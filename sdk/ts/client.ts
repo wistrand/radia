@@ -37,11 +37,11 @@ export {
   grantKey,
   isRetired,
   newestByKey,
-  readRegistry,
+  readAll,
   RETIRED,
   unsafeAsPopulation,
 } from "./registry.ts";
-export type { Population, RegistryView } from "./registry.ts";
+export type { Population } from "./registry.ts";
 // Waiting for another agent's answer: the other half every client re-implements, and the one where
 // a timeout is an ordinary outcome rather than an exception.
 export { awaitResult } from "./await.ts";
@@ -763,12 +763,25 @@ export class RadiaClient {
    * `complete: false` means the walk was capped, so the set is a prefix. Treat that as a reason to
    * refuse widening, never as a full picture. A caller that must SEE a retirement uses `queryAll`;
    * this answers what is in force.
+   *
+   * A SET, not an array, because a projection HAS no order: the wire sends the entries in the order
+   * the walk happened to see each key first, which is nothing a caller may read meaning into.
+   * `currentFleetKey` took `.at(-1)` meaning "the newest" and sealed conversations to the fleet key
+   * about to be retired. `.at`, `[0]` and index access are gone here; ordering by an actual field
+   * (`[...entries].sort(byRank)`) is unaffected, and picking the newest is `newer` from
+   * `registry.ts`.
    */
   async registry(
     kind: string,
     match?: Record<string, unknown>,
-  ): Promise<{ entries: RadiaRecord[]; complete: boolean; scanned: number; scope?: ReadScope }> {
-    return await this.req("POST", "/v0/records/registry", { kind, ...(match ? { match } : {}) });
+  ): Promise<{ entries: ReadonlySet<RadiaRecord>; complete: boolean; scanned: number; scope?: ReadScope }> {
+    const out = await this.req("POST", "/v0/records/registry", { kind, ...(match ? { match } : {}) }) as {
+      entries: RadiaRecord[];
+      complete: boolean;
+      scanned: number;
+      scope?: ReadScope;
+    };
+    return { ...out, entries: new Set(out.entries) };
   }
 
   async queryAll(pattern: Pattern, maxPages = 40): Promise<Population> {

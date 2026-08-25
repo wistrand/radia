@@ -73,7 +73,7 @@ import { type CompactionResult, compactRegistries, keyOf, RUNTIME_KEYS } from ".
 import { type BlobGcResult, type BlobStore, MemoryBlobStore, type RewrapResult } from "../storage/blobs.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
 import { RadiaError } from "./errors.ts";
-import { activeSet, grantKey, isRetired, oidcIdentityKey, opsGrantKey, readRegistry, type RegistryView } from "./registry.ts";
+import { activeByKey, activeSet, grantKey, isRetired, newestByKey, oidcIdentityKey, opsGrantKey, readAll, type RegistryView } from "./registry.ts";
 import { type OidcConfig, OidcVerifier } from "./oidc.ts";
 import { httpGetJson } from "../platform.ts";
 import { Notifier } from "./notifier.ts";
@@ -691,16 +691,16 @@ export class Space {
    * Read one registry kind completely and project it. This is the ONE place limit and direction
    * are decided, rather than at each call site.
    */
-  private registry<T = unknown>(
+  private async registry<T = unknown>(
     kind: string,
     keyOf: (body: T, rec: RadiaRecord) => string | undefined,
     match?: Record<string, unknown>,
     scope?: StatsScope,
   ): Promise<RegistryView> {
-    return readRegistry<T>(
+    const { records, complete, scanned } = await readAll(
       (page) => this.query({ kind, match }, page.limit, page, scope),
-      keyOf,
     );
+    return { entries: activeByKey<T>(records, keyOf), newest: newestByKey<T>(records, keyOf), complete, scanned };
   }
 
   /**
@@ -1111,7 +1111,7 @@ export class Space {
   /**
    * A truncated grant view decided this. Say so.
    *
-   * `readRegistry` reports `complete: false` when it hits its page budget rather than returning a
+   * `readAll` reports `complete: false` when it hits its page budget rather than returning a
    * plausible prefix, and every authorization path took `.entries` and never looked. Truncation is
    * fail-CLOSED here — reads are newest-first, so a retirement is inside the window while what it
    * retires may be outside, and the entry drops out either way — so the cost is silence rather than
@@ -4186,12 +4186,10 @@ export class Space {
     checked: number;
     complete: boolean;
   }> {
-    const view = await readRegistry<Record<string, unknown>>(
-      (page) => this.query({ kind: SHRED }, page.limit, page),
-      (_body, r) => r.id,
-    );
+    const view = await readAll((page) => this.query({ kind: SHRED }, page.limit, page));
     const out: ErasureStatus[] = [];
-    for (const [shredId, rec] of view.entries) {
+    for (const rec of view.records) {
+      const shredId = rec.id;
       const b = rec.body as Record<string, unknown>;
       const digest = typeof b.digest === "string" ? b.digest : "";
       if (!digest) continue;
@@ -4209,7 +4207,7 @@ export class Space {
         holds,
       });
     }
-    return { erasures: out, checked: view.entries.size, complete: view.complete };
+    return { erasures: out, checked: view.records.length, complete: view.complete };
   }
 
   /** Every digest a surviving `artifact` record carries, paged to EXHAUSTION: a bounded read would

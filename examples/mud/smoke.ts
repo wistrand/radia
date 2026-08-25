@@ -154,7 +154,7 @@ check("…and the arrival in the room entered",
   await until(async () => (await where(bob.principal)) === "gate");
   const view = await admin.registry("presence", { worldId: WORLD_ID });
   const at = (room: string) =>
-    view.entries.map((r) => r.body as { actor: string; roomId: string })
+    [...view.entries].map((r) => r.body as { actor: string; roomId: string })
       .filter((p) => p.roomId === room).map((p) => p.actor).sort();
   check("somebody who left is not still standing there",
     !at("gate").includes(alice.principal) && at("courtyard").includes(alice.principal),

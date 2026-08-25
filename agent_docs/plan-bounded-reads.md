@@ -29,7 +29,7 @@ restart. Grant reads capped: at 101 records a granted principal was DENIED, at 1
 invisible and the revoked grant kept working. `query_page` dropped `scope`. The SDK's own `grant()`
 revival anchor scanned 500. The chat's procedure lookup read the oldest 50 twice over, so 51 saves
 resolved to the 50th. `runs --for` reads the oldest 1000, so offboarding reports 0 active and
-`--stop` stops nothing. Five `readRegistry` callers page ascending and keep the wrong half. Three
+`--stop` stops nothing. Five `readAll` callers page ascending and keep the wrong half. Three
 minor: `turn.ts` newest-50 global, `forksOf` 500, `listSandboxes` 200.
 
 **Order confusion (8).** `readOne` answers with the OLDEST match, hit TWICE: the second time a newly
@@ -77,7 +77,7 @@ private async newestByHash(kind: string, tokenHash: string) {
 
 | | strategy | cost | when |
 |---|----------|------|------|
-| 1 | **exhaust** (`queryAll`, `readRegistry`) | O(history) | the whole set |
+| 1 | **exhaust** (`queryAll`, `readAll`) | O(history) | the whole set |
 | 2 | **page** (explicit, with a cursor) | O(page) | display, walking |
 | 3 | **narrow** (match to a key, take newest 1) | O(1) | one current thing |
 
@@ -169,9 +169,9 @@ inferring.
 
 | mechanism | incidents |
 |-----------|-----------|
-| server-side registry read | tool list x2, credentials, grants, procedures x2, `runs --for`, the five readRegistry callers, the minor trio, **and in Python** |
+| server-side registry read | tool list x2, credentials, grants, procedures x2, `runs --for`, the five readAll callers, the minor trio, **and in Python** |
 | `Population` brand | tool list x2, credentials, grants, procedures x2, the minor trio (TS only) |
-| `readRegistry` builds the `Page` | the five callers, by construction |
+| `readAll` builds the `Page` | the five callers, by construction |
 | strategy-3 discipline | procedures x2, and the shape behind the credential index |
 | `pageClause` | the 139-of-25 walk, and future drift |
 | cursor + SDK rename | **none of them** |
@@ -222,7 +222,7 @@ gone, and with it the hand-checked agreement. Its `complete: false` now refuses 
 routing on a prefix.
 
 **4. `Population` brand. DONE 2026-08-25.** `Population = RadiaRecord[] & { readonly [exhaustive]: true }`
-in `sdk/ts/registry.ts`, produced only by `queryAll` and `readRegistry`, required by `activeByKey` /
+in `sdk/ts/registry.ts`, produced only by `queryAll` and `readAll`, required by `activeByKey` /
 `newestByKey` / `activeSet`.
 
 IT FOUND TWO LIVE DEFECTS THE MOMENT IT COMPILED, and the prediction of "zero call-site changes" was
@@ -237,7 +237,7 @@ instance of the same defect in the chat's registries, after the two step 2 found
 The window bug is fixed too (it looks both ways now, proved red against the defect it missed), but
 the type is the primary rule: it cannot be defeated by where the read sits relative to the call.
 
-The brand does NOT mean "complete" (`readRegistry` brands its accumulation while reporting
+The brand does NOT mean "complete" (`readAll` brands its accumulation while reporting
 `complete: false`); it means **this read either exhausted or told you it did not**, which is exactly
 what separates it from `query(p, 500)`. `unsafeAsPopulation(records, why: string)` is the named
 escape, `why` mandatory, and the ledger in `test/registrycost.test.ts` asserts the EXACT set of
@@ -249,11 +249,11 @@ The idiom matters: `{ __exhaustive: unique symbol }` as a property TYPE degrades
 `{}` and takes `.map`/`.length` with it. `declare const exhaustive: unique symbol` plus a computed
 key is the form that keeps the array half intact.
 
-**5. `readRegistry` constructs the `Page`. DONE 2026-08-25.** The reader now receives a
+**5. `readAll` constructs the `Page`. DONE 2026-08-25.** The reader now receives a
 `RegistryPage` (limit, dir and cursor together) and passes it through:
 `(page) => client.query(pattern, page.limit, page)`. All 14 call sites converted; the five that
 paged ascending against the prose contract are fixed BY CONSTRUCTION, and no caller names a
-direction any more. Guard: `test/registrycost.test.ts` refuses a `dir` near a `readRegistry` call,
+direction any more. Guard: `test/registrycost.test.ts` refuses a `dir` near a `readAll` call,
 proved red by planting one back.
 
 **6. Move the known sites onto the right strategy. DONE 2026-08-25.** `runs --for` now exhausts

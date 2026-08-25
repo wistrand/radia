@@ -23,7 +23,7 @@ compute identically. The runtime imports these definitions; the SDK imports noth
 | Credential  | `{definitionToken}` exchanges on expiry; `keepAlive(signal, onLost)` renews at half-life | `keep_alive(stop, on_lost)`, renewal only (see below) |
 | Children    | `getChildren` / `getChildrenPage` (paged) | `get_children` / `get_children_page` (paged) |
 | Reads       | `readOne` (the OLDEST match) / `readNewest` | `read_one` (the OLDEST match) / `read_newest` |
-| Registry    | `registry(kind, match?)`: the current set, projected server-side from the kind's declared key | `registry(kind, match=None)`, and the ONLY correct path there: Python has no projection helper |
+| Registry    | `registry(kind, match?)`: the current set, projected server-side from the kind's declared key. Entries are a `ReadonlySet`, since a projection has no order to index into | `registry(kind, match=None)`, a list, and the ONLY correct path there: Python has no projection helper |
 | Content key | `contentKey(tag, body)`, async (Web Crypto) | `content_key(tag, body)`, sync (hashlib) |
 | Dependencies| none beyond the runtime | none, standard library only (3.9+) |
 
@@ -80,7 +80,7 @@ wherever `python3` is present, including CI. The small-float divergence it exist
 (`1e-05` vs `0.00001`) shipped and survived precisely because nothing checked.
 
 **Client-side helpers.** Two helpers compose public verbs without adding wire operations.
-`readRegistry` reads a registry projection, paging to exhaustion and reporting `complete: false`
+`readAll` pages a read to exhaustion and reports `complete: false`
 rather than a plausible prefix. `awaitResult` waits for the record another agent will write: the
 deadline loop, the poll, an injected wake (pass a shared one, or take the default sleep) and a final
 read after the deadline, returning a DISCRIMINATED outcome, because "nobody answered in time" is an

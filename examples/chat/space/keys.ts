@@ -19,8 +19,8 @@
 // No private key is ever written to the space. What the space holds is the DEK wrapped under each.
 
 import type { RadiaClient, RadiaRecord } from "../../../sdk/ts/client.ts";
-import { RadiaClientError, readRegistry } from "../../../sdk/ts/client.ts";
-import { newer } from "../../../sdk/ts/registry.ts";
+import { RadiaClientError, readAll } from "../../../sdk/ts/client.ts";
+import { activeByKey, newer } from "../../../sdk/ts/registry.ts";
 import {
   type ConversationEncryption,
   type ConversationKey,
@@ -182,7 +182,7 @@ export async function livePersonKeys(
   type Body = { principal: string; keyId: string; publicKey: string; retired?: boolean };
   const view = await c.registry(PERSON_KEY_KIND, { principal });
   if (!view.complete) throw new Error(`could not read ${principal}'s key registry completely; refusing to seal`);
-  return view.entries.map((r) => ({
+  return [...view.entries].map((r) => ({
     keyId: (r.body as Body).keyId,
     publicKey: (r.body as Body).publicKey,
   }));
@@ -303,20 +303,19 @@ export async function recoverPersonKeys(
   }
   // NEWEST per conversation: enrolment writes successors, and only the latest names the artifact
   // holding every wrap so far.
-  const view = await readRegistry<{ conversationId?: string; keys?: string }>(
-    (page) =>
-      admin.queryPage({
-        kind: CONVERSATION_KEY_KIND,
-        match: { owner: principal, ...(opts.conversationId ? { conversationId: opts.conversationId } : {}) },
-      }, page.limit, page).then((r) => r.records),
-    (b) => b.conversationId,
+  const view = await readAll((page) =>
+    admin.queryPage({
+      kind: CONVERSATION_KEY_KIND,
+      match: { owner: principal, ...(opts.conversationId ? { conversationId: opts.conversationId } : {}) },
+    }, page.limit, page).then((r) => r.records)
   );
+  const current = activeByKey<{ conversationId?: string }>(view.records, (b) => b.conversationId);
   if (!view.complete) throw new Error(`could not enumerate ${principal}'s conversations; refusing a partial recovery`);
 
   const holder: KeyHolder = { kind: "fleet", privateKey: fleet.privateKey, keyId: fleet.keyId };
   const extend: { conversationId: string; keyIds: string[] }[] = [];
   const erased: string[] = [];
-  for (const rec of view.entries.values()) {
+  for (const rec of current.values()) {
     const body = rec.body as { conversationId?: string; keys?: string };
     if (!body.conversationId || !body.keys) continue;
     let encryption;
@@ -340,7 +339,7 @@ export async function recoverPersonKeys(
       await writeConversationKey(admin, body.conversationId, principal, grown);
     }
   }
-  return { scanned: view.entries.size, extend, erased };
+  return { scanned: current.size, extend, erased };
 }
 
 /**
@@ -358,15 +357,15 @@ export async function eraseConversation(
   admin: RadiaClient,
   conversationId: string,
 ): Promise<{ shredded: string[] }> {
-  const records = await readRegistry<{ keys?: string }>(
-    (page) => admin.queryPage({ kind: CONVERSATION_KEY_KIND, match: { conversationId } }, page.limit, page).then((r) => r.records),
-    (_b, r) => r.id, // every version, not the newest: each names an artifact that must go
+  // EVERY version, not the newest: each names an artifact that must go.
+  const records = await readAll((page) =>
+    admin.queryPage({ kind: CONVERSATION_KEY_KIND, match: { conversationId } }, page.limit, page).then((r) => r.records)
   );
   if (!records.complete) {
     throw new Error(`could not enumerate every key record for ${conversationId}; refusing a partial erasure`);
   }
   const shredded: string[] = [];
-  for (const rec of records.entries.values()) {
+  for (const rec of records.records) {
     const id = (rec.body as { keys?: string }).keys;
     if (!id || shredded.includes(id)) continue;
     // Already-shredded is success, not a failure: erasing twice must converge rather than throw.

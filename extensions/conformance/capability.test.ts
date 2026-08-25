@@ -40,7 +40,7 @@ async function withSpace<T>(fn: (c: RadiaClient) => Promise<T>): Promise<T> {
  *  space is shared across tests now, so an unscoped read would see every other test's tools. */
 const liveFor = async (c: RadiaClient, tool: string) =>
   new Map(
-    (await c.registry(CAPABILITY, { tool })).entries
+    [...(await c.registry(CAPABILITY, { tool })).entries]
       .map((r) => [capabilityKey(r.body as CapabilityBody)!, r] as const),
   );
 

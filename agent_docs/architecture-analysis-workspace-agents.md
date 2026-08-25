@@ -56,7 +56,7 @@ it. The same doc records the second wart this closes: "which code is live" has t
 BUILT (order step 7 below). The planner used to walk a FIXED `STAGES` array, so everything above
 swapped implementations of the three named stages and could never add a fourth. Making the
 sequence itself a registry closed that: a `stage_def` record per stage ({stage, index}), read
-through `readRegistry` (latest-wins, retire to remove, content-keyed writes, paged to
+through `readAll` (latest-wins, retire to remove, content-keyed writes, paged to
 exhaustion like every registry). This is the kinds-are-records move applied to the pipeline definition. What it
 enables is the chat-to-pipeline path for NEW stages, not only new implementations: a
 conversation authors a tree (`save_procedure` already yields a bindable workspace with the same

@@ -138,7 +138,7 @@ export async function retireProviderCapabilities(client: RadiaClient, providers:
   try {
     const live = await client.registry(CAPABILITY);
     await Promise.all(
-      live.entries.map(async (rec) => {
+      [...live.entries].map(async (rec) => {
         const b = rec.body as CapabilityBody;
         if (!b.provider || !wanted.has(b.provider)) return;
         try {

@@ -315,7 +315,7 @@ becomes a defect.
   success while writing nothing. Applies to saved lenses; the interest registry no longer needs the
   anchor — its keys are RUN-scoped (a new run's key is new), which is also what keeps a restarted
   worker visible (gotchas.md, "A registry keyed by AUTHOR needs run-scoped idempotency keys").
-- **Registry reads page to exhaustion.** Use `readRegistry` and surface `complete: false`. The space
+- **Registry reads page to exhaustion.** Use `readAll` and surface `complete: false`. The space
   digest is the worst possible place to reintroduce the bounded-read-as-population bug, because it is
   the most trusted artifact an inspector has.
 - **Patterns match bodies only.** They cannot express taint or envelope state, so any filter over

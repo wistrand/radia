@@ -17,7 +17,6 @@ import { RadiaError } from "../src/core/errors.ts";
 import { SqliteAdapter } from "../src/storage/sqlite.ts";
 import { makeHandler } from "../src/server/http.ts";
 import type { GrantDef } from "../src/core/kinds.ts";
-import { readRegistry } from "../sdk/ts/registry.ts";
 
 const NOTE = {
   kind: "note",

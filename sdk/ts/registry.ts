@@ -218,19 +218,6 @@ function canonicalJson(v: unknown): string {
   return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(o[k])}`).join(",")}}`;
 }
 
-/** What a registry read produced, and whether it saw everything. */
-export interface RegistryView {
-  /** Current entry per key, retired ones dropped. */
-  entries: Map<string, RadiaRecord>;
-  /** Newest record per key INCLUDING retirements. A writer that re-declares a key needs this:
-   *  reviving a retired entry requires a key that differs from the record being revived, so it
-   *  has to be able to see that the newest record is a retirement, and which record that is. */
-  newest: Map<string, RadiaRecord>;
-  /** False when the scan hit its cap before exhausting the kind. The view may be missing entries,
-   *  and a caller that treats it as authoritative would be guessing. */
-  complete: boolean;
-  scanned: number;
-}
 
 /**
  * Records from a read that EXHAUSTED, or that said it could not.
@@ -238,9 +225,9 @@ export interface RegistryView {
  * A brand rather than a comment, because the alternative is a rule: "a latest-wins projection needs
  * the whole history", which three audits and a grep guard have caught being broken and which the
  * type system can simply enforce. `activeByKey` / `newestByKey` / `activeSet` take only this, and
- * only `queryAll`, `readRegistry` and `registry` produce it.
+ * only `queryAll` and `readAll` produce it.
  *
- * WHAT IT DOES NOT MEAN IS COMPLETE. `readRegistry` brands its accumulation while reporting
+ * WHAT IT DOES NOT MEAN IS COMPLETE. `readAll` brands its accumulation while reporting
  * `complete: false`, and that is deliberate: the brand says **this read either exhausted or told you
  * it did not**, which is exactly what separates it from `query(p, 500)`, which says nothing at all.
  * A caller still has to read `complete`.
@@ -265,7 +252,7 @@ export function unsafeAsPopulation(records: RadiaRecord[], why: string): Populat
  *  record per entry, so exhausting it is normally a single page. */
 const REGISTRY_PAGE = 500;
 
-/** One page of a registry walk, built by `readRegistry` and passed straight through by the caller.
+/** One page of an exhaustive walk, built by `readAll` and passed straight through by the caller.
  *  `limit` rides along so the caller needs nothing of its own:
  *  `client.queryPage(pattern, p.limit, p)`. Spelled out rather than `extends Page`, because `Page`
  *  is a union (after+dir OR cursor) and a registry walk is always the first arm. */
@@ -278,7 +265,7 @@ export interface RegistryPage {
 const REGISTRY_MAX_PAGES = 40;
 
 /**
- * Read a registry COMPLETELY, newest-first, and project it.
+ * Read a paged query COMPLETELY, newest-first.
  *
  * This exists because registry writes are unbounded while a hand-written read is bounded, with
  * nothing connecting the two. That is the most repeated bug in this codebase. A capped read returns
@@ -300,15 +287,14 @@ const REGISTRY_MAX_PAGES = 40;
  * current entry, while `complete: false` said only that something was missing. A rule a caller can
  * get wrong is a rule that will be got wrong, so the caller no longer states it.
  *
- * A `keyOf` of `(_b, r) => r.id` is the EXHAUST idiom, not a projection: every record is its own
- * entry, so this is `queryAll` that reports `complete` instead of throwing. Those callers (counting
- * every reference to a blob, shredding every wrap artifact of a conversation) must NOT move to
- * `client.registry`, which would collapse them to the newest per key and answer 1.
+ * ONE JOB: exhaust. It projected too, taking a `keyOf` and returning both a retirement-dropped map
+ * and a raw one, which made it two functions wearing one name — and the way to ask for the second
+ * was to pass `(_b, r) => r.id`, a key that means "no key". Projection is `activeByKey` /
+ * `newestByKey`, named at the call site, over the `Population` this returns.
  */
-export async function readRegistry<T = unknown>(
+export async function readAll(
   read: (page: RegistryPage) => Promise<RadiaRecord[]>,
-  keyOf: (body: T, record: RadiaRecord) => string | undefined,
-): Promise<RegistryView> {
+): Promise<{ records: Population; complete: boolean; scanned: number }> {
   const all: RadiaRecord[] = [];
   let after: string | undefined;
   let complete = false;
@@ -323,8 +309,5 @@ export async function readRegistry<T = unknown>(
   }
   // WHERE THE BRAND IS EARNED: this loop either exhausted the kind or set `complete: false` above,
   // which is exactly what `Population` asserts. Nothing else in this file may mint one.
-  const newest = newestByKey(unsafeAsPopulation(all, "readRegistry paged to exhaustion or reported it could not"), keyOf);
-  const entries = new Map(newest);
-  for (const [key, rec] of entries) if (isRetired(rec.body)) entries.delete(key);
-  return { entries, newest, complete, scanned: all.length };
+  return { records: unsafeAsPopulation(all, "readAll paged to exhaustion or reported it could not"), complete, scanned: all.length };
 }

@@ -8,7 +8,7 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
 **Read a SECTION, not the file.** The traps below are grouped by what a rule constrains, so a
 change to one subsystem has one heading to skim rather than nine hundred lines. Many rules are
 genuinely bi-topical (a storage lesson learned in the credential path), so they sit under the thing
-they CONSTRAIN, not where they were found; grep by symbol (`readRegistry`, `lease_lost`) when in
+they CONSTRAIN, not where they were found; grep by symbol (`readAll`, `lease_lost`) when in
 doubt.
 
 **Writing an entry: a bold rule, then at most a short paragraph.** Name the mechanism, the
@@ -54,10 +54,10 @@ skimming for a rule, and a page of prose per entry means the rule is not found.
 
 > Most of the entries below are instances of ONE mistake: a registry's writes are unbounded, its
 > reads were bounded, and nothing connected the two. They are kept individually because each cost
-> real debugging, but the fix is structural and lives in `src/core/registry.ts` (`readRegistry`,
+> real debugging, but the fix is structural and lives in `src/core/registry.ts` (`readAll`,
 > which pages to exhaustion and admits when it cannot) plus content-keyed registry writes. New code
 > should not be able to re-enter this class: if you are writing `query(kind, N)` and treating the
-> result as "all of them", use `readRegistry` instead.
+> result as "all of them", use `readAll` instead.
 
 Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
@@ -205,12 +205,11 @@ disagreement means `gc` deletes by one key while readers project by another. It 
 correct path from PYTHON, which has no projection helper at all. `complete: false` means a prefix,
 never a set. Use `queryAll` when you must SEE a retirement; this answers what is in force.
 
-**Never pick from a projection BY POSITION; a projection is a set and its order is an artefact of
-the walk.** `entries` is ordered by when each key was FIRST SEEN, and the walk is descending, so the
-last entry is the key whose newest record is OLDEST. `currentFleetKey` took `.at(-1)` meaning
-"newest" and sealed conversations to the fleet key about to be retired, wrong only when two keys are
-live, which is exactly a rotation in flight. Use the shared `newer` comparator (`sdk/ts/registry.ts`),
-as `runs --for` also had to learn.
+**Never pick from a projection BY POSITION.** `client.registry` returns a `ReadonlySet` so `.at(-1)`
+no longer compiles, but a spread restores it: `[...entries]` is ordered by when each key was first
+seen in a DESCENDING walk, so the last element is the key whose newest record is oldest.
+`currentFleetKey` read that as "newest" and sealed to the fleet key about to be retired. Use `newer`
+(`sdk/ts/registry.ts`), as `runs --for` also had to learn.
 
 **A record missing a keyed path is an ENTRY under the absent key, not an unclassifiable one.**
 `keyOf` (`src/core/gc.ts`) marks absence with a NUL, which `JSON.stringify` never emits, so it
@@ -221,7 +220,7 @@ superseded key-less records; guard: `suites/gc.ts`, "compaction keeps exactly wh
 reads".
 
 **`activeByKey` / `newestByKey` / `activeSet` take a `Population`, not a `RadiaRecord[]`.** Only
-`queryAll` and `readRegistry` mint one, so a projection over a page does not compile. Two live
+`queryAll` and `readAll` mint one, so a projection over a page does not compile. Two live
 defects fell out the day it landed, both in `examples/chat/client/` and both past a grep that had
 been green over them: the grep looks BACKWARD from the projection and both reads were inline
 arguments after it. `unsafeAsPopulation(records, why)` is the way out, and
@@ -273,7 +272,7 @@ again at a call site is the same defect whether written as a comparison (`page.d
 as a default (`page?.dir ?? "asc"`), and the second shape got into the query handler while the guard
 matched only the first. It builds the cursor, so a wrong answer sends the NEXT page backwards.
 
-**`readRegistry` builds the `Page`; a caller passes it through and never names a direction.** The
+**`readAll` builds the `Page`; a caller passes it through and never names a direction.** The
 contract used to be prose ("must return records NEWEST-FIRST") and five call sites paged ascending
 against it, right only because the function exhausts: on the incomplete path they would have kept
 the OLDEST records, the half missing every retirement, while `complete: false` said only that
@@ -431,7 +430,7 @@ something was missing. A rule a caller can get wrong is one that will be got wro
   `dir: "desc"` — which corrected which tools vanish (least-recently-republished instead of newest)
   and left the boundedness. Measured mid-session on a real space: **737 capability records for 33
   tools**, so the page was within 1.5x of silently dropping tools again. CLAUDE.md already said
-  registry state is read through `readRegistry`, never a hand-rolled `query(kind, N)`; this was the
+  registry state is read through `readAll`, never a hand-rolled `query(kind, N)`; this was the
   hand-rolled one, in the most consequential place, and the failure mode is invisible: "the
   assistant does not have that tool" is indistinguishable from "it did not think to use it".
   IT HAPPENED TWICE MORE IN THE SAME APP, found by the `Population` brand rather than by any grep:
@@ -1193,7 +1192,7 @@ fleet appends one record per entry forever. Measured: 40 re-puts sailed past a c
   OLDEST records fell out of its own self-scoped reads. That list is the allowlist for `take`,
   lineage, graph, artifact bytes and watch wakeups, so truncation makes an agent's own records
   unclaimable and `rankClaimable` skips them indistinguishably from an empty queue. It pages to
-  exhaustion via `readRegistry` and throws `registry_incomplete` rather than narrowing. Five client
+  exhaustion via `readAll` and throws `registry_incomplete` rather than narrowing. Five client
   reads had the same shape and now route through `RadiaClient.queryAll` / `query_all`, which pages
   newest-first and THROWS instead of returning a prefix. Guarded in `test/conformance/suites/auth.ts`
   (1201 runs for one agent; its oldest must stay in scope). Where a bound is right, bound by

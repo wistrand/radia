@@ -45,7 +45,7 @@ export async function liveModels(client: RadiaClient): Promise<ModelAd[]> {
   // because the second statement is gone (agent_docs/plan-bounded-reads.md).
   const view = await client.registry("model");
   if (!view.complete) throw new Error("could not read the model registry completely; refusing to route on a prefix");
-  return view.entries
+  return [...view.entries]
     .map((r) => r.body as ModelAd)
     .filter((m) => !m.modalities || m.modalities.includes("text"))
     .sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));

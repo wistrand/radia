@@ -19,7 +19,7 @@
 //   function of what it reads, so it is safe to run on a timer, on a watch, or by hand.
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
-import { readRegistry } from "../../sdk/ts/client.ts";
+import { activeByKey, newestByKey, readAll } from "../../sdk/ts/client.ts";
 import { reactorLoop } from "../../sdk/ts/loop.ts";
 import type { RadiaRecord } from "../../sdk/ts/wire.ts";
 import { readBindings } from "../../extensions/ts/host.ts";
@@ -69,7 +69,7 @@ export interface StageDef {
 export async function readStageDefs(c: RadiaClient): Promise<StageDef[]> {
   const view = await c.registry("stage_def");
   if (!view.complete) throw new Error("could not read the stage_def registry completely");
-  return view.entries
+  return [...view.entries]
     .map((r) => r.body as StageDef)
     .sort((a, b) => a.index - b.index);
 }
@@ -123,12 +123,12 @@ async function readPass(c: RadiaClient, names: string[]): Promise<PassReads> {
   // one entry and the older half would be dropped. And declaring one puts `stage_result` and
   // `stage_request` in reach of compaction, which deletes the run history an operator inspects.
   const bulk = async (kind: string) => {
-    const view = await readRegistry<Record<string, unknown>>(
-      (page) => c.queryPage({ kind, match: { dataset: { $in: names } } }, page.limit, page).then((r) => r.records),
-      (b) => workKey(b as { dataset?: string }),
+    const view = await readAll((page) =>
+      c.queryPage({ kind, match: { dataset: { $in: names } } }, page.limit, page).then((r) => r.records)
     );
     if (!view.complete) throw new Error(`could not read every ${kind} for this pass; refusing to plan on a prefix`);
-    return view.newest; // newest per work key, retirements included: nothing here retires
+    // `newestByKey`, not `activeByKey`: retirements included, because nothing here retires.
+    return newestByKey(view.records, (b) => workKey(b as { dataset?: string }));
   };
   const results = await bulk("stage_result");
   // Resolve every ok result's output digest to its artifact id in ONE read, skipping results that
@@ -139,12 +139,11 @@ async function readPass(c: RadiaClient, names: string[]): Promise<PassReads> {
     .map((b) => b.outputDigest!);
   const artifacts = new Map<string, string>();
   if (unresolved.length > 0) {
-    const view = await readRegistry<{ digest?: string }>(
-      (page) => c.queryPage({ kind: "artifact", match: { digest: { $in: [...new Set(unresolved)] } } }, page.limit, page).then((r) => r.records),
-      (b) => b.digest,
+    const view = await readAll((page) =>
+      c.queryPage({ kind: "artifact", match: { digest: { $in: [...new Set(unresolved)] } } }, page.limit, page).then((r) => r.records)
     );
     if (!view.complete) throw new Error("could not resolve every output digest to an artifact; refusing to plan on a prefix");
-    for (const [digest, rec] of view.entries) artifacts.set(digest, rec.id);
+    for (const [digest, rec] of activeByKey<{ digest?: string }>(view.records, (b) => b.digest)) artifacts.set(digest, rec.id);
   }
   return { defs, code, results, requests: await bulk("stage_request"), artifacts };
 }

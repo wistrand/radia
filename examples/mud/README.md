@@ -82,7 +82,7 @@ client is a claim, and a stale tab would otherwise act in a room it has already 
 
 **An occupant list is a projection, not a query.** `presence` is append-only, so
 `query {worldId, roomId}` returns everyone who was EVER in that room. Project latest-wins per actor
-first (`readRegistry`), then filter. The smoke test asserts both halves, including that the naive
+first (`client.registry`, projected server-side from the kind's `contentKey`), then filter. The smoke test asserts both halves, including that the naive
 query still says otherwise.
 
 **A feed is ordered and tailed by RECORD ID.** There is no `index` field, because an idempotency key

@@ -305,7 +305,7 @@ async function occupantsOf(
   actor: string,
 ): Promise<{ here: string[]; complete: boolean }> {
   const view = await client.registry("presence", { worldId });
-  const here = view.entries
+  const here = [...view.entries]
     .map((r) => r.body as PresenceBody)
     .filter((p) => p.roomId === roomId && p.actor !== actor)
     .map((p) => `${displayName(p.actor)} is here.`);
