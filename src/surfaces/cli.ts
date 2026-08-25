@@ -1774,7 +1774,7 @@ function parseAgentTokens(argv: string[], base: Record<string, string>): Record<
 async function hostTokensFromStdin(argv: string[]): Promise<Record<string, string>> {
   const spec = flag(argv, "--agents");
   if (!spec) return {};
-  const text = spec === "-" ? new TextDecoder().decode(await readAll(stdin())) : spec;
+  const text = spec === "-" ? new TextDecoder().decode(await readAllBytes(stdin())) : spec;
   const parsed = json(text, "agents");
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(parsed)) {
@@ -1825,13 +1825,13 @@ function pattern(kind: string, argv: string[]) {
 async function leaseArg(argv: string[]): Promise<Lease | undefined> {
   const [arg] = positional(argv, 1);
   if (!arg) return undefined;
-  const text = arg === "-" ? new TextDecoder().decode(await readAll(stdin())) : arg;
+  const text = arg === "-" ? new TextDecoder().decode(await readAllBytes(stdin())) : arg;
   const parsed = JSON.parse(text);
   // Accept either a bare lease or the whole `take` output, so a pipeline can pass either.
   return (parsed.lease ?? parsed) as Lease;
 }
 
-async function readAll(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+async function readAllBytes(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
   const chunks: Uint8Array[] = [];
   for await (const c of stream) chunks.push(c);
   const total = chunks.reduce((n, c) => n + c.length, 0);

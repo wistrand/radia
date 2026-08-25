@@ -230,9 +230,9 @@ function canonicalJson(v: unknown): string {
  * A brand rather than a comment, because the alternative is a rule: "a latest-wins projection needs
  * the whole history", which three audits and a grep guard have caught being broken and which the
  * type system can simply enforce. `activeByKey` / `newestByKey` / `activeSet` take only this, and
- * only `queryAll` and `readAll` produce it.
+ * only `queryAll` and `readCompletely` produce it.
  *
- * WHAT IT DOES NOT MEAN IS COMPLETE. `readAll` brands its accumulation while reporting
+ * WHAT IT DOES NOT MEAN IS COMPLETE. `readCompletely` brands its accumulation while reporting
  * `complete: false`, and that is deliberate: the brand says **this read either exhausted or told you
  * it did not**, which is exactly what separates it from `query(p, 500)`, which says nothing at all.
  * A caller still has to read `complete`.
@@ -257,7 +257,7 @@ export function unsafeAsPopulation(records: RadiaRecord[], why: string): Populat
  *  record per entry, so exhausting it is normally a single page. */
 const REGISTRY_PAGE = 500;
 
-/** One page of an exhaustive walk, built by `readAll` and passed straight through by the caller.
+/** One page of an exhaustive walk, built by `readCompletely` and passed straight through by the caller.
  *  `limit` rides along so the caller needs nothing of its own:
  *  `client.queryPage(pattern, p.limit, p)`. Spelled out rather than `extends Page`, because `Page`
  *  is a union (after+dir OR cursor) and a registry walk is always the first arm. */
@@ -297,7 +297,7 @@ const REGISTRY_MAX_PAGES = 40;
  * was to pass `(_b, r) => r.id`, a key that means "no key". Projection is `activeByKey` /
  * `newestByKey`, named at the call site, over the `Population` this returns.
  */
-export async function readAll(
+export async function readCompletely(
   read: (page: RegistryPage) => Promise<RadiaRecord[]>,
 ): Promise<{ records: Population; complete: boolean; scanned: number }> {
   const all: RadiaRecord[] = [];
@@ -314,5 +314,5 @@ export async function readAll(
   }
   // WHERE THE BRAND IS EARNED: this loop either exhausted the kind or set `complete: false` above,
   // which is exactly what `Population` asserts. Nothing else in this file may mint one.
-  return { records: unsafeAsPopulation(all, "readAll paged to exhaustion or reported it could not"), complete, scanned: all.length };
+  return { records: unsafeAsPopulation(all, "readCompletely paged to exhaustion or reported it could not"), complete, scanned: all.length };
 }

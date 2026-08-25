@@ -19,7 +19,7 @@ import { ARTIFACT, type ArtifactDef, SHRED, validateArtifactDef, validateArtifac
 import type { Pattern } from "./matching.ts";
 import type { PutRequest } from "./record.ts";
 import { RadiaError } from "./errors.ts";
-import { readAll } from "./registry.ts";
+import { readCompletely } from "./registry.ts";
 
 /** Everything the artifact verbs need from a space, and nothing else. */
 export interface ArtifactHost {
@@ -147,7 +147,7 @@ export async function shredArtifact(
   // Every artifact record pointing at these bytes. Read to exhaustion: a bounded count that
   // undercounts would let a shared blob past the guard below, which is the failure that turns a
   // targeted erasure into somebody else's data loss.
-  const refs = await readAll(
+  const refs = await readCompletely(
     (page) => h.query({ kind: ARTIFACT, match: { digest: def.digest } }, page.limit, page),
   );
   const references = refs.records.length;

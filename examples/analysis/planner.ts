@@ -19,7 +19,7 @@
 //   function of what it reads, so it is safe to run on a timer, on a watch, or by hand.
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
-import { activeByKey, newestByKey, readAll } from "../../sdk/ts/client.ts";
+import { activeByKey, newestByKey, readCompletely } from "../../sdk/ts/client.ts";
 import { reactorLoop } from "../../sdk/ts/loop.ts";
 import type { RadiaRecord } from "../../sdk/ts/wire.ts";
 import { readBindings } from "../../extensions/ts/host.ts";
@@ -123,7 +123,7 @@ async function readPass(c: RadiaClient, names: string[]): Promise<PassReads> {
   // one entry and the older half would be dropped. And declaring one puts `stage_result` and
   // `stage_request` in reach of compaction, which deletes the run history an operator inspects.
   const bulk = async (kind: string) => {
-    const view = await readAll((page) =>
+    const view = await readCompletely((page) =>
       c.queryPage({ kind, match: { dataset: { $in: names } } }, page.limit, page).then((r) => r.records)
     );
     if (!view.complete) throw new Error(`could not read every ${kind} for this pass; refusing to plan on a prefix`);
@@ -139,7 +139,7 @@ async function readPass(c: RadiaClient, names: string[]): Promise<PassReads> {
     .map((b) => b.outputDigest!);
   const artifacts = new Map<string, string>();
   if (unresolved.length > 0) {
-    const view = await readAll((page) =>
+    const view = await readCompletely((page) =>
       c.queryPage({ kind: "artifact", match: { digest: { $in: [...new Set(unresolved)] } } }, page.limit, page).then((r) => r.records)
     );
     if (!view.complete) throw new Error("could not resolve every output digest to an artifact; refusing to plan on a prefix");

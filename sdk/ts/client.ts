@@ -37,7 +37,7 @@ export {
   grantKey,
   isRetired,
   newestByKey,
-  readAll,
+  readCompletely,
   RETIRED,
   unsafeAsPopulation,
 } from "./registry.ts";

@@ -19,7 +19,7 @@
 // No private key is ever written to the space. What the space holds is the DEK wrapped under each.
 
 import type { RadiaClient, RadiaRecord } from "../../../sdk/ts/client.ts";
-import { RadiaClientError, readAll } from "../../../sdk/ts/client.ts";
+import { RadiaClientError, readCompletely } from "../../../sdk/ts/client.ts";
 import { activeByKey, newer } from "../../../sdk/ts/registry.ts";
 import {
   type ConversationEncryption,
@@ -303,7 +303,7 @@ export async function recoverPersonKeys(
   }
   // NEWEST per conversation: enrolment writes successors, and only the latest names the artifact
   // holding every wrap so far.
-  const view = await readAll((page) =>
+  const view = await readCompletely((page) =>
     admin.queryPage({
       kind: CONVERSATION_KEY_KIND,
       match: { owner: principal, ...(opts.conversationId ? { conversationId: opts.conversationId } : {}) },
@@ -358,7 +358,7 @@ export async function eraseConversation(
   conversationId: string,
 ): Promise<{ shredded: string[] }> {
   // EVERY version, not the newest: each names an artifact that must go.
-  const records = await readAll((page) =>
+  const records = await readCompletely((page) =>
     admin.queryPage({ kind: CONVERSATION_KEY_KIND, match: { conversationId } }, page.limit, page).then((r) => r.records)
   );
   if (!records.complete) {

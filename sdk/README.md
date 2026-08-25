@@ -80,7 +80,7 @@ wherever `python3` is present, including CI. The small-float divergence it exist
 (`1e-05` vs `0.00001`) shipped and survived precisely because nothing checked.
 
 **Client-side helpers.** Two helpers compose public verbs without adding wire operations.
-`readAll` pages a read to exhaustion and reports `complete: false`
+`readCompletely` pages a read to exhaustion and reports `complete: false`
 rather than a plausible prefix. `awaitResult` waits for the record another agent will write: the
 deadline loop, the poll, an injected wake (pass a shared one, or take the default sleep) and a final
 read after the deadline, returning a DISCRIMINATED outcome, because "nobody answered in time" is an

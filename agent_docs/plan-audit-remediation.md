@@ -295,7 +295,7 @@ The disease CLAUDE.md names as the most repeated in the codebase, now in the SDK
 - Smaller instances, same shape: `turn.ts` reconciles over the newest 50 messages globally,
   `forksOf` reads 500 versions, `listSandboxes` reads 200 rows.
 
-**Rule.** `readAll`/`queryAll` semantics, or report `complete: false`; never a plausible prefix.
+**Rule.** `readCompletely`/`queryAll` semantics, or report `complete: false`; never a plausible prefix.
 **Guard.** A case that retires and re-grants past the page size and asserts the principal actually
 holds the grant afterwards.
 

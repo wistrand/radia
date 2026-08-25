@@ -10,7 +10,7 @@ where the first analysis put it.
 ## What was measured
 
 **A registry read is linear in HISTORY, not in the number of entries.** 20 capabilities behind a
-growing tail of superseded successors, read to exhaustion the way `readAll` does:
+growing tail of superseded successors, read to exhaustion the way `readCompletely` does:
 
 | history | read | pages | transferred | to learn |
 |---------|------|-------|-------------|----------|
