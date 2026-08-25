@@ -64,15 +64,12 @@ export interface StageDef {
   about?: string;
 }
 
-/** The pipeline's stages, in order, from the `stage_def` registry. Paged to exhaustion: a def
+/** The pipeline's stages, in order, from the `stage_def` registry. Read to exhaustion: a def
  *  that fell off a page would silently truncate every dataset's pipeline. */
 export async function readStageDefs(c: RadiaClient): Promise<StageDef[]> {
-  const view = await readRegistry<StageDef & { retired?: boolean }>(
-    (page) => c.queryPage({ kind: "stage_def" }, page.limit, page).then((r) => r.records),
-    (b) => b.stage,
-  );
+  const view = await c.registry("stage_def");
   if (!view.complete) throw new Error("could not read the stage_def registry completely");
-  return [...view.entries.values()]
+  return view.entries
     .map((r) => r.body as StageDef)
     .sort((a, b) => a.index - b.index);
 }
@@ -120,6 +117,11 @@ async function readPass(c: RadiaClient, names: string[]): Promise<PassReads> {
   const defs = await readStageDefs(c);
   const code = await liveCode(c);
   if (names.length === 0) return { defs, code, results: new Map(), requests: new Map(), artifacts: new Map() };
+  // NOT `client.registry`, for two reasons that both have to be answered before it could be.
+  // `workKey` falls back from `workspace` to `codeDigest` for records written before the rename,
+  // and a `contentKey` names paths rather than a fallback, so the two spellings would collapse into
+  // one entry and the older half would be dropped. And declaring one puts `stage_result` and
+  // `stage_request` in reach of compaction, which deletes the run history an operator inspects.
   const bulk = async (kind: string) => {
     const view = await readRegistry<Record<string, unknown>>(
       (page) => c.queryPage({ kind, match: { dataset: { $in: names } } }, page.limit, page).then((r) => r.records),

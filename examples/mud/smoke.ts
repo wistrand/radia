@@ -16,7 +16,6 @@
 //   7. an NPC acts on its OWN clock, by acking each beat with the next one deferred
 
 import { RadiaClient, RadiaClientError, type RadiaRecord } from "../../sdk/ts/client.ts";
-import { readRegistry } from "../../sdk/ts/registry.ts";
 import { operatorToken } from "../operator.ts";
 import { registerMudKinds, WORLD_ID } from "./kinds.ts";
 import { seedAmbient, seedWorld } from "./world.ts";
@@ -153,12 +152,9 @@ check("…and the arrival in the room entered",
 {
   await say(bob, "look");
   await until(async () => (await where(bob.principal)) === "gate");
-  const view = await readRegistry<{ worldId: string; actor: string; roomId: string }>(
-    (page) => admin.queryPage({ kind: "presence", match: { worldId: WORLD_ID } }, page.limit, page).then((r) => r.records),
-    (b) => `${b.worldId}\n${b.actor}`,
-  );
+  const view = await admin.registry("presence", { worldId: WORLD_ID });
   const at = (room: string) =>
-    [...view.entries.values()].map((r) => r.body as { actor: string; roomId: string })
+    view.entries.map((r) => r.body as { actor: string; roomId: string })
       .filter((p) => p.roomId === room).map((p) => p.actor).sort();
   check("somebody who left is not still standing there",
     !at("gate").includes(alice.principal) && at("courtyard").includes(alice.principal),

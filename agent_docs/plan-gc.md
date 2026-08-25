@@ -133,6 +133,14 @@ The one place the trade is stated whole; the sections below carry the mechanics.
 - Keys: `agent_run` → `run` (in code). App registries declare `contentKey` paths on their
   `kind_def` (additive `KindDef` field), which is what lets the runtime compact a kind it knows
   nothing about; the chat declares `capability` (provider, tool) and `model` (provider, model).
+- **An absent keyed path is a VALUE, not a refusal to classify** (`keyOf`, `src/core/gc.ts`,
+  corrected 2026-08-25). Records missing the same path are one entry, newest wins. It returned null
+  before, which meant compaction KEPT such a record while `registryOf` SKIPPED it: a `capability`
+  published with no provider was invisible to every reader of the declared key, and the tool
+  vanished from the model's list with no error. Absence is not null: the marker is a NUL, which
+  `JSON.stringify` never emits, so a body carrying an explicit `null` stays a separate entry.
+  Consequence: `gc` now deletes superseded records that lack a keyed path, where it used to keep
+  every one of them.
 - `interest` is neither retention nor keep-newest: an interest is live while its RUN is live, so
   interests of terminal runs sweep (the `liveInterests` liveness test, applied destructively).
 - **Never compacted: `grant`, `kind_def`, `signal`, `agent_definition`.** "The audit trail

@@ -7,11 +7,11 @@
 // per-turn decision belongs to a worker, which is what makes this loop short enough to read.
 
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
-import { activeByKey, awaitResult, newestByKey, readRegistry } from "../../../sdk/ts/client.ts";
+import { activeByKey, awaitResult } from "../../../sdk/ts/client.ts";
 import type { ChatMessage, ToolDef } from "../provider/openrouter.ts";
 import type { Thread } from "./thread.ts";
 import { sessionOwner } from "../space/roles.ts";
-import { type CapabilityBody, capabilityKey, collapseByTool } from "../../../extensions/ts/capability.ts";
+import { collapseByTool } from "../../../extensions/ts/capability.ts";
 import { assertReadable, type ConversationKey, openBody } from "../../../extensions/ts/encrypted.ts";
 import { answerStream, columns, dim, endStatus, ensureLine, holdLine, notice, showArtifact, statusLineOn, trunc, write } from "./ui.ts";
 import { Waiter, waitWake } from "./waiting.ts";
@@ -729,22 +729,20 @@ export class ToolSet {
     // silently dropping tools again, and the failure is invisible (the model simply never mentions
     // a capability it was given).
     //
-    // CLAUDE.md says registry state is read through `readRegistry`, never a hand-rolled
+    // CLAUDE.md says registry state is read as a registry, never as a hand-rolled
     // `query(kind, N)`. This was the hand-rolled one.
-    // Keyed by (provider, tool), so two workers advertising one name are two entries rather than
-    // one silently overwriting the other; `collapseByTool` folds them back into the single name a
-    // model can call, and says when the fold hid a disagreement.
-    const view = await readRegistry<CapabilityBody>(
-      (page) => this.client.queryPage({ kind: "capability" }, page.limit, page).then((r) => r.records),
-      capabilityKey,
-    );
+    // Keyed by (provider, tool) SERVER-SIDE, from what the kind declares, so two workers
+    // advertising one name are two entries rather than one silently overwriting the other, and the
+    // key is not restated here to drift from the one `radia gc` compacts by. `collapseByTool` folds
+    // them back into the single name a model can call, and says when the fold hid a disagreement.
+    const view = await this.client.registry("capability");
     // A partial read means the tool list is a guess. Say so once rather than running a turn that
     // silently lacks something: "the assistant does not have that tool" is indistinguishable from
     // "the assistant did not think to use it", and the second is what everyone assumes.
     // `notice`, not `write`: this runs from a `capability` watch wakeup, so it can land at any
     // point, including the middle of a streaming answer. It did.
     if (!view.complete) {
-      notice(dim(`[tool list may be incomplete: stopped after ${view.entries.size} advertisements]`));
+      notice(dim(`[tool list may be incomplete: stopped after ${view.scanned} advertisements]`));
     }
     // A capability whose `def` is not a tool definition is skipped rather than passed on (inside
     // `collapseByTool`). One malformed record would otherwise break EVERY turn, since the whole

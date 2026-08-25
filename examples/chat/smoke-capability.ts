@@ -14,12 +14,10 @@
 //
 // This is a script, not a `*.test.ts`: `deno task test:runtime` is for PORT contracts, not examples.
 
-import { RadiaClient, readRegistry } from "../../sdk/ts/client.ts";
+import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import {
-  type CapabilityBody,
-  capabilityKey,
   collapseByTool,
   publishCapability,
   retireProviderCapabilities,
@@ -55,10 +53,7 @@ function check(name: string, ok: boolean, detail = "") {
 /** The tool list exactly as `ToolSet.refresh` builds it: the shared projection, not a copy. A
  *  re-implementation here could only ever prove that this file's own loop was right. */
 async function toolList() {
-  const view = await readRegistry<CapabilityBody>(
-    (page) => client.queryPage({ kind: "capability" }, page.limit, page).then((r) => r.records),
-    capabilityKey,
-  );
+  const view = await client.registry("capability");
   return collapseByTool(view.entries);
 }
 

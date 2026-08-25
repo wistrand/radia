@@ -16,9 +16,10 @@ WIDENS. Two of those are security-relevant (a fail-open taint barrier, an unscop
 
 ## The census
 
-Eighteen distinct incidents across the project's life, in the runtime, both SDKs, the CLI, the
+Twenty distinct incidents across the project's life, in the runtime, both SDKs, the CLI, the
 console and three examples. At least three security-relevant. Sources: [gotchas.md](gotchas.md),
-[plan-audit-remediation.md](plan-audit-remediation.md), and two found while writing this.
+[plan-audit-remediation.md](plan-audit-remediation.md), two found while writing this, and two found
+migrating the readers onto step 3.
 
 **Partial read of a population (11).** Tool list read an ascending page of 500 and a live session
 reported "I don't have a request_grant tool" for a tool that was published, granted and working.
@@ -31,14 +32,23 @@ resolved to the 50th. `runs --for` reads the oldest 1000, so offboarding reports
 `--stop` stops nothing. Five `readRegistry` callers page ascending and keep the wrong half. Three
 minor: `turn.ts` newest-50 global, `forksOf` 500, `listSandboxes` 200.
 
-**Order confusion (7).** `readOne` answers with the OLDEST match, hit TWICE: the second time a newly
+**Order confusion (8).** `readOne` answers with the OLDEST match, hit TWICE: the second time a newly
 enrolled machine was told it had no key while the record granting it sat one row later. Compaction
 paged by ULID against a projection ordering by `created_at`. `radia query` truncated at 500
 oldest-first. The console's record browser shipped the oldest-50-as-"the records" trap. `runs --for`
-sorts by ULID rather than the shared comparator. And a five-site direction change that missed one
-site paged 139 records of 25, with repeats, silently.
+sorts by ULID rather than the shared comparator. `currentFleetKey` took the LAST entry of a
+projection meaning the newest, so during a key rotation the chat sealed conversations to the fleet
+key about to be retired. And a five-site direction change that missed one site paged 139 records of
+25, with repeats, silently.
 
-**How they were found: audits 6, symptoms 3, manual review 5, guards 2.** The grep guard added
+**Key disagreement (1).** The fix for the whole class had one of its own. `keyOf` returned null for
+a record missing a keyed path, so compaction KEPT it and `registryOf` SKIPPED it: a `capability`
+with no provider was absent from the projection, and its tool was silently missing from every tool
+list built the new way. Found only because migrating the last readers onto step 3 meant checking
+what the two keys did on the same record. One derivation is not one ANSWER until every input maps to
+a key; see [plan-gc.md](plan-gc.md), "Compaction scope".
+
+**How they were found: audits 6, symptoms 3, manual review 7, guards 2.** The grep guard added
 2026-08-23 found two on its first run. Everything else cost a person.
 
 ## Finding 1: leading with direction repeats the tool-list mistake
@@ -190,6 +200,12 @@ TWICE per registry before, and `examples/chat/space/kinds.ts` carried a comment 
 human had checked the two agreed. Disagreement is silent and one-directional in the worst way: `gc`
 deletes by its key while readers project by theirs. A kind with no declared key is REFUSED
 (`kind_not_keyed`) rather than projected by a guess.
+
+BUILT-CORRECTION 2026-08-25: sharing the derivation was not yet sharing the ANSWER. `keyOf` returned
+null for a record missing a keyed path and each side did something different with it (compaction
+kept, the projection dropped), so the disagreement this step removed survived inside the one
+function meant to end it. An absent path is now a value in the key. The lesson for the next shared
+derivation: a total function, or the sentinel gets interpreted twice.
 
 It also gives PYTHON a correct path at all: that SDK has `query_all` and no projection whatsoever,
 so a Python caller wanting the current set had to hand-roll latest-wins, which is the shape no guard

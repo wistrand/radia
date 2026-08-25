@@ -51,6 +51,10 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     kind: "fleet_key",
     indexedPaths: [{ path: "keyId", type: "keyword" }],
     claimable: false,
+    // Latest-wins per key id, so `currentFleetKey` reads it server-side and the key is stated
+    // here alone. A key id derives from the public half, so a successor is only a re-publish or a
+    // retirement, and keep-newest keeps the tombstone: compaction cannot revive a retired key.
+    contentKey: ["keyId"],
   });
   // A LAUNCHER saying it is still running its workers, so a fleet's shutdown can tell whether it is
   // the last one out. The advertisements it withdraws are keyed by (provider, tool) and shared by
@@ -71,6 +75,10 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     kind: "person_key",
     indexedPaths: [{ path: "principal", type: "keyword" }, { path: "keyId", type: "keyword" }],
     claimable: false,
+    // As `fleet_key`: latest-wins per key id, read server-side by `livePersonKeys`. Not
+    // (principal, keyId), because the id already derives from the public half, and the reader
+    // narrows to one principal with a `match` rather than with the key.
+    contentKey: ["keyId"],
   });
   // A conversation's wrapped DEKs (plan-encryption.md phase 2), as their OWN record rather than a
   // field on the anchor the plan proposed. The anchor's only identifier is its record id, and a
@@ -81,6 +89,11 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     kind: "conversation_key",
     indexedPaths: [{ path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }],
     claimable: false,
+    // NO `contentKey`, and it must stay that way: every successor names a DIFFERENT wrap artifact,
+    // and `eraseConversation` shreds all of them. Compacting to newest-per-conversation would
+    // delete the records naming the older artifacts while those artifacts survive, so the erasure
+    // would report success with the conversation still readable. That also means the readers here
+    // cannot use `client.registry`; they page to exhaustion instead.
   });
   // The two kinds the turn CHAIN introduces (extensions/ts/turn.ts owns both shapes): a terminus so
   // a client has something to wait for, and Escape as a fact the worker can read. Both carry

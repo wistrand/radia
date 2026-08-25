@@ -28,7 +28,7 @@
 
 import type { RadiaClient } from "../../sdk/ts/client.ts";
 import { reactorLoop } from "../../sdk/ts/loop.ts";
-import { oidcIdentityKey, readRegistry } from "../../sdk/ts/registry.ts";
+import { OIDC_IDENTITY } from "../../sdk/ts/wire.ts";
 
 interface OidcMapping {
   principal?: string;
@@ -48,13 +48,10 @@ export type GrantFor = (admin: RadiaClient, principal: string) => Promise<void>;
  * skips people it has already decided about.
  */
 export async function enrolledPrincipals(admin: RadiaClient): Promise<string[]> {
-  const view = await readRegistry<OidcMapping>(
-    (page) => admin.queryPage({ kind: "oidc_identity" }, page.limit, page).then((r) => r.records),
-    oidcIdentityKey,
-  );
+  const view = await admin.registry(OIDC_IDENTITY);
   if (!view.complete) throw new Error("the identity registry could not be read to the end");
   const out: string[] = [];
-  for (const rec of view.entries.values()) {
+  for (const rec of view.entries) {
     const p = (rec.body as OidcMapping).principal;
     if (typeof p === "string" && p.startsWith("human:")) out.push(p);
   }
@@ -82,19 +79,16 @@ export async function sweepEnrolments(
    *  re-check (the tests do). */
   decided: Set<string> = new Set(),
 ): Promise<string[]> {
-  // PAGED TO EXHAUSTION rather than a bounded read: a person who fell off the page would silently
-  // never be granted. `activeByKey` (inside `readRegistry`) drops retired mappings, so a ban needs
-  // no test here — it is absent from the view.
-  const view = await readRegistry<OidcMapping>(
-    (page) => admin.queryPage({ kind: "oidc_identity" }, page.limit, page).then((r) => r.records),
-    oidcIdentityKey,
-  );
+  // READ TO EXHAUSTION rather than a bounded read: a person who fell off the page would silently
+  // never be granted. The projection drops retired mappings, so a ban needs no test here: it is
+  // absent from the view.
+  const view = await admin.registry(OIDC_IDENTITY);
   if (!view.complete) {
     log(`auto-grant: the identity registry could not be read to the end (${view.scanned} scanned); some people may not be granted yet`);
   }
 
   const granted: string[] = [];
-  for (const rec of view.entries.values()) {
+  for (const rec of view.entries) {
     const principal = (rec.body as OidcMapping).principal;
     if (typeof principal !== "string" || !principal.startsWith("human:")) continue;
     if (decided.has(principal)) continue;

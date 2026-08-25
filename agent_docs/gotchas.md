@@ -205,6 +205,21 @@ disagreement means `gc` deletes by one key while readers project by another. It 
 correct path from PYTHON, which has no projection helper at all. `complete: false` means a prefix,
 never a set. Use `queryAll` when you must SEE a retirement; this answers what is in force.
 
+**Never pick from a projection BY POSITION; a projection is a set and its order is an artefact of
+the walk.** `entries` is ordered by when each key was FIRST SEEN, and the walk is descending, so the
+last entry is the key whose newest record is OLDEST. `currentFleetKey` took `.at(-1)` meaning
+"newest" and sealed conversations to the fleet key about to be retired, wrong only when two keys are
+live, which is exactly a rotation in flight. Use the shared `newer` comparator (`sdk/ts/registry.ts`),
+as `runs --for` also had to learn.
+
+**A record missing a keyed path is an ENTRY under the absent key, not an unclassifiable one.**
+`keyOf` (`src/core/gc.ts`) marks absence with a NUL, which `JSON.stringify` never emits, so it
+collides with no value and an explicit `null` stays separate. It returned null until 2026-08-25, and
+the two callers read that differently: compaction kept the record, `registryOf` dropped it, so a
+provider-less `capability` was missing from every projection with no error. `gc` now sweeps
+superseded key-less records; guard: `suites/gc.ts`, "compaction keeps exactly what the projection
+reads".
+
 **`activeByKey` / `newestByKey` / `activeSet` take a `Population`, not a `RadiaRecord[]`.** Only
 `queryAll` and `readRegistry` mint one, so a projection over a page does not compile. Two live
 defects fell out the day it landed, both in `examples/chat/client/` and both past a grep that had

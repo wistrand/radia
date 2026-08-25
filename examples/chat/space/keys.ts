@@ -18,8 +18,9 @@
 //
 // No private key is ever written to the space. What the space holds is the DEK wrapped under each.
 
-import type { RadiaClient } from "../../../sdk/ts/client.ts";
+import type { RadiaClient, RadiaRecord } from "../../../sdk/ts/client.ts";
 import { RadiaClientError, readRegistry } from "../../../sdk/ts/client.ts";
+import { newer } from "../../../sdk/ts/registry.ts";
 import {
   type ConversationEncryption,
   type ConversationKey,
@@ -110,22 +111,24 @@ export async function publishFleetKey(admin: RadiaClient, pair: FleetKeyPair): P
 /**
  * The fleet's current public key, as any session reads it.
  *
- * Through `readRegistry`, never a bounded `query`: this decides whether a conversation can be
- * sealed at all, and a page that missed the newest key would seal to a retired one.
+ * As a registry, never a bounded `query`: this decides whether a conversation can be sealed at all,
+ * and a page that missed the newest key would seal to a retired one.
  */
 export async function currentFleetKey(
   c: RadiaClient,
 ): Promise<{ keyId: string; publicKey: string } | undefined> {
   type Body = { keyId: string; publicKey: string; retired?: boolean };
-  const view = await readRegistry<Body>(
-    (page) => c.queryPage({ kind: FLEET_KEY_KIND }, page.limit, page).then((r) => r.records),
-    (b) => b.keyId,
-  );
+  const view = await c.registry(FLEET_KEY_KIND);
   if (!view.complete) throw new Error("could not read the fleet key registry completely; refusing to seal");
   // `entries` is already latest-wins minus tombstones. Newest wins among what is left: several live
   // keys means a rotation in flight, and sealing to the newest is what makes the old private half
   // safe to retire once no conversation names it.
-  const live = [...view.entries.values()].at(-1);
+  //
+  // Chosen with the SHARED COMPARATOR, never by position. This took the LAST entry, and a
+  // projection is ordered by when each key was first seen, so during a rotation it sealed to the
+  // OLDEST live key: the one whose private half is about to be retired.
+  let live: RadiaRecord | undefined;
+  for (const rec of view.entries) if (!live || newer(live, rec)) live = rec;
   return live ? { keyId: (live.body as Body).keyId, publicKey: (live.body as Body).publicKey } : undefined;
 }
 
@@ -169,20 +172,17 @@ export async function publishPersonKey(c: RadiaClient, principal: string, pair: 
 /**
  * Every machine this person can still read on, newest wins per key id, tombstones dropped.
  *
- * Through `readRegistry`, never a bounded query: a page that missed a key would seal a conversation
- * the person cannot open on that machine, and they would find out later and elsewhere.
+ * As a registry, never a bounded query: a page that missed a key would seal a conversation the
+ * person cannot open on that machine, and they would find out later and elsewhere.
  */
 export async function livePersonKeys(
   c: RadiaClient,
   principal: string,
 ): Promise<{ keyId: string; publicKey: string }[]> {
   type Body = { principal: string; keyId: string; publicKey: string; retired?: boolean };
-  const view = await readRegistry<Body>(
-    (page) => c.queryPage({ kind: PERSON_KEY_KIND, match: { principal } }, page.limit, page).then((r) => r.records),
-    (b) => b.keyId,
-  );
+  const view = await c.registry(PERSON_KEY_KIND, { principal });
   if (!view.complete) throw new Error(`could not read ${principal}'s key registry completely; refusing to seal`);
-  return [...view.entries.values()].map((r) => ({
+  return view.entries.map((r) => ({
     keyId: (r.body as Body).keyId,
     publicKey: (r.body as Body).publicKey,
   }));

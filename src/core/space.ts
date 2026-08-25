@@ -739,7 +739,7 @@ export class Space {
           `Declare one, or read it with an ordinary query.`,
       );
     }
-    const view = await this.registry<unknown>(kind, (_b, rec) => keyOf(rec, paths) ?? undefined, match, scope);
+    const view = await this.registry<unknown>(kind, (_b, rec) => keyOf(rec, paths), match, scope);
     return { entries: [...view.entries.values()], complete: view.complete, scanned: view.scanned };
   }
 

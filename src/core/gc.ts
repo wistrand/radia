@@ -81,8 +81,6 @@ const PAGE = 500;
  *  Compaction is idempotent, so a capped call plus `more: true` is a smaller next call. */
 const MAX_WALK = 20_000;
 
-/** The latest-wins identity of one record, or null when it cannot be classified (a key path
- *  missing means KEEP: an unclassifiable record must never be deleted on a guess). */
 /**
  * A record's latest-wins identity, from the paths its kind DECLARES.
  *
@@ -91,15 +89,25 @@ const MAX_WALK = 20_000;
  * each reader, and nothing checked they agreed. Disagreement is silent and one-directional in the
  * worst way: `gc` deletes by its key while readers project by theirs, so a record every reader
  * considers current can be swept.
+ *
+ * AN ABSENT PATH IS A VALUE, not a refusal to classify. Returning null instead was a
+ * one-directional bug of exactly the kind this function exists to end: compaction kept such a
+ * record while the projection SKIPPED it, so a `capability` advertised without a provider was
+ * invisible to every reader that used the declared key, and the tool vanished from the model's list
+ * with no error. Absence groups: two records missing the same path are one entry, newest wins, which
+ * is what each reader's own `?`-style fallback already did by hand.
+ *
+ * ABSENT IS NOT NULL. A NUL cannot appear in `JSON.stringify` output (control characters are
+ * escaped), so the marker collides with no encodable value, and a body carrying an explicit `null`
+ * keys as `"null"` and stays a separate entry. SQL conflates the two and the oracle must not
+ * (`test/conformance/suites/pushdown.ts`); neither may this.
  */
-export function keyOf(rec: RadiaRecord, paths: string[]): string | null {
-  const parts: unknown[] = [];
-  for (const p of paths) {
+const ABSENT = "\u0000";
+export function keyOf(rec: RadiaRecord, paths: string[]): string {
+  return paths.map((p) => {
     const v = getPath(rec.body, p);
-    if (v === undefined) return null;
-    parts.push(v);
-  }
-  return JSON.stringify(parts);
+    return v === undefined ? ABSENT : JSON.stringify(v);
+  }).join("\u0001");
 }
 
 export async function compactRegistries(
@@ -148,7 +156,6 @@ export async function compactRegistries(
       const page = await host.pageDesc(kind, PAGE, after);
       for (const rec of page) {
         const key = keyOf(rec, paths);
-        if (key === null) continue; // unclassifiable: keep
         const held = winner.get(key);
         if (!held) winner.set(key, rec);
         else if (newer(held, rec)) {

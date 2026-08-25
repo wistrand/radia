@@ -23,7 +23,6 @@
 
 import { agentLoop } from "../../sdk/ts/loop.ts";
 import { RadiaClient, RadiaClientError, type RadiaRecord } from "../../sdk/ts/client.ts";
-import { readRegistry } from "../../sdk/ts/registry.ts";
 import { WORLD_ID } from "./kinds.ts";
 import { type EventBody, writeEvent } from "./feed.ts";
 
@@ -294,6 +293,10 @@ async function describe(client: RadiaClient, worldId: string, room: RoomBody, ac
  * latest-wins per actor first, then filter. A projection over an append-only log read as state is
  * the most repeated bug in this codebase (CLAUDE.md), and a room full of ghosts is what it looks
  * like from in here.
+ *
+ * The key is NOT restated here: `client.registry` projects by the `contentKey` the kind declares
+ * (`worldId` + `actor`), which is the same statement `radia gc` compacts by. Filtering by room
+ * stays client-side, since the projection must span the whole world to see where someone went.
  */
 async function occupantsOf(
   client: RadiaClient,
@@ -301,18 +304,15 @@ async function occupantsOf(
   roomId: string,
   actor: string,
 ): Promise<{ here: string[]; complete: boolean }> {
-  const view = await readRegistry<PresenceBody>(
-    (page) => client.queryPage({ kind: "presence", match: { worldId } }, page.limit, page).then((r) => r.records),
-    (b) => `${b.worldId}\n${b.actor}`,
-  );
-  const here = [...view.entries.values()]
+  const view = await client.registry("presence", { worldId });
+  const here = view.entries
     .map((r) => r.body as PresenceBody)
     .filter((p) => p.roomId === roomId && p.actor !== actor)
     .map((p) => `${displayName(p.actor)} is here.`);
   return { here, complete: view.complete };
 }
 
-/** `readRegistry` reports when it could not exhaust the kind. Saying so beats a plausible list:
+/** The registry read reports when it could not exhaust the kind. Saying so beats a plausible list:
  *  the answer to "who is here" is a population, and a prefix of one is a different answer. */
 const incomplete = (complete: boolean) => complete ? "" : "\n(Too many people to count; this list is partial.)";
 

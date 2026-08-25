@@ -8,7 +8,7 @@
 // changed, retired-then-revived — plus the collapse that separates replicas from a real conflict.
 
 import { assert, assertEquals } from "@std/assert";
-import { activeByKey, RadiaClient } from "../../sdk/ts/client.ts";
+import { RadiaClient } from "../../sdk/ts/client.ts";
 import {
   CAPABILITY,
   CAPABILITY_KIND,
@@ -39,7 +39,10 @@ async function withSpace<T>(fn: (c: RadiaClient) => Promise<T>): Promise<T> {
 /** The live projection scoped to one TOOL: latest per (provider, tool), retirements dropped. The
  *  space is shared across tests now, so an unscoped read would see every other test's tools. */
 const liveFor = async (c: RadiaClient, tool: string) =>
-  activeByKey<CapabilityBody>(await c.queryAll({ kind: CAPABILITY, match: { tool } }), capabilityKey);
+  new Map(
+    (await c.registry(CAPABILITY, { tool })).entries
+      .map((r) => [capabilityKey(r.body as CapabilityBody)!, r] as const),
+  );
 
 Deno.test("[capability] an unchanged re-publish writes nothing; a changed one supersedes", async () => {
   await withSpace(async (c) => {
@@ -86,13 +89,13 @@ Deno.test("[capability] replicas of one worker are ONE tool; two tools wearing o
     // Same definition from two providers: a fleet scaled out. Legitimate, and it must be silent.
     await publishCapability(c, def(tool), w1);
     await publishCapability(c, def(tool), w2);
-    let one = collapseByTool(await liveFor(c, tool)).get(tool);
+    let one = collapseByTool((await liveFor(c, tool)).values()).get(tool);
     assertEquals(one?.providers, [w1, w2]);
     assertEquals(one?.conflicted, false, "replicas are not a conflict");
 
     // A DIFFERENT definition under the same name is a real disagreement.
     await publishCapability(c, def(tool, "something else entirely"), w2);
-    one = collapseByTool(await liveFor(c, tool)).get(tool);
+    one = collapseByTool((await liveFor(c, tool)).values()).get(tool);
     assertEquals(one?.conflicted, true, "two tools wearing one name must be reported");
     assertEquals(one?.def.function.description, "something else entirely", "and the newest still wins");
   });
@@ -105,7 +108,7 @@ Deno.test("[capability] a provider superseding its OWN older definition is an up
     // as disagreeing with its own past self, once per turn, forever.
     await publishCapability(c, def(tool), w1);
     await publishCapability(c, def(tool, "v2"), w1);
-    assertEquals(collapseByTool(await liveFor(c, tool)).get(tool)?.conflicted, false);
+    assertEquals(collapseByTool((await liveFor(c, tool)).values()).get(tool)?.conflicted, false);
   });
 });
 

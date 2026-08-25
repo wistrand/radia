@@ -299,6 +299,11 @@ const REGISTRY_MAX_PAGES = 40;
  * they would have kept the OLDEST records, which is the half missing every retirement and every
  * current entry, while `complete: false` said only that something was missing. A rule a caller can
  * get wrong is a rule that will be got wrong, so the caller no longer states it.
+ *
+ * A `keyOf` of `(_b, r) => r.id` is the EXHAUST idiom, not a projection: every record is its own
+ * entry, so this is `queryAll` that reports `complete` instead of throwing. Those callers (counting
+ * every reference to a blob, shredding every wrap artifact of a conversation) must NOT move to
+ * `client.registry`, which would collapse them to the newest per key and answer 1.
  */
 export async function readRegistry<T = unknown>(
   read: (page: RegistryPage) => Promise<RadiaRecord[]>,

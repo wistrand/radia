@@ -80,6 +80,9 @@ export async function registerAnalysisKinds(client: RadiaClient): Promise<void> 
     kind: "stage_def",
     indexedPaths: [{ path: "stage", type: "keyword" }],
     claimable: false,
+    // Latest-wins per stage name (retire to remove), so the planner and the UI read it server-side
+    // and the key is stated here rather than restated at each reader.
+    contentKey: ["stage"],
   });
 
   // The unit of work. CLAIMABLE, so a worker takes it under a lease and at-least-once delivery

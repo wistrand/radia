@@ -335,14 +335,16 @@ export const gcSuites: Suite[] = [
         contentKey: ["tool"],
       });
       const put = (body: Record<string, unknown>) => space.put({ kind: "cap", body });
-      // `search`: three supersessions, live at the end. `draw`: retired at the end — the
-      // resurrection row. `odd`: no `tool` field at all, so it cannot be classified.
+      // `search`: three supersessions, live at the end. `draw`: retired at the end, the
+      // resurrection row. The last two carry no `tool` at all: ABSENCE IS A KEY, so they are one
+      // entry like any other, and the newest of them wins.
       await put({ tool: "search", v: 1 });
       await put({ tool: "search", v: 2 });
       const { id: searchNewest } = await put({ tool: "search", v: 3 });
       const { id: drawOld } = await put({ tool: "draw", v: 1 });
       const { id: drawRetired } = await put({ tool: "draw", retired: true });
-      const { id: unclassifiable } = await put({ other: "shape" });
+      const { id: keylessOld } = await put({ other: "shape", v: 1 });
+      const { id: keylessNewest } = await put({ other: "shape", v: 2 });
 
       const projection = async () => {
         const rows = await space.query({ kind: "cap" }, 100, { dir: "desc" });
@@ -356,12 +358,22 @@ export const gcSuites: Suite[] = [
       const before = await projection();
 
       const r = await space.gc();
-      assertEquals(r.compaction?.compacted, 3, "the two old search versions and the old draw");
+      assertEquals(r.compaction?.compacted, 4, "the two old search versions, the old draw, the old keyless");
 
       assert(await space.getRecord(searchNewest), "the newest per key survives");
       assert(await space.getRecord(drawRetired), "the TOMBSTONE survives: deleting it would resurrect the tool");
       assertEquals(await space.getRecord(drawOld), null, "the superseded live entry under a tombstone goes");
-      assert(await space.getRecord(unclassifiable), "a record missing a key path is never deleted on a guess");
+      // A record missing a key path is an ENTRY under the absent key, not an unclassifiable one to
+      // keep on a guess. It used to be kept here and SKIPPED by `registryOf`, which is the
+      // disagreement that hid a provider-less `capability` from every reader of the declared key.
+      assert(await space.getRecord(keylessNewest), "the newest of the absent key survives");
+      assertEquals(await space.getRecord(keylessOld), null, "and its superseded predecessor goes");
+      const projected = await space.registryOf("cap");
+      assertEquals(
+        projected.entries.filter((rec) => (rec.body as { tool?: string }).tool === undefined).map((rec) => rec.id),
+        [keylessNewest],
+        "the reader SHOWS the absent-key entry, so sweeper and reader agree on it",
+      );
 
       assertEquals(await projection(), before, "compaction must be invisible to the projection");
       // What activeByKey folds: `search` live, `draw` retired away. Stated once explicitly, so the

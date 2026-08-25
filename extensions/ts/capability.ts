@@ -8,7 +8,7 @@
 // name per tool and separates the two cases a flat key confuses — replicas of one worker (identical
 // definitions, legitimate, silent) from two different tools wearing one name (a conflict, reported).
 
-import { activeByKey, type KindDef, type RadiaClient, type RadiaRecord } from "../../sdk/ts/client.ts";
+import type { KindDef, RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
 
 export const CAPABILITY = "capability";
 
@@ -46,7 +46,12 @@ async function defHash(def: unknown): Promise<string> {
 }
 
 /** The registry key: one entry per (provider, tool). A record from before namespacing has no
- *  provider and groups under `?`, which keeps it visible rather than colliding with a named one. */
+ *  provider and groups under `?`, which keeps it visible rather than colliding with a named one.
+ *
+ *  Kept for `retireCapability`'s write key, NOT as a projection key: readers use
+ *  `client.registry(CAPABILITY)`, which projects by the declared `contentKey` and groups an absent
+ *  provider the same way (`src/core/gc.ts`, `keyOf`). Restating it here as a `keyOf` closure is the
+ *  drift those two agreeing exists to prevent. */
 export function capabilityKey(b: CapabilityBody): string | undefined {
   return typeof b?.tool === "string" ? `${b.provider ?? "?"}|${b.tool}` : undefined;
 }
@@ -131,9 +136,9 @@ export async function retireProviderCapabilities(client: RadiaClient, providers:
   const wanted = new Set(providers);
   let retired = 0;
   try {
-    const live = activeByKey<CapabilityBody>(await client.queryAll({ kind: CAPABILITY }), capabilityKey);
+    const live = await client.registry(CAPABILITY);
     await Promise.all(
-      [...live.values()].map(async (rec) => {
+      live.entries.map(async (rec) => {
         const b = rec.body as CapabilityBody;
         if (!b.provider || !wanted.has(b.provider)) return;
         try {
@@ -167,9 +172,9 @@ export interface ToolEntry {
  * that DIFFER are two tools wearing one name; the newest wins, as everywhere else in a latest-wins
  * registry, and the caller is told rather than left to infer it from behaviour.
  */
-export function collapseByTool(entries: Map<string, RadiaRecord>): Map<string, ToolEntry> {
+export function collapseByTool(entries: Iterable<RadiaRecord>): Map<string, ToolEntry> {
   const byTool = new Map<string, { rec: RadiaRecord; body: CapabilityBody }[]>();
-  for (const rec of entries.values()) {
+  for (const rec of entries) {
     const body = rec.body as CapabilityBody;
     if (typeof body?.tool !== "string" || typeof body.def?.function?.name !== "string") continue;
     const group = byTool.get(body.tool);

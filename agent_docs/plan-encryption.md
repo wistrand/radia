@@ -202,7 +202,7 @@ anyone who has ever run a session.
 one unwrap per process, the promise cached so concurrent claims coalesce and a rejection evicts).
 `examples/chat/space/keys.ts` holds the policy: which env var, which file, which record.
 
-### Two things the plan got wrong, both found by building it
+### Three things the plan got wrong
 
 **The fleet half cannot be a symmetric KEK.** In join mode the SESSION creates the conversation —
 there is no operator in that process — so whoever creates it must wrap the DEK for a fleet whose
@@ -212,6 +212,16 @@ to it and can never unwrap. `fleetKeyId` (a digest of the public half, computed 
 what they hold) makes a rotation report itself as a rotation instead of as a decrypt failure; the
 two want different fixes and are otherwise indistinguishable. The person half stays symmetric,
 because there the wrapper and the reader are the same party.
+
+**Sealing picked the OLDEST live fleet key** (`currentFleetKey`, fixed 2026-08-25; the first two
+above were found by building it, this one by migrating the readers onto `client.registry`). It took
+the LAST entry of the projection, and a projection is ordered by when each key was FIRST SEEN in a
+descending walk, so the last entry is the key whose newest record is oldest. With one live key that
+is the same answer, which is why it survived; with two it is the wrong one, and two live keys is
+precisely a rotation in flight. So new conversations sealed to the half about to be retired, and
+retiring it would have made them unreadable — the failure the rotation design exists to avoid. The
+newest is now chosen with the shared `newer` comparator. Never select from a projection by position:
+`entries` is a set, and its order is an artefact of the walk.
 
 **Key material cannot live on the `conversation` record.** An anchor's only identifier is its record
 id, and a session cannot fetch by id: get-by-id is the ops plane, and every public read is a pattern
