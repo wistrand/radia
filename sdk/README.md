@@ -44,6 +44,12 @@ If you are RELAYING a pattern somebody else wrote (a tool call, jailed code), di
 than picking a direction: `pattern.orderBy?.length ? queryOrdered(...) : queryNewest(...)`. A
 direction is an assumption, and it is not yours to make about a pattern you did not write.
 
+**Field names are camelCase on the wire, and a misspelling is refused rather than dropped.**
+`orderBy`, `parentIds`, `availableAt`, `clientMeta`. The design docs name these concepts in prose as
+`order_by`, `parent_ids` and `available_at`, which is the mistake worth knowing about: those
+spellings used to be silently ignored, so a read came back unsorted and a record came back with no
+lineage, both with a 200. The space now answers 400 and names the field it meant.
+
 `readOne` returns the oldest matching record. Use `readNewest` for registries, versions and other
 successor-based data. `readNewest` uses the query operation and therefore requires a query grant.
 

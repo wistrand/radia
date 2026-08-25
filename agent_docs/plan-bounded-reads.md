@@ -1,12 +1,18 @@
 # Plan: ending the bounded-read disease
 
-**Status: steps 1, 2, 3, 5, 6 and 7 BUILT 2026-08-25. Steps 4 and 8 PLANNED.** Rewritten 2026-08-24 after counting the actual incidents: the first draft led with
-direction work, the census says that is the wrong order, and the reason is recorded in Finding 1
-rather than quietly fixed.
+**Status: ALL EIGHT STEPS BUILT 2026-08-25.** Rewritten 2026-08-24 after counting the actual
+incidents: the first draft led with direction work, the census says that is the wrong order, and the
+reason is recorded in Finding 1 rather than quietly fixed.
 
-Built so far: the grep guard (`test/registrycost.test.ts`, 2026-08-23, which found two defects on
-its first run) and the `ops_grant` ceiling. Sibling: [plan-registry-cost.md](plan-registry-cost.md),
-which covers what a registry read COSTS and whose items 1 and 3 shipped 2026-08-22/23.
+Sibling: [plan-registry-cost.md](plan-registry-cost.md), which covers what a registry read COSTS and
+whose items 1 and 3 shipped 2026-08-22/23.
+
+**AUDITING THE WORK FOUND MORE DEFECTS THAN THE WORK FIXED**, and the ones that mattered most were
+not in this plan's subject at all. Three were introduced by steps 4 and 8 and are recorded under
+those steps. Five were pre-existing and share one shape, which the plan had not named: a field the
+code picks BY NAME is silently dropped when misspelled, and wherever that field NARROWS, dropping it
+WIDENS. Two of those are security-relevant (a fail-open taint barrier, an unscoped grant). See
+"The sibling disease" below, and [gotchas.md](gotchas.md).
 
 ## The census
 
@@ -299,6 +305,16 @@ green for all three:
   SDK refuse. Default is `None` now. `query_newest`/`query_oldest` also refuse `order_by` locally,
   matching TS.
 
+A FOURTH, found by asking what `queryAll` now trusts: **its termination moved from evidence it
+computed to a field the space chooses to send.** It used to stop on `rows.length < 500`; walking by
+cursor made it stop on a missing `nextCursor`, so any space that does not send one would turn the
+read that REFUSES to truncate into one that truncates silently and brands the prefix a `Population`.
+The three walks with the same shape (`readAllManifests`, git's version walk, Python's `query_all`)
+had it too, and the workspace ones set `complete: true`, the flag `radia workspaces` and the chat's
+`list_workspaces` both read. Now: a SHORT PAGE is the only thing that says stop, `nextCursor` only
+says where to continue, and a full page with nowhere to continue raises (or reports
+`complete: false`). `test/exhaustion.test.ts` drives it over a real socket with the field stripped.
+
 The generalisation is worth more than the three fixes: **a call site that did not write the pattern
 cannot make assumptions about it.** A literal pattern with `order_by` and a direction is a
 programmer error and throwing is right; the same pattern arriving from a tool call is a request to
@@ -307,11 +323,80 @@ honour.
 `Page` is a DISCRIMINATED UNION, so `{cursor, dir}` is a TypeScript error rather than only a 400:
 `{after?, dir?, cursor?: never} | {cursor, after?: never, dir?: never}`.
 
+The audit also turned up a PRE-EXISTING member of the same family, and a worse one, because it
+needs no rename to bite: **a handler picks fields by name, so a misspelled one is silently dropped,
+and wherever that field narrows, dropping it WIDENS.** `order_by` (the spelling this repo uses in
+prose everywhere) answered 200 unsorted; `match` dropped on the registry verb returns the whole
+registry as a slice; `kind` dropped on `remediate` drains every app; `parent_ids` dropped on `put`
+costs the record its lineage. `rejectUnknown` in `src/server/problem.ts` now refuses them by name.
+Two are worse than a wrong answer. FAIL-OPEN: `take`'s `allowTaint` is the caller's own barrier, an
+absent one means no barrier, so `allow_taint: []` (the strictest request there is) was read as "send
+me anything". And PRIVILEGE-WIDENING: a `grant` body's `pattern` is optional and omitting it means
+the whole kind, so a misspelled `patern` committed an UNSCOPED grant, with
+`effectivePermissions` reporting `patterns: []` for an author who had written a bound.
+`kind_def` is covered too, but ONE-SIDED: strict on the write path, lenient on load. `loadKinds`
+skips what its validator rejects, so a shared strict validator would turn a stored declaration
+carrying an unknown field into an unloadable kind and fail every query against it after a restart.
+`assertKnownKindDefFields` therefore hangs off `validateReservedBody` and not `kindDefFromBody`,
+so the load path cannot reach it by construction rather than by remembering a flag.
+
+The rule was already written down THREE times in the code that lacked it, in `handleTake`
+("dropping it would claim a different record than asked"), in `bodyTaint`, and in `clientTaint`
+("collapsing it to `undefined` turned the strictest possible request into no barrier at all"); it
+had just never been applied to FIELDS. See [gotchas.md](gotchas.md).
+
 The CLI gained `--cursor` and LOST the need to re-carry `--oldest`: the continuation line used to
 repeat the flag at every hop, one dropped word from a walk that reversed. `--cursor` with `--after`
 or `--oldest` is a usage error, mirroring the server's 400. `/v0/ops/events` and `children` keep
 `nextAfter`, and the differing names now mean something: `nextCursor` carries a direction, while
 `nextAfter` is a forward-only position in a log.
+
+## The sibling disease: a dropped FIELD, not a truncated READ
+
+Found while auditing this plan's own work, 2026-08-25, and it belongs here because the failure is
+the same sentence with one word changed. The disease this plan is named for is **a bounded read
+presented as a population**. Its sibling is **a dropped field presented as a bound**: the code picks
+fields by name, so a misspelled one falls on the floor, and wherever that field NARROWS, dropping it
+WIDENS. Both answer confidently with something smaller or larger than was asked for, and neither has
+a symptom.
+
+Five instances, worst first:
+
+| where | the misspelling | what the caller got |
+|-------|-----------------|---------------------|
+| `grant` body | `patern` | an UNSCOPED grant: every record of the kind, with `effectivePermissions` reporting `patterns: []` |
+| `POST /v0/takes` | `allow_taint` | NO taint barrier: an absent `allowTaint` means "send me anything", so the strictest request became the weakest |
+| `POST /v0/ops/remediate` | `Kind`, or `expired: "true"` | a sweep across EVERY app's backlog, and one reclaiming LIVE leases |
+| `POST /v0/records/registry` | `mach` | the whole registry returned as a slice |
+| `POST /v0/records` | `parent_ids` | a record with no lineage, so graph, Feed, `children` and flow mining all lose the edge |
+
+Plus the one with a named victim: `order_by` on a read. That is the spelling the design docs, the
+Python docstrings and the chat's own tool description all use in PROSE, while the wire field is
+`orderBy`, so it answered 200 with records in id order. `space_query`'s description tells a model to
+"order_by the numeric path descending" to answer *which X had the most Y*; a model following the
+prose got the OLDEST rows and reported one of them as the maximum.
+
+**The rule was already written down three times in the code that lacked it**: `handleTake`
+("dropping it would claim a different record than asked"), `bodyTaint` ("a wrong-typed field is a
+caller believing it restricted a record"), and `clientTaint` ("collapsing it to `undefined` turned
+the strictest possible request into no barrier at all"). It had simply never been applied to FIELDS.
+`rejectUnknown` in `src/server/problem.ts` is that rule, with a near-miss table naming the field
+meant. `put` refuses only near-misses, because ignoring the rest is how the server-assigned half
+gets dropped there.
+
+TWO PLACES NEEDED THE CHECK IN CORE RATHER THAN AT THE BOUNDARY, and both for the same reason: the
+record arrives by more than one route. A `grant` reaches validation from `put`, from
+`createAgentDefinition` and from a definition's grant list, so `validateGrantDef` owns it. A
+`kind_def` is stricter still on one side and lenient on the other: `assertKnownKindDefFields` hangs
+off `validateReservedBody` (write) and NOT off `kindDefFromBody` (load), because both readers of a
+stored declaration swallow a validation failure and keep what they have, so strictness there would
+make a stored kind_def an unloadable kind, and through `refreshKind` a kind declared on ANOTHER
+INSTANCE would never register on this one.
+
+AND ONE THE WIRE CANNOT REACH. A tool boundary rebuilds the pattern from the model's arguments, so
+the model's key never crosses the socket and no server-side refusal can see it. Those accept BOTH
+spellings, because the key is chosen by a model and a dropped sort key is a wrong answer rather than
+an error.
 
 ## The core default stays `asc`
 

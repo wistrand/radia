@@ -64,6 +64,12 @@ barriers rather than complete information-flow control.
   fires at that instant and there is no scheduler: the record is simply not a take candidate until
   the database clock passes it, so a worker picks it up on its next poll and an idle space still
   runs nothing
+- **registry**: an application's current-value view over an append-only kind, computed as
+  latest-wins-minus-retired. It is the shape most often got wrong, so the SDKs name the readings:
+  `queryNewest` / `queryOldest` return a page and say which end, while `queryAll` and `registry`
+  exhaust and never hand back a plausible prefix (`queryAll` raises, `registry` reports
+  `complete: false`). There is no unnamed `query` with a limit. A page cursor carries its own
+  direction, so a multi-page walk cannot reverse part way
 - **flow**: a recurring shape of work, mined from lineage rather than declared
 - **workspace**: a multi-file tree as a manifest record plus one artifact per file. An EXTENSION
   convention, not a runtime concept: the runtime has no idea what a file or a path is

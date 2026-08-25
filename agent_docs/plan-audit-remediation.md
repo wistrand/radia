@@ -1,6 +1,12 @@
 # Plan: audit remediation
 
-> Status: **A third audit opened package W on 2026-08-22 and CLOSED it the same day** (fourteen
+> Status: **Package X (2026-08-25) is the first entry here that is not a codebase audit**: it is what
+> reviewing ONE change set twice produced, and it produced more defects than the change set fixed.
+> Two are P1 (an unscoped grant from a typo, a fail-open taint barrier), five were pre-existing and
+> share one shape, and every one of the five was already a rule written in code that did not follow
+> it. Read it before picking a request field by name. CLOSED same day.
+>
+> **A third audit opened package W on 2026-08-22 and CLOSED it the same day** (fourteen
 > findings across seven root causes, five guards proved red first; two reported findings did not
 > survive the check and are recorded with the correction, and the structural debt it named stays
 > open). **T remains open.** Everything else closed: A–G and J–O by 2026-08-03, **H, I, N, P, Q, R
@@ -140,6 +146,62 @@ read to records the caller could have read themselves, because their own put gra
 gets an EMPTY context at BOTH window settings, and her own thread still loads. Proved red by
 restoring the unconjoined query — it fails on `window=0` and passes at 40, which is exactly why a
 guard covering only the default would have missed this.
+
+## Package X: auditing a change set (2026-08-25), CLOSED 2026-08-25
+
+Not a codebase audit. This is what fell out of reviewing ONE change set (steps 4 and 8 of
+[plan-bounded-reads.md](plan-bounded-reads.md)) twice, and it is here because the ratio is the
+finding: **the audit produced more defects than the work it audited**, and the worst of them were
+pre-existing and unrelated to the change. Eight items, all VERIFIED by planting the defect and
+watching a new guard go red.
+
+**Three introduced by the change set** (recorded in detail under steps 4 and 8 of that plan):
+
+1. **The query handler resolved the page direction a SIXTH time** (`page?.dir ?? "asc"`), written as
+   a default rather than a comparison, so step 7's guard did not match it. It builds the cursor, so
+   a wrong answer sends the next page backwards. Fixed to `pageIsDescending`; the guard now matches
+   `??`/`||` defaulting too.
+2. **Both RELAY sites broke.** The MCP adapter's `space_query` and the broker's query proposal pass
+   a pattern written by someone else, so `order_by` is DATA there; the mechanical rewrite gave them
+   `queryOldest`, whose new local refusal turned every ordered query from a model or a jail into an
+   error, on a NORMATIVE surface in the broker's case. Neither had coverage. Guard:
+   `extensions/conformance/broker.test.ts` plus a structural rule in `test/registrycost.test.ts`.
+3. **`queryAll` moved its termination from evidence it computed to a field the space sends.** Any
+   space not sending `nextCursor` would turn the read that REFUSES to truncate into one that
+   truncates silently and brands the prefix a `Population`. Three sibling walks had it too, two of
+   which set `complete: true`. Guard: `test/exhaustion.test.ts`, over a real socket with the field
+   stripped.
+
+**Five pre-existing, one shape: a dropped FIELD presented as a bound.** Code picks request fields by
+name, so a misspelled one falls on the floor, and wherever that field NARROWS, dropping it WIDENS.
+Worst first:
+
+| # | where | misspelling | consequence |
+|---|-------|-------------|-------------|
+| 4 | `grant` body | `patern` | **P1**: an UNSCOPED grant. `effectivePermissions` reported `patterns: []` for an author who wrote a bound |
+| 5 | `POST /v0/takes` | `allow_taint` | **P1**: NO taint barrier. An absent `allowTaint` means "send me anything", so the strictest request became the weakest |
+| 6 | `POST /v0/ops/remediate` | `Kind`, `expired: "true"` | a sweep across every app's backlog; one reclaiming LIVE leases |
+| 7 | `POST /v0/records/registry` | `mach` | the whole registry returned as a slice |
+| 8 | reads, and the chat tool | `order_by` | 200 with records in id order. A model told to "order_by the numeric path descending" reported the OLDEST row as the maximum |
+
+Fixed by `rejectUnknown` (`src/server/problem.ts`) at six surfaces, by `validateGrantDef` and
+`assertKnownKindDefFields` in CORE where a record arrives by more than one route, and by accepting
+both spellings at a TOOL boundary, which the wire cannot reach because the pattern is rebuilt from
+the model's arguments. `kind_def` is deliberately one-sided (strict on write, lenient on load):
+both readers of a stored declaration swallow a validation failure and keep what they have, so
+strictness in the shared validator would make a stored declaration an unloadable kind. Guards:
+`test/http.test.ts` (six surfaces), `test/conformance/suites/auth.ts`,
+`test/conformance/suites/kinds.ts` (both halves of the split, each proved red by planting the other
+arrangement).
+
+THE LESSON, and it is about method rather than about any of these: **every one of the five was
+already written down as a rule in code that did not follow it.** `handleTake` said "dropping it
+would claim a different record than asked", `bodyTaint` said "a wrong-typed field is a caller
+believing it restricted a record", `clientTaint` said "collapsing it to `undefined` turned the
+strictest possible request into no barrier at all", and `validateGrantDef` said a silent no-op on an
+authorization record is what gets mistaken for a working grant. The rule existed four times and had
+never been generalised from VALUES to FIELD NAMES. Look for a rule stated locally that was never
+applied at the level above it.
 
 ## Package W: the third audit (2026-08-22) — CLOSED 2026-08-22
 

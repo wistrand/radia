@@ -1441,3 +1441,109 @@ Deno.test("http: a page cursor carries its direction, so a walk cannot reverse h
     await close();
   }
 });
+
+Deno.test("http: a misspelled pattern field is refused, never silently dropped", async () => {
+  // A read handler PICKS `kind`, `match` and `orderBy` by name, so every other key fell on the
+  // floor. Measured before this check: `order_by` (the spelling the design docs, the Python
+  // docstrings and the chat's own tool description all use in PROSE) answered 200 with `[3,1,2]`
+  // where `orderBy` answered `[3,2,1]`. The caller asked for an order, did not get one, and was
+  // told nothing.
+  //
+  // The victim is not hypothetical. `space_query`'s description tells a model to "order_by the
+  // numeric path descending" to answer "which X had the most Y", while the schema property is
+  // `orderBy`: a model that follows the prose gets the OLDEST rows back and reports one of them as
+  // the maximum. Same fail-open shape `bodyTaint` refuses for `taint`, in the same file.
+  const { space, handler, close } = await newHandler();
+  try {
+    space.registerKind({
+      kind: "r",
+      indexedPaths: [{ path: "score", type: "number" }],
+      sortablePaths: ["score"],
+      claimable: false,
+    });
+    for (const score of [3, 1, 2]) await space.put({ kind: "r", body: { score } });
+    const q = async (path: string, body: unknown) => {
+      const res = await handler(post(path, body));
+      return { status: res.status, json: await res.json() };
+    };
+
+    // The spelling that works still works, and still sorts.
+    const ok = await q("/v0/records/query", { kind: "r", limit: 3, orderBy: [{ path: "score", dir: "desc" }] });
+    assertEquals(ok.status, 200);
+    assertEquals(ok.json.records.map((r: { body: { score: number } }) => r.body.score), [3, 2, 1]);
+
+    // The near-miss is a 400 that NAMES the field it meant, on both read verbs. `read_one` matters
+    // as much as `query`: it answers with the first record in the pattern's order, so a dropped
+    // orderBy changes WHICH record comes back, not merely the sequence.
+    for (const path of ["/v0/records/query", "/v0/records/read-one"]) {
+      const bad = await q(path, { kind: "r", order_by: [{ path: "score", dir: "desc" }] });
+      assertEquals(bad.status, 400, `${path} still accepts order_by and drops it`);
+      assert(String(bad.json.detail).includes("orderBy"), `…without naming the field meant: ${bad.json.detail}`);
+    }
+
+    // A key that is not a near-miss is still refused, because a typo nobody predicted is the case
+    // this exists for; the message lists what a read may carry.
+    const typo = await q("/v0/records/query", { kind: "r", limitt: 3 });
+    assertEquals(typo.status, 400);
+    assert(String(typo.json.detail).includes("limit"), `the refusal must list the allowed fields: ${typo.json.detail}`);
+
+    // THE REGISTRY VERB IS THE ONE THAT WIDENS. Dropping its `match` does not return fewer records,
+    // it returns ALL of them, to a caller that believes it asked for a slice.
+    space.registerKind({ kind: "cap2", indexedPaths: [{ path: "tool", type: "keyword" }], claimable: false, contentKey: ["tool"] });
+    await space.put({ kind: "cap2", body: { tool: "a" } });
+    await space.put({ kind: "cap2", body: { tool: "b" } });
+    const narrowed = await q("/v0/records/registry", { kind: "cap2", match: { tool: "a" } });
+    assertEquals(narrowed.json.entries.length, 1, "the filtered registry read is the baseline");
+    const widened = await q("/v0/records/registry", { kind: "cap2", mach: { tool: "a" } });
+    assertEquals(widened.status, 400, "a dropped `match` hands back the whole registry as a slice");
+
+    // PUT keeps ignoring unknown fields, because that is how the server-assigned half gets dropped
+    // and how a record read back out can be written again. Only the NEAR-MISSES are refused, where
+    // ignoring loses an instruction the caller gave: `parent_ids` and `available_at` are the
+    // spellings the design docs use in prose, and dropping them costs the record its lineage, or
+    // makes it claimable now instead of when it was meant to be.
+    const ignored = await q("/v0/records", { kind: "r", body: { score: 9 }, createdBy: "human:someone-else" });
+    assertEquals(ignored.status, 201, "an authoritative field must still be IGNORED, not refused");
+    const snake = await q("/v0/records", { kind: "r", body: { score: 9 }, parent_ids: [] });
+    assertEquals(snake.status, 400, "parent_ids was dropped, so the record silently lost its lineage");
+    assert(String(snake.json.detail).includes("parentIds"), `…without naming the field meant: ${snake.json.detail}`);
+
+    // TAKE already refused a malformed pattern OBJECT ("dropping it would claim a different record
+    // than asked"). Its FIELDS are the widening half of that same sentence: a dropped `match`
+    // claims ANY record of the kind, so a worker takes work that was never selected for it.
+    space.registerKind({ kind: "job", indexedPaths: [{ path: "tag", type: "keyword" }] });
+    await space.put({ kind: "job", body: { tag: "mine" } });
+    const stolen = await q("/v0/takes", { pattern: { kind: "job", mach: { tag: "mine" } } });
+    assertEquals(stolen.status, 400, "a dropped `match` claims any record of the kind");
+
+    // AND THE TAKE BODY, which is the fail-open one. `allowTaint` is the caller's OWN barrier and
+    // an ABSENT one means no barrier at all, so `allow_taint: []` (the strictest request there is)
+    // was read as "send me anything" and the worker received exactly the labelled records it said
+    // it would not accept. `clientTaint` already carries a note about collapsing that request into
+    // no barrier; a dropped key reopened it through a different door.
+    const failOpen = await q("/v0/takes", { pattern: { kind: "job" }, allow_taint: [] });
+    assertEquals(failOpen.status, 400, "a dropped allowTaint removes the caller's barrier entirely");
+    assert(String(failOpen.json.detail).includes("allowTaint"), `…without naming it: ${failOpen.json.detail}`);
+
+    // REMEDIATE mutates lease state across the space and every selector field NARROWS, so a dropped
+    // one widens the sweep. `kind` exists precisely so one app's backlog drains without touching
+    // another's; losing it drains everyone's.
+    const wideKind = await q("/v0/ops/remediate", { action: "reclaim", state: "leased", Kind: "job" });
+    assertEquals(wideKind.status, 400, "a dropped `kind` remediates across every app");
+    // And `expired: "true"` is a string: `=== true` is false, so the sweep would reclaim LIVE
+    // leases from a caller that asked only for lapsed ones.
+    const wideExpired = await q("/v0/ops/remediate", { action: "reclaim", state: "leased", expired: "true" });
+    assertEquals(wideExpired.status, 400, "a string `expired` silently widens the sweep to live leases");
+    // The selector that is actually correct still works.
+    const fine = await q("/v0/ops/remediate", { action: "reclaim", state: "leased", kind: "job", expired: true });
+    assertEquals(fine.status, 200, JSON.stringify(fine.json));
+
+    // And every field a read legitimately carries is still accepted together.
+    const full = await q("/v0/records/query", { kind: "r", match: {}, limit: 2, dir: "desc", explain: true });
+    assertEquals(full.status, 200, JSON.stringify(full.json));
+    const next = await q("/v0/records/query", { kind: "r", limit: 2, cursor: full.json.nextCursor });
+    assertEquals(next.status, 200, "a cursor from that answer must still be accepted");
+  } finally {
+    await close();
+  }
+});

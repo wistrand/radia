@@ -273,7 +273,12 @@
     <div class="callout warn">
       <strong>Application registries are projections over immutable records.</strong> A current value
       is normally the newest matching record after applying retirement records. Queries are bounded,
-      so applications must also handle pagination when computing a complete projection.
+      so a projection computed from one page answers confidently about a prefix. The SDKs separate
+      the two readings by name: <code>queryNewest</code> and <code>queryOldest</code> return a page
+      and say which end it came from, while <code>queryAll</code> and <code>registry</code> exhaust.
+      Neither hands back a plausible prefix: <code>queryAll</code> raises, and <code>registry</code>
+      reports <code>complete: false</code>. There is no unnamed <code>query</code> with a limit.
+      Page cursors carry their own direction, so a multi-page walk cannot reverse part way.
     </div>
     <p>
       Finalized events can be sealed into a hash chain. Each seal covers the previous link, the event

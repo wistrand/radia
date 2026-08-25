@@ -105,6 +105,13 @@ paths:
         Server assigns all authoritative metadata (created_by, created_at, schema_version,
         taint); client-submitted authoritative fields are ignored. `Idempotency-Key` header
         makes the put replayable (same key -> same id; different request -> 409).
+
+        This is the ONE operation that keeps ignoring unknown fields, and that leniency is the
+        mechanism above: it is how the server-assigned half gets dropped, and how a record read back
+        out can be written again. It refuses only NEAR-MISSES, where ignoring loses an instruction
+        the caller gave rather than a claim it may not make: `parent_ids` and `available_at` (the
+        spellings the design prose uses) cost the record its lineage, or make it claimable now
+        instead of when it was meant to be.
       x-stability: stable
       parameters:
         - { $ref: "#/components/parameters/IdempotencyKey" }
@@ -160,6 +167,9 @@ paths:
         was narrowed. `complete: false` means the walk was capped and the set is a prefix; treat that
         as a reason to refuse widening, never as a full picture. Use `/records/query` when you must
         SEE a retirement, since this answers what is in force.
+
+        A field this operation does not have is a 400 naming it. A dropped `match` here does not
+        return fewer records, it returns the WHOLE registry to a caller that believes it filtered.
       x-stability: experimental
       requestBody:
         required: true
@@ -201,12 +211,18 @@ paths:
         because a keyset over a body field would need the whole sort key plus the matcher's type
         rules. Note that ids order by time only to the millisecond (ULID), so `desc` is
         newest-first at that resolution, not a strict write order.
+        A field this operation does not have is a 400 naming it, never ignored: `order_by` (the
+        spelling the design prose uses) answered 200 unsorted before that check, and a dropped
+        field that NARROWS hands back a wider answer than was asked for.
       x-stability: stable
       requestBody:
         required: true
         content:
           application/json:
             schema:
+              # NOT `additionalProperties: false`: beside `allOf` that keyword cannot see the
+              # subschemas' properties and would reject every field. The refusal is in the handler
+              # (`rejectUnknown`), and the description above is what states it.
               allOf:
                 - { $ref: "#/components/schemas/Pattern" }
                 - type: object
@@ -280,6 +296,11 @@ paths:
         server re-verifies availability and, if given, the pattern). Returns
         {record, lease} or null when nothing is claimable. Long-poll blocking is not
         implemented in M0.
+
+        A field this operation does not have is a 400 naming it, in the body and inside the pattern
+        alike. `allowTaint` is the reason: it is the CALLER'S OWN barrier and an absent one means no
+        barrier, so `allow_taint: []`, the strictest request there is, was read as "send me
+        anything". A dropped `match` inside the pattern claims any record of the kind.
       x-stability: stable
       requestBody:
         required: true
@@ -632,6 +653,11 @@ paths:
         with a worker that returns: a record that has moved on is simply not applied. Bounded by
         `limit`; `more` reports that the page was full, so a caller draining a backlog repeats
         until it is false.
+
+        A field this selector does not have is a 400 naming it, and `expired` must be a boolean.
+        Every field here NARROWS, so dropping one widens a sweep that mutates lease state: a
+        misspelled `kind` drains every app's backlog rather than one, and `expired: "true"` (a
+        string) reclaims LIVE leases from a caller that asked only for lapsed ones.
       x-stability: experimental
       x-phase: "M1"
       requestBody:

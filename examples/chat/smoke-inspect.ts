@@ -552,6 +552,22 @@ check(
   ranked.records?.[0]?.body?.usage?.total_tokens === 21000,
   JSON.stringify(ranked.records?.map((r) => r.body?.usage?.total_tokens)),
 );
+// SNAKE_CASE TOO, because the key is the model's and a dropped sort key is a WRONG ANSWER rather
+// than an error. This description taught `order_by` in prose while the schema property is
+// `orderBy`, and the reader took only the camelCase one: a model following the prose asked for a
+// descending sort, silently got the OLDEST rows, and reported one of them as the maximum. Exactly
+// the question above, answered wrongly with no sign of it.
+const snake = await tools.space_query({
+  kind: "message",
+  match: { "usage.total_tokens": { $exists: true } },
+  order_by: [{ path: "usage.total_tokens", dir: "desc" }],
+  limit: 3,
+}) as { records?: { body?: { usage?: { total_tokens?: number } } }[] };
+check(
+  "…and answers it the same way when the model spells the key order_by",
+  snake.records?.[0]?.body?.usage?.total_tokens === 21000,
+  JSON.stringify(snake.records?.map((r) => r.body?.usage?.total_tokens)),
+);
 // The description is where the model learns both rules; a reworded description that drops them is
 // this failure shipping again (the pattern smoke-save uses for edit_workspace's own rules).
 const qDesc = (INSPECT_SCHEMAS.find((d) => d.function.name === "space_query")?.function.description) ?? "";

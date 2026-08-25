@@ -123,6 +123,12 @@ registry, never the database), and `compactRegistries` takes `only` so the pass 
 registry that just grew. Guards in `suites/gc.ts`; the isolation half is proved red by removing both
 the keyed check and the scope.
 
+A TYPO USED TO DISABLE IT SILENTLY. `contentKey` is optional and absence means "not a registry", so
+`contentKeys` declared a kind that simply never compacted, with nothing to see and this whole
+document's cost curve as the result. Refused since 2026-08-25 (`assertKnownKindDefFields`), on the
+WRITE path only: `loadKinds` skips what its validator rejects, so a stored declaration must keep
+loading. See [gotchas.md](gotchas.md).
+
 ONE CONSEQUENCE, recorded in [gotchas.md](gotchas.md): compaction deletes superseded entries AND
 their edges, so a record parented onto a registry entry now dangles by default rather than only
 after somebody ran the verb. Nothing in-repo does that, and the retention sweep already behaved the

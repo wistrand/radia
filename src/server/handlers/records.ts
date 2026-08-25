@@ -8,6 +8,27 @@
 import type { Space } from "../../core/space.ts";
 import { clientTaint } from "../../core/kinds.ts";
 
+/**
+ * The snake_case spelling of a field `pickPut` DOES accept.
+ *
+ * Unknown fields stay IGNORED on this path, deliberately: that is how `createdBy`, `taint` and the
+ * rest of the server-assigned half get dropped (see the file header), and it is what lets a record
+ * read back out be written again. So this list is only the near-misses, where ignoring means the
+ * caller's instruction vanished rather than a claim being refused. `parent_ids` and `available_at`
+ * are the spellings the design docs and CLAUDE.md use in PROSE, and dropping them is silent: no
+ * lineage, so the graph, the Feed, `children` and flow mining all lose the edge; or a record
+ * claimable NOW instead of when it was meant to be.
+ */
+const PUT_NEAR_MISS: Record<string, string> = {
+  parent_ids: "parentIds",
+  available_at: "availableAt",
+  client_meta: "clientMeta",
+  deadline_at: "deadlineAt",
+  retention_until: "retentionUntil",
+  idempotency_key: "the Idempotency-Key header",
+  idempotencyKey: "the Idempotency-Key header",
+};
+
 /** `taint` in a JSON body is an ARRAY of labels. A bare string is refused rather than parsed as a
  *  comma list (that leniency exists for headers, which can only carry strings): a wrong-typed field
  *  is a caller believing it restricted a record, and silently reading it as "no raise" is the
@@ -20,7 +41,7 @@ function bodyTaint(raw: unknown): string[] | undefined {
 import type { PutRequest } from "../../core/record.ts";
 import { combineMatch, pageIsDescending, type Pattern } from "../../core/matching.ts";
 import { RadiaError } from "../../core/errors.ts";
-import { problem, statusFor } from "../problem.ts";
+import { problem, rejectUnknown, statusFor } from "../problem.ts";
 import { decodeCursor, encodeCursor, type Page } from "../../../sdk/ts/wire.ts";
 
 async function readJson(req: Request): Promise<Record<string, unknown> | null> {
@@ -43,6 +64,9 @@ async function readJson(req: Request): Promise<Record<string, unknown> | null> {
  */
 function pickPut(j: Record<string, unknown>): PutRequest | string {
   if (typeof j.kind !== "string" || j.kind.length === 0) return "kind must be a non-empty string";
+  for (const [wrong, right] of Object.entries(PUT_NEAR_MISS)) {
+    if (j[wrong] !== undefined) return `unknown field ${JSON.stringify(wrong)}: did you mean ${right}?`;
+  }
   if (j.parentIds !== undefined) {
     if (!Array.isArray(j.parentIds) || j.parentIds.some((p) => typeof p !== "string")) {
       return "parentIds must be an array of record ids";
@@ -142,6 +166,10 @@ export async function handleRegistry(space: Space, req: Request, principal: stri
   if (j.match !== undefined && (typeof j.match !== "object" || j.match === null || Array.isArray(j.match))) {
     return problem(400, "invalid_pattern", "match must be an object");
   }
+  // Strict, and this one matters most of the three: a dropped `match` WIDENS the answer. The caller
+  // asked for one slice of a registry and would be handed all of it, believing it had filtered.
+  const unknownReg = rejectUnknown(j, ["kind", "match"]);
+  if (unknownReg) return unknownReg;
   try {
     const { constraint, createdBy } = await space.readAccess(principal, "query", j.kind);
     const match = constraint
@@ -166,6 +194,8 @@ export async function handleQuery(space: Space, req: Request, principal: string)
     match: j.match as Record<string, unknown> | undefined,
     orderBy: j.orderBy as Pattern["orderBy"],
   };
+  const unknown = rejectUnknown(j, ["kind", "match", "orderBy", "limit", "after", "dir", "cursor", "explain"]);
+  if (unknown) return unknown;
   const limit = typeof j.limit === "number" && j.limit > 0 ? Math.min(j.limit, 500) : 100;
   // Keyset page. Validated at the boundary rather than cast: `after` reaching SQL as a non-string
   // and `dir` as anything but asc/desc are exactly the shapes that turn a bad request into a 500.
@@ -230,6 +260,10 @@ export async function handleReadOne(space: Space, req: Request, principal: strin
   if (typeof j.kind !== "string" || j.kind.length === 0) {
     return problem(400, "invalid_pattern", "pattern.kind must be a non-empty string");
   }
+  // Same rule as the query path: `read_one` answers with the FIRST record in the pattern's order,
+  // so a dropped `orderBy` changes which record comes back, not merely the sequence.
+  const unknown = rejectUnknown(j, ["kind", "match", "orderBy"]);
+  if (unknown) return unknown;
 
   const pattern: Pattern = {
     kind: j.kind,

@@ -777,11 +777,23 @@ export class RadiaClient {
     // the bug this loop would otherwise be one edit away from: the direction lives in the cursor,
     // so a page cannot come back the other way.
     let cursor: Cursor | undefined;
+    const PAGE = 500;
     for (let page = 0; page < maxPages; page++) {
-      const { records, nextCursor } = await this.queryPage(pattern, 500, cursor ? { cursor } : { dir: "desc" });
+      const { records, nextCursor } = await this.queryPage(pattern, PAGE, cursor ? { cursor } : { dir: "desc" });
       out.push(...records);
-      if (!nextCursor) {
+      // TERMINATION IS DECIDED HERE, from the page's own size. `nextCursor` says where to continue,
+      // never that it is safe to stop: taking the absence of a server field as "that was all of
+      // them" is this function's own failure mode, since any space that does not send it would turn
+      // the read that REFUSES to truncate into one that truncates silently and brands the result a
+      // Population. A short page is the only evidence of exhaustion that cannot go missing.
+      if (records.length < PAGE) {
         return unsafeAsPopulation(out, "queryAll exhausted the kind; it throws rather than truncating");
+      }
+      if (!nextCursor) {
+        throw new Error(
+          `queryAll: a full page of ${PAGE} arrived with no cursor to continue from. Refusing to ` +
+            `report a prefix as the whole set`,
+        );
       }
       cursor = nextCursor;
     }

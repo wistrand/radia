@@ -330,14 +330,27 @@ class RadiaClient:
         # Walks by CURSOR rather than pairing ``after`` with a ``dir`` it has to remember: the
         # direction rides in the cursor, so a page cannot come back the other way.
         cursor: Optional[str] = None
+        page_size = 500
         for _ in range(max_pages):
             if cursor is None:
-                rows, next_cursor, _scope = self.query_page(pattern, limit=500, dir="desc")
+                rows, next_cursor, _scope = self.query_page(pattern, limit=page_size, dir="desc")
             else:
-                rows, next_cursor, _scope = self.query_page(pattern, limit=500, cursor=cursor)
+                rows, next_cursor, _scope = self.query_page(pattern, limit=page_size, cursor=cursor)
             out.extend(rows)
-            if not next_cursor:
+            # TERMINATION IS DECIDED HERE, from the page's own size. ``next_cursor`` says where to
+            # continue, never that it is safe to stop: treating its absence as "that was all of
+            # them" would turn the read that REFUSES to truncate into one that truncates silently
+            # against any space that does not send it. A short page is the only evidence of
+            # exhaustion that cannot go missing.
+            if len(rows) < page_size:
                 return out
+            if not next_cursor:
+                raise RadiaError(
+                    0,
+                    "registry_incomplete",
+                    "a full page of {} arrived with no cursor to continue from - refusing to "
+                    "report a prefix as the whole set".format(page_size),
+                )
             cursor = next_cursor
         raise RadiaError(
             0,

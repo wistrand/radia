@@ -456,10 +456,14 @@ async function readAllManifests(
   for (let page = 0; page < maxPages; page++) {
     const r = await client.queryPage({ kind: "workspace" }, PAGE, cursor ? { cursor } : { dir: "desc" });
     all.push(...r.records);
-    if (!r.nextCursor) {
+    // A SHORT page is what proves exhaustion; `nextCursor` only says where to resume. Reading its
+    // absence as "that was all" would let a space that does not send it report a first page as the
+    // complete set, which is the one thing `complete` exists to prevent.
+    if (r.records.length < PAGE) {
       complete = true;
       break;
     }
+    if (!r.nextCursor) break; // full page, nowhere to continue: `complete` stays false, and says so
     cursor = r.nextCursor;
   }
   return { all, complete };

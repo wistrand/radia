@@ -7,7 +7,7 @@
 
 import type { Space } from "../../core/space.ts";
 import type { RecordState, StatsScope } from "../../storage/adapter.ts";
-import { problem, statusFor } from "../problem.ts";
+import { problem, rejectUnknown, statusFor } from "../problem.ts";
 import { RadiaError } from "../../core/errors.ts";
 
 /**
@@ -531,6 +531,16 @@ export async function handleRemediate(space: Space, req: Request): Promise<Respo
     kinds = kindField as string[];
   } else if (kindField !== undefined) {
     return problem(400, "invalid_body", "kind must be a string or an array of strings");
+  }
+  // Every field here NARROWS, so dropping one widens a sweep that mutates lease state: a misspelled
+  // `kind` drains every app's backlog rather than one (the reason `kind` exists), and a misspelled
+  // `stale` or `limit` removes the bound the caller thought it set.
+  const badSelector = rejectUnknown(j, ["action", "state", "kind", "kinds", "expired", "stale", "limit"], "selector field");
+  if (badSelector) return badSelector;
+  // Typed strictly for the same reason: `expired: "true"` is a string, `=== true` is false, and the
+  // sweep would then reclaim LIVE leases from a caller that asked only for lapsed ones.
+  if (j.expired !== undefined && typeof j.expired !== "boolean") {
+    return problem(400, "invalid_body", "expired must be a boolean");
   }
   const out = await space.remediate(action, {
     state: state as RecordState,

@@ -8,6 +8,7 @@ import type { Suite } from "../harness.ts";
 import { Space } from "../../../src/core/space.ts";
 import { buildRecord } from "../../../src/core/record.ts";
 import { RadiaError } from "../../../src/core/errors.ts";
+import { rawExec } from "./integrity.ts";
 
 function expectError(fn: () => unknown, code: string): void {
   let got: string | undefined;
@@ -345,6 +346,68 @@ export const kindSuites: Suite[] = [
       await restarted.loadKinds();
       // Still the code-defined contract, so the grant lookup still compiles and still answers.
       assertEquals(await restarted.authorize("agent:dev", "put", "task"), null, "a granted principal still authorizes");
+    },
+  },
+  {
+    name: "an unknown kind_def field is refused on WRITE and still loads from the LOG",
+    run: async (adapter) => {
+      // Both halves matter and they pull opposite ways.
+      //
+      // WRITE: `contentKey` is optional and absence means "not a registry", so a misspelling costs
+      // the kind its compaction with nothing to see. That is the whole subject of
+      // plan-registry-cost.md, reachable by a typo. Same for `sortablePaths`, and for
+      // `{path, type, sortable: true}` one level down, where the declarer instead meets
+      // `unsortable_path` at query time, far from the cause.
+      //
+      // LOAD: both readers of a stored declaration SKIP what their validator rejects and keep what
+      // they have (`loadKinds` at startup, `refreshKind` on a stale projection), so making the
+      // shared validator strict would turn a stored kind_def carrying an unknown field into an
+      // UNLOADABLE KIND, and through `refreshKind` a kind declared on ANOTHER INSTANCE would never
+      // register on this one. The check therefore lives on the write path only, and structurally:
+      // both readers call `kindDefFromBody` directly and cannot reach `assertKnownKindDefFields`.
+      const space = new Space(adapter);
+      await assertRejects(
+        () => space.put({ kind: "kind_def", body: { kind: "reg", indexedPaths: [{ path: "t", type: "keyword" }], contentKeys: ["t"] } }),
+        RadiaError,
+        "contentKeys",
+        "a typo'd contentKey must not commit a kind that silently never compacts",
+      );
+      await assertRejects(
+        () => space.put({ kind: "kind_def", body: { kind: "reg", indexedPaths: [{ path: "t", type: "number", sortable: true }] } }),
+        RadiaError,
+        "sortable",
+        "sortability is declared once for the kind, and the wrong spelling must say so here",
+      );
+      // The real declaration, with every optional field, still writes; so does a retirement.
+      await space.put({
+        kind: "kind_def",
+        body: {
+          kind: "reg",
+          indexedPaths: [{ path: "t", type: "keyword" }],
+          sortablePaths: [],
+          contentKey: ["t"],
+          claimable: false,
+          defaultRetentionSeconds: 60,
+        },
+      });
+      await space.put({ kind: "kind_def", body: { kind: "gone", indexedPaths: [], retired: true } });
+
+      // Now the load half. A declaration carrying a field this build does not know can only get
+      // into the log from another build, so it is planted the way the gc suite plants states the
+      // honest path cannot reach.
+      await space.put({ kind: "kind_def", body: { kind: "legacy", indexedPaths: [{ path: "t", type: "keyword" }] } });
+      await rawExec(
+        adapter,
+        `update records set body_json = ? where kind = 'kind_def' and body_json like '%"legacy"%'`,
+        [JSON.stringify({ kind: "legacy", indexedPaths: [{ path: "t", type: "keyword" }], futureField: 1 })],
+      );
+      const restarted = new Space(adapter);
+      await restarted.loadKinds();
+      assertEquals(
+        (await restarted.query({ kind: "legacy", match: { t: "x" } }, 5)).length,
+        0,
+        "a stored declaration with an unknown field must still load, or its kind becomes unqueryable",
+      );
     },
   },
 ];

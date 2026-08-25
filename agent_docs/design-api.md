@@ -7,7 +7,8 @@ the wire protocol, and the client agent loop. Origin: outline §4–5.
 and all ten operations are built: HTTP handlers in `src/server/handlers/`, the service in
 `src/core/space.ts`, lease/settlement in the adapters, claim ranking in `src/core/take.ts`.
 Watches are implemented (see Wire protocol below), as is the artifact payload plane (below), and
-`query` takes a keyset cursor (`after`/`dir`; see [design-matching.md](design-matching.md)).
+`query` takes a keyset cursor (`after`/`dir`, or an opaque `cursor` that carries its own direction;
+see [design-matching.md](design-matching.md)).
 **Not implemented:** long-poll blocking on `take` (M1).
 
 ## Contents
@@ -149,6 +150,24 @@ See [design-data-model.md](design-data-model.md) §2.4.
   `effective_priority` is mutable under aging, so it is not a cursor key. Aging
   influences scheduler admission, not cursor order. "Snapshot cursor" is reserved for a
   real snapshot implementation, deferred.
+- **A page cursor carries its DIRECTION.** `after` is exclusive in the direction of the read, so a
+  caller that walked page one `desc` and page two without repeating `dir` got records from BEFORE
+  page one, with both requests individually valid and the walk never terminating. The answer's
+  `nextCursor` (`a:`/`d:` plus the id) is sent back as `cursor` and nothing else: `cursor` with
+  `dir` or `after` is a 400, and in TypeScript `Page` is a union so the pair does not compile. An
+  `order_by` read is offered no cursor at all, since a record-id keyset cannot express that order.
+  `/v0/ops/events` and `children` keep `nextAfter`, and the different name is the signal: those are
+  forward-only positions in a log, with no direction to get wrong.
+- **A request field the operation does not have is a 400 NAMING it, never ignored.** Handlers pick
+  fields by name, so a misspelled one used to fall on the floor, and wherever that field NARROWS,
+  dropping it WIDENS the operation: `order_by` (the spelling this document uses in prose, against a
+  wire field of `orderBy`) answered 200 unsorted; `mach` on the registry verb returned the whole
+  registry as a slice; `Kind` on `remediate` swept every app's backlog; `allow_taint` on a take
+  removed the caller's barrier entirely, because an absent `allowTaint` means "send me anything".
+  `put` is the ONE exception and keeps ignoring unknown fields, since that is how the
+  server-assigned half gets dropped and how a record read back out can be written again; it refuses
+  only NEAR-MISSES, where ignoring loses an instruction the caller gave (`parent_ids`,
+  `available_at`).
 - **Long-poll cancellation:** client disconnect releases nothing; only leases hold
   state. Reactive mode retains priority aging so low-priority work cannot starve.
 

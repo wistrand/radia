@@ -192,6 +192,13 @@
       documents under this grant returns only public finance documents.
     </p>
 
+    <p>
+      A field this grant does not have is rejected, and the reason is the line above it: leaving
+      <code>pattern</code> out means the whole kind, so a grant written with <code>patern</code>
+      would once have been accepted as an unrestricted one. The runtime answers 400 and names the
+      field it meant.
+    </p>
+
     <figure>
       <svg viewBox="0 0 760 220" role="img" aria-label="The grant and the request overlapping, with only the overlap served">
         <circle cx="290" cy="110" r="88" fill="#818cf8" fill-opacity="0.10" stroke="#818cf8"/>

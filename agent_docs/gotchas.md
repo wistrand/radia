@@ -213,6 +213,31 @@ arguments after it. `unsafeAsPopulation(records, why)` is the way out, and
 `test/registrycost.test.ts` asserts the exact set of sites that use it. Do not reach for
 `as unknown as Population`: it loses the type and the ledger at once.
 
+**An unknown field on a `grant` or `ops_grant` body is REFUSED, because `pattern` is optional and
+omitting it means the whole kind.** A misspelled `patern` validated cleanly and committed an
+UNSCOPED grant, with `effectivePermissions` reporting `patterns: []`. In `validateGrantDef` (core),
+not at the HTTP boundary: a grant also arrives from `createAgentDefinition` and from a definition's
+grant list. Guard: `suites/auth.ts`.
+
+**`kind_def` rejects an unknown field on WRITE and accepts one on LOAD.** A typo'd `contentKey`
+silently costs the kind its compaction ([plan-registry-cost.md](plan-registry-cost.md)); but both
+readers of a stored declaration (`loadKinds`, `refreshKind`) SKIP what their validator rejects, so
+strictness there makes a stored kind_def an unloadable kind. `assertKnownKindDefFields` therefore
+hangs off `validateReservedBody`, never off `kindDefFromBody`. Guard: `suites/kinds.ts`, both halves.
+
+**A handler picks fields BY NAME, so a misspelled one is dropped, and wherever that field NARROWS,
+dropping it WIDENS.** `order_by` answered 200 unsorted; `mach` on `/v0/records/registry` returned
+the whole registry as a slice; `Kind` on `/v0/ops/remediate` swept every app; `allow_taint` on a
+take removed the barrier entirely, since an absent `allowTaint` means "send me anything".
+`rejectUnknown` (`src/server/problem.ts`) refuses them by name. `put` is the exception and refuses
+only near-misses: ignoring the rest is how the server-assigned half gets dropped there. Guards:
+`test/http.test.ts`. Full list in [plan-bounded-reads.md](plan-bounded-reads.md).
+
+**A tool boundary accepts BOTH spellings, because the key is a model's.** `space_query` rebuilds
+the pattern from the model's args, so `order_by` becomes `undefined` and the wire's refusal never
+sees it. Its description taught `order_by` while the schema said `orderBy`, so a model asked for a
+descending sort got the OLDEST rows and reported one as the maximum. `pickOrderBy` reads either.
+
 **A call site that did not WRITE the pattern must not impose a direction on it.** `queryNewest` /
 `queryOldest` refuse a pattern carrying `order_by`, which is right where the pattern is a literal
 (the caller asked for two orders) and wrong at a RELAY, where `order_by` is data: the MCP adapter's

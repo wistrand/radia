@@ -115,6 +115,12 @@ export interface OpsGrantDef {
 /** Validate an ops_grant body. Throws RadiaError. The privileged-principal refusal lives in
  *  `Space.validateReservedBody` (it needs the context's operator set). */
 export function validateOpsGrantDef(def: OpsGrantDef): void {
+  // Same rule, same reason: an ignored field on an authorization record reads as a bound.
+  for (const key of Object.keys(def ?? {})) {
+    if (!["principal", "operations", "retired"].includes(key)) {
+      throw new RadiaError("invalid_ops_grant", `unknown ops_grant field '${key}' (allowed: principal, operations, retired)`);
+    }
+  }
   if (typeof def.principal !== "string" || def.principal.length === 0) {
     throw new RadiaError("invalid_ops_grant", "ops_grant.principal must be a non-empty string");
   }
@@ -287,7 +293,27 @@ export interface GrantDef {
 }
 
 /** Validate a grant body. Throws RadiaError. Rejects wildcard kinds (kind-scoped invariant). */
+/** Fields a grant body may carry. `retired` is the withdrawal tombstone every registry uses. */
+const GRANT_FIELDS = ["principal", "kind", "operations", "scope", "pattern", "retired"];
+
 export function validateGrantDef(def: GrantDef): void {
+  // AN UNKNOWN KEY IS REFUSED, and this is the field where that matters most. `pattern` is
+  // OPTIONAL and omitting it means the WHOLE KIND, so a misspelled `patern` validated cleanly and
+  // produced an UNSCOPED grant: measured, `{principal, kind, operations, patern: {owner}}` was
+  // accepted and `effectivePermissions` reported `patterns: []`, giving a worker every record of
+  // the kind when the author had written a bound. That is a silent privilege widening on an
+  // authorization record, which is the exact thing the `scope` note below refuses for its own
+  // vocabulary. Checked HERE rather than at the HTTP boundary because a grant reaches this
+  // function from `put`, from `createAgentDefinition` and from the definition grants alike.
+  for (const key of Object.keys(def ?? {})) {
+    if (!GRANT_FIELDS.includes(key)) {
+      throw new RadiaError(
+        "invalid_grant",
+        `unknown grant field '${key}' (allowed: ${GRANT_FIELDS.join(", ")}). ` +
+          `An ignored field on a grant reads as a bound that is not there`,
+      );
+    }
+  }
   if (typeof def.principal !== "string" || def.principal.length === 0) {
     throw new RadiaError("invalid_grant", "grant.principal must be a non-empty string");
   }
@@ -517,6 +543,58 @@ function validPath(path: string): boolean {
 }
 
 /** Validate a declaration. Throws RadiaError on any problem (a registration error). */
+/** Fields a kind_def body may carry. `retired` is the withdrawal tombstone (suites/retire.ts). */
+const KIND_DEF_FIELDS = [
+  "kind",
+  "indexedPaths",
+  "sortablePaths",
+  "claimable",
+  "contentKey",
+  "defaultRetentionSeconds",
+  "retired",
+];
+/** …and an entry inside `indexedPaths`. */
+const INDEXED_PATH_FIELDS = ["path", "type"];
+
+/**
+ * Refuse a kind_def field nobody declared. THE WRITE PATH ONLY, and that is structural rather than
+ * a flag: the two readers of a stored declaration (`Space.loadKinds` at startup, `refreshKind` on a
+ * stale projection) call `kindDefFromBody` directly and never reach this function. Both swallow a
+ * validation failure and keep what they have, so strictness there would make a stored kind_def
+ * carrying an unknown field an UNLOADABLE KIND, and through `refreshKind` a kind declared on
+ * another instance would never register on this one.
+ *
+ * The field that makes this worth having is `contentKey`: it is optional, and without it the kind
+ * is simply never compacted, so a typo costs the registry its flat read with nothing to see. That
+ * is the whole subject of plan-registry-cost.md, arrived at by a misspelling. `sortablePaths` is
+ * the same shape one level down, and `{path, type, sortable: true}` is a real mistake rather than a
+ * hypothetical one: the declarer gets `unsortable_path` at query time, far from the cause.
+ */
+export function assertKnownKindDefFields(body: unknown): void {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return; // shape is kindDefFromBody's job
+  for (const key of Object.keys(body as Record<string, unknown>)) {
+    if (KIND_DEF_FIELDS.includes(key)) continue;
+    throw new RadiaError(
+      "invalid_kind",
+      `unknown kind_def field '${key}' (allowed: ${KIND_DEF_FIELDS.join(", ")}). ` +
+        `An ignored field on a declaration reads as a contract that is not there`,
+    );
+  }
+  const paths = (body as { indexedPaths?: unknown }).indexedPaths;
+  if (!Array.isArray(paths)) return;
+  for (const ip of paths) {
+    if (ip === null || typeof ip !== "object" || Array.isArray(ip)) continue;
+    for (const key of Object.keys(ip as Record<string, unknown>)) {
+      if (INDEXED_PATH_FIELDS.includes(key)) continue;
+      throw new RadiaError(
+        "invalid_kind",
+        `unknown indexedPaths field '${key}' (allowed: ${INDEXED_PATH_FIELDS.join(", ")}). ` +
+          `Sortability is declared once for the kind, as sortablePaths`,
+      );
+    }
+  }
+}
+
 export function validateKindDef(def: KindDef): void {
   if (typeof def.kind !== "string" || def.kind.length === 0) {
     throw new RadiaError("invalid_kind", "kind must be a non-empty string");

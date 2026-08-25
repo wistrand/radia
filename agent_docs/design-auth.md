@@ -317,6 +317,15 @@ satisfy the pattern (`Space.bodyMatchesGrant`, in the put handler and on ack-emi
 so a scoped principal both *sees* and *writes* only records inside its pattern. Multiple grants
 union, an unrestricted grant widens to the whole kind. See [design-matching.md](design-matching.md).
 
+**AN UNKNOWN FIELD ON A GRANT BODY IS REFUSED**, and `pattern` is why. It is OPTIONAL and omitting
+it means the whole kind, so a misspelled `patern` validated cleanly and committed an UNSCOPED grant:
+measured, `effectivePermissions` reported `patterns: []` for a body whose author had written
+`{owner: "alice"}`. That is a silent privilege widening on an authorization record, which is exactly
+what `validateGrantDef`'s note on `scope` already refused for its own vocabulary. The check is in
+CORE (`validateGrantDef`), not at the HTTP boundary, because a grant reaches validation from `put`,
+from `createAgentDefinition` and from a definition's own grant list alike. `ops_grant` gets the same
+rule. Allowed: `principal`, `kind`, `operations`, `scope`, `pattern`, `retired`.
+
 The two directions answer different questions and use different machinery:
 
 | Direction  | Mechanism          | Question                                    | Where                                                     |

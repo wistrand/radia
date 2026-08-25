@@ -103,6 +103,39 @@ export const authSuites: Suite[] = [
     },
   },
   {
+    name: "a misspelled field on a grant is refused, not read as a bound that is not there",
+    run: async (adapter) => {
+      // `pattern` is OPTIONAL and omitting it means THE WHOLE KIND, so a typo in that one key is a
+      // silent privilege widening: measured before this check, a body carrying `patern` validated
+      // cleanly and `effectivePermissions` reported `patterns: []`, handing a worker every record
+      // of the kind while its author had written a bound. `validateGrantDef`'s own note about
+      // `scope` already said why ("a silent no-op on an authorization record is exactly the thing
+      // that gets mistaken for a working grant"); it just did not cover unknown keys.
+      //
+      // In CORE rather than at the HTTP boundary, because a grant reaches validation from `put`,
+      // from `createAgentDefinition` and from a definition's own grant list alike.
+      const space = new Space(adapter, { operators: ["human:op"] });
+      space.registerKind({ kind: "doc", indexedPaths: [{ path: "owner", type: "keyword" }] });
+      const put = (body: Record<string, unknown>) => space.put({ kind: "grant", body }, undefined, "human:op");
+
+      await assertRejects(
+        () => put({ principal: "agent:w", kind: "doc", operations: ["query"], patern: { owner: "alice" } }),
+        Error,
+        "patern",
+        "a typo'd pattern key must not commit an UNSCOPED grant",
+      );
+      // The correctly spelled grant still commits, and is still scoped: the check bars the typo,
+      // not the feature.
+      await put({ principal: "agent:w", kind: "doc", operations: ["query"], pattern: { owner: "alice" } });
+      const perms = await space.effectivePermissions("agent:w");
+      assertEquals(perms.kinds[0]?.patterns, [{ owner: "alice" }], "the real grant must keep its bound");
+
+      // A withdrawal still works: `retired` is a field, not an unknown key.
+      await put({ principal: "agent:w", kind: "doc", operations: ["query"], pattern: { owner: "alice" }, retired: true });
+      assertEquals((await space.effectivePermissions("agent:w")).kinds, [], "a tombstone must still withdraw");
+    },
+  },
+  {
     name: "a definition cannot name a privileged principal",
     run: async (adapter) => {
       // A definition mints runs for its subject, so one naming an operator is a permanent way to

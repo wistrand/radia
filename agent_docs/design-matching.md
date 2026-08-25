@@ -197,7 +197,20 @@ which a pushed `LIMIT` reproduces exactly (see [design-storage.md](design-storag
 So a limited query returns the OLDEST matches unless you say otherwise, and `order_by` cannot help,
 because it ranges over the record BODY and creation time is runtime metadata, not a body field.
 Asking for the newest is what `dir: "desc"` on the keyset cursor is for; the event log remains the
-answer when you want events rather than records.
+answer when you want events rather than records. The SDKs name the two readings instead of leaving
+the default to be discovered: `queryNewest` / `queryOldest` for the natural id order, `queryOrdered`
+for a pattern that carries its own `order_by`, `queryPage` for a walk and `queryAll` to exhaust.
+There is no bare `query(pattern, limit)`, and its absence is the point.
+
+**THE FIELD IS SPELLED `orderBy` ON THE WIRE.** This document says `order_by` throughout, because
+that is the concept's name here and in the design prose generally; the JSON field is camelCase, as
+`parentIds` and `availableAt` are. The mismatch was not harmless: a read carrying `order_by`
+answered 200 with records in id order, no error and no note, so a caller who asked for a sort got
+none and could not tell. It is a 400 naming the field meant since 2026-08-25 (`rejectUnknown`,
+`src/server/problem.ts`). A TOOL boundary is the exception and accepts both spellings, because the
+key is chosen by a model and the wire never sees it: `space_query` rebuilds the pattern from the
+model's arguments, and its description had taught the prose spelling, so a model asked to
+"order_by the numeric path descending" received the OLDEST rows and reported one as the maximum.
 And **ids order by time only to the millisecond**: ULIDs minted in the same millisecond differ
 only in their random half, so records written in one burst come back in a stable but arbitrary
 relative order. A test that assumes "the order I put them" is a test that passes on a slow

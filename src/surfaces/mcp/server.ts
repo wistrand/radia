@@ -334,7 +334,10 @@ function pat(a: Record<string, unknown>): Pattern {
   return {
     kind: str(a, "kind"),
     match: (a.match ?? undefined) as Record<string, unknown> | undefined,
-    orderBy: (a.orderBy ?? undefined) as Pattern["orderBy"],
+    // Both spellings: the key is the MODEL's, the wire reads only `orderBy`, and a dropped sort
+    // key is a wrong answer rather than an error. The wire's own near-miss refusal cannot help
+    // here, because this rebuilds the pattern and the model's key never crosses the socket.
+    orderBy: (a.orderBy ?? a.order_by ?? undefined) as Pattern["orderBy"],
   };
 }
 

@@ -22,7 +22,7 @@ function intersectAllow(caller: string[] | undefined, grant: string[] | undefine
   if (!grant) return caller;
   return caller.filter((l) => grant.includes(l));
 }
-import { problem } from "../problem.ts";
+import { problem, rejectUnknown } from "../problem.ts";
 
 async function body(req: Request): Promise<Record<string, unknown> | null> {
   try {
@@ -69,6 +69,13 @@ function parseLease(j: Record<string, unknown>): Lease | null {
 export async function handleTake(space: Space, req: Request, principal: string): Promise<Response> {
   const j = await body(req);
   if (!j) return problem(400, "invalid_body", "expected a JSON object");
+  // `allowTaint` is the CALLER'S OWN BARRIER and an absent one means no barrier at all (`take.ts`
+  // skips the check when it is undefined), so a misspelled `allow_taint` is fail-open: the caller
+  // believes it refused every labelled record and receives all of them. `clientTaint` already
+  // carries the note that collapsing the strictest request into no barrier was a bug once; a
+  // dropped key reopens it through a different door.
+  const badBody = rejectUnknown(j, ["pattern", "recordId", "leaseSeconds", "allowTaint", "requireUntainted"]);
+  if (badBody) return badBody;
 
   const recordId = typeof j.recordId === "string" ? j.recordId : undefined;
   // `typeof [] === "object"`, so a bare object check lets `pattern: []` and `pattern: {}` through
@@ -81,6 +88,10 @@ export async function handleTake(space: Space, req: Request, principal: string):
     if (typeof t !== "object" || Array.isArray(t) || typeof t.kind !== "string" || t.kind.length === 0) {
       return problem(400, "invalid_pattern", "pattern.kind must be a non-empty string");
     }
+    // …and its FIELDS, by the same sentence: a dropped `match` does not claim fewer records, it
+    // claims ANY record of the kind, which is the widening version of what the comment above bars.
+    const badField = rejectUnknown(t, ["kind", "match", "orderBy"], "pattern field");
+    if (badField) return badField;
     pattern = t as unknown as Pattern;
   }
   if (!recordId && !pattern) {

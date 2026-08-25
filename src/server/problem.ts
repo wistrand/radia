@@ -59,3 +59,50 @@ export function statusFor(code: string, fallback: number): number {
   if (code === "kind_not_remediable") return 422;
   return fallback;
 }
+
+/**
+ * A request may carry only the fields the operation HAS. Anything else is a 400 naming it.
+ *
+ * Handlers PICK fields by name, so every other key was silently dropped. That is deliberate on
+ * `put`, where it is how the server-assigned half gets ignored, and a defect everywhere the dropped
+ * field NARROWS: the caller asked for a smaller thing and got a bigger one, told nothing. Measured:
+ * `order_by` (the spelling the design docs, the Python docstrings and the chat's own tool
+ * description use in prose) returned records in id order where `orderBy` sorted them, status 200.
+ * A misspelled `match` on the registry verb hands back the whole registry as a slice; a misspelled
+ * `kind` on `remediate` drains every app's backlog instead of one.
+ *
+ * `handleTake` already stated the rule for the pattern OBJECT ("dropping it would claim a different
+ * record than asked") and `bodyTaint` for `taint`. This is that rule, applied to fields.
+ */
+const NEAR_MISS: Record<string, string> = {
+  order_by: "orderBy",
+  next_cursor: "cursor",
+  next_after: "after",
+  order: "orderBy",
+  sort: "orderBy",
+  record_id: "recordId",
+  lease_seconds: "leaseSeconds",
+  allow_taint: "allowTaint",
+  require_untainted: "requireUntainted",
+  parent_ids: "parentIds",
+  available_at: "availableAt",
+  client_meta: "clientMeta",
+};
+
+export function rejectUnknown(
+  j: Record<string, unknown>,
+  allowed: string[],
+  where = "field",
+): Response | undefined {
+  for (const key of Object.keys(j)) {
+    if (allowed.includes(key)) continue;
+    const meant = NEAR_MISS[key];
+    return problem(
+      400,
+      "invalid_pattern",
+      meant
+        ? `unknown ${where} ${JSON.stringify(key)}: did you mean ${JSON.stringify(meant)}? It was silently ignored before this check`
+        : `unknown ${where} ${JSON.stringify(key)} (allowed: ${allowed.join(", ")})`,
+    );
+  }
+}

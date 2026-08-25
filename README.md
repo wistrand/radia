@@ -177,7 +177,8 @@ for the second whenever it lapses, so nothing asks you to re-authenticate until
 ```bash
 radia kinds                                   # declared kinds (a query for kind_def records)
 radia put job '{"tag":"a"}'                   # write a record
-radia query job --match '{"tag":"a"}'         # read by pattern
+radia query job --match '{"tag":"a"}'         # read by pattern, NEWEST first
+radia query job --cursor "$C"                 # continue; the cursor carries its direction
 radia take job --lease 30 --json > claim.json # claim work
 radia ack - --result-kind job_result --result '{"ok":true}' < claim.json
 radia watch job                               # stream wakeups

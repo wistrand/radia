@@ -37,6 +37,7 @@ import {
   parseTaintAllowlist,
   SHRED,
   type ArtifactDef,
+  assertKnownKindDefFields,
   assertReservedCompatible,
   AUTHORIZATION_KINDS,
   GRANT,
@@ -2252,7 +2253,15 @@ export class Space {
   private validateReservedBody(req: PutRequest): KindDef | undefined {
     // A kind_def record IS a kind declaration: validate its body as a KindDef before commit,
     // so the space coordinates its own schema through the normal write path (no side table).
-    if (req.kind === KIND_DEF) return this.kindDefFromBody(req.body);
+    // WRITE PATH ONLY, and deliberately here rather than inside `kindDefFromBody`. BOTH readers of
+    // that function swallow a validation failure and keep what they have: `loadKinds` at startup
+    // and `refreshKind` on a stale projection. Strictness there would make a stored declaration
+    // carrying an unknown field an unloadable kind, and through `refreshKind` a kind declared on
+    // ANOTHER INSTANCE would never register on this one.
+    if (req.kind === KIND_DEF) {
+      assertKnownKindDefFields(req.body);
+      return this.kindDefFromBody(req.body);
+    }
     // A grant record IS an authorization grant: validate its body before commit. Write-protection
     // (that only a privileged principal may put one) is enforced at the API boundary.
     if (req.kind === GRANT) {

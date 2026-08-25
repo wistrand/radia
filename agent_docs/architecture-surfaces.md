@@ -199,6 +199,17 @@ drift this doc exists to avoid.
 Discovery-first, per the CLAUDE.md corollary: `kinds` is a query for `kind_def` records, `lineage`
 and `children` walk the graph, and no verb carries a table of known kinds.
 
+`query` reads NEWEST first and hands over a `--cursor` to continue with. The cursor carries its own
+direction, which is what removed a footgun from the printed continuation: it used to re-carry
+`--oldest` at every hop, and dropping that one word turned page two around. `--cursor` with
+`--after` or `--oldest` is a usage error, mirroring the space's 400.
+
+The MCP adapter's `space_query` RELAYS the model's pattern, so it dispatches on it rather than
+imposing a direction: a pattern carrying `order_by` goes to `queryOrdered`, anything else reads
+oldest-first, which the tool description now states (descriptions are the docs here). It accepts
+both spellings of that key, because the key is the model's and the adapter rebuilds the pattern, so
+the wire's own near-miss refusal never sees it.
+
 The claim lifecycle is composable rather than stateful: `take --json` prints the record together
 with its lease, and `ack`/`nack`/`release` accept that object back, either as an argument or as
 `-` to read stdin. So a shell pipeline drives a full claim without the CLI holding session state.

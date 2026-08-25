@@ -186,6 +186,18 @@ One of these is enforcement and the rest are vocabulary, which the list used to 
 only, whatever grants say — with one carve-out: the supervisor may put `grant`/`signal`, its entire
 remaining privilege ([architecture-ops-tiers.md](architecture-ops-tiers.md)).
 
+**A `kind_def` body is checked for unknown fields on the WRITE path and NOT on the load path**, and
+the split is load-bearing rather than an oversight. `contentKey` and `sortablePaths` are optional
+and absence is meaningful, so a misspelled `contentKeys` declared a kind that simply never compacted
+(the whole cost curve in [plan-registry-cost.md](plan-registry-cost.md), reachable by a typo), and
+`{path, type, sortable: true}` gets the declarer `unsortable_path` at query time, far from the
+cause. But BOTH readers of a stored declaration swallow a validation failure and keep what they have
+(`Space.loadKinds` at startup, `refreshKind` on a stale projection), so strictness in the shared
+validator would turn a stored `kind_def` into an UNLOADABLE KIND and, through `refreshKind`, mean a
+kind declared on another instance never registers on this one. `assertKnownKindDefFields` therefore
+hangs off `validateReservedBody` and never off `kindDefFromBody`. Allowed: `kind`, `indexedPaths`,
+`sortablePaths`, `claimable`, `contentKey`, `defaultRetentionSeconds`, `retired`.
+
 **Suggested names, which the runtime has never heard of:** `task` · `fact` / `hypothesis` ·
 `request` / `bid` / `award` (see [design-marketplace.md](design-marketplace.md)) · `result`. These
 are naming conventions from the origin outline. Declaring one is an ordinary `kind_def` and carries
