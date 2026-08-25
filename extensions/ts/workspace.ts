@@ -13,7 +13,7 @@
 // SHAPE. One `workspace` record per version, projected latest-wins by name like `procedure`, with
 // each file's bytes stored as an ordinary artifact. Reading one workspace is `limit 1, dir:desc`,
 // which is exact and cheap; listing every workspace is a registry read that must page to
-// exhaustion, which is the expensive direction and the one that needs `readCompletely`.
+// exhaustion, which is the expensive direction and the one that needs `readExhaustively`.
 //
 // The manifest holds the SOURCE tree only. A vendored dependency set belongs beside it as its own
 // content-addressed artifact: bodies are bounded (Phase 0's record limit caps a manifest at roughly

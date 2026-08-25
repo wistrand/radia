@@ -110,7 +110,7 @@ Five appear repeatedly. Four are built; the fifth is the notable absence.
 and saved procedures are all mutable-looking views over an append-only stream, honoured once in
 `src/core/registry.ts` (`activeByKey`, `activeSet`). Withdrawal is a successor, never a delete, so
 the audit trail survives revocation. The stopping rule matters as much as the pattern: registry
-state is read through `readCompletely`, which pages to exhaustion and reports `complete: false`
+state is read through `readExhaustively`, which pages to exhaustion and reports `complete: false`
 rather than a plausible prefix. A bounded read treated as a population is the most repeated bug
 here; this pass found five more instances.
 

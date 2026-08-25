@@ -78,12 +78,25 @@ Deno.test("docs: every `radia` import resolves through the npm package's exports
       );
       // Resolving the path is half the answer. `agentLoop` was importable from a specifier that
       // existed and exported everything except it.
-      const source = await Deno.readTextFile(new URL(`../sdk/ts/${target.replace(/^sdk\//, "")}`, import.meta.url));
+      //
+      // FOLLOWS `export *`, because the root entry point is a barrel: reading only the named
+      // exports of `mod.ts` would fail every client symbol it re-exports wholesale, and making the
+      // barrel restate each name is the duplicated statement it exists to avoid.
+      const rel = target.replace(/^sdk\//, "");
+      const sources: string[] = [];
+      const load = async (file: string, depth = 0) => {
+        const text = await Deno.readTextFile(new URL(`../sdk/ts/${file}`, import.meta.url));
+        sources.push(text);
+        if (depth > 2) return;
+        for (const star of text.matchAll(/export\s*\*\s*from\s*"\.\/([^"]+)"/g)) await load(star[1], depth + 1);
+      };
+      await load(rel);
+      const source = sources.join("\n");
       for (const name of names.split(",").map((n) => n.trim()).filter(Boolean)) {
         assert(
           new RegExp(`export\\s+(async\\s+)?(function|class|const|interface|type)\\s+${name}\\b`).test(source) ||
-            new RegExp(`export\\s*\\{[^}]*\\b${name}\\b`).test(source),
-          `${p.name} imports { ${name} } from "${specifier}", but sdk/ts/${target.replace(/^sdk\//, "")} does not export it`,
+            new RegExp(`export\\s*(type\\s*)?\\{[^}]*\\b${name}\\b`).test(source),
+          `${p.name} imports { ${name} } from "${specifier}", but sdk/ts/${rel} does not export it`,
         );
       }
       checked++;

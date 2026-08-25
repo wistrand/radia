@@ -85,7 +85,7 @@ flowchart TB
     R["request to /v0/ops/*"] --> P{"privileged?<br/>ctx.operators or the space itself"}
     P -->|yes| A["allowed: full tier"]
     P -->|no| G{"ops_grant covers<br/>this route's power?"}
-    G -->|"readCompletely to exhaustion<br/>complete: false denies"| G
+    G -->|"readExhaustively to exhaustion<br/>complete: false denies"| G
     G -->|yes| A
     G -->|no| S{"self-scoped read?<br/>opsScope: own records, reads only"}
     S -->|yes| A
@@ -93,7 +93,7 @@ flowchart TB
 ```
 
 Privileged passes as before; otherwise the gate resolves the caller's `ops_grant` operations
-(`readCompletely` to exhaustion; `complete: false` denies) and matches the route against the table
+(`readExhaustively` to exhaustion; `complete: false` denies) and matches the route against the table
 above; otherwise the existing `opsScope` self-scope path runs unchanged (it stays the tier below
 `observe`: kind-scoped, own records, reads only). A refusal names the missing power in the 403
 detail, because "forbidden" alone sends the caller to request a kind grant that cannot help,

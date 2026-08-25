@@ -71,7 +71,7 @@ planted test, none by the type system:
 - `readOne` answers with the OLDEST match, so a successor written by enrolment was invisible.
 - An idempotency key naming the conversation rather than the wrap set replayed the first write.
 - Content-key idempotency expires, so a memo built on it silently stops memoizing.
-- A bounded `query` where `readCompletely` was needed.
+- A bounded `query` where `readExhaustively` was needed.
 
 CLAUDE.md already names this as the stopping rule for expressing features through the space.
 Two independent applications hitting it four times says the rule is real and under-enforced: it is

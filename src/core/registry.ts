@@ -14,7 +14,7 @@ export {
   newestByKey,
   oidcIdentityKey,
   opsGrantKey,
-  readCompletely,
+  readExhaustively,
   RETIRED,
 } from "../../sdk/ts/registry.ts";
 

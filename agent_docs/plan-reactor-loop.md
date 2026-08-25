@@ -18,7 +18,7 @@ re-read, decide, write under a derived key (`examples/pipeline/aggregator.ts` ca
 `extensions/ts/turn.ts` elaborate). The five rules of that shape stay APP rules: don't claim
 facts; a wakeup is a trigger, never the data; let the parts carry their own arity; the
 idempotency key is the correctness argument (and expires, so the QUERY is the long-term memo);
-page to exhaustion before deciding (`readCompletely`, refuse a prefix).
+page to exhaustion before deciding (`readExhaustively`, refuse a prefix).
 
 ## What actually fails today, verified
 

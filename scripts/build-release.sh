@@ -107,11 +107,12 @@ cat > "$OUT/npm/radia/package.json" <<JSON
   "bin": { "radia": "bin/radia.js" },
   "files": ["bin", "sdk", "extensions", "LICENSE"],
   "exports": {
-    ".": "./sdk/client.ts",
+    ".": "./sdk/mod.ts",
     "./loop": "./sdk/loop.ts",
     "./wire": "./sdk/wire.ts",
     "./registry": "./sdk/registry.ts",
     "./await": "./sdk/await.ts",
+    "./client": "./sdk/client.ts",
     "./extensions/*": "./extensions/*.ts"
   },
   "optionalDependencies": {$(printf "%b" "$OPTIONAL_DEPS" | sed '$ s/,$//')

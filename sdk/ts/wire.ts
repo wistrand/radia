@@ -75,10 +75,13 @@ export interface RuntimeMeta {
 }
 
 /** Immutable content half of a record. Never rewritten after commit. */
-export interface RadiaRecord {
+export interface RadiaRecord<T = unknown> {
   id: Ulid;
   kind: string;
-  body: unknown;
+  /** Opaque by default. A reader that KNOWS the shape names it (`RadiaRecord<Task>`), which is what
+   *  the typed reads below hand back; it is not a promise the runtime makes, so a body still has to
+   *  be one the writer's kind allows. */
+  body: T;
   bodySha256: string; // over plaintext
   clientMeta?: Record<string, unknown>; // client-submitted claims only
   runtimeMeta: RuntimeMeta;

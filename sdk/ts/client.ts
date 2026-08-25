@@ -37,7 +37,7 @@ export {
   grantKey,
   isRetired,
   newestByKey,
-  readCompletely,
+  readExhaustively,
   RETIRED,
   unsafeAsPopulation,
 } from "./registry.ts";
@@ -549,7 +549,7 @@ export class RadiaClient {
    * registry entry, a versioned record, key material a later write extends — that is the stale
    * answer, and it is stale silently. Use `readNewest`.
    */
-  readOne(pattern: Pattern): Promise<RadiaRecord | null> {
+  readOne<T = unknown>(pattern: Pattern): Promise<RadiaRecord<T> | null> {
     return this.req("POST", "/v0/records/read-one", pattern);
   }
 
@@ -564,8 +564,8 @@ export class RadiaClient {
    * NOTE THE GRANT. This is a `query`, not a `read_one`, so a principal holding only `read_one` on
    * the kind gets `forbidden` here. That is not a bug to route around: ordering IS a query.
    */
-  async readNewest(pattern: Pattern): Promise<RadiaRecord | null> {
-    return (await this.queryNewest(pattern, 1))[0] ?? null;
+  async readNewest<T = unknown>(pattern: Pattern): Promise<RadiaRecord<T> | null> {
+    return (await this.queryNewest(pattern, 1))[0] as RadiaRecord<T> ?? null;
   }
 
   /**
@@ -771,17 +771,17 @@ export class RadiaClient {
    * (`[...entries].sort(byRank)`) is unaffected, and picking the newest is `newer` from
    * `registry.ts`.
    */
-  async registry(
+  async registry<T = unknown>(
     kind: string,
     match?: Record<string, unknown>,
-  ): Promise<{ entries: ReadonlySet<RadiaRecord>; complete: boolean; scanned: number; scope?: ReadScope }> {
+  ): Promise<{ entries: ReadonlySet<RadiaRecord<T>>; complete: boolean; scanned: number; scope?: ReadScope }> {
     const out = await this.req("POST", "/v0/records/registry", { kind, ...(match ? { match } : {}) }) as {
       entries: RadiaRecord[];
       complete: boolean;
       scanned: number;
       scope?: ReadScope;
     };
-    return { ...out, entries: new Set(out.entries) };
+    return { ...out, entries: new Set(out.entries as RadiaRecord<T>[]) };
   }
 
   async queryAll(pattern: Pattern, maxPages = 40): Promise<Population> {

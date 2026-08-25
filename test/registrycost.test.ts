@@ -7,7 +7,7 @@
 // What IS checkable is the one shape where the intent is written down. Feeding a `query()` result
 // into `activeByKey` / `newestByKey` / `activeSet` says "this is the current set", and those
 // projections are only correct over the whole history: a bounded read hands them a prefix and they
-// answer confidently about it. The safe inputs (`queryAll`, `readCompletely`, `query_all`) page to
+// answer confidently about it. The safe inputs (`queryAll`, `readExhaustively`, `query_all`) page to
 // exhaustion and refuse rather than truncate, so the rule is simply which call feeds the projection.
 //
 // It found two real defects when first written, both in the chat's procedure lookup, and both worse
@@ -26,7 +26,7 @@ const ROOTS = ["src", "sdk", "extensions", "examples"];
 const PROJECTIONS = ["activeByKey", "newestByKey", "activeSet"];
 
 /** Reads that page to exhaustion, or that are already a complete view. */
-const EXHAUSTIVE = /\b(queryAll|query_all|readCompletely|registry|liveInterests|readBindings|readRegistryOf)\s*(<[^>]*>)?\s*\(/;
+const EXHAUSTIVE = /\b(queryAll|query_all|readExhaustively|registry|liveInterests|readBindings|readRegistryOf)\s*(<[^>]*>)?\s*\(/;
 
 /** Source with `//` and block comments removed. */
 function code(text: string): string {
@@ -80,12 +80,12 @@ Deno.test("[registry-cost] a latest-wins projection is never fed a bounded read"
     violations,
     [],
     "a latest-wins projection over a bounded read answers confidently about a PREFIX. " +
-      "Use queryAll/readCompletely, which page to exhaustion and report an incomplete view.",
+      "Use queryAll/readExhaustively, which page to exhaustion and report an incomplete view.",
   );
 });
 
-Deno.test("[registry-cost] no readCompletely caller states a page direction", async () => {
-  // `readCompletely` builds the whole `Page` and hands it over, so a caller passes it through and
+Deno.test("[registry-cost] no readExhaustively caller states a page direction", async () => {
+  // `readExhaustively` builds the whole `Page` and hands it over, so a caller passes it through and
   // never names a direction. Before that the contract was prose ("must return records
   // NEWEST-FIRST") and FIVE call sites in this repo paged ascending against it: correct only
   // because the function exhausts, and on the incomplete path they would have kept the OLDEST
@@ -98,7 +98,7 @@ Deno.test("[registry-cost] no readCompletely caller states a page direction", as
       const text = code(await Deno.readTextFile(new URL(`../${file}`, import.meta.url)));
       const lines = text.split("\n");
       for (const [i, line] of lines.entries()) {
-        if (!/\breadCompletely\s*(<[^>]*>)?\s*\(/.test(line)) continue;
+        if (!/\breadExhaustively\s*(<[^>]*>)?\s*\(/.test(line)) continue;
         // The reader is the first argument, so it is within a few lines of the call.
         const window = lines.slice(i, i + 8).join("\n");
         if (/\bdir\s*:/.test(window)) violations.push(`${file}:${i + 1}  names a direction`);
@@ -108,7 +108,7 @@ Deno.test("[registry-cost] no readCompletely caller states a page direction", as
   assertEquals(
     violations,
     [],
-    "readCompletely builds the Page; a caller passes it through rather than restating the direction",
+    "readExhaustively builds the Page; a caller passes it through rather than restating the direction",
   );
 });
 
@@ -161,7 +161,7 @@ Deno.test("[registry-cost] every escape from the Population brand is accounted f
   // `unsafeAsPopulation` is the legal way out, and this test is the ledger. A new entry is a
   // deliberate edit here, and a GROWING count is the signal that the brand is being routed around.
   const allowed = new Map([
-    ["sdk/ts/registry.ts", 1], // readCompletely, where paging to exhaustion earns it
+    ["sdk/ts/registry.ts", 1], // readExhaustively, where paging to exhaustion earns it
     ["sdk/ts/client.ts", 1], // queryAll, same
     ["extensions/ts/workspace.ts", 1], // readAllManifests: its own budget (maxPages), same exhaustion rule
     ["src/surfaces/cli.ts", 1], // two queryAll halves concatenated; the type cannot see that

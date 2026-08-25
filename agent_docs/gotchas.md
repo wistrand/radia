@@ -8,7 +8,7 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
 **Read a SECTION, not the file.** The traps below are grouped by what a rule constrains, so a
 change to one subsystem has one heading to skim rather than nine hundred lines. Many rules are
 genuinely bi-topical (a storage lesson learned in the credential path), so they sit under the thing
-they CONSTRAIN, not where they were found; grep by symbol (`readCompletely`, `lease_lost`) when in
+they CONSTRAIN, not where they were found; grep by symbol (`readExhaustively`, `lease_lost`) when in
 doubt.
 
 **Writing an entry: a bold rule, then at most a short paragraph.** Name the mechanism, the
@@ -54,10 +54,10 @@ skimming for a rule, and a page of prose per entry means the rule is not found.
 
 > Most of the entries below are instances of ONE mistake: a registry's writes are unbounded, its
 > reads were bounded, and nothing connected the two. They are kept individually because each cost
-> real debugging, but the fix is structural and lives in `src/core/registry.ts` (`readCompletely`,
+> real debugging, but the fix is structural and lives in `src/core/registry.ts` (`readExhaustively`,
 > which pages to exhaustion and admits when it cannot) plus content-keyed registry writes. New code
 > should not be able to re-enter this class: if you are writing `query(kind, N)` and treating the
-> result as "all of them", use `readCompletely` instead.
+> result as "all of them", use `readExhaustively` instead.
 
 Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
@@ -220,7 +220,7 @@ superseded key-less records; guard: `suites/gc.ts`, "compaction keeps exactly wh
 reads".
 
 **`activeByKey` / `newestByKey` / `activeSet` take a `Population`, not a `RadiaRecord[]`.** Only
-`queryAll` and `readCompletely` mint one, so a projection over a page does not compile. Two live
+`queryAll` and `readExhaustively` mint one, so a projection over a page does not compile. Two live
 defects fell out the day it landed, both in `examples/chat/client/` and both past a grep that had
 been green over them: the grep looks BACKWARD from the projection and both reads were inline
 arguments after it. `unsafeAsPopulation(records, why)` is the way out, and
@@ -272,7 +272,7 @@ again at a call site is the same defect whether written as a comparison (`page.d
 as a default (`page?.dir ?? "asc"`), and the second shape got into the query handler while the guard
 matched only the first. It builds the cursor, so a wrong answer sends the NEXT page backwards.
 
-**`readCompletely` builds the `Page`; a caller passes it through and never names a direction.** The
+**`readExhaustively` builds the `Page`; a caller passes it through and never names a direction.** The
 contract used to be prose ("must return records NEWEST-FIRST") and five call sites paged ascending
 against it, right only because the function exhausts: on the incomplete path they would have kept
 the OLDEST records, the half missing every retirement, while `complete: false` said only that
@@ -430,7 +430,7 @@ something was missing. A rule a caller can get wrong is one that will be got wro
   `dir: "desc"` — which corrected which tools vanish (least-recently-republished instead of newest)
   and left the boundedness. Measured mid-session on a real space: **737 capability records for 33
   tools**, so the page was within 1.5x of silently dropping tools again. CLAUDE.md already said
-  registry state is read through `readCompletely`, never a hand-rolled `query(kind, N)`; this was the
+  registry state is read through `readExhaustively`, never a hand-rolled `query(kind, N)`; this was the
   hand-rolled one, in the most consequential place, and the failure mode is invisible: "the
   assistant does not have that tool" is indistinguishable from "it did not think to use it".
   IT HAPPENED TWICE MORE IN THE SAME APP, found by the `Population` brand rather than by any grep:
@@ -1192,7 +1192,7 @@ fleet appends one record per entry forever. Measured: 40 re-puts sailed past a c
   OLDEST records fell out of its own self-scoped reads. That list is the allowlist for `take`,
   lineage, graph, artifact bytes and watch wakeups, so truncation makes an agent's own records
   unclaimable and `rankClaimable` skips them indistinguishably from an empty queue. It pages to
-  exhaustion via `readCompletely` and throws `registry_incomplete` rather than narrowing. Five client
+  exhaustion via `readExhaustively` and throws `registry_incomplete` rather than narrowing. Five client
   reads had the same shape and now route through `RadiaClient.queryAll` / `query_all`, which pages
   newest-first and THROWS instead of returning a prefix. Guarded in `test/conformance/suites/auth.ts`
   (1201 runs for one agent; its oldest must stay in scope). Where a bound is right, bound by
@@ -1949,8 +1949,8 @@ only hang again.
   `sdk/ts/client.ts` imported the wire types AND runtime values from `../../src/`, with its own
   header saying a standalone type surface would be extracted in Phase 7. Phase 7 shipped and it was
   not, so `build-release.sh` — which stages `sdk/` and `extensions/` into the npm package and no
-  `src/` — published a package whose entry point (`"." : "./sdk/client.ts"`) imported four paths
-  that are not in it. The fix is directional: `sdk/ts/wire.ts` OWNS the contract vocabulary and the
+  `src/` — published a package whose entry point (then `"." : "./sdk/client.ts"`, now `./sdk/mod.ts`)
+  imported four paths that are not in it. The fix is directional: `sdk/ts/wire.ts` OWNS the contract vocabulary and the
   old definition sites re-export from it, so nothing inside `src/` had to move. A contract the
   client cannot ship is not a contract.
 - **Any uncaught handler error must return problem+json, never a plain-text 500.** The SDK does

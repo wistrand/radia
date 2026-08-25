@@ -3,13 +3,19 @@
 The TypeScript and Python SDKs wrap the public `/v0` API. They provide clients, watches, worker
 loops, artifact transfer and shared wire types without importing runtime internals.
 
+**Import from `radia` (`ts/mod.ts`) and nothing else.** It is a barrel: every name is re-exported
+unchanged from the module that owns it, so the individual paths stay importable and there is nothing
+to keep in sync. Measured on four minimal journeys (a task/result pair, a registry you own, a
+correlated request, a registry you discover): 9 imports across 9 module paths became 4 across 1,
+and `contentKey` had not been reachable from the client at all.
+
 `ts/wire.ts` defines the frozen wire vocabulary and pure functions that clients and the server must
 compute identically. The runtime imports these definitions; the SDK imports nothing from `src/`.
 `test/layering.test.ts` enforces that direction for value and type imports.
 
 | | TypeScript | Python |
 |-|------------|--------|
-| Path        | [`ts/`](ts/): `wire.ts`, `registry.ts`, `await.ts`, `client.ts`, `loop.ts` | [`py/radia.py`](py/radia.py) |
+| Path        | [`ts/`](ts/): import `mod.ts`; behind it `wire.ts`, `registry.ts`, `await.ts`, `client.ts`, `loop.ts` | [`py/radia.py`](py/radia.py) |
 | Client      | `RadiaClient`      | `RadiaClient` |
 | Worker loop | `agentLoop`        | `agent_loop` |
 | Reactor loop (fact-side: watch, re-read, decide) | `reactorLoop` | not yet: hand-roll the sweep, or poll |
@@ -23,6 +29,7 @@ compute identically. The runtime imports these definitions; the SDK imports noth
 | Credential  | `{definitionToken}` exchanges on expiry; `keepAlive(signal, onLost)` renews at half-life | `keep_alive(stop, on_lost)`, renewal only (see below) |
 | Children    | `getChildren` / `getChildrenPage` (paged) | `get_children` / `get_children_page` (paged) |
 | Reads       | `readOne` (the OLDEST match) / `readNewest` | `read_one` (the OLDEST match) / `read_newest` |
+| Body typing | `RadiaRecord<T>`: `agentLoop<T>` / `registry<T>` / `readOne<T>` / `readNewest<T>` hand back a named body | none; bodies are dicts |
 | Registry    | `registry(kind, match?)`: the current set, projected server-side from the kind's declared key. Entries are a `ReadonlySet`, since a projection has no order to index into | `registry(kind, match=None)`, a list, and the ONLY correct path there: Python has no projection helper |
 | Content key | `contentKey(tag, body)`, async (Web Crypto) | `content_key(tag, body)`, sync (hashlib) |
 | Dependencies| none beyond the runtime | none, standard library only (3.9+) |
@@ -80,7 +87,7 @@ wherever `python3` is present, including CI. The small-float divergence it exist
 (`1e-05` vs `0.00001`) shipped and survived precisely because nothing checked.
 
 **Client-side helpers.** Two helpers compose public verbs without adding wire operations.
-`readCompletely` pages a read to exhaustion and reports `complete: false`
+`readExhaustively` pages a read to exhaustion and reports `complete: false`
 rather than a plausible prefix. `awaitResult` waits for the record another agent will write: the
 deadline loop, the poll, an injected wake (pass a shared one, or take the default sleep) and a final
 read after the deadline, returning a DISCRIMINATED outcome, because "nobody answered in time" is an

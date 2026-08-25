@@ -15,7 +15,7 @@
 import { RadiaClientError } from "./client.ts";
 import type { PutRequest, RadiaClient, RadiaRecord, Pattern } from "./client.ts";
 
-export interface LoopOptions {
+export interface LoopOptions<T = unknown> {
   name: string;
   patterns: Pattern[];
   leaseSeconds?: number;
@@ -62,7 +62,7 @@ export interface LoopOptions {
    * i.e. after all the work was already done. Ignoring it is safe but keeps the old behaviour:
    * delivery is at-least-once either way, so effects still need idempotency at their boundary.
    */
-  handle: (record: RadiaRecord, client: RadiaClient, signal: AbortSignal) => Promise<PutRequest | void>;
+  handle: (record: RadiaRecord<T>, client: RadiaClient, signal: AbortSignal) => Promise<PutRequest | void>;
   /**
    * Where the loop narrates itself. Absent means SILENT for routine trace (took, acked, fenced),
    * which is the right default for a library.
@@ -98,7 +98,7 @@ function describeFailure(e: unknown, base: string): string {
   return String(e);
 }
 
-export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<void> {
+export async function agentLoop<T = unknown>(client: RadiaClient, o: LoopOptions<T>): Promise<void> {
   const leaseSeconds = o.leaseSeconds ?? 30;
   // 1 by default: strictly sequential, every existing caller's behaviour. See LoopOptions.
   const concurrency = Math.max(1, Math.floor(o.concurrency ?? 1));
@@ -196,7 +196,10 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
       claim.abort(new Error(`lease_lost: ${reason}`));
     });
     try {
-      const result = await o.handle(claimed.record, client, claim.signal);
+      // THE ONE CAST. `T` is the caller's claim about the bodies its patterns match, asserted here
+      // rather than re-asserted by every handler. The runtime still decides what a body may be; this
+      // only stops the assertion being written out once per worker.
+      const result = await o.handle(claimed.record as RadiaRecord<T>, client, claim.signal);
       if (fenced) {
         // Settling is pointless and the log line has to say which of the two happened: the work
         // ran to completion but somebody else owns the record now.
