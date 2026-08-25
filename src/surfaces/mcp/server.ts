@@ -191,8 +191,14 @@ async function call(
       return pretty(r);
     }
 
-    case "space_query":
-      return pretty(await client.queryOldest(pat(a), num(a, "limit") ?? 50));
+    case "space_query": {
+      // The pattern is the MODEL's, so `orderBy` is data here rather than something this call site
+      // knows. A directional read cannot be combined with it (the space refuses, and the SDK now
+      // refuses first), so the two cases dispatch instead of one silently losing.
+      const p = pat(a);
+      const n = num(a, "limit") ?? 50;
+      return pretty(p.orderBy?.length ? await client.queryOrdered(p, n) : await client.queryOldest(p, n));
+    }
 
     case "space_read_one":
       return pretty(await client.readOne(pat(a)));

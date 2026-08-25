@@ -129,7 +129,15 @@ Deno.test("[registry-cost] the page direction is decided in one place", async ()
       // one is a different question and stays legal: `space.ts` refuses a cursor combined with
       // `orderBy`, and `inspection.ts` reports "no dir was given" in an explain note. Neither
       // resolves a default, and rewriting them to the resolved value would make both wrong.
-      if (/page\??\.dir\s*===\s*"(asc|desc)"/.test(line)) {
+      // Two forms, because the second slipped past the first. Comparing (`page.dir === "desc"`) was
+      // the shape the five original sites used; DEFAULTING (`page?.dir ?? "asc"`) is the same
+      // decision written the other way round, and the query handler grew one building `nextCursor`
+      // while this guard stayed green. `pageIsDescending` is the export that exists to be used
+      // instead.
+      if (
+        /page\??\.dir\s*===\s*"(asc|desc)"/.test(line) ||
+        /page\??\.dir\s*(\?\?|\|\|)\s*"(asc|desc)"/.test(line)
+      ) {
         violations.push(`${file}:${i + 1}  ${line.trim().slice(0, 70)}`);
       }
     }
@@ -173,5 +181,45 @@ Deno.test("[registry-cost] every escape from the Population brand is accounted f
     Object.fromEntries([...found].sort()),
     Object.fromEntries([...allowed].sort()),
     "an escape from the Population brand is legal, but it is listed here with the reason it holds",
+  );
+});
+
+Deno.test("[registry-cost] a relayed pattern's own order_by is honoured, not overridden", async () => {
+  // `queryNewest`/`queryOldest` name a direction of the natural id order, which the space refuses
+  // combined with `order_by` (a pattern that already states its order). At a call site with a
+  // LITERAL pattern that is a programmer error and the SDK throws. At a RELAY it is not: the
+  // pattern belongs to whoever called in, `order_by` is data, and hard-coding a direction turns
+  // every ordered query they make into an error.
+  //
+  // Both relays in this repo were broken exactly that way when the SDK's `query(p, n)` was split
+  // and the call sites rewritten mechanically: the MCP adapter's `space_query` and the broker's
+  // query proposal, the second a NORMATIVE surface. Neither had coverage, so the whole suite
+  // stayed green. The rule is structural because the trigger is: a pattern the call site did not
+  // write is one it cannot make assumptions about.
+  const dispatches = /orderBy\?\.length|orderBy\s*&&|queryOrdered/;
+  const allowed = new Set([
+    // The pattern is the CALLER'S OWN and `readNewest` is its explicit request for newest-first.
+    // Asking for both is a contradiction the caller wrote, so throwing is the answer, not relaying.
+    "sdk/ts/client.ts",
+  ]);
+  const violations: string[] = [];
+  for (const root of ROOTS) {
+    for (const file of await tsFiles(root)) {
+      if (allowed.has(file)) continue;
+      const text = code(await Deno.readTextFile(new URL(`../${file}`, import.meta.url)));
+      const lines = text.split("\n");
+      for (const m of text.matchAll(/\.query(?:Oldest|Newest)\(\s*([^\s{])/g)) {
+        // A first argument that is not an object literal is a pattern from somewhere else.
+        const i = text.slice(0, m.index).split("\n").length - 1;
+        const window = lines.slice(Math.max(0, i - 8), i + 3).join("\n");
+        if (dispatches.test(window)) continue;
+        violations.push(`${file}:${i + 1}  ${lines[i].trim().slice(0, 72)}`);
+      }
+    }
+  }
+  assertEquals(
+    violations,
+    [],
+    "a relayed pattern may carry order_by: dispatch to queryOrdered instead of imposing a direction",
   );
 });

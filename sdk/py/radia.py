@@ -638,6 +638,16 @@ class RadiaClient:
         rows = self.query_newest(pattern, limit=1)
         return rows[0] if rows else None
 
+    @staticmethod
+    def _no_order_by(pattern: Dict[str, Any], verb: str) -> None:
+        """A direction of the natural id order cannot be combined with ``order_by``, which already
+        sets the order. Refused here rather than as a 400, matching the TS SDK."""
+        if pattern.get("order_by") or pattern.get("orderBy"):
+            raise ValueError(
+                "{!r} is queried with order_by, which already sets the order: drop {} and page "
+                "without a direction".format(pattern.get("kind"), verb)
+            )
+
     def query_newest(self, pattern: Dict[str, Any], limit: int = 100) -> List[Dict[str, Any]]:
         """The NEWEST ``limit`` records matching ``pattern``. A PAGE, named as one.
 
@@ -646,11 +656,13 @@ class RadiaClient:
         about that at the call site. For "the current set" use ``registry`` or ``query_all``, which
         exhaust; a page can only ever be a page.
         """
+        self._no_order_by(pattern, "query_newest")
         return self.query_page(pattern, limit, dir="desc")[0]
 
     def query_oldest(self, pattern: Dict[str, Any], limit: int = 100) -> List[Dict[str, Any]]:
         """The OLDEST ``limit`` records matching ``pattern``. The old default, now asked for on
         purpose: right for a claim-ordered read or a replay, wrong for anything with successors."""
+        self._no_order_by(pattern, "query_oldest")
         return self.query_page(pattern, limit, dir="asc")[0]
 
     def query_page(
@@ -658,7 +670,7 @@ class RadiaClient:
         pattern: Dict[str, Any],
         limit: int = 100,
         after: Optional[str] = None,
-        dir: str = "asc",
+        dir: Optional[str] = None,
         cursor: Optional[str] = None,
     ) -> Tuple[List[Dict[str, Any]], Optional[str], Optional[Dict[str, Any]]]:
         """One page, the cursor for the next, and the read's scope: ``(records, next_cursor, scope)``.
@@ -681,13 +693,17 @@ class RadiaClient:
         payload = dict(pattern)
         payload["limit"] = limit
         if cursor is not None:
-            if after is not None or dir != "asc":
+            # `dir` defaults to None rather than "asc" so that PASSING "asc" is distinguishable from
+            # not passing it. With the old default this pair was accepted here and refused by the
+            # server and the TS SDK, and accepting it is the reversing walk the cursor exists to
+            # prevent: the caller's "asc" is silently ignored when the cursor says "desc".
+            if after is not None or dir is not None:
                 raise ValueError("cursor already carries the direction and position; pass it alone")
             payload["cursor"] = cursor
         else:
             if after is not None:
                 payload["after"] = after
-            if dir != "asc":
+            if dir is not None and dir != "asc":
                 payload["dir"] = dir
         r = self._req("POST", "/v0/records/query", payload)
         return r["records"], r.get("nextCursor"), r.get("scope")

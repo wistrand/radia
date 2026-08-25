@@ -27,7 +27,7 @@
 // a retired key revives it because that record is newer still. There is no un-retire path to
 // implement or to get wrong.
 
-import type { Page, RadiaRecord } from "./wire.ts";
+import type { Page, RadiaRecord, Ulid } from "./wire.ts";
 
 /** The body field that withdraws a registry entry. A convention honoured by the projections here,
  *  never by the matching layer. */
@@ -266,10 +266,14 @@ export function unsafeAsPopulation(records: RadiaRecord[], why: string): Populat
 const REGISTRY_PAGE = 500;
 
 /** One page of a registry walk, built by `readRegistry` and passed straight through by the caller.
- *  `limit` rides along so the caller needs nothing of its own: `client.query(pattern, p.limit, p)`. */
-export interface RegistryPage extends Page {
+ *  `limit` rides along so the caller needs nothing of its own:
+ *  `client.queryPage(pattern, p.limit, p)`. Spelled out rather than `extends Page`, because `Page`
+ *  is a union (after+dir OR cursor) and a registry walk is always the first arm. */
+export interface RegistryPage {
+  after?: Ulid;
   limit: number;
   dir: "desc";
+  cursor?: never;
 }
 const REGISTRY_MAX_PAGES = 40;
 

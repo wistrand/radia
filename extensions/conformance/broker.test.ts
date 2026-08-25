@@ -51,6 +51,12 @@ await declareBinding(operator);
 await operator.registerKind({ kind: "note", indexedPaths: [{ path: "tag", type: "keyword" }, { path: "compartment", type: "keyword" }] });
 await operator.registerKind({ kind: "exec_result", indexedPaths: [{ path: "tag", type: "keyword" }] });
 await operator.registerKind({
+  kind: "ranked",
+  indexedPaths: [{ path: "score", type: "number" }],
+  sortablePaths: ["score"],
+  claimable: false,
+});
+await operator.registerKind({
   kind: "workspace",
   indexedPaths: [{ path: "name", type: "keyword" }, { path: "owner", type: "keyword" }, { path: "treeDigest", type: "keyword" }, { path: "basedOn", type: "keyword" }],
   claimable: false,
@@ -695,5 +701,30 @@ Deno.test("[broker] a put made with POSITIONAL arguments is told the signature",
     assertStringIncludes(tag, "space.put({kind, body})");
     assertStringIncludes(tag, "Positional arguments");
     assertEquals((await operator.queryOldest({ kind: "note", match: { tag: "positional" } }, 5)).length, 0, "and nothing was written");
+  });
+});
+
+Deno.test("[broker] a query proposal honours the pattern's own order_by", async () => {
+  // The broker RELAYS a pattern written by jailed code, so `order_by` is data here, not something
+  // the host chooses. A directional read cannot be combined with it (the space refuses), so a host
+  // that hard-codes a direction turns every ordered query from the jail into an error. That is
+  // exactly what happened when the SDK's `query(p, n)` was split into `queryOldest`/`queryNewest`
+  // and this relay was rewritten mechanically: nothing here covered order_by, so nothing failed.
+  await withSpace(async ({ operator, hostFor, agent }) => {
+    for (const score of [3, 1, 2]) await operator.put({ kind: "ranked", body: { score } });
+    await operator.grant(agent, "ranked", ["query"]);
+    const host = await hostFor(`
+      export default async (record, space) => {
+        const top = await space.query({ kind: "ranked", orderBy: [{ path: "score", dir: "desc" }] }, 2);
+        const plain = await space.query({ kind: "ranked" }, 2);
+        return { kind: "exec_result", body: { tag: "ordered", top: top.map((r) => r.body.score), plain: plain.length } };
+      };
+    `);
+    const outcomes = await host.tick();
+    assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
+    const body = (await operator.queryNewest({ kind: "exec_result", match: { tag: "ordered" } }, 1))[0]
+      .body as { top: number[]; plain: number };
+    assertEquals(body.top, [3, 2], "the jail's own order_by must decide the order");
+    assertEquals(body.plain, 2, "…and a pattern without one still reads normally");
   });
 });

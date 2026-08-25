@@ -281,6 +281,32 @@ them into 400s. The direction verbs now throw LOCALLY on an `orderBy` pattern an
 generalises: a vocabulary that names the direction has to name "the pattern decides" too, or the
 default is the thing with no name.
 
+THREE DEFECTS IN THIS STEP'S OWN WORK, found by auditing it rather than by the suite, which was
+green for all three:
+
+- **The handler resolved the direction a SIXTH time.** `encodeCursor(page?.dir ?? "asc", ...)` is the
+  decision `pageClause` owns, written as a default instead of a comparison, so step 7's guard did
+  not match it. A cursor saying `a:` for a walk the storage ran descending sends the next page
+  backwards. Now `pageIsDescending`, and the guard matches `??`/`||` defaulting too.
+- **Both RELAY sites broke.** The MCP adapter's `space_query` and the broker's query proposal pass a
+  pattern written by someone else (a model, jailed code), so `order_by` is DATA there. The
+  mechanical rewrite made them `queryOldest`, whose new local refusal turned every ordered query
+  from a model or a jail into an error, on a NORMATIVE surface in the broker's case. Neither had
+  coverage. Both now dispatch to `queryOrdered`; there is a broker conformance test and a
+  structural guard for the class, both proved red.
+- **Python accepted `cursor` with `dir="asc"`.** `dir` defaulted to `"asc"`, so passing it was
+  indistinguishable from not passing it, and Python accepted the exact pair the server and the TS
+  SDK refuse. Default is `None` now. `query_newest`/`query_oldest` also refuse `order_by` locally,
+  matching TS.
+
+The generalisation is worth more than the three fixes: **a call site that did not write the pattern
+cannot make assumptions about it.** A literal pattern with `order_by` and a direction is a
+programmer error and throwing is right; the same pattern arriving from a tool call is a request to
+honour.
+
+`Page` is a DISCRIMINATED UNION, so `{cursor, dir}` is a TypeScript error rather than only a 400:
+`{after?, dir?, cursor?: never} | {cursor, after?: never, dir?: never}`.
+
 The CLI gained `--cursor` and LOST the need to re-carry `--oldest`: the continuation line used to
 repeat the flag at every hop, one dropped word from a walk that reversed. `--cursor` with `--after`
 or `--oldest` is a usage error, mirroring the server's 400. `/v0/ops/events` and `children` keep

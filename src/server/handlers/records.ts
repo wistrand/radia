@@ -18,7 +18,7 @@ function bodyTaint(raw: unknown): string[] | undefined {
   return clientTaint(raw, { reserved: true }); // a RAISE; see clientTaint
 }
 import type { PutRequest } from "../../core/record.ts";
-import { combineMatch, type Pattern } from "../../core/matching.ts";
+import { combineMatch, pageIsDescending, type Pattern } from "../../core/matching.ts";
 import { RadiaError } from "../../core/errors.ts";
 import { problem, statusFor } from "../problem.ts";
 import { decodeCursor, encodeCursor, type Page } from "../../../sdk/ts/wire.ts";
@@ -208,8 +208,12 @@ export async function handleQuery(space: Space, req: Request, principal: string)
       // Offered only when the walk is one this cursor can describe. With `orderBy` the order is a
       // body field and a record-id cursor cannot express it, so no cursor is offered at all rather
       // than one that would resume in the wrong order.
-      nextCursor: records.length === limit && !pattern.orderBy?.length && records.length > 0
-        ? encodeCursor(page?.dir ?? "asc", records[records.length - 1].id)
+      // The direction comes from `pageIsDescending`, the same decision `pageClause` makes for the
+      // SQL. Resolving the default here instead (`page?.dir ?? "asc"`) would be a sixth site
+      // deciding it, which is what step 7 of plan-bounded-reads.md exists to stop: a cursor that
+      // says `a:` for a walk the storage ran descending sends the next page backwards.
+      nextCursor: records.length === limit && !pattern.orderBy?.length
+        ? encodeCursor(pageIsDescending(page) ? "desc" : "asc", records[records.length - 1].id)
         : undefined,
       ...describeReadScope(constraint, createdBy),
       ...(explain.length > 0 ? { explain } : {}),

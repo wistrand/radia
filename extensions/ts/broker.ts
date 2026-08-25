@@ -684,7 +684,10 @@ async function perform(
       if (call.op !== "query") {
         return { id: call.id, ok: true, result: (await ctx.client.readOne(p)) ?? null };
       }
-      return { id: call.id, ok: true, result: await ctx.client.queryOldest(p, Math.min(Number(limit) || 50, 500)) };
+      // The pattern is the JAIL's, so `order_by` is data. A directional read cannot be combined
+      // with it, so honour the pattern's own order when it has one rather than refusing the call.
+      const n = Math.min(Number(limit) || 50, 500);
+      return { id: call.id, ok: true, result: p.orderBy?.length ? await ctx.client.queryOrdered(p, n) : await ctx.client.queryOldest(p, n) };
     }
     throw new Error(`unsupported op '${call.op}': the broker serves put, query and read_one`);
   } catch (e) {

@@ -213,12 +213,25 @@ arguments after it. `unsafeAsPopulation(records, why)` is the way out, and
 `test/registrycost.test.ts` asserts the exact set of sites that use it. Do not reach for
 `as unknown as Population`: it loses the type and the ledger at once.
 
+**A call site that did not WRITE the pattern must not impose a direction on it.** `queryNewest` /
+`queryOldest` refuse a pattern carrying `order_by`, which is right where the pattern is a literal
+(the caller asked for two orders) and wrong at a RELAY, where `order_by` is data: the MCP adapter's
+`space_query` and the broker's query proposal both turned every ordered query from a model or from
+jailed code into an error. Dispatch to `queryOrdered` when `pattern.orderBy?.length`. Guard:
+`test/registrycost.test.ts` flags a directional read whose first argument is not an object literal.
+
 **A page cursor carries its direction (`nextCursor`, `a:`/`d:` + the id).** `after` is exclusive IN
 THE DIRECTION OF THE READ, so a caller that walked page one `desc` and page two without repeating
 `dir` got records from BEFORE page one, silently, with the walk never terminating and both requests
 individually valid. Send `nextCursor` back as `cursor` and nothing else; `cursor` with `dir` or
-`after` is a 400. `/v0/ops/events` and `children` keep `nextAfter`, and the different name is the
-signal: that one is a forward-only position in a log, with no direction to get wrong.
+`after` is a 400, and in TypeScript `Page` is a union so the pair does not compile.
+`/v0/ops/events` and `children` keep `nextAfter`, and the different name is the signal: that one is
+a forward-only position in a log, with no direction to get wrong.
+
+**The direction default lives in `pageClause`; read it back with `pageIsDescending`.** Resolving it
+again at a call site is the same defect whether written as a comparison (`page.dir === "desc"`) or
+as a default (`page?.dir ?? "asc"`), and the second shape got into the query handler while the guard
+matched only the first. It builds the cursor, so a wrong answer sends the NEXT page backwards.
 
 **`readRegistry` builds the `Page`; a caller passes it through and never names a direction.** The
 contract used to be prose ("must return records NEWEST-FIRST") and five call sites paged ascending

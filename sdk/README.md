@@ -40,11 +40,16 @@ how a re-saved procedure kept resolving to a stale version and a re-published to
 carrying `order_by`, which already sets the order (the space refuses a direction combined with it,
 and the directional calls throw locally rather than letting you find that as a 400).
 
+If you are RELAYING a pattern somebody else wrote (a tool call, jailed code), dispatch on it rather
+than picking a direction: `pattern.orderBy?.length ? queryOrdered(...) : queryNewest(...)`. A
+direction is an assumption, and it is not yours to make about a pattern you did not write.
+
 `readOne` returns the oldest matching record. Use `readNewest` for registries, versions and other
 successor-based data. `readNewest` uses the query operation and therefore requires a query grant.
 
 **Paging.** Send `nextCursor` back as `cursor` and nothing else: it carries the direction of the
-walk, so page two cannot run the other way. `cursor` with `dir` or `after` is a 400. An `order_by`
+walk, so page two cannot run the other way. `cursor` with `dir` or `after` is a 400, and in
+TypeScript `Page` is a union so that pair does not compile. An `order_by`
 read is offered no cursor at all, since a record-id keyset cannot express that order. TypeScript's
 `queryAll` returns a `Population`, the brand `activeByKey` / `newestByKey` / `activeSet` require, so
 a latest-wins projection over a page does not compile; Python has no such check, which is why

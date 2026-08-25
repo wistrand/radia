@@ -78,7 +78,7 @@ export const TOOLS: McpTool[] = [
   },
   {
     name: "space_query",
-    description: "Read records matching a pattern. Read-only. It does not claim anything.",
+    description: "Read records matching a pattern. Read-only. It does not claim anything. Without order_by, records come back in ascending record-id order, so a limit gives you the OLDEST matches and never the newest: this is the wrong tool for \"the most recent X\". Narrow the match, or order_by a sortable path.",
     inputSchema: {
       type: "object",
       properties: { kind: KIND, match: MATCH, orderBy: ORDER_BY, limit: { type: "number", description: "Default 50." } },

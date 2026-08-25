@@ -176,17 +176,17 @@ export interface Pattern {
  * a total, stable order, which is all pagination needs, and is exactly what an offset cannot give
  * while the space is being written to.
  */
-export interface Page {
-  after?: Ulid;
-  dir?: "asc" | "desc"; // default "asc"
+export type Page =
+  /** A FIRST page, or a resume from a watermark the caller stores itself. */
+  | { after?: Ulid; dir?: "asc" | "desc"; cursor?: never }
   /**
-   * A cursor from a previous page's `nextCursor`. It CARRIES THE DIRECTION, so it is an
-   * alternative to `after` + `dir` rather than an addition to them: sending either alongside it is
-   * a 400, because the only thing that could mean is a walk changing direction half way through,
-   * which re-reads records it already returned and skips ones it never did.
+   * A CONTINUATION. The cursor carries the direction, so it is an alternative to `after` + `dir`
+   * and never an addition: the union makes the pair unrepresentable in TypeScript, and the server
+   * refuses it with a 400 for every other client. Either resolution of that pair is a walk that
+   * changes direction half way through, re-reading records it already returned and skipping ones
+   * it never did.
    */
-  cursor?: Cursor;
-}
+  | { cursor: Cursor; after?: never; dir?: never };
 
 /**
  * An opaque page cursor. Treat it as a token to echo back; the encoding below is an implementation
