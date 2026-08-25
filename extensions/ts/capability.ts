@@ -69,7 +69,7 @@ export async function publishCapability(client: RadiaClient, def: ToolDef, provi
     // Narrowed to THIS provider: another worker's advertisement of the same name must not read as
     // "unchanged, nothing to say" and suppress this one.
     const match = provider ? { tool, provider } : { tool };
-    const existing = await client.query({ kind: CAPABILITY, match }, 1, { dir: "desc" });
+    const existing = await client.queryNewest({ kind: CAPABILITY, match }, 1);
     const current = existing[0]?.body as (CapabilityBody & { retired?: boolean }) | undefined;
     if (current?.retired) {
       // REVIVAL. Re-publishing an unchanged definition after a retirement replays the original write

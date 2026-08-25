@@ -96,7 +96,7 @@ async function narrate(
   const actorName = displayName(actor);
 
   // Already narrated. A redelivery, and the world has moved on since: leave it alone and ack.
-  const already = await client.query({ kind: "event", match: { worldId, causedBy: command.id } }, 1);
+  const already = await client.queryOldest({ kind: "event", match: { worldId, causedBy: command.id } }, 1);
   if (already.length > 0) {
     log?.(`[narrator] ${command.id.slice(-6)} was already narrated; acking without writing`);
     return;
@@ -211,7 +211,7 @@ async function cueNpcs(
 ): Promise<void> {
   if (audible.length === 0) return;
   const rooms = new Set(audible.map((a) => a.roomId));
-  const npcs = (await client.query({ kind: "npc", match: { worldId } }, 200))
+  const npcs = (await client.queryOldest({ kind: "npc", match: { worldId } }, 200))
     .map((r) => r.body as NpcBody)
     .filter((npc) => rooms.has(npc.roomId));
   if (npcs.length === 0) return;
@@ -239,7 +239,7 @@ async function cueNpcs(
 
 /** Where this actor is, or null for somebody the world has never seen. */
 async function locate(client: RadiaClient, worldId: string, actor: string): Promise<string | null> {
-  const rows = await client.query({ kind: "presence", match: { worldId, actor } }, 1, { dir: "desc" });
+  const rows = await client.queryNewest({ kind: "presence", match: { worldId, actor } }, 1);
   return rows.length ? (rows[0].body as PresenceBody).roomId : null;
 }
 
@@ -252,7 +252,7 @@ async function placeNewcomer(
   command: RadiaRecord,
   broadcast: (inRoom: string, verb: string, text: string) => Promise<void>,
 ): Promise<string> {
-  const world = (await client.query({ kind: "world", match: { worldId } }, 1, { dir: "desc" }))[0];
+  const world = (await client.queryNewest({ kind: "world", match: { worldId } }, 1))[0];
   const roomId = (world?.body as { startRoom?: string })?.startRoom ?? "gate";
   await client.put({
     kind: "presence",
@@ -266,14 +266,14 @@ async function placeNewcomer(
 async function readRoom(client: RadiaClient, worldId: string, roomId: string): Promise<RoomBody | null> {
   // A `query` rather than `readOne`, deliberately: `readOne` is a separate coordination verb with
   // its own grant, and the narrator holds `room: query` and nothing more.
-  const rows = await client.query({ kind: "room", match: { worldId, roomId } }, 1, { dir: "desc" });
+  const rows = await client.queryNewest({ kind: "room", match: { worldId, roomId } }, 1);
   return rows.length ? rows[0].body as RoomBody : null;
 }
 
 /** The room as a player sees it. */
 async function describe(client: RadiaClient, worldId: string, room: RoomBody, actor: string): Promise<string> {
   const { here, complete } = await occupantsOf(client, worldId, room.roomId, actor);
-  const npcs = (await client.query({ kind: "npc", match: { worldId, roomId: room.roomId } }, 50))
+  const npcs = (await client.queryOldest({ kind: "npc", match: { worldId, roomId: room.roomId } }, 50))
     .map((r) => r.body as NpcBody);
   const exits = Object.keys(room.exits);
   return [
@@ -302,7 +302,7 @@ async function occupantsOf(
   actor: string,
 ): Promise<{ here: string[]; complete: boolean }> {
   const view = await readRegistry<PresenceBody>(
-    (limit, after) => client.query({ kind: "presence", match: { worldId } }, limit, { dir: "desc", after }),
+    (page) => client.queryPage({ kind: "presence", match: { worldId } }, page.limit, page).then((r) => r.records),
     (b) => `${b.worldId}\n${b.actor}`,
   );
   const here = [...view.entries.values()]

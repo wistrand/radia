@@ -266,7 +266,7 @@ async function runWave(n: number): Promise<Stats> {
   async function audit(): Promise<void> {
     let last = 0;
     while (!ac.signal.aborted) {
-      const results = await auditor.query({ kind: "stress_result", match: { wave } }, 1000);
+      const results = await auditor.queryOldest({ kind: "stress_result", match: { wave } }, 1000);
       // One summary per decade of results, not one jump to the current count. That keeps a steady
       // trickle of a third kind while the tasks churn (and content-keyed, so a re-poll never
       // duplicates).

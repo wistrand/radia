@@ -33,7 +33,7 @@ let running = true;
 
 /** Where this player is, from `presence` and never from anything this process remembers. */
 async function locate(): Promise<string | null> {
-  const rows = await client.query({ kind: "presence", match: { worldId, actor: me } }, 1, { dir: "desc" });
+  const rows = await client.queryNewest({ kind: "presence", match: { worldId, actor: me } }, 1);
   return rows.length ? (rows[0].body as { roomId: string }).roomId : null;
 }
 

@@ -353,7 +353,7 @@ function markFleet(admin: RadiaClient, fleetId: string, retired = false): Promis
  *  Ages come from `createdAt`, which is the DATABASE clock; the comparison is against this
  *  process's, which is the one place this file trusts the two to be roughly in step. */
 async function liveFleets(admin: RadiaClient, exclude: string): Promise<number> {
-  const rows = await admin.query({ kind: FLEET_KIND }, 200, { dir: "desc" });
+  const rows = await admin.queryNewest({ kind: FLEET_KIND }, 200);
   const seen = new Set<string>();
   let live = 0;
   for (const r of rows) {

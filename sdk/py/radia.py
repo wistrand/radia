@@ -296,6 +296,25 @@ class RadiaClient:
         self.put({"kind": KIND_DEF, "body": definition}, idempotency_key=kind_def_key(definition))
         return {"kind": definition["kind"]}
 
+    def registry(self, kind: str, match: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """The CURRENT SET of a keyed registry kind: newest per key, retirements dropped, projected
+        by the SERVER from the key the kind declares.
+
+        This is the one correct way to ask that question from Python. There is no projection helper
+        in this SDK, so the alternative was hand-rolling latest-wins over ``query_all``, which is the
+        shape no guard can see: the same hand-roll in the CLI got the direction, the boundedness and
+        the ordering wrong at once (agent_docs/plan-bounded-reads.md).
+
+        Returns ``{entries, complete, scanned}``, and ``scope`` when a grant narrowed the read.
+        ``complete: False`` means the walk was capped, so the set is a prefix: treat it as a reason
+        to refuse widening, never as a full picture. Use :meth:`query_all` instead when you must SEE
+        a retirement; this answers what is in force.
+        """
+        body: Dict[str, Any] = {"kind": kind}
+        if match:
+            body["match"] = match
+        return self._req("POST", "/v0/records/registry", body)
+
     def query_all(self, pattern: Dict[str, Any], max_pages: int = 40) -> List[Dict[str, Any]]:
         """Every record matching ``pattern``, newest-first, paged to EXHAUSTION.
 
@@ -308,13 +327,18 @@ class RadiaClient:
         projecting a registry cannot tell a truncated answer from a complete one.
         """
         out: List[Dict[str, Any]] = []
-        after: Optional[str] = None
+        # Walks by CURSOR rather than pairing ``after`` with a ``dir`` it has to remember: the
+        # direction rides in the cursor, so a page cannot come back the other way.
+        cursor: Optional[str] = None
         for _ in range(max_pages):
-            rows = self.query(pattern, limit=500, after=after, dir="desc")
+            if cursor is None:
+                rows, next_cursor, _scope = self.query_page(pattern, limit=500, dir="desc")
+            else:
+                rows, next_cursor, _scope = self.query_page(pattern, limit=500, cursor=cursor)
             out.extend(rows)
-            if len(rows) < 500:
+            if not next_cursor:
                 return out
-            after = rows[-1]["id"]
+            cursor = next_cursor
         raise RadiaError(
             0,
             "registry_incomplete",
@@ -383,11 +407,17 @@ class RadiaClient:
             hdrs["X-Radia-Meta"] = encoded
         if parent_ids:
             hdrs["X-Radia-Parent-Ids"] = ",".join(parent_ids)
+        if isinstance(taint, bool):
+            # The old signature took a boolean and sent "true", which the server has refused since
+            # taint became a closed label set: every such call was already failing `invalid_taint`.
+            # Named here rather than left to `",".join(True)`, whose TypeError says nothing about
+            # what to pass instead.
+            raise ValueError(
+                "taint is a list of labels (file, net, foreign), not a boolean. "
+                "`taint=True` sent the label \"true\", which the space refuses; pass e.g. taint=[\"net\"]."
+            )
         if taint:
-            # LABELS, comma-separated. This sent the string "true" until 2026-08-22, which the
-            # server has refused since taint stopped being a boolean: `normalizeTaint` rejects an
-            # unknown label, so every Python caller raising taint got `invalid_taint`. The TS client
-            # carried the migration in a comment and this side was never updated.
+            # LABELS, comma-separated, which is what the header carries.
             hdrs["X-Radia-Taint"] = ",".join(taint)
         if idempotency_key:
             hdrs["Idempotency-Key"] = idempotency_key
@@ -605,17 +635,23 @@ class RadiaClient:
         is a ``query``, not a ``read_one``, so a principal holding only ``read_one`` on the kind is
         refused. Ordering is a query.
         """
-        rows = self.query(pattern, limit=1, dir="desc")
+        rows = self.query_newest(pattern, limit=1)
         return rows[0] if rows else None
 
-    def query(
-        self,
-        pattern: Dict[str, Any],
-        limit: int = 100,
-        after: Optional[str] = None,
-        dir: str = "asc",
-    ) -> List[Dict[str, Any]]:
-        return self.query_page(pattern, limit, after, dir)[0]
+    def query_newest(self, pattern: Dict[str, Any], limit: int = 100) -> List[Dict[str, Any]]:
+        """The NEWEST ``limit`` records matching ``pattern``. A PAGE, named as one.
+
+        There is no bare ``query(pattern, limit)`` any more, and its absence is the point: it read
+        the OLDEST matches, which is almost never what a caller with a limit wants, and said nothing
+        about that at the call site. For "the current set" use ``registry`` or ``query_all``, which
+        exhaust; a page can only ever be a page.
+        """
+        return self.query_page(pattern, limit, dir="desc")[0]
+
+    def query_oldest(self, pattern: Dict[str, Any], limit: int = 100) -> List[Dict[str, Any]]:
+        """The OLDEST ``limit`` records matching ``pattern``. The old default, now asked for on
+        purpose: right for a claim-ordered read or a replay, wrong for anything with successors."""
+        return self.query_page(pattern, limit, dir="asc")[0]
 
     def query_page(
         self,
@@ -623,29 +659,38 @@ class RadiaClient:
         limit: int = 100,
         after: Optional[str] = None,
         dir: str = "asc",
+        cursor: Optional[str] = None,
     ) -> Tuple[List[Dict[str, Any]], Optional[str], Optional[Dict[str, Any]]]:
-        """One page, the cursor for the next, and the read's scope: ``(records, next_after, scope)``.
+        """One page, the cursor for the next, and the read's scope: ``(records, next_cursor, scope)``.
 
         ``scope`` is present only when a grant NARROWED this read (``{narrowedBy, ownRecordsOnly,
         note}``) and is ``None`` otherwise. Dropping it, as this method used to, leaves a scoped
         caller unable to tell its own slice from the whole space — the failure the server added the
         field to prevent, since a narrowed answer is shaped exactly like a complete one.
 
-        ``after``/``dir`` are KEYSET pagination over record id: a cursor, not an offset, so a
-        page stays correct while records are being written. Records come back in ASCENDING id
-        order by default, which means a plain ``limit`` gives the OLDEST matches; pass
-        ``dir="desc"`` for the newest. A cursor is defined for that natural order only: combining
-        it with ``order_by`` is rejected, since a keyset over a body field would need the whole
-        sort key. ``next_after`` is ``None`` on the last page.
+        FEED ``next_cursor`` BACK AS ``cursor``, not as ``after``. It carries the direction of the
+        walk, so the second page cannot silently run the other way; passing it alongside ``after``
+        or ``dir`` is a 400 rather than a guess. ``next_cursor`` is ``None`` on the last page.
+
+        ``after``/``dir`` remain for a FIRST page, or for a caller resuming from a watermark it
+        stores itself. Both are keyset over record id, not an offset, so a page stays correct while
+        records are being written. A cursor is defined for the natural id order only: combining
+        either with ``order_by`` is rejected, since a keyset over a body field would need the whole
+        sort key, and no cursor is offered for such a read.
         """
         payload = dict(pattern)
         payload["limit"] = limit
-        if after is not None:
-            payload["after"] = after
-        if dir != "asc":
-            payload["dir"] = dir
+        if cursor is not None:
+            if after is not None or dir != "asc":
+                raise ValueError("cursor already carries the direction and position; pass it alone")
+            payload["cursor"] = cursor
+        else:
+            if after is not None:
+                payload["after"] = after
+            if dir != "asc":
+                payload["dir"] = dir
         r = self._req("POST", "/v0/records/query", payload)
-        return r["records"], r.get("nextAfter"), r.get("scope")
+        return r["records"], r.get("nextCursor"), r.get("scope")
 
     def get_record(self, record_id: str) -> Optional[Dict[str, Any]]:
         try:

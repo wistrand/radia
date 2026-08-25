@@ -508,10 +508,18 @@ await adoptProcedures();
  * where the code would actually run.
  */
 async function lookupProcedure(c: RadiaClient, name: string, conversationId?: string) {
-  const rows = await c.query({ kind: "procedure", match: { name, conversationId: conversationId ?? "" } }, 50);
-  // `newestByKey`, not `activeByKey`: this caller must SEE a retirement to report it, where the
-  // chat's tool list wants it already filtered out. Same projection, two needs.
-  const latest = newestByKey<{ name?: string }>(rows, (b) => b?.name).get(name);
+  // NARROWED, then newest-1: the match names one procedure in one conversation, so the answer is a
+  // single record and reading its whole history to discard all but one buys nothing. `readNewest`
+  // is that read (agent_docs/plan-bounded-reads.md, strategy 3), and it is O(1) where the fix
+  // before it was O(history of this name).
+  //
+  // Not a bounded PAGE, which is the shape that was wrong here: `query` with a limit and no `dir`
+  // returns the OLDEST matches, so a procedure re-saved past the limit resolved to a stale version
+  // while looking correct, and 51 saves answered with the 50th.
+  //
+  // A RETIREMENT is returned rather than filtered: this caller must see one to report it, where the
+  // chat's tool list wants it already gone.
+  const latest = await c.readNewest({ kind: "procedure", match: { name, conversationId: conversationId ?? "" } });
   if (!latest) return null;
   // The RECORD, not just its body: a caller has to be able to name the exact version it used.
   // Re-saving a name is a successor, so "the procedure called X" is not a stable referent; only
@@ -1445,7 +1453,13 @@ async function readProcedure(rec: RadiaRecord, c: RadiaClient) {
   if (!name) {
     return toolResult(callId, b, answer("read_procedure needs a `name`", { ok: false, taint: [] }));
   }
-  const rows = await c.query({ kind: "procedure", match: { name, conversationId: b.conversationId ?? "" } }, 50);
+  // EXHAUSTIVE here, and `lookupProcedure` is narrowed-then-newest, because the two sites ask
+  // different questions. That one wants the current source, which is one record. This one also
+  // answers `versions`, which is a question about the whole history, so the history is what it has
+  // to read (agent_docs/plan-bounded-reads.md: match the strategy to the question, and a count of
+  // versions is a population). Paged to exhaustion rather than bounded: a bounded read here
+  // answers with the OLDEST versions and undercounts.
+  const rows = await c.queryAll({ kind: "procedure", match: { name, conversationId: b.conversationId ?? "" } });
   if (rows.length === 0) {
     return toolResult(callId, b, answer(`no procedure '${name}' saved in this conversation`, { ok: false, taint: [] }));
   }

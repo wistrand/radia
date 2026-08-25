@@ -121,7 +121,7 @@ export async function seedWorld(admin: RadiaClient): Promise<void> {
 export async function seedAmbient(admin: RadiaClient, delaySeconds = 5): Promise<string[]> {
   const started: string[] = [];
   for (const npc of NPCS) {
-    const existing = await admin.query({ kind: "npc_turn", match: { worldId: WORLD_ID, npc: npc.npc, trigger: "ambient" } }, 1);
+    const existing = await admin.queryOldest({ kind: "npc_turn", match: { worldId: WORLD_ID, npc: npc.npc, trigger: "ambient" } }, 1);
     if (existing.length > 0) continue;
     await admin.put({
       kind: "npc_turn",

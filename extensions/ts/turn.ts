@@ -247,11 +247,7 @@ export async function runTurnWorker(
    * `deadlineAt` is a record field rather than a body one.
    */
   const currentCall = async (conversationId: string) => {
-    const rows = await client.query(
-      { kind: k.llmCall, match: { conversationId, tier: { $exists: false } } },
-      1,
-      { dir: "desc" },
-    );
+    const rows = await client.queryNewest({ kind: k.llmCall, match: { conversationId, tier: { $exists: false } } }, 1);
     const body = rows[0]?.body as { tools?: unknown[]; turnAt?: number } | undefined;
     return { tools: body?.tools ?? [], turnAt: body?.turnAt, deadlineAt: rows[0]?.deadlineAt, seedId: rows[0]?.id };
   };
@@ -402,7 +398,7 @@ export async function runTurnWorker(
   const seen = new Set<string>();
 
   const sweep = async (): Promise<void> => {
-    const rows = await client.query({ kind: k.message }, sweepSize, { dir: "desc" });
+    const rows = await client.queryNewest({ kind: k.message }, sweepSize);
     const now = await dbNow();
     // ONLY THE HEAD of each conversation. Anything older has been answered already, and a turn is
     // live only at its head. Without this a boot reconcile walks history and re-dispatches dead

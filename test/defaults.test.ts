@@ -337,7 +337,7 @@ Deno.test("cli: query reads NEWEST first, and a full page says so and hands over
   // 818 records `radia query interest --limit 1000` answered with 500 records from six hours
   // earlier and nothing saying either thing (plan-startup-ergonomics.md item 3). The console's
   // Records browser had the same bug and was fixed; the CLI kept it. The server already returned
-  // `nextAfter` and the explain notes: only the printing was missing.
+  // `nextCursor` and the explain notes: only the printing was missing.
   const { startServer } = await import("../src/server/http.ts");
   const { Space } = await import("../src/core/space.ts");
   const { SqliteAdapter } = await import("../src/storage/sqlite.ts");
@@ -362,19 +362,35 @@ Deno.test("cli: query reads NEWEST first, and a full page says so and hands over
     const out = lines.join("\n");
     lines.length = 0;
     assert(/\{"i":5\}[\s\S]*\{"i":4\}/.test(out), `newest first, or a limit answers with history: ${out}`);
-    assert(/more \(newest first\): radia query note .*--limit 2 --after \S+/.test(out), `a full page must hand over its cursor: ${out}`);
+    assert(/more \(newest first\): radia query note .*--limit 2 --cursor \S+/.test(out), `a full page must hand over its cursor: ${out}`);
     assert(/more \(newest first\): radia query note --url/.test(out), `…carrying the flags that shaped the page: ${out}`);
     assert(out.includes("PAGE and not a population"), `…and carry the explain note that says why: ${out}`);
 
     // The cursor continues the page it came from, and --oldest is the way back to the old order.
-    const cursor = out.match(/--after (\S+)/)?.[1];
+    const cursor = out.match(/--cursor (\S+)/)?.[1];
     assert(cursor, "no cursor to follow");
-    assertEquals(await runCli("query", ["note", "--limit", "2", "--after", cursor!, "--url", url]), 0);
+    assert(cursor!.startsWith("d:"), `a cursor carries the direction it was produced in: ${cursor}`);
+    assertEquals(await runCli("query", ["note", "--limit", "2", "--cursor", cursor!, "--url", url]), 0);
     assert(/\{"i":3\}[\s\S]*\{"i":2\}/.test(lines.join("\n")), `the cursor must continue, not restart: ${lines.join("\n")}`);
     lines.length = 0;
 
     assertEquals(await runCli("query", ["note", "--limit", "2", "--oldest", "--url", url]), 0);
-    assert(/\{"i":1\}[\s\S]*\{"i":2\}/.test(lines.join("\n")), `--oldest must restore ascending id order: ${lines.join("\n")}`);
+    const oldest = lines.join("\n");
+    lines.length = 0;
+    assert(/\{"i":1\}[\s\S]*\{"i":2\}/.test(oldest), `--oldest must restore ascending id order: ${oldest}`);
+
+    // THE DIRECTION RIDES IN THE CURSOR. The continuation does not repeat `--oldest`, and the walk
+    // still runs oldest-first: before this the flag had to be re-carried by hand at every hop, and
+    // dropping it silently turned page two around, re-reading records page one already showed.
+    const asc = oldest.match(/--cursor (\S+)/)?.[1];
+    assert(asc?.startsWith("a:"), `an ascending walk hands over an ascending cursor: ${oldest}`);
+    assert(!/more \(oldest first\).*--oldest/.test(oldest), `the flag is in the cursor, not the command: ${oldest}`);
+    assertEquals(await runCli("query", ["note", "--limit", "2", "--cursor", asc!, "--url", url]), 0);
+    assert(/\{"i":3\}[\s\S]*\{"i":4\}/.test(lines.join("\n")), `the cursor must keep walking forward: ${lines.join("\n")}`);
+    lines.length = 0;
+
+    // Combining them is refused rather than resolved: either resolution is a walk that reverses.
+    assertEquals(await runCli("query", ["note", "--limit", "2", "--cursor", asc!, "--oldest", "--url", url]), 1);
     lines.length = 0;
 
     // A last page is not a page: no cursor, nothing to follow.

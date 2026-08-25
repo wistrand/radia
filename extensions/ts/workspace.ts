@@ -19,7 +19,7 @@
 // content-addressed artifact: bodies are bounded (Phase 0's record limit caps a manifest at roughly
 // six thousand entries) and, unlike a body, an artifact can be erased.
 
-import type { RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
+import type { Cursor, RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
 
 /**
  * The media type a path implies, `text/plain` when unknown.
@@ -387,7 +387,7 @@ export async function forksOf(
 ): Promise<{ heads: (WorkspaceManifest & { id: string })[]; forked: boolean; versions: number }> {
   const match: Record<string, unknown> = { name };
   if (conversationId !== undefined) match.conversationId = conversationId;
-  const rows = await client.query({ kind: "workspace", match }, 500, { dir: "desc" });
+  const rows = await client.queryNewest({ kind: "workspace", match }, 500);
   const superseded = new Set(
     rows.map((r) => (r.body as unknown as WorkspaceManifest).basedOn).filter(Boolean) as string[],
   );
@@ -410,7 +410,7 @@ export async function readWorkspace(
 ): Promise<(WorkspaceManifest & { id: string }) | null> {
   const match: Record<string, unknown> = { name };
   if (conversationId !== undefined) match.conversationId = conversationId;
-  const rows = await client.query({ kind: "workspace", match }, 1, { dir: "desc" });
+  const rows = await client.queryNewest({ kind: "workspace", match }, 1);
   if (rows.length === 0) return null;
   return { id: rows[0].id, ...(rows[0].body as unknown as WorkspaceManifest) };
 }
@@ -450,17 +450,17 @@ async function readAllManifests(
   maxPages: number,
 ): Promise<{ all: RadiaRecord[]; complete: boolean }> {
   const all: RadiaRecord[] = [];
-  let after: string | undefined;
+  let cursor: Cursor | undefined;
   let complete = false;
   const PAGE = 500;
   for (let page = 0; page < maxPages; page++) {
-    const rows = await client.query({ kind: "workspace" }, PAGE, { dir: "desc", after });
-    all.push(...rows);
-    if (rows.length < PAGE) {
+    const r = await client.queryPage({ kind: "workspace" }, PAGE, cursor ? { cursor } : { dir: "desc" });
+    all.push(...r.records);
+    if (!r.nextCursor) {
       complete = true;
       break;
     }
-    after = rows[rows.length - 1].id;
+    cursor = r.nextCursor;
   }
   return { all, complete };
 }

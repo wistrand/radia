@@ -90,7 +90,7 @@ const worker = new Deno.Command(Deno.execPath(), {
 }).spawn();
 // It advertises on startup; wait for the record rather than guessing at a sleep.
 for (let i = 0; i < 100; i++) {
-  if ((await admin.query({ kind: "capability", match: { tool: "run_javascript" } }, 1)).length > 0) break;
+  if ((await admin.queryOldest({ kind: "capability", match: { tool: "run_javascript" } }, 1)).length > 0) break;
   await new Promise((r) => setTimeout(r, 200));
 }
 
@@ -269,7 +269,7 @@ check("a missing path is an error that LISTS what is there", Array.isArray(missi
 // it gets nothing it can use.
 const doomed = await toolCall("save_workspace", { name: "leaky", files: { "keep.py": "ok\n", "secret.txt": "OOPS\n" } }) as Record<string, unknown>;
 void doomed;
-const leaky = (await admin.query({ kind: "workspace", match: { name: "leaky" } }, 1, { dir: "desc" }))[0];
+const leaky = (await admin.queryNewest({ kind: "workspace", match: { name: "leaky" } }, 1))[0];
 const secret = (leaky.body as { files: { path: string; artifactId: string }[] }).files.find((f) => f.path === "secret.txt")!;
 await admin.shredArtifact(secret.artifactId, { acknowledgeShared: true, reason: "leaked" });
 const erased = await toolCall("read_workspace", { workspace: "leaky", path: "secret.txt" }) as Record<string, unknown>;
@@ -431,7 +431,7 @@ const toolsWorker = new Deno.Command(Deno.execPath(), {
 }).spawn();
 try {
   for (let i = 0; i < 100; i++) {
-    if ((await admin.query({ kind: "capability", match: { tool: "edit_workspace" } }, 1)).length > 0) break;
+    if ((await admin.queryOldest({ kind: "capability", match: { tool: "edit_workspace" } }, 1)).length > 0) break;
     await new Promise((r) => setTimeout(r, 200));
   }
   const wConv = (await admin.put({ kind: "conversation", body: { title: "worker" } })).id;

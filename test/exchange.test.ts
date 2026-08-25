@@ -117,12 +117,12 @@ Deno.test("[exchange] the token a launcher hands to a child is the LIVE one", as
 
     // The child: a plain client with no way back to the durable half, exactly like the tools worker.
     const child = new RadiaClient(s.base, { token: parent.bearerToken });
-    const found = await child.query({ kind: "task", match: { tag: "recovered" } }, 5);
+    const found = await child.queryOldest({ kind: "task", match: { tag: "recovered" } }, 5);
     assertEquals(found.length, 1, "the handed-over token has to work in a process that cannot mint");
 
     // And the stale one still does not, which is what makes the assertion above mean something.
     const stale = new RadiaClient(s.base, { token: runToken });
-    await assertRejects(() => stale.query({ kind: "task" }, 1), RadiaClientError);
+    await assertRejects(() => stale.queryOldest({ kind: "task" }, 1), RadiaClientError);
   } finally {
     await s.close();
   }

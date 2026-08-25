@@ -17,7 +17,13 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { activeByKey, grantKey } from "../src/core/registry.ts";
+import { unsafeAsPopulation } from "../sdk/ts/client.ts";
 import { kindDefKey } from "../sdk/ts/wire.ts";
+
+/** A unit test for a PROJECTION builds the whole population by hand; that is what makes it a unit
+ *  test. One helper rather than an escape per assertion, so the ledger in registrycost.test.ts
+ *  counts this file once and a real bounded read here would still stand out. */
+const pop = (records: RadiaRecord[]) => unsafeAsPopulation(records, "literal, complete set built by the test");
 import { contentKey } from "../sdk/ts/registry.ts";
 import type { RadiaRecord } from "../src/storage/adapter.ts";
 
@@ -48,21 +54,20 @@ Deno.test("registry: a retirement and its revival in the same millisecond follow
   // Within one process ids are strictly increasing even inside a millisecond (monotonic ULIDs), so
   // this pair IS ordered and the revival must take. This is the case that makes "prefer the
   // retirement on a same-millisecond tie" the wrong rule.
-  const revived = activeByKey([rec(MS_A, "AAA", REVOKED), rec(MS_A, "AAB", GRANT)], grantKey);
+  const revived = activeByKey(pop([rec(MS_A, "AAA", REVOKED), rec(MS_A, "AAB", GRANT)]), grantKey);
   assertEquals(revived.size, 1, "a higher id in the same millisecond is still newer");
 
-  const revoked = activeByKey([rec(MS_A, "AAA", GRANT), rec(MS_A, "AAB", REVOKED)], grantKey);
+  const revoked = activeByKey(pop([rec(MS_A, "AAA", GRANT), rec(MS_A, "AAB", REVOKED)]), grantKey);
   assertEquals(revoked.size, 0);
 });
 
 Deno.test("registry: a genuinely later re-declaration revives a retired key", () => {
   // The point of retirement-as-a-successor is that there is no un-retire path to call: you write
   // the thing again.
-  const revived = activeByKey([rec(MS_A, "AAA", REVOKED), rec(MS_B, "AAA", GRANT)], grantKey);
+  const revived = activeByKey(pop([rec(MS_A, "AAA", REVOKED), rec(MS_B, "AAA", GRANT)]), grantKey);
   assertEquals(revived.size, 1);
 
-  const seq = activeByKey(
-    [rec("01K0000000", "A", GRANT), rec("01K0000001", "A", REVOKED), rec("01K0000002", "A", GRANT)],
+  const seq = activeByKey(pop([rec("01K0000000", "A", GRANT), rec("01K0000001", "A", REVOKED), rec("01K0000002", "A", GRANT)]),
     grantKey,
   );
   assertEquals(seq.size, 1, "grant, revoke, re-grant");
@@ -72,15 +77,15 @@ Deno.test("registry: retirement is per KEY, not across the registry", () => {
   const other = { principal: "agent:w", kind: "note", operations: ["query"] };
   // Revoking one grant must not take an unrelated one with it. That is the same mistake as keying
   // a grant on (principal, kind) instead of on its whole content.
-  const view = activeByKey([rec(MS_A, "AAA", REVOKED), rec(MS_A, "ZZZ", other)], grantKey);
+  const view = activeByKey(pop([rec(MS_A, "AAA", REVOKED), rec(MS_A, "ZZZ", other)]), grantKey);
   assertEquals([...view.values()].length, 1);
   assertEquals((view.values().next().value!.body as { kind: string }).kind, "note");
 });
 
 Deno.test("registry: the newest record decides, whatever order the rows arrive in", () => {
-  const forward = activeByKey([rec(MS_A, "A", GRANT), rec(MS_B, "A", REVOKED)], grantKey);
+  const forward = activeByKey(pop([rec(MS_A, "A", GRANT), rec(MS_B, "A", REVOKED)]), grantKey);
   assertEquals(forward.size, 0, "a later revocation wins");
-  const shuffled = activeByKey([rec(MS_B, "A", REVOKED), rec(MS_A, "A", GRANT)], grantKey);
+  const shuffled = activeByKey(pop([rec(MS_B, "A", REVOKED), rec(MS_A, "A", GRANT)]), grantKey);
   assertEquals(shuffled.size, 0, "…and still wins when the older record is processed last");
 });
 
@@ -92,27 +97,27 @@ Deno.test("registry: a revocation from a slow-clocked instance still wins (the D
   // which is what made this worse than the same-millisecond tie below.
   const granted = rec("01K0000009", "A", GRANT, "2026-07-26T00:00:01.000Z"); // instance A, clock ahead
   const revoked = rec("01K0000000", "B", REVOKED, "2026-07-26T00:00:02.000Z"); // instance B, later by the DB
-  assertEquals(activeByKey([granted, revoked], grantKey).size, 0, "the later DB timestamp wins");
-  assertEquals(activeByKey([revoked, granted], grantKey).size, 0, "…in either arrival order");
+  assertEquals(activeByKey(pop([granted, revoked]), grantKey).size, 0, "the later DB timestamp wins");
+  assertEquals(activeByKey(pop([revoked, granted]), grantKey).size, 0, "…in either arrival order");
 
   // And the converse, so this is an ordering rule and not a bias toward retirement: a re-grant
   // that is later by the DB clock revives, even though its id is lower.
   const regranted = rec("01K0000000", "C", GRANT, "2026-07-26T00:00:03.000Z");
-  assertEquals(activeByKey([granted, revoked, regranted], grantKey).size, 1, "a later re-grant revives");
+  assertEquals(activeByKey(pop([granted, revoked, regranted]), grantKey).size, 1, "a later re-grant revives");
 });
 
 Deno.test("registry: inside one DB millisecond the ids still decide", () => {
   // The tie-break has to stay the id: within a process ULIDs are strictly increasing, and
   // retire-then-revive lands in one millisecond routinely. Same `created_at`, ids ordered.
   const at = "2026-07-26T00:00:05.000Z";
-  const revived = activeByKey([rec(MS_A, "AAA", REVOKED, at), rec(MS_A, "AAB", GRANT, at)], grantKey);
+  const revived = activeByKey(pop([rec(MS_A, "AAA", REVOKED, at), rec(MS_A, "AAB", GRANT, at)]), grantKey);
   assertEquals(revived.size, 1, "a higher id in the same DB millisecond is still newer");
 
   // A record written before this build stamped nothing here would fall back to the id as well;
   // missing timestamps must not make a projection throw or silently prefer the older record.
   const noStamp = (r: RadiaRecord) => ({ ...r, runtimeMeta: undefined }) as unknown as RadiaRecord;
   assertEquals(
-    activeByKey([noStamp(rec(MS_A, "AAA", GRANT)), noStamp(rec(MS_B, "AAA", REVOKED))], grantKey).size,
+    activeByKey(pop([noStamp(rec(MS_A, "AAA", GRANT)), noStamp(rec(MS_B, "AAA", REVOKED))]), grantKey).size,
     0,
     "with no timestamps at all the id order still holds",
   );
@@ -126,7 +131,7 @@ Deno.test("registry: a grant whose scoping field this build does not understand 
   // so an unrecognized shape must identify nothing and drop out of every projection.
   const legacy = { principal: "agent:w", kind: "message", operations: ["query"], template: { conversationId: "c1" } };
   assertEquals(grantKey(legacy), undefined, "a legacy-shaped grant must not produce a key");
-  assertEquals(activeByKey([rec("0000000000", "A", legacy)], grantKey).size, 0, "and must not project");
+  assertEquals(activeByKey(pop([rec("0000000000", "A", legacy)]), grantKey).size, 0, "and must not project");
 
   // The version tag keeps new keys out of the old key-space. Without it the same pattern VALUE
   // produced the same key under both field names, so re-declaring a grant against a space that

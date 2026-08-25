@@ -21,7 +21,7 @@ interface ResultBody {
 export async function aggregatorLoop(client: RadiaClient, signal?: AbortSignal, log?: (m: string) => void): Promise<void> {
   const done = new Set<string>();
   while (!signal?.aborted) {
-    const results = await client.query({ kind: "result" }, 500);
+    const results = await client.queryOldest({ kind: "result" }, 500);
     const byJob = new Map<string, RadiaRecord[]>();
     for (const r of results) {
       const jobId = (r.body as ResultBody).jobId;

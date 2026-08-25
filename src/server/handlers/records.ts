@@ -21,6 +21,7 @@ import type { PutRequest } from "../../core/record.ts";
 import { combineMatch, type Pattern } from "../../core/matching.ts";
 import { RadiaError } from "../../core/errors.ts";
 import { problem, statusFor } from "../problem.ts";
+import { decodeCursor, encodeCursor, type Page } from "../../../sdk/ts/wire.ts";
 
 async function readJson(req: Request): Promise<Record<string, unknown> | null> {
   try {
@@ -127,6 +128,33 @@ function describeReadScope(
   };
 }
 
+/**
+ * `POST /v0/records/registry`: the CURRENT SET of a keyed kind.
+ *
+ * Authorized exactly as a query, because that is what it is: the grant's pattern is ANDed in and an
+ * author scope applies, so a scoped caller sees the current set OF WHAT IT MAY READ. That is worth
+ * stating, because the answer looks absolute: `scope` rides along for the same reason the query's
+ * does, so a narrowed set is not mistaken for the whole registry.
+ */
+export async function handleRegistry(space: Space, req: Request, principal: string): Promise<Response> {
+  const j = await readJson(req);
+  if (!j || typeof j.kind !== "string") return problem(400, "invalid_pattern", "registry requires a kind");
+  if (j.match !== undefined && (typeof j.match !== "object" || j.match === null || Array.isArray(j.match))) {
+    return problem(400, "invalid_pattern", "match must be an object");
+  }
+  try {
+    const { constraint, createdBy } = await space.readAccess(principal, "query", j.kind);
+    const match = constraint
+      ? combineMatch(j.match as Record<string, unknown> | undefined, constraint)
+      : j.match as Record<string, unknown> | undefined;
+    const out = await space.registryOf(j.kind, match, createdBy ? { createdBy } : undefined);
+    return Response.json({ ...out, ...describeReadScope(constraint, createdBy) });
+  } catch (e) {
+    if (e instanceof RadiaError) return problem(statusFor(e.code, 400), e.code, e.message);
+    throw e;
+  }
+}
+
 export async function handleQuery(space: Space, req: Request, principal: string): Promise<Response> {
   const j = await readJson(req);
   if (!j) return problem(400, "invalid_body", "expected a JSON object");
@@ -147,9 +175,23 @@ export async function handleQuery(space: Space, req: Request, principal: string)
   if (j.dir !== undefined && j.dir !== "asc" && j.dir !== "desc") {
     return problem(400, "invalid_pattern", "dir must be 'asc' or 'desc'");
   }
-  const page = j.after !== undefined || j.dir !== undefined
-    ? { after: j.after as string | undefined, dir: j.dir as "asc" | "desc" | undefined }
-    : undefined;
+  // A cursor CARRIES its direction, so it replaces `after` + `dir` rather than joining them. The
+  // combination is refused instead of resolved, because either resolution is a walk that changes
+  // direction mid-way: it re-reads a page it already returned and skips one it never did.
+  let page: Page | undefined;
+  if (j.cursor !== undefined) {
+    if (typeof j.cursor !== "string") return problem(400, "invalid_pattern", "cursor must be a string");
+    if (j.dir !== undefined || j.after !== undefined) {
+      return problem(400, "invalid_pattern", "cursor already carries its direction and position; send cursor alone");
+    }
+    try {
+      page = decodeCursor(j.cursor);
+    } catch (e) {
+      return problem(400, "invalid_pattern", e instanceof Error ? e.message : "invalid cursor");
+    }
+  } else if (j.after !== undefined || j.dir !== undefined) {
+    page = { after: j.after as string | undefined, dir: j.dir as "asc" | "desc" | undefined };
+  }
   try {
     // Both halves of the read scope in one call. A self-scoped grant narrows the coordination
     // plane too, and asking for the pattern alone is how that gets forgotten.
@@ -163,7 +205,12 @@ export async function handleQuery(space: Space, req: Request, principal: string)
     const explain = j.explain === true ? space.explainQuery(pattern, records.length, limit, page) : [];
     return Response.json({
       records,
-      nextAfter: records.length === limit ? records[records.length - 1]?.id : undefined,
+      // Offered only when the walk is one this cursor can describe. With `orderBy` the order is a
+      // body field and a record-id cursor cannot express it, so no cursor is offered at all rather
+      // than one that would resume in the wrong order.
+      nextCursor: records.length === limit && !pattern.orderBy?.length && records.length > 0
+        ? encodeCursor(page?.dir ?? "asc", records[records.length - 1].id)
+        : undefined,
       ...describeReadScope(constraint, createdBy),
       ...(explain.length > 0 ? { explain } : {}),
     });

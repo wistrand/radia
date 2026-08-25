@@ -56,7 +56,7 @@ The one place the trade is stated whole; the sections below carry the mechanics.
   Lost: the BODY. Lineage over a swept parent reports fragments, v1 cannot answer "swept or never
   existed", and a swept record cannot parent new work (`parent_not_found`). What survives: the
   event residue (id, kind, `body_sha256`, every transition) — until the event horizon below.
-- **Registry compaction** (rides the verb).
+- **Registry compaction** (the verb, AND amortized per keyed kind since 2026-08-23).
   Won: projections whose read cost is the number of MEANINGS, not the number of writes.
   Lost: succession history of compacted registries (who republished, when, how often).
   Never lost: `grant`/`kind_def`/`signal`/`agent_definition` history, and the newest entry per
@@ -153,10 +153,20 @@ discipline.** Every `gcEveryWrites` record commits (default 1000; `0` disables),
 runs ONE small retention batch inline (`AMORTIZED_BATCH`, 256 rows) — the lazy-lease-expiry shape.
 No timer is involved, an idle space runs nothing and does not grow, and the cost lands on the
 principal generating the litter. Awaited rather than fire-and-forget, so the Nth writer pays a
-bounded few milliseconds and the behaviour is deterministic under test. Retention only: compaction
-walks whole registries, its litter grows per session not per write, and it stays with the verb. A
-live `gc` call restarts the amortized clock; a DRY one deliberately does not, or doctor's own
+bounded few milliseconds and the behaviour is deterministic under test. A live `gc` call restarts the amortized clock; a DRY one deliberately does not, or doctor's own
 backlog report would forever postpone the sweep it reports on.
+
+**COMPACTION IS AMORTIZED TOO, since 2026-08-23, on its own counter.** This paragraph used to end
+"compaction walks whole registries, its litter grows per session not per write, and it stays with
+the verb". The first two clauses are right and the conclusion did not follow: litter growing per
+SESSION is an argument against riding `gcEveryWrites`, not against automating it. So the trigger is
+per KIND (`compactEveryWritesPerKind`, default 200, `0` disables): only keyed kinds count, and the
+pass walks the one registry that just grew, so a space streaming an unkeyed kind never pays for a
+walk over somebody else's registry. Measured, it is not even a trade: 1,000 writes of a keyed kind
+took 177ms uncompacted and 77ms with the trigger on, because a 20-row table is cheaper to insert
+into than a 1,000-row one, and the reader went from 1.66ms to 0.07ms. Why it matters at all is
+[plan-registry-cost.md](plan-registry-cost.md): a registry read is linear in HISTORY, and only
+compaction makes it flat.
 
 **What it costs, measured** (in-process, 2026-08-06; the per-write counter itself is unmeasurable):
 

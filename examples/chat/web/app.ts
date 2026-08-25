@@ -233,10 +233,7 @@ async function start(): Promise<void> {
 /** Render whatever landed while this tab was asleep, immediately. The live view's own pass does the
  *  same thing on its next tick; this only removes the wait. */
 async function catchUp(): Promise<void> {
-  const rows = await client.query(
-    { kind: "message", match: { conversationId: thread.id, index: { $gt: thread.upToIndex } }, orderBy: [{ path: "index" }] },
-    50,
-  ).catch(() => []);
+  const rows = await client.queryOrdered({ kind: "message", match: { conversationId: thread.id, index: { $gt: thread.upToIndex } }, orderBy: [{ path: "index" }] }, 50).catch(() => []);
   const last = rows[rows.length - 1]?.body as { index?: number } | undefined;
   if (!rows.length || typeof last?.index !== "number") return;
   renderMessages(rows.map((r) => r.body as Parameters<typeof renderMessages>[0][number]));
@@ -403,10 +400,7 @@ async function refuseIfEncrypted(conversationId: string): Promise<void> {
  * drift apart in appearance. Ascending by `index`, which is what that path is declared sortable for.
  */
 async function renderHistory(conversationId: string): Promise<void> {
-  const rows = await client.query(
-    { kind: "message", match: { conversationId }, orderBy: [{ path: "index" }] },
-    500,
-  );
+  const rows = await client.queryOrdered({ kind: "message", match: { conversationId }, orderBy: [{ path: "index" }] }, 500);
   renderMessages(rows.map((r) => r.body as LiveMessage), "full", HOOKS);
   ui.write(ui.dim(`— ${rows.length} earlier record${rows.length === 1 ? "" : "s"} —\n`));
 }

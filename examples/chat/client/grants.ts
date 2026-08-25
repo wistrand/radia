@@ -78,7 +78,7 @@ async function selfExposure(
     // session's own records and reports the exposure as wider than it is.
     const runs = await admin.queryAll({ kind: "agent_run", match: { agent: subject } });
     const principals = new Set([subject, ...runs.map((r) => (r.body as { run?: string }).run).filter(Boolean) as string[]]);
-    const sample = await admin.query({ kind }, 100, { dir: "desc" });
+    const sample = await admin.queryNewest({ kind }, 100);
     return { mine: sample.filter((r) => principals.has(r.runtimeMeta.createdBy)).length, total: sample.length };
   } catch {
     return undefined; // cannot tell: say nothing rather than guess
@@ -95,9 +95,10 @@ export async function reviewGrantRequests(
   let pending;
   try {
     pending = activeByKey<RequestBody>(
-      // Newest-first: requests and their retirements accumulate, and an ascending page would
-      // eventually show only old, already-handled asks.
-      await session.query({ kind: "grant_request", match: { conversationId } }, 50, { dir: "desc" }),
+      // EXHAUSTIVE, not a newest-50 page. Requests and their retirements accumulate per
+      // conversation and there is no honest number to bound them with: a page drops the OLDEST
+      // keys wholesale, so the request left waiting longest is the first to disappear from review.
+      await session.queryAll({ kind: "grant_request", match: { conversationId } }),
       (b) => keyOf(b),
     );
   } catch {

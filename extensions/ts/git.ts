@@ -31,7 +31,7 @@
 // never touches it.
 
 import { RadiaClientError } from "../../sdk/ts/client.ts";
-import type { RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
+import type { Cursor, RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
 import { sha256Hex, validatePath, type WorkspaceManifest } from "./workspace.ts";
 
 /** Git's spelling for a directory entry. Note there is no leading zero in the OBJECT, whatever
@@ -566,16 +566,16 @@ async function collectVersions(
   const maxPages = opts.maxPages ?? 40;
   const PAGE = 500;
   const all: RadiaRecord[] = [];
-  let after: string | undefined;
+  let cursor: Cursor | undefined;
   let complete = false;
   for (let page = 0; page < maxPages; page++) {
-    const rows = await client.query({ kind: "workspace", match }, PAGE, { dir: "desc", after });
-    all.push(...rows);
-    if (rows.length < PAGE) {
+    const r = await client.queryPage({ kind: "workspace", match }, PAGE, cursor ? { cursor } : { dir: "desc" });
+    all.push(...r.records);
+    if (!r.nextCursor) {
       complete = true;
       break;
     }
-    after = rows[rows.length - 1].id;
+    cursor = r.nextCursor;
   }
   if (!complete) {
     throw new Error(

@@ -90,7 +90,7 @@ Deno.test("[promotion] a pin refuses an unpromoted digest on BOTH the write and 
     const second = await runner.take({ pattern: { kind: EXEC_REQUEST } });
     assertEquals(second, null, "a runner pinned to D1 must not claim a D2 request that exists");
     // The operator sees it, so the test cannot pass because the record was never written.
-    const all = await operator.query({ kind: EXEC_REQUEST, match: { workspace: D2 } }, 10);
+    const all = await operator.queryOldest({ kind: EXEC_REQUEST, match: { workspace: D2 } }, 10);
     assertEquals(all.length, 1);
   });
 });

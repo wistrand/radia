@@ -20,7 +20,7 @@
 //
 // No model and no API key: a tool_call is a record, so both runners can be driven directly.
 
-import { activeByKey, RadiaClient } from "../../sdk/ts/client.ts";
+import { activeByKey, type Population, RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { bootstrap, mintSession } from "./space/roles.ts";
@@ -84,15 +84,16 @@ async function startWorker(title: string, allowRun: string) {
   // Wait on the JS runner, which every host can serve: once it is up the boot probes have all run,
   // so the ABSENCE of the other one is a decision rather than a race.
   for (let i = 0; i < 150; i++) {
-    if ((await admin.query({ kind: "capability", match: { tool: "run_javascript" } }, 1)).length > 0) break;
+    if ((await admin.queryOldest({ kind: "capability", match: { tool: "run_javascript" } }, 1)).length > 0) break;
     await new Promise((r) => setTimeout(r, 200));
   }
   return { conv, proc };
 }
 
 /** tool -> its CURRENT description, latest-wins and retirement-aware. */
-// deno-lint-ignore no-explicit-any
-function descriptions(rows: any[]): Map<string, string> {
+// `Population`, not `RadiaRecord[]`: the obligation to have exhausted belongs to the CALLER, and
+// typing it here is what carries the rule across the function boundary the grep guard cannot see.
+function descriptions(rows: Population): Map<string, string> {
   const active = activeByKey<{ tool: string; def: { function: { description?: string } } }>(
     rows,
     (b) => b.tool,
@@ -164,7 +165,7 @@ check("…and no sandbox record claims a jail that failed its probe", !jails.inc
 // (its description names a sibling only where one is served), so the space holds more than one
 // record for that tool and "the last row I saw" is whichever way the page happened to be ordered.
 // That is the bounded-read-treated-as-a-population bug this codebase keeps rediscovering.
-const soloDesc = descriptions(await admin.query({ kind: "capability" }, 500, { dir: "desc" })).get("run_javascript") ?? "";
+const soloDesc = descriptions(await admin.queryAll({ kind: "capability" })).get("run_javascript") ?? "";
 check("…so the JS runner does not point at a tool nobody serves", !/run_python/.test(soloDesc));
 check("…and says this space runs one language", /only language|no Python here/i.test(soloDesc));
 
@@ -219,7 +220,7 @@ if (!haveBwrap) {
   // names exists: a description pointing at a tool that is not there yet is the failure mode, and a
   // description that does not yet mention one is merely incomplete.
   for (let i = 0; i < 150; i++) {
-    const now = descriptions(await admin.query({ kind: "capability" }, 500, { dir: "desc" }));
+    const now = descriptions(await admin.queryAll({ kind: "capability" }));
     if (now.has("run_python") && /run_python/.test(now.get("run_javascript") ?? "")) break;
     await new Promise((r) => setTimeout(r, 200));
   }
@@ -229,7 +230,7 @@ if (!haveBwrap) {
   // broken — `run_javascript` simply never mentioned that a sibling existed, and a model comparing
   // tools reads the opening clause, where "JavaScript" was one word ahead of four hundred about
   // save_as. Each must now name the other AND state what selects it, which is the language written.
-  const desc = descriptions(await admin.query({ kind: "capability" }, 500, { dir: "desc" }));
+  const desc = descriptions(await admin.queryAll({ kind: "capability" }));
   const jsDesc = desc.get("run_javascript") ?? "";
   const pyDesc = desc.get("run_python") ?? "";
   check("the JS runner names the Python one", /run_python/.test(jsDesc));
@@ -302,7 +303,7 @@ if (!haveBwrap) {
   // pass under the other.
   await call(both.conv, "run_python", { code: "print(2 + 2)", expect: { stdout_contains: "4" } });
   await call(both.conv, "run_javascript", { code: "console.log(2 + 2)", expect: { stdout_contains: "4" } });
-  const checks = await admin.query({ kind: "check", match: { conversationId: both.conv } }, 20, { dir: "desc" });
+  const checks = await admin.queryNewest({ kind: "check", match: { conversationId: both.conv } }, 20);
   const jailsNamed = new Set(checks.map((r) => (r.body as { sandbox?: string }).sandbox));
   check(
     "…and a check names the jail the verdict was reached in",
@@ -430,7 +431,7 @@ if (!haveBwrap) {
   check("…and the refusal says where a real run comes from", String(combined.output).includes("bind the tree to an agent"), String(combined.output).slice(-60));
 
   // The assertion the feature rests on: a rehearsal is not a run.
-  const notes = await admin.query({ kind: "note" }, 10);
+  const notes = await admin.queryOldest({ kind: "note" }, 10);
   check("…and NOTHING was written", notes.length === 0, `${notes.length} notes`);
   js.proc.kill();
   await js.proc.status;
@@ -484,7 +485,7 @@ if (!haveBwrap) {
   check("--require-confinement refuses to serve when nothing confines", done !== null && done.code !== 0, done ? `exit=${done.code}` : "still running after 20s: the flag was read and ignored");
   check("…and says what would fix it", /REFUSING to serve/.test(err) && /bubblewrap/.test(err), err.split("\n")[0]?.slice(0, 140));
   // It refuses EVERYTHING rather than declining one tool: a procedure is code execution too.
-  const served = await admin.query({ kind: "capability", match: { tool: "run_javascript" } }, 50);
+  const served = await admin.queryOldest({ kind: "capability", match: { tool: "run_javascript" } }, 50);
   check(
     "…and publishes no runner for that conversation",
     !served.some((r) => (r.body as { by?: string; conversationId?: string }).conversationId === conv),

@@ -27,7 +27,7 @@
 // a retired key revives it because that record is newer still. There is no un-retire path to
 // implement or to get wrong.
 
-import type { RadiaRecord } from "./wire.ts";
+import type { Page, RadiaRecord } from "./wire.ts";
 
 /** The body field that withdraws a registry entry. A convention honoured by the projections here,
  *  never by the matching layer. */
@@ -69,7 +69,7 @@ export function newer(a: RadiaRecord, b: RadiaRecord): boolean {
  * trusting the order the caller happened to read records in.
  */
 export function newestByKey<T = unknown>(
-  records: RadiaRecord[],
+  records: Population,
   keyOf: (body: T, record: RadiaRecord) => string | undefined,
 ): Map<string, RadiaRecord> {
   const out = new Map<string, RadiaRecord>();
@@ -93,7 +93,7 @@ export function newestByKey<T = unknown>(
  * same-millisecond cross-instance race is still decided by id) is stated there.
  */
 export function activeByKey<T = unknown>(
-  records: RadiaRecord[],
+  records: Population,
   keyOf: (body: T, record: RadiaRecord) => string | undefined,
 ): Map<string, RadiaRecord> {
   const newest = newestByKey(records, keyOf);
@@ -109,7 +109,7 @@ export function activeByKey<T = unknown>(
  * which is exactly what revoking a single grant must do.
  */
 export function activeSet<T = unknown>(
-  records: RadiaRecord[],
+  records: Population,
   keyOf: (body: T, record: RadiaRecord) => string | undefined,
 ): RadiaRecord[] {
   return [...activeByKey(records, keyOf).values()];
@@ -232,9 +232,45 @@ export interface RegistryView {
   scanned: number;
 }
 
+/**
+ * Records from a read that EXHAUSTED, or that said it could not.
+ *
+ * A brand rather than a comment, because the alternative is a rule: "a latest-wins projection needs
+ * the whole history", which three audits and a grep guard have caught being broken and which the
+ * type system can simply enforce. `activeByKey` / `newestByKey` / `activeSet` take only this, and
+ * only `queryAll`, `readRegistry` and `registry` produce it.
+ *
+ * WHAT IT DOES NOT MEAN IS COMPLETE. `readRegistry` brands its accumulation while reporting
+ * `complete: false`, and that is deliberate: the brand says **this read either exhausted or told you
+ * it did not**, which is exactly what separates it from `query(p, 500)`, which says nothing at all.
+ * A caller still has to read `complete`.
+ */
+declare const exhaustive: unique symbol;
+export type Population = RadiaRecord[] & { readonly [exhaustive]: true };
+
+/**
+ * Records the caller KNOWS to be a whole set, for the cases the type cannot see: a concatenation of
+ * two exhaustive reads, a set passed in by a caller that already exhausted, a literal in a test.
+ *
+ * NAMED, and `why` is MANDATORY, because the alternative is `as unknown as Population`, which loses
+ * the type and the grep at once. Every use is legal, visible and countable; a rising count is the
+ * signal that the brand is being routed around rather than the escape being needed.
+ */
+export function unsafeAsPopulation(records: RadiaRecord[], why: string): Population {
+  if (!why) throw new Error("unsafeAsPopulation needs a reason: say why these records are a whole set");
+  return records as Population;
+}
+
 /** Pages one registry read takes before giving up. Generous: a content-keyed registry holds one
  *  record per entry, so exhausting it is normally a single page. */
 const REGISTRY_PAGE = 500;
+
+/** One page of a registry walk, built by `readRegistry` and passed straight through by the caller.
+ *  `limit` rides along so the caller needs nothing of its own: `client.query(pattern, p.limit, p)`. */
+export interface RegistryPage extends Page {
+  limit: number;
+  dir: "desc";
+}
 const REGISTRY_MAX_PAGES = 40;
 
 /**
@@ -252,18 +288,23 @@ const REGISTRY_MAX_PAGES = 40;
  * so (`complete: false`) instead of returning a plausible prefix. Callers that authorize on this
  * must treat an incomplete view as a reason to refuse widening, never as a full picture.
  *
- * `read(limit, after)` must return records NEWEST-FIRST, `after` being the last id of the previous
- * page (i.e. a keyset page with `dir: "desc"`).
+ * THE CALLER NEVER NAMES A DIRECTION. It is handed the whole page, built here, and passes it
+ * through: `(page) => client.query(pattern, page.limit, page)`. The contract used to be prose
+ * ("`read(limit, after)` must return records NEWEST-FIRST"), and five call sites in this repo paged
+ * ASCENDING against it. They were right only because this function exhausts; on the incomplete path
+ * they would have kept the OLDEST records, which is the half missing every retirement and every
+ * current entry, while `complete: false` said only that something was missing. A rule a caller can
+ * get wrong is a rule that will be got wrong, so the caller no longer states it.
  */
 export async function readRegistry<T = unknown>(
-  read: (limit: number, after?: string) => Promise<RadiaRecord[]>,
+  read: (page: RegistryPage) => Promise<RadiaRecord[]>,
   keyOf: (body: T, record: RadiaRecord) => string | undefined,
 ): Promise<RegistryView> {
   const all: RadiaRecord[] = [];
   let after: string | undefined;
   let complete = false;
   for (let page = 0; page < REGISTRY_MAX_PAGES; page++) {
-    const rows = await read(REGISTRY_PAGE, after);
+    const rows = await read({ limit: REGISTRY_PAGE, dir: "desc", after });
     all.push(...rows);
     if (rows.length < REGISTRY_PAGE) {
       complete = true;
@@ -271,7 +312,9 @@ export async function readRegistry<T = unknown>(
     }
     after = rows[rows.length - 1].id;
   }
-  const newest = newestByKey(all, keyOf);
+  // WHERE THE BRAND IS EARNED: this loop either exhausted the kind or set `complete: false` above,
+  // which is exactly what `Population` asserts. Nothing else in this file may mint one.
+  const newest = newestByKey(unsafeAsPopulation(all, "readRegistry paged to exhaustion or reported it could not"), keyOf);
   const entries = new Map(newest);
   for (const [key, rec] of entries) if (isRetired(rec.body)) entries.delete(key);
   return { entries, newest, complete, scanned: all.length };

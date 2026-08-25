@@ -87,7 +87,7 @@ Deno.test("[host] one host, several agents, and everything is attributed to the 
 
     // The property: the RESULT is authored by the agent's run, and its delegation chain names the
     // agent. Nothing here mentions the host, which holds no identity of its own in the space.
-    const results = await operator.query({ kind: "exec_result", match: { tag: TAG } }, 10, { dir: "desc" });
+    const results = await operator.queryNewest({ kind: "exec_result", match: { tag: TAG } }, 10);
     assertEquals(results.length, 2);
     const authors = await Promise.all(results.map(async (r) => {
       const perms = await operator.permissions(r.runtimeMeta.createdBy) as { subject: string };
@@ -152,7 +152,7 @@ Deno.test("[host] a binding and a grant that DISAGREE about the digest run nothi
 
     const host = new WorkspaceHost({ base: url, credentials, reader: operator, invoke: echo(TAG) });
     assertEquals(await host.tick(), [{ agent: "agent:drifted", status: "digest_mismatch", wanted: D1, bound: D2, recordId: id }]);
-    assertEquals((await operator.query({ kind: "exec_result", match: { tag: TAG } }, 10)).length, 0, "nothing may be produced from mismatched code");
+    assertEquals((await operator.queryOldest({ kind: "exec_result", match: { tag: TAG } }, 10)).length, 0, "nothing may be produced from mismatched code");
     // Released, not consumed and not dead-lettered: a correctly bound host can still take it.
     const env = await operator.queryEnvelopes({ state: "available", limit: 50 });
     assert(env.some((r) => r.record?.id === id), "the claim must go back");
@@ -180,7 +180,7 @@ Deno.test("[host] the default invoker runs the workspace's entrypoint in the jai
     const host = new WorkspaceHost({ base: url, credentials, reader: operator, invoke: sandboxInvoker(operator) });
     const outcomes = await host.tick();
     assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
-    const results = await operator.query({ kind: "exec_result" }, 10, { dir: "desc" });
+    const results = await operator.queryNewest({ kind: "exec_result" }, 10);
     assertEquals((results[0].body as { tag: string }).tag, "ran:seven", "the entrypoint's return value is the result");
   });
 });
@@ -274,7 +274,7 @@ Deno.test("[host] the CODE tree stays read-only, even with an output tree open",
     const host = new WorkspaceHost({ base: url, credentials, reader: operator, invoke: sandboxInvoker(operator) });
     const [outcome] = await host.tick();
     assertEquals(outcome.status, "acked", JSON.stringify(outcome));
-    const results = await operator.query({ kind: "exec_result" }, 10, { dir: "desc" });
+    const results = await operator.queryNewest({ kind: "exec_result" }, 10);
     assertEquals((results[0].body as { tag: string }).tag, "refused");
     // And the tree it ran from is untouched on disk, not merely un-rewritten in the space.
     assertEquals((await readWorkspace(operator, "vandal"))!.treeDigest, digest);
@@ -330,7 +330,7 @@ Deno.test("[host] a declared input is materialised into the cwd, excluded from c
     assertEquals(outcome.status, "acked", JSON.stringify(outcome));
     const resultId = (outcome as { resultId?: string }).resultId!;
 
-    const results = await operator.query({ kind: "exec_result", match: { tag: TAG } }, 10);
+    const results = await operator.queryOldest({ kind: "exec_result", match: { tag: TAG } }, 10);
     assertEquals(results.length, 1);
     assertEquals((results[0].body as { got: string }).got, "h\n1\n2\n3\n", "the artifact's bytes, read from input/data.csv");
     // Capture excluded `input/`: the output version holds the run's file and never the request's data.
@@ -379,7 +379,7 @@ Deno.test("[host] outputMeta stamps captured artifacts from the claimed record",
 
     // The captured file's artifact carries the REQUEST's owner, winning over the capture default
     // (the agent), so an {owner}-scoped grant reaches it.
-    const found = await operator.query({ kind: "artifact", match: { owner: PERSON } }, 10, { dir: "desc" });
+    const found = await operator.queryNewest({ kind: "artifact", match: { owner: PERSON } }, 10);
     const out = found.find((r) => (r.body as { workspace?: string }).workspace === OUT);
     assert(out, `no captured artifact carries owner=${PERSON}: ${JSON.stringify(found.map((r) => r.body))}`);
   });
@@ -419,7 +419,7 @@ Deno.test("[host] inputs without an output tree get a read-only cwd", async () =
     const host = new WorkspaceHost({ base: url, credentials, reader: operator, invoke: sandboxInvoker(operator) });
     const [outcome] = await host.tick();
     assertEquals(outcome.status, "acked", JSON.stringify(outcome));
-    const [r] = await operator.query({ kind: "exec_result", match: { tag: TAG } }, 10);
+    const [r] = await operator.queryOldest({ kind: "exec_result", match: { tag: TAG } }, 10);
     assertEquals((r.body as { got: string }).got, "payload-bytes");
     assertEquals((r.body as { wrote: boolean }).wrote, false, "an inputs-only run holds no writable path");
     assert(r.runtimeMeta.parentIds.includes(art.id), "lineage holds on this posture too");

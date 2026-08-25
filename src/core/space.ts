@@ -68,7 +68,7 @@ import {
   type ResolvedToken,
 } from "./auth.ts";
 import { Coalescer } from "./coalesce.ts";
-import { type CompactionResult, compactRegistries } from "./gc.ts";
+import { type CompactionResult, compactRegistries, keyOf, RUNTIME_KEYS } from "./gc.ts";
 import { type BlobGcResult, type BlobStore, MemoryBlobStore, type RewrapResult } from "../storage/blobs.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
 import { RadiaError } from "./errors.ts";
@@ -189,6 +189,48 @@ export interface SpaceContext {
    *  a SECOND process over the same blob directory. Minutes, not seconds: it has to dwarf any
    *  bytes-to-commit gap, and blobs eligible today are eligible on the next sweep too. */
   blobGcGraceSeconds: number;
+  /**
+   * Writes to ONE keyed registry kind before that kind is compacted inline, or `0` to leave
+   * compaction to the `gc` verb.
+   *
+   * Separate from `gcEveryWrites`, and per KIND, because the two measure different litter. Retention
+   * litter accrues per write of any kind, so a global counter tracks it; registry litter accrues per
+   * write of a KEYED kind, and a space streaming chunks would otherwise trigger compaction walks
+   * over registries nothing touched. Counting per kind makes the trigger proportional to the mess:
+   * the walk that runs is over the registry that just grew.
+   *
+   * Sized against the measurement (agent_docs/plan-registry-cost.md): a registry read is linear in
+   * history, and compaction makes it exactly flat, so the value of running early is the whole
+   * point. 200 writes of one kind is a pass over a small history, which is milliseconds.
+   */
+  compactEveryWritesPerKind: number;
+  /**
+   * Grant RECORDS one (principal, kind) may accumulate, history included.
+   *
+   * `Space.access` reads that history on EVERY authorized request and `GRANT` is in `NEVER_COMPACT`,
+   * so nothing ever sweeps it: measured, `authorize()` costs 1.72ms at 1 record and 93.57ms at 5,000
+   * on Postgres (5.5x worse than SQLite at the tail). This is the same rule as
+   * `maxInterestsPerPrincipal` and the same sentence behind it: a registry whose size is somebody
+   * else's read cost needs a per-principal ceiling. See agent_docs/plan-registry-cost.md.
+   *
+   * Counted in RECORDS rather than live entries, because history is what the read pays for: one
+   * live grant behind 4,999 retirements costs the same 93ms as 5,000 live ones.
+   */
+  maxGrantRecordsPerPrincipalKind: number;
+  /**
+   * Ops-power RECORDS one principal may accumulate, history included.
+   *
+   * The same rule as the grant ceiling above and for the same measured reason, on the registry the
+   * OPS-PLANE GATE reads: `Space.opsPowers` walks a principal's whole `ops_grant` history on every
+   * `/v0/ops/*` request, and the kind is in `NEVER_COMPACT` because a power's assignment history is
+   * audit. A registry is either compactable or capped, never neither
+   * (agent_docs/plan-bounded-reads.md).
+   *
+   * Lower than the grant ceiling because the healthy number is far smaller: an identity here is
+   * (principal, sorted operations) over a CLOSED five-power vocabulary, so at most 31 exist per
+   * principal and a real deployment holds one or two. Anything above this is republishing.
+   */
+  maxOpsGrantRecordsPerPrincipal: number;
   /** How far ahead a writer may push `availableAt` (`PutRequest.availableAt`). A ceiling rather
    *  than a preference: retention GC never sweeps unclaimed CLAIMABLE work, so a record made
    *  available in the year 2400 is litter no sweep can reach. `0` refuses any delay. */
@@ -240,6 +282,19 @@ const DEFAULT_CONTEXT: SpaceContext = {
   oidc: null, // opt-in: an unconfigured space refuses /v0/sessions/oidc
   maxOidcRunsPerSubject: 8,
   blobGcGraceSeconds: 900, // 15 min; see the field's comment for why this is the race bound
+  // 200 writes of one keyed kind. Well under the point where a registry read starts to cost
+  // (2,000 history is already 976 KiB to learn 20 entries), and each pass at that size is a
+  // handful of milliseconds.
+  compactEveryWritesPerKind: 200,
+  // 256, from the measured curve: 100 records keeps `authorize()` at 2.90ms (1.7x baseline) and
+  // 1,000 costs 16ms, so this holds the hot path near baseline while leaving years of ordinary
+  // churn (content-keying dedupes a re-assignment inside the idempotency window, so normal
+  // operation adds about one record per week per pair).
+  maxGrantRecordsPerPrincipalKind: 256,
+  // 64, well above the 31 distinct identities that can exist and far below where the read starts to
+  // cost (measured: 100 records is 2.90ms, 1.7x baseline). `maxInterestsPerPrincipal` uses the same
+  // number for the same reason.
+  maxOpsGrantRecordsPerPrincipal: 64,
   // 7 days, the idempotency window's horizon, and picked for the same reason: past it the caller
   // is describing a schedule rather than deferring a piece of work, and Radia does not hold one
   // (plan-milestones.md, "durable timers", out of scope).
@@ -642,9 +697,49 @@ export class Space {
     scope?: StatsScope,
   ): Promise<RegistryView> {
     return readRegistry<T>(
-      (limit: number, after?: string) => this.query({ kind, match }, limit, { dir: "desc", after }, scope),
+      (page) => this.query({ kind, match }, page.limit, page, scope),
       keyOf,
     );
+  }
+
+  /**
+   * THE CURRENT SET of a keyed registry kind: newest per key, retirements dropped, read to
+   * exhaustion, and honest when it could not exhaust.
+   *
+   * The point is what the caller does NOT supply. No direction, no cursor, no page size, and no key
+   * function: the key comes from what the kind DECLARES (`contentKey`, or the runtime's own key for
+   * a reserved kind), which is the same statement `radia gc` compacts by. Every reader otherwise
+   * restated it as a `keyOf` closure, so the key existed twice per registry with nothing checking
+   * they agreed, and a disagreement is silent in the worst direction: `gc` deletes by its key while
+   * readers project by theirs (agent_docs/plan-bounded-reads.md).
+   *
+   * It also gives PYTHON a correct path at all. That SDK has `query_all` and no projection, so a
+   * Python caller wanting the current set had to hand-roll latest-wins, which is the shape no guard
+   * can see and which `radia runs --for` got wrong three ways at once.
+   *
+   * COST: one walk of the kind, which is flat because keyed registries compact themselves
+   * (`compactEveryWritesPerKind`). That flatness is the whole reason this is allowed to be a
+   * server-side read: a read whose cost the caller cannot see is acceptable only when that cost
+   * does not grow (plan-registry-cost.md). It reports `complete: false` rather than a plausible
+   * prefix if the walk is capped.
+   *
+   * A caller that must SEE a retirement uses `queryAll` instead: this answers what is in force.
+   */
+  async registryOf(
+    kind: string,
+    match?: Record<string, unknown>,
+    scope?: StatsScope,
+  ): Promise<{ entries: RadiaRecord[]; complete: boolean; scanned: number }> {
+    const paths = RUNTIME_KEYS[kind] ?? this.kinds.get(kind)?.contentKey;
+    if (!paths || paths.length === 0) {
+      throw new RadiaError(
+        "kind_not_keyed",
+        `kind '${kind}' declares no contentKey, so it has no latest-wins identity to project. ` +
+          `Declare one, or read it with an ordinary query.`,
+      );
+    }
+    const view = await this.registry<unknown>(kind, (_b, rec) => keyOf(rec, paths) ?? undefined, match, scope);
+    return { entries: [...view.entries.values()], complete: view.complete, scanned: view.scanned };
   }
 
   /** Rebuild the registry from kind_def records (call once at startup). A kind's latest
@@ -2214,6 +2309,153 @@ export class Space {
    *
    * Counted per kind, since that is the granularity the registry is read at.
    */
+  /**
+   * Cap the grant HISTORY one (principal, kind) may accumulate.
+   *
+   * `Space.access` re-reads that history on every authorized request and nothing can ever sweep it
+   * (`GRANT` is in `NEVER_COMPACT`, because compacting it would break the revival protocol's
+   * `:after:` anchor). So an unbounded history is a permanent, unrecoverable tax on the hot path:
+   * 93.57ms per `authorize()` at 5,000 records on Postgres, against 1.72ms at one.
+   *
+   * Counted in RECORDS, not live entries: one live grant behind 4,999 retirements costs the reader
+   * exactly as much as 5,000 live ones, and `scanned` is the number the reader actually pays.
+   *
+   * WHAT THIS IS AIMED AT is a fleet republishing grants in a loop, which gotchas.md records
+   * happening once. Ordinary operation cannot reach the ceiling: a re-assignment dedupes inside the
+   * idempotency window, so it adds about one record per pair per week.
+   *
+   * AT THE CEILING, A RE-PUT OF A LIVE IDENTICAL GRANT IS NOT WRITTEN, and that is the difference
+   * between bounding history and only bounding distinct identities. Content-keying dedupes a re-put
+   * inside the idempotency window (7 days) and NOT past it, so a fleet restarting weekly appends one
+   * record per pair per restart forever, and exempting it (the obvious way to keep restarts working)
+   * left the ceiling unable to bound the very case it was built for: measured, 40 re-puts of one
+   * identity sailed past a ceiling of 10. Answering with the record that already carries that grant
+   * keeps the restart working AND stops the growth, and it is the same answer idempotency gives
+   * inside the window. Below the ceiling nothing changes: every write lands, as before.
+   */
+  private async checkGrantBudget(req: PutRequest): Promise<{ satisfiedBy: string } | undefined> {
+    const b = (req.body ?? {}) as { principal?: unknown; kind?: unknown };
+    if (typeof b.principal !== "string" || typeof b.kind !== "string") return;
+    return await this.checkRegistryBudget(req, {
+      kind: GRANT,
+      // The MATCH the expensive read uses, which is what decides the ceiling's granularity:
+      // `Space.access` narrows to (principal, kind), so that pair is what accumulates.
+      match: { principal: b.principal, kind: b.kind },
+      identityOf: grantKey,
+      ceiling: this.ctx.maxGrantRecordsPerPrincipalKind,
+      code: "too_many_grants",
+      subject: `'${b.principal}' on kind '${b.kind}'`,
+      reader: "every authorized request",
+      cause: "something is assigning NEW grant identities in a loop (a changing pattern, most likely)",
+    });
+  }
+
+  /**
+   * Cap the ops-power history one principal may accumulate.
+   *
+   * `Space.opsPowers` reads it per principal, exhaustively, on EVERY `/v0/ops/*` request (the gate in
+   * `server/http.ts`), and `OPS_GRANT` is in `NEVER_COMPACT` because the assignment history of a
+   * power is audit. That is the same unsweepable-hot-path shape as `grant`, measured at 1.72ms for
+   * one record and 93.57ms at 5,000 on Postgres, and the grant ceiling covered `grant` alone.
+   *
+   * What reaches it: assigning powers ON A SCHEDULE. `examples/analysis/run.ts` calls `grantObserve`
+   * for every enrolled principal on every launch, so past the idempotency window each launch appends
+   * one record per person, forever. That is the shape gotchas.md already warns about, running in a
+   * shipped example against the one registry with no ceiling.
+   *
+   * A distinct identity here is (principal, sorted operations) over a CLOSED five-power vocabulary,
+   * so a principal has at most 31 of them and cannot blow the ceiling by inventing new ones. Reaching
+   * it therefore means history, always.
+   */
+  private async checkOpsGrantBudget(req: PutRequest): Promise<{ satisfiedBy: string } | undefined> {
+    const b = (req.body ?? {}) as { principal?: unknown };
+    if (typeof b.principal !== "string") return;
+    return await this.checkRegistryBudget(req, {
+      kind: OPS_GRANT,
+      match: { principal: b.principal }, // what `opsPowers` narrows to, so what accumulates
+      identityOf: opsGrantKey,
+      ceiling: this.ctx.maxOpsGrantRecordsPerPrincipal,
+      code: "too_many_ops_grants",
+      subject: `'${b.principal}'`,
+      reader: "every ops-plane request",
+      cause: "something is assigning powers on a schedule rather than at identity creation",
+    });
+  }
+
+  /**
+   * The shared ceiling for a registry that can never be compacted.
+   *
+   * The invariant behind it (agent_docs/plan-bounded-reads.md): **a registry is either compactable or
+   * capped, never neither.** An uncompactable one is read in full forever, so its history is a
+   * permanent, unrecoverable tax on whoever reads it, and the write is the only place to stop it.
+   *
+   * Three rules, each with a failure behind it:
+   *
+   * A WITHDRAWAL is never refused. It is how a caller reduces what the reader projects, and refusing
+   * it would trap the state this exists to prevent.
+   *
+   * AT THE CEILING, a re-put of a LIVE identical entry is answered with the record that already
+   * carries it, rather than written. The first version simply exempted such a re-put, and that left
+   * the ceiling unable to bound the case it was built for: content-keying dedupes only inside the
+   * idempotency window, so a fleet restarting weekly appends one record per entry forever, and
+   * measured, 40 re-puts of one identity sailed past a ceiling of 10. Answering with the existing
+   * record keeps the restart working and stops the growth. Below the ceiling nothing changes.
+   *
+   * An INCOMPLETE read refuses rather than guessing. Enforcing a ceiling over a prefix is the
+   * bounded-read trap at the one site that exists to prevent registry blowup.
+   */
+  private async checkRegistryBudget(
+    req: PutRequest,
+    o: {
+      kind: string;
+      match: Record<string, unknown>;
+      identityOf: (body: unknown) => string | undefined;
+      ceiling: number;
+      code: string;
+      subject: string;
+      reader: string;
+      cause: string;
+    },
+  ): Promise<{ satisfiedBy: string } | undefined> {
+    if ((req.body as { retired?: unknown })?.retired === true) return;
+    const view = await this.registry(o.kind, o.identityOf, o.match);
+    if (!view.complete) {
+      throw new RadiaError("registry_incomplete", `${o.kind} registry read for ${o.subject} did not complete`);
+    }
+    // `entries` rather than `newest`, so a RETIREMENT does not read as the entry still standing:
+    // a re-put after a withdrawal must revive, which means it must write.
+    const identity = o.identityOf(req.body);
+    const live = identity === undefined ? undefined : view.entries.get(identity);
+
+    // ABSORB an identical live re-put, ALWAYS rather than only at a ceiling. This is the whole
+    // mechanism: content-keying dedupes a re-put for the idempotency window (7 days) and not past
+    // it, so a fleet restarting weekly appends one record per entry forever, on kinds nothing can
+    // ever sweep. Answering with the record that already carries the entry keeps the restart
+    // working and stops the growth at its source, so history only grows on a REAL change, which is
+    // also exactly what the audit trail these kinds are excluded from compaction FOR wants to hold.
+    //
+    // Compared by BODY, never by identity. `grantKey` excludes `scope` (so a self-scoped grant
+    // replaces its unscoped twin in place), so one identity can carry two meanings, and absorbing
+    // on identity alone dropped a grant that added `scope: {createdBy: "self"}` while reporting
+    // success, leaving the wider grant standing. The hash is over the same serialization
+    // `buildRecord` stores, so any difference at all writes.
+    if (live && live.bodySha256 === await sha256Hex(JSON.stringify(req.body ?? null))) {
+      return { satisfiedBy: live.id };
+    }
+
+    if (view.scanned < o.ceiling) return;
+    // At the ceiling with a live identity and a DIFFERENT body: write anyway. It is a replacement
+    // rather than a new entry, and a ceiling must never block a write that REDUCES authority, or a
+    // maxed-out pair could not be tightened.
+    if (live) return;
+    throw new RadiaError(
+      o.code,
+      `${o.subject} already has ${view.scanned} ${o.kind} records (limit ${o.ceiling}), and ` +
+        `${o.reader} re-reads all of them. This kind is never compacted, so that is HISTORY rather ` +
+        `than live entries: ${o.cause}.`,
+    );
+  }
+
   private async checkInterestBudget(req: PutRequest, principal?: string): Promise<void> {
     const b = (req.body ?? {}) as { kind?: unknown; match?: unknown; retired?: unknown };
     if (typeof b.kind !== "string" || b.retired === true) return; // withdrawal always allowed
@@ -2292,11 +2534,73 @@ export class Space {
     return new Date(at).toISOString();
   }
 
+  /** Kinds whose write pays a budget check first. In `putRaw` rather than `put`, so the
+   *  definition path (`createAgentDefinition` -> `putRaw`) cannot grow a registry the client path
+   *  is bounded on: a second write path that skipped the first one's rule is a shape this codebase
+   *  has already been bitten by twice (`kind_def` via ack, `clientMeta` past the body guards). */
+  /** The id of an existing record this write is redundant with, when a budget says so. Writing
+   *  anyway is what the ceiling exists to prevent; refusing would break a fleet restart. */
+  /**
+   * The three uncompactable LATEST-WINS registries, before anything is written.
+   *
+   * `signal` and `agent_definition` are deliberately absent although they are also uncompactable.
+   * A signal is a BROADCAST, so two identical ones are two events and absorbing the second would
+   * lose one; an agent definition carries a freshly minted `tokenHash`, so no two bodies are ever
+   * identical and the read would buy nothing. Neither is a registry in the sense that matters here.
+   */
+  private async checkBudgets(req: PutRequest): Promise<{ satisfiedBy: string } | undefined> {
+    if (req.kind === GRANT) return await this.checkGrantBudget(req);
+    if (req.kind === OPS_GRANT) return await this.checkOpsGrantBudget(req);
+    if (req.kind === KIND_DEF) return await this.checkKindDefBudget(req);
+    return undefined;
+  }
+
+  /**
+   * Absorb an identical re-declaration, and DO NOT cap.
+   *
+   * `kind_def` is uncompactable like the two above, but neither ceiling shape fits it. A cap per
+   * kind NAME would not bound what `loadKinds` pays, because that read is over the whole kind
+   * (100 names x 64 is still 6,400 records); a cap on the TOTAL would refuse declaring a new kind,
+   * which is the one thing here that legitimately grows. So the ceiling would land on variety
+   * instead of history, which is backwards, and the absorb is the whole of the fix.
+   *
+   * That is enough because the growth has exactly one source: `registerKind` is content-keyed, so a
+   * re-declaration dedupes for the idempotency window and appends past it, and a fleet declaring
+   * ~20 kinds on every start appends ~20 records a week forever. A real schema change still writes,
+   * which is what keeps the declaration history this kind is excluded from compaction FOR.
+   *
+   * The identity is the kind NAME, matching `loadKinds`' own projection, so a changed declaration
+   * carries the same identity with a different body and therefore writes.
+   */
+  private async checkKindDefBudget(req: PutRequest): Promise<{ satisfiedBy: string } | undefined> {
+    const name = (req.body as { kind?: unknown })?.kind;
+    if (typeof name !== "string") return;
+    return await this.checkRegistryBudget(req, {
+      kind: KIND_DEF,
+      match: { kind: name }, // what `refreshKind` narrows to; `loadKinds` reads the whole kind
+      identityOf: (b) => {
+        const k = (b as { kind?: unknown })?.kind;
+        return typeof k === "string" ? k : undefined;
+      },
+      ceiling: Number.POSITIVE_INFINITY, // absorb only; see above for why no cap fits
+      code: "too_many_kind_defs",
+      subject: `kind '${name}'`,
+      reader: "every startup",
+      cause: "unreachable: this kind has no ceiling",
+    });
+  }
+
   private async putRaw(
     req: PutRequest,
     idempotencyKey?: string,
     opts: { taint?: string[]; principal?: string; event?: { operation?: string; detail?: Record<string, unknown> } } = {},
   ): Promise<{ id: string }> {
+    // Before anything is written, and on every write path. A budget may answer that this write is
+    // redundant with a record that already exists, in which case the postcondition the caller cares
+    // about ("the grant is in force") already holds and writing would only grow the history the
+    // ceiling exists to bound.
+    const satisfied = await this.checkBudgets(req);
+    if (satisfied) return { id: satisfied.satisfiedBy };
     const now = await this.storage.now(); // INVARIANT: timestamps come from the DB clock
     // Taint is server-computed data lineage: forced by opts (declassify), else client-raise OR
     // any data parent tainted. A client can only RAISE taint; clearing needs a privileged declassify.
@@ -2343,6 +2647,7 @@ export class Space {
     // may need it — wake everyone. This is the fan-out fix (bench/suites/fanout.ts).
     this.notifier.notify(AUTHORIZATION_KINDS.has(record.kind) ? undefined : record.kind);
     await this.maybeAmortizedSweep(); // the write that crossed the threshold pays for the batch
+    await this.maybeCompactKind(record.kind); // and for its own registry's litter
     return { id: result.id };
   }
 
@@ -2777,8 +3082,10 @@ export class Space {
     // everyone, the conservative default. Same fan-out fix as putRaw.
     this.notifier.notify(result && !AUTHORIZATION_KINDS.has(result.kind) ? result.kind : undefined);
     // The result record committed inside storage.ack, not through putRaw, so it counts here or the
-    // amortized clock undercounts exactly the worker fleet's writes.
+    // amortized clock undercounts exactly the worker fleet's writes. The same is true of registry
+    // litter: a worker acking a `capability` successor is the shape that grows one.
     await this.maybeAmortizedSweep();
+    if (result && r.status === "ok") await this.maybeCompactKind(result.kind);
     return r;
   }
 
@@ -3382,12 +3689,10 @@ export class Space {
     // logic and its resurrection guard; this only wires the reads and the one destructive member.
     let compaction: CompactionResult | undefined;
     if (opts.compact !== false) {
-      compaction = await compactRegistries({
-        listKinds: () => this.kinds.list(),
-        pageDesc: (kind, limit, after) => this.query({ kind }, limit, { dir: "desc", after }),
-        sweepIds: (ids, runId) => this.storage.sweepIds(ids, runId),
-        runIsLive: (run) => this.runIsLive(run),
-      }, { dryRun: opts.dryRun, runId: opts.principal ?? this.ctx.runId });
+      compaction = await compactRegistries(
+        this.compactionHost(),
+        { dryRun: opts.dryRun, runId: opts.principal ?? this.ctx.runId },
+      );
     }
     // Reference-aware blob GC rides the verb LAST (phase 4, plan-gc.md): the record sweep above
     // is what turns an expired artifact into an unreferenced digest, so its bytes reclaim in the
@@ -3486,10 +3791,64 @@ export class Space {
     };
   }
 
+  /** What compaction reads and the one destructive member it calls. Shared by the `gc` verb and
+   *  the amortized per-kind trigger, so the two cannot come to disagree about what a registry is. */
+  private compactionHost() {
+    return {
+      listKinds: () => this.kinds.list(),
+      pageDesc: (kind: string, limit: number, after?: string) => this.query({ kind }, limit, { dir: "desc" as const, after }),
+      sweepIds: (ids: string[], runId: string) => this.storage.sweepIds(ids, runId),
+      runIsLive: (run: string) => this.runIsLive(run),
+    };
+  }
+
   /** Commits since the last amortized sweep. Instance state, like the notifier: two instances over
    *  one database each keep their own count, which only means the housekeeping runs a bit oftener. */
   private writesSinceSweep = 0;
   private amortizedSweepRunning = false;
+  /** Writes per KEYED kind since that kind was last compacted. Only keyed kinds are counted, so a
+   *  space streaming an unkeyed kind never triggers a walk. */
+  private readonly writesSinceCompact = new Map<string, number>();
+  private compactingKind = new Set<string>();
+
+  /**
+   * Compact ONE registry inline, every `compactEveryWritesPerKind` writes of that kind.
+   *
+   * The measurement is the whole argument (agent_docs/plan-registry-cost.md): a registry read is
+   * linear in history, and compaction makes it EXACTLY FLAT, so leaving it to a verb nobody runs
+   * means every reader pays for litter forever. Amortizing it puts the cost on the writer producing
+   * the litter, which is where the interest budget and the retention sweep already put theirs.
+   *
+   * PER KIND rather than on `gcEveryWrites`, and that distinction is the reason this is separate
+   * machinery: registry litter grows per write of a KEYED kind, so a global counter would walk
+   * every registry in the space because somebody streamed a million chunks. What runs here is a
+   * walk of the registry that just grew.
+   *
+   * Same shape as the retention sweep otherwise: no timer, awaited so it is deterministic and
+   * bounded, guarded against stacking, and a failure is swallowed because housekeeping must never
+   * fail the write that happened to trigger it.
+   */
+  private async maybeCompactKind(kind: string): Promise<void> {
+    if (this.ctx.compactEveryWritesPerKind <= 0) return;
+    // Only kinds a compaction pass would actually walk. `NEVER_COMPACT` and unkeyed kinds are
+    // asked about once per write and answered from the in-process registry, never the database.
+    const def = this.kinds.get(kind);
+    const keyed = kind === INTEREST || (def !== undefined && (def.contentKey?.length ?? 0) > 0);
+    if (!keyed) return;
+    const n = (this.writesSinceCompact.get(kind) ?? 0) + 1;
+    if (n < this.ctx.compactEveryWritesPerKind) {
+      this.writesSinceCompact.set(kind, n);
+      return;
+    }
+    this.writesSinceCompact.set(kind, 0);
+    if (this.compactingKind.has(kind)) return;
+    this.compactingKind.add(kind);
+    try {
+      await compactRegistries(this.compactionHost(), { runId: this.ctx.runId, only: kind });
+    } catch { /* the litter waits for the next trigger or the verb */ } finally {
+      this.compactingKind.delete(kind);
+    }
+  }
 
   /**
    * The amortized half of GC: every `gcEveryWrites` record commits, the WRITING call runs one small
@@ -3819,7 +4178,7 @@ export class Space {
     complete: boolean;
   }> {
     const view = await readRegistry<Record<string, unknown>>(
-      (limit, after) => this.query({ kind: SHRED }, limit, { dir: "desc", after }),
+      (page) => this.query({ kind: SHRED }, page.limit, page),
       (_body, r) => r.id,
     );
     const out: ErasureStatus[] = [];

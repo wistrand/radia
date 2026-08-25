@@ -11,6 +11,7 @@
 
 import type {
   AckResult,
+  Cursor,
   DelegatedRun,
   KindDef,
   Lease,
@@ -25,19 +26,28 @@ import type {
 } from "./wire.ts";
 import { type GraphNode, KIND_DEF, kindDefKey, RESERVED_KINDS } from "./wire.ts";
 export type { GraphNode };
-import { activeByKey, grantKey, isRetired, newestByKey } from "./registry.ts";
+import { activeByKey, grantKey, isRetired, newestByKey, type Population, unsafeAsPopulation } from "./registry.ts";
 export { RESERVED_KINDS };
 // Re-exported because every client that reads a registry (capabilities, models, kinds, an app's
 // own kinds) needs the SAME latest-wins-minus-retired rule the runtime uses. Six hand-rolled
 // copies of this loop existed before it was shared, and the failure mode is silent.
-export { activeByKey, activeSet, grantKey, isRetired, newestByKey, readRegistry, RETIRED } from "./registry.ts";
-export type { RegistryView } from "./registry.ts";
+export {
+  activeByKey,
+  activeSet,
+  grantKey,
+  isRetired,
+  newestByKey,
+  readRegistry,
+  RETIRED,
+  unsafeAsPopulation,
+} from "./registry.ts";
+export type { Population, RegistryView } from "./registry.ts";
 // Waiting for another agent's answer: the other half every client re-implements, and the one where
 // a timeout is an ordinary outcome rather than an exception.
 export { awaitResult } from "./await.ts";
 export type { AwaitOptions, AwaitOutcome } from "./await.ts";
 
-export type { AckResult, KindDef, Lease, Page, PutRequest, RadiaRecord, SpaceEvent, Pattern };
+export type { AckResult, Cursor, KindDef, Lease, Page, PutRequest, RadiaRecord, SpaceEvent, Pattern };
 
 export interface KindStateCount {
   kind: string;
@@ -555,10 +565,54 @@ export class RadiaClient {
    * the kind gets `forbidden` here. That is not a bug to route around: ordering IS a query.
    */
   async readNewest(pattern: Pattern): Promise<RadiaRecord | null> {
-    return (await this.query(pattern, 1, { dir: "desc" }))[0] ?? null;
+    return (await this.queryNewest(pattern, 1))[0] ?? null;
   }
 
-  async query(pattern: Pattern, limit = 100, page?: Page): Promise<RadiaRecord[]> {
+  /**
+   * The NEWEST `limit` records matching `pattern`. A PAGE, deliberately named as one.
+   *
+   * There is no bare `query(pattern, limit)` any more, and its absence is the point: it read the
+   * OLDEST matches, which is almost never what a caller with a limit wants, and it said nothing
+   * about that at the call site. Every read now states its direction in its NAME, so the wrong one
+   * is visible in review rather than in a stale answer six months later.
+   *
+   * If what you want is "the current set", this is still the wrong call: use `registry` or
+   * `queryAll`, which exhaust. A page can only ever be a page.
+   */
+  queryNewest(pattern: Pattern, limit = 100): Promise<RadiaRecord[]> {
+    return this.queryDirected(pattern, limit, { dir: "desc" });
+  }
+
+  /**
+   * The OLDEST `limit` records matching `pattern`.
+   *
+   * The old default, now something a caller asks for on purpose. Right for a claim-ordered read or
+   * a replay from the beginning; wrong for anything that accumulates successors.
+   */
+  queryOldest(pattern: Pattern, limit = 100): Promise<RadiaRecord[]> {
+    return this.queryDirected(pattern, limit, { dir: "asc" });
+  }
+
+  /**
+   * The first `limit` records IN THE ORDER THE PATTERN DECLARES.
+   *
+   * For a pattern carrying `orderBy`, which already answers "in what order": `queryNewest` and
+   * `queryOldest` name a direction of the natural id order, and the space refuses that combined
+   * with `orderBy` rather than silently resolving one of them. This is the call that expresses it,
+   * and the two directional verbs point here rather than letting a caller discover it as a 400.
+   */
+  async queryOrdered(pattern: Pattern, limit = 100): Promise<RadiaRecord[]> {
+    const r = await this.req("POST", "/v0/records/query", { ...pattern, limit });
+    return r.records;
+  }
+
+  private async queryDirected(pattern: Pattern, limit: number, page: Page): Promise<RadiaRecord[]> {
+    if (pattern.orderBy?.length) {
+      throw new Error(
+        `${JSON.stringify(pattern.kind)} is queried with order_by, which already sets the order: ` +
+          `use queryOrdered (a direction of the natural id order cannot be combined with it)`,
+      );
+    }
     const r = await this.req("POST", "/v0/records/query", { ...pattern, limit, ...page });
     return r.records;
   }
@@ -570,18 +624,21 @@ export class RadiaClient {
     pattern: Pattern,
     limit = 100,
     page?: Page,
-  ): Promise<{ records: RadiaRecord[]; explain: string[]; nextAfter?: string }> {
+  ): Promise<{ records: RadiaRecord[]; explain: string[]; nextCursor?: Cursor }> {
     const r = await this.req("POST", "/v0/records/query", { ...pattern, limit, ...page, explain: true });
-    return { records: r.records, explain: r.explain ?? [], nextAfter: r.nextAfter };
+    return { records: r.records, explain: r.explain ?? [], nextCursor: r.nextCursor };
   }
 
   /**
-   * One page, plus the cursor for the next one. `nextAfter` is undefined on the last page.
+   * One page, plus the cursor for the next one. `nextCursor` is undefined on the last page.
    *
-   * Use this over `query` when walking a whole kind: a keyset cursor stays correct while records
-   * are being written, where an offset would skip or repeat rows as the space grows underneath it.
-   * `dir: "desc"` walks newest-first, which a plain `query` cannot express: its deterministic
-   * order is ascending id, so a limit there always returns the OLDEST matches.
+   * Use this over `queryNewest`/`queryOldest` when walking a whole kind: a keyset cursor stays
+   * correct while records are being written, where an offset would skip or repeat rows as the
+   * space grows underneath it.
+   *
+   * FEED `nextCursor` BACK AS `page.cursor`, not as `after`. It carries the direction of the walk,
+   * so the second page cannot silently run the other way; sending it alongside `dir` or `after` is
+   * a 400 rather than a guess.
    */
   /** Present when a grant narrowed the read: what it was narrowed BY. An answer that does not say
    *  it is a slice gets reported as the whole kind. */
@@ -590,9 +647,9 @@ export class RadiaClient {
     limit = 100,
     page?: Page,
     opts: { explain?: boolean } = {},
-  ): Promise<{ records: RadiaRecord[]; nextAfter?: string; scope?: ReadScope; explain?: string[] }> {
+  ): Promise<{ records: RadiaRecord[]; nextCursor?: Cursor; scope?: ReadScope; explain?: string[] }> {
     const r = await this.req("POST", "/v0/records/query", { ...pattern, limit, ...page, ...(opts.explain ? { explain: true } : {}) });
-    return { records: r.records, nextAfter: r.nextAfter, scope: r.scope, explain: r.explain };
+    return { records: r.records, nextCursor: r.nextCursor, scope: r.scope, explain: r.explain };
   }
 
   take(sel: TakeSelector, opts: { leaseSeconds?: number; allowTaint?: string[] } = {}): Promise<TakeResult | null> {
@@ -693,14 +750,40 @@ export class RadiaClient {
    * Throws rather than returning a plausible prefix when even the page budget is exhausted: a
    * caller projecting a registry cannot tell a truncated answer from a complete one.
    */
-  async queryAll(pattern: Pattern, maxPages = 40): Promise<RadiaRecord[]> {
+/**
+   * THE CURRENT SET of a keyed registry kind: newest per key, retirements dropped, projected by the
+   * server from the key the KIND DECLARES.
+   *
+   * Prefer this to `queryAll` + `activeByKey` wherever the kind declares a `contentKey`. What you do
+   * not supply is the point: no direction, no cursor, no page size, and no key function. That last
+   * one is not convenience: the key otherwise exists twice per registry, as `contentKey` for
+   * compaction and as a `keyOf` closure at each reader, with nothing checking they agree, and a
+   * disagreement is silent (agent_docs/plan-bounded-reads.md).
+   *
+   * `complete: false` means the walk was capped, so the set is a prefix. Treat that as a reason to
+   * refuse widening, never as a full picture. A caller that must SEE a retirement uses `queryAll`;
+   * this answers what is in force.
+   */
+  async registry(
+    kind: string,
+    match?: Record<string, unknown>,
+  ): Promise<{ entries: RadiaRecord[]; complete: boolean; scanned: number; scope?: ReadScope }> {
+    return await this.req("POST", "/v0/records/registry", { kind, ...(match ? { match } : {}) });
+  }
+
+  async queryAll(pattern: Pattern, maxPages = 40): Promise<Population> {
     const out: RadiaRecord[] = [];
-    let after: string | undefined;
+    // Walks by CURSOR rather than pairing `after` with a `dir` it has to remember. That pairing is
+    // the bug this loop would otherwise be one edit away from: the direction lives in the cursor,
+    // so a page cannot come back the other way.
+    let cursor: Cursor | undefined;
     for (let page = 0; page < maxPages; page++) {
-      const rows = await this.query(pattern, 500, { dir: "desc", after });
-      out.push(...rows);
-      if (rows.length < 500) return out;
-      after = rows[rows.length - 1].id;
+      const { records, nextCursor } = await this.queryPage(pattern, 500, cursor ? { cursor } : { dir: "desc" });
+      out.push(...records);
+      if (!nextCursor) {
+        return unsafeAsPopulation(out, "queryAll exhausted the kind; it throws rather than truncating");
+      }
+      cursor = nextCursor;
     }
     throw new Error(
       `queryAll: more than ${maxPages * 500} records match ${JSON.stringify(pattern)}. Refusing to ` +

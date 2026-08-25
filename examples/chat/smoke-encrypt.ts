@@ -86,11 +86,11 @@ await publishFleetKey(admin, fleet!);
 check("…and a joining session can read the public half", (await currentFleetKey(aliceC))?.keyId === fleet!.keyId);
 check(
   "…which is the only half that leaves the fleet",
-  !JSON.stringify(await aliceC.query({ kind: "fleet_key" }, 5)).includes(fleet!.privateKey.slice(0, 40)),
+  !JSON.stringify(await aliceC.queryOldest({ kind: "fleet_key" }, 5)).includes(fleet!.privateKey.slice(0, 40)),
 );
 // Content-keyed: a fleet restarting must not append a record per boot.
 await publishFleetKey(admin, fleet!);
-check("republishing the same key writes nothing new", (await admin.query({ kind: "fleet_key" }, 10)).length === 1);
+check("republishing the same key writes nothing new", (await admin.queryOldest({ kind: "fleet_key" }, 10)).length === 1);
 
 // ---- a session seals its own conversation ----
 const conv = await aliceC.put({ kind: "conversation", body: {} });
@@ -107,7 +107,7 @@ check("a session writes its own conversation's key material", true, conv.id);
 // Her key is STABLE across sessions on this machine, or a later one could not read what this wrote.
 check("her machine's key is remembered", (await personKeyPair(url, alice)).keyId === laptop.keyId);
 check("…and only its PUBLIC half is on the space",
-  !JSON.stringify(await aliceC.query({ kind: "person_key" }, 5)).includes(laptop.privateKey.slice(0, 40)));
+  !JSON.stringify(await aliceC.queryOldest({ kind: "person_key" }, 5)).includes(laptop.privateKey.slice(0, 40)));
 
 // ---- she reads it back, which is the whole point of a record over a client-side file ----
 const back = await aliceC.readOne({ kind: CONVERSATION_KEY_KIND, match: { conversationId: conv.id } });
@@ -213,7 +213,7 @@ try {
   await thread.append({ role: "user", content: "the secret question" });
 
   // What the operator sees on disk: no fragment of either message.
-  const rows = await admin.query({ kind: "message", match: { conversationId: conv.id } }, 20);
+  const rows = await admin.queryOldest({ kind: "message", match: { conversationId: conv.id } }, 20);
   const raw = JSON.stringify(rows.map((r) => r.body));
   check("the stored rows carry no plaintext", !raw.includes("the secret question") && !raw.includes("concise assistant"), raw.slice(0, 90));
   check("…and every one is MARKED, so a keyless reader refuses rather than guesses", rows.every((r) => (r.body as { enc?: string }).enc === "v1"));
@@ -231,7 +231,7 @@ try {
     const body = answer.body as Record<string, unknown>;
     check("the assistant message is sealed on the way back", body.enc === "v1" && !String(body.content).includes("the answer"));
     check("…and the session opens it", (await openBody(body, "message", dek!)).content === "the answer");
-    const chunks = await admin.query({ kind: "llm_chunk", match: { conversationId: conv.id } }, 20);
+    const chunks = await admin.queryOldest({ kind: "llm_chunk", match: { conversationId: conv.id } }, 20);
     check("the STREAM is sealed too, not just the final answer", chunks.length > 0 && chunks.every((r) => (r.body as { enc?: string }).enc === "v1"), `${chunks.length} chunks`);
     check(
       "…and no chunk leaks the answer, which a day of retention would otherwise keep in clear",
@@ -358,12 +358,12 @@ try {
   check("the turn completed a second round, so the whole chain ran", done !== null);
   check("the TOOL saw plaintext arguments", toolSaw === "/etc/secret", String(toolSaw));
 
-  const calls = await admin.query({ kind: "tool_call", match: { conversationId: conv2.id } }, 5);
+  const calls = await admin.queryOldest({ kind: "tool_call", match: { conversationId: conv2.id } }, 5);
   check("the tool_call is marked and carries no plaintext argument", calls.length > 0 &&
     calls.every((r) => (r.body as { enc?: string }).enc === "v1") &&
     !JSON.stringify(calls.map((r) => r.body)).includes("/etc/secret"));
 
-  const all = await admin.query({ kind: "message", match: { conversationId: conv2.id } }, 20);
+  const all = await admin.queryOldest({ kind: "message", match: { conversationId: conv2.id } }, 20);
   const dump = JSON.stringify(all.map((r) => r.body));
   check("…and neither the tool's output nor its arguments are in the transcript",
     !dump.includes("SECRET-OUTPUT") && !dump.includes("/etc/secret"));
@@ -406,7 +406,7 @@ try {
   check("…and after the laptop next opens it, the desktop can read it too",
     nowOnDesktop !== undefined && !(nowOnDesktop instanceof Error), String(nowOnDesktop));
   check("…without re-encrypting anything: the transcript is untouched",
-    (await admin.query({ kind: "message", match: { conversationId: conv.id } }, 20))
+    (await admin.queryOldest({ kind: "message", match: { conversationId: conv.id } }, 20))
       .every((r) => (r.body as { enc?: string }).enc === "v1"));
   // Bob publishing a key of his own must not put him in her conversation.
   const bobDesktop = await newFleetKeyPair();
@@ -468,7 +468,7 @@ const lostConv = await aliceC.put({ kind: "conversation", body: {} });
 // What must SURVIVE is as much the point as what goes: the records, their lineage and the chain.
 
 {
-  const before = await admin.query({ kind: "message", match: { conversationId: conv.id } }, 20);
+  const before = await admin.queryOldest({ kind: "message", match: { conversationId: conv.id } }, 20);
   const lineageBefore = await admin.getLineage(before[0].id).catch(() => null);
 
   // EVERY key artifact, not just the one the conversation started with. Enrolling the desktop wrote
@@ -490,7 +490,7 @@ const lostConv = await aliceC.put({ kind: "conversation", body: {} });
   check("…for the FLEET too, which is what makes it an erasure and not a permission", asFleetNow instanceof ConversationErasedError);
 
   // The paper trail is the half that must not go.
-  const still = await admin.query({ kind: "message", match: { conversationId: conv.id } }, 20);
+  const still = await admin.queryOldest({ kind: "message", match: { conversationId: conv.id } }, 20);
   check("the records survive, with their ids and ordering", still.length === before.length &&
     still[0].id === before[0].id);
   check("…and their lineage still walks", JSON.stringify(await admin.getLineage(before[0].id).catch(() => null)) === JSON.stringify(lineageBefore));
@@ -531,7 +531,7 @@ const lostConv = await aliceC.put({ kind: "conversation", body: {} });
     // `sandbox` declares which jails a host offers. Both are routing and neither carries prose.
     "cancel", "sandbox",
   ]);
-  const declared = (await admin.query({ kind: "kind_def" }, 200))
+  const declared = (await admin.queryOldest({ kind: "kind_def" }, 200))
     .map((r) => (r.body as { kind: string }).kind)
     .filter((k) => k !== "kind_def");
   const undecided = [...new Set(declared)].filter((k) => !(k in ENCRYPTED_FIELDS) && !CLEAR_BY_DECISION.has(k));

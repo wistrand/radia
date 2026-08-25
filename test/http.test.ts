@@ -384,8 +384,17 @@ Deno.test("http: a self-scoped grant narrows EVERY read verb, not just query", a
   const { space, handler, close } = await newHandler();
   try {
     space.registerKind({ kind: "secret", indexedPaths: [] });
+    // A KEYED kind, because the registry verb projects by the declared key and would otherwise
+    // refuse this kind outright, passing its row for the wrong reason.
+    space.registerKind({
+      kind: "keyed",
+      indexedPaths: [{ path: "k", type: "keyword" }],
+      claimable: false,
+      contentKey: ["k"],
+    });
     const secret = await space.put({ kind: "secret", body: { payload: "TOP-SECRET" } });
     await space.put({ kind: "task", body: { tag: "operator-owned" } });
+    await space.put({ kind: "keyed", body: { k: "x", tag: "operator-owned" } });
 
     const { definitionToken } = await space.createAgentDefinition("agent:w", [
       {
@@ -395,6 +404,7 @@ Deno.test("http: a self-scoped grant narrows EVERY read verb, not just query", a
         scope: { createdBy: "self" },
       },
       { principal: "agent:w", kind: "secret", operations: ["put"], scope: { createdBy: "self" } },
+      { principal: "agent:w", kind: "keyed", operations: ["query"], scope: { createdBy: "self" } },
     ]);
     const { runToken } = await space.mintRun(definitionToken);
     const auth = { authorization: `Bearer ${runToken}` };
@@ -407,6 +417,9 @@ Deno.test("http: a self-scoped grant narrows EVERY read verb, not just query", a
 
     const verbs: { verb: string; run: () => Promise<Response> }[] = [
       { verb: "query", run: () => handler(post("/v0/records/query", { kind: "task" }, auth)) },
+      // The server-side projection is a read verb like any other, and the one whose answer looks
+      // most absolute: "the current set" invites being read as the whole registry.
+      { verb: "registry", run: () => handler(post("/v0/records/registry", { kind: "keyed" }, auth)) },
       { verb: "read_one", run: () => handler(post("/v0/records/read-one", { kind: "task" }, auth)) },
       { verb: "take", run: () => handler(post("/v0/takes", { pattern: { kind: "task" } }, auth)) },
       { verb: "lineage", run: () => handler(get(`/v0/ops/records/${own.id}/lineage`, auth)) },
@@ -1366,6 +1379,64 @@ Deno.test("http: diagnostics reports the compaction backlog, not only the retent
     // Never folded into `sweepable`: a retention policy and a registry keeping its newest entry are
     // different things, and summing them hides which one a retention setting governs.
     assertEquals(d.sweepable?.eligible, 0, "compaction leaked into the retention count");
+  } finally {
+    await close();
+  }
+});
+
+Deno.test("http: a page cursor carries its direction, so a walk cannot reverse half way", async () => {
+  // The old answer was `nextAfter`, a bare record id, and `after` is EXCLUSIVE IN THE DIRECTION OF
+  // THE READ. So a caller that walked page one `desc` and page two without repeating `dir` did not
+  // get an error: it got records from BEFORE page one, silently, with the walk never terminating.
+  // Nothing in the protocol could catch it, because both requests were individually valid. The
+  // direction now rides in the cursor, which makes the combination unrepresentable rather than
+  // merely discouraged, and the CLI's continuation line stopped having to re-carry `--oldest`.
+  const { space, handler, close } = await newHandler();
+  try {
+    space.registerKind({ kind: "note", indexedPaths: [{ path: "i", type: "number" }], claimable: false });
+    for (let i = 1; i <= 6; i++) await space.put({ kind: "note", body: { i } });
+
+    const page = async (body: unknown) => await (await handler(post("/v0/records/query", body))).json();
+
+    const first = await page({ kind: "note", limit: 2, dir: "desc" });
+    assertEquals(first.records.map((r: { body: { i: number } }) => r.body.i), [6, 5]);
+    assert(first.nextCursor?.startsWith("d:"), `the cursor states the direction it was made in: ${first.nextCursor}`);
+    assertEquals(first.nextAfter, undefined, "the bare-id cursor is gone, not kept as an alias");
+
+    // Followed with NOTHING but the cursor, the walk keeps going the way it started.
+    const second = await page({ kind: "note", limit: 2, cursor: first.nextCursor });
+    assertEquals(second.records.map((r: { body: { i: number } }) => r.body.i), [4, 3]);
+    assertEquals(
+      await (async () => (await page({ kind: "note", limit: 2, cursor: second.nextCursor })).records.map((r: { body: { i: number } }) => r.body.i))(),
+      [2, 1],
+      "the third page continues rather than restarting",
+    );
+
+    // An ascending walk hands over an ascending cursor. Same request shape, opposite tag.
+    const asc = await page({ kind: "note", limit: 2 });
+    assertEquals(asc.records.map((r: { body: { i: number } }) => r.body.i), [1, 2]);
+    assert(asc.nextCursor?.startsWith("a:"), `an ascending walk must not hand back a descending cursor: ${asc.nextCursor}`);
+    assertEquals((await page({ kind: "note", limit: 2, cursor: asc.nextCursor })).records.map((r: { body: { i: number } }) => r.body.i), [3, 4]);
+
+    // The combinations are REFUSED, not resolved: either resolution is the reversing walk above.
+    for (const extra of [{ dir: "asc" }, { dir: "desc" }, { after: first.records[0].id }]) {
+      const res = await handler(post("/v0/records/query", { kind: "note", limit: 2, cursor: first.nextCursor, ...extra }));
+      assertEquals(res.status, 400, `cursor + ${JSON.stringify(extra)} must be refused`);
+    }
+
+    // A bare record id in `cursor` is refused rather than read as an ascending walk. This is what
+    // the `a:`/`d:` prefix buys over base64: the old shape is distinguishable, so a client that
+    // was not updated fails loudly on its FIRST follow instead of quietly walking the wrong way.
+    const bare = await handler(post("/v0/records/query", { kind: "note", limit: 2, cursor: first.records[0].id }));
+    assertEquals(bare.status, 400, "a bare record id must not be accepted as a cursor");
+
+    // An order_by read is offered no cursor at all: a record-id keyset cannot express that order,
+    // and the server already refuses after/dir with it. Offering one would be an invitation to 400.
+    space.registerKind({ kind: "ranked", indexedPaths: [{ path: "score", type: "number" }], sortablePaths: ["score"], claimable: false });
+    for (let i = 1; i <= 6; i++) await space.put({ kind: "ranked", body: { score: i } });
+    const ordered = await page({ kind: "ranked", limit: 2, orderBy: [{ path: "score", dir: "desc" }] });
+    assertEquals(ordered.records.length, 2);
+    assertEquals(ordered.nextCursor, undefined, "an order_by read must not be handed a record-id cursor");
   } finally {
     await close();
   }

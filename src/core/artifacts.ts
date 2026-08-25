@@ -148,7 +148,7 @@ export async function shredArtifact(
   // undercounts would let a shared blob past the guard below, which is the failure that turns a
   // targeted erasure into somebody else's data loss.
   const refs = await readRegistry(
-    (limit, after) => h.query({ kind: ARTIFACT, match: { digest: def.digest } }, limit, { dir: "desc", after }),
+    (page) => h.query({ kind: ARTIFACT, match: { digest: def.digest } }, page.limit, page),
     (_b, r) => r.id,
   );
   const references = refs.entries.size;

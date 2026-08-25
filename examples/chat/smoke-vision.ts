@@ -139,7 +139,7 @@ const worker = new Deno.Command(Deno.execPath(), {
 }).spawn();
 
 async function analyzeCapability(): Promise<ToolDef | undefined> {
-  const rows = await admin.query({ kind: "capability", match: { tool: "analyze_image" } }, 1, { dir: "desc" });
+  const rows = await admin.queryNewest({ kind: "capability", match: { tool: "analyze_image" } }, 1);
   return (rows[0]?.body as { def?: ToolDef } | undefined)?.def;
 }
 let def: ToolDef | undefined;
@@ -180,7 +180,7 @@ check(
 );
 check("…and the size limit it will actually enforce", description.includes("512 bytes"), description.slice(0, 90));
 
-const ads = await admin.query({ kind: "model", match: { tier: "vision" } }, 1, { dir: "desc" });
+const ads = await admin.queryNewest({ kind: "model", match: { tier: "vision" } }, 1);
 const ad = ads[0]?.body as { model?: string; inputMediaTypes?: string[] } | undefined;
 check("the vision model is on a record, not only in prose", ad?.model === VISION_MODEL, String(ad?.model));
 check(

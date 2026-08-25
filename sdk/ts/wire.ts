@@ -179,6 +179,46 @@ export interface Pattern {
 export interface Page {
   after?: Ulid;
   dir?: "asc" | "desc"; // default "asc"
+  /**
+   * A cursor from a previous page's `nextCursor`. It CARRIES THE DIRECTION, so it is an
+   * alternative to `after` + `dir` rather than an addition to them: sending either alongside it is
+   * a 400, because the only thing that could mean is a walk changing direction half way through,
+   * which re-reads records it already returned and skips ones it never did.
+   */
+  cursor?: Cursor;
+}
+
+/**
+ * An opaque page cursor. Treat it as a token to echo back; the encoding below is an implementation
+ * detail that exists so a MISUSE is loud rather than silent.
+ */
+export type Cursor = string;
+
+/**
+ * `<a|d>:<ulid>`, and deliberately not base64.
+ *
+ * A cursor that carried only the id let a caller walk the first page `desc` and the second `asc`
+ * with nothing to notice: `after` is exclusive in the direction of the read, so the second page
+ * returned records from BEFORE the first. Encoding the direction makes that unrepresentable.
+ *
+ * The `:` is what makes an old bare-ULID `after` value DISTINGUISHABLE rather than misread: a ULID
+ * is 26 characters of Crockford base32 and can never contain one, so `decodeCursor` can refuse.
+ * Base64 would have hidden that, and hidden the direction from anyone reading a log.
+ */
+export function encodeCursor(dir: "asc" | "desc", after: Ulid): Cursor {
+  return `${dir === "desc" ? "d" : "a"}:${after}`;
+}
+
+/** Inverse of `encodeCursor`. Throws on anything it did not produce, including a bare record id. */
+export function decodeCursor(cursor: Cursor): { dir: "asc" | "desc"; after: Ulid } {
+  const at = cursor.indexOf(":");
+  const tag = at === 1 ? cursor[0] : "";
+  if (tag !== "a" && tag !== "d") {
+    throw new Error(`not a page cursor: ${JSON.stringify(cursor)} (expected a value from nextCursor)`);
+  }
+  const after = cursor.slice(2);
+  if (after.length === 0) throw new Error("page cursor carries no record id");
+  return { dir: tag === "d" ? "desc" : "asc", after };
 }
 
 // ---------------------------------------------------------------------------

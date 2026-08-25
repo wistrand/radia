@@ -107,11 +107,7 @@ export async function previousTurnTier(
   tiers: string[],
 ): Promise<string | null> {
   if (!body.conversationId) return null;
-  const rows = await c.query(
-    { kind: "llm_call", match: { conversationId: body.conversationId, tier: { $exists: true } } },
-    30,
-    { dir: "desc" },
-  );
+  const rows = await c.queryNewest({ kind: "llm_call", match: { conversationId: body.conversationId, tier: { $exists: true } } }, 30);
   for (const r of rows) {
     const b = r.body as { tier?: string; turnAt?: number };
     // STRICTLY EARLIER, not merely "not this turn". Skipping only the current turn also accepts a
@@ -159,8 +155,7 @@ async function currentTurn(
 ): Promise<{ text: string; toolCalls: number; index?: number; encrypted?: boolean }> {
   let limit = 8;
   for (;;) {
-    const rows = (await c.query(
-      {
+    const rows = (await c.queryOrdered({
         // `owner` CONJOINED, for the reason in package V (plan-audit-remediation.md): both fields
         // come from the call body, which is a claim, and this worker's `message` grant is
         // unscoped. Without it a session can name somebody else's conversation and have its text
@@ -168,9 +163,7 @@ async function currentTurn(
         kind: "message",
         match: { conversationId, owner, index: { $lte: upToIndex } },
         orderBy: [{ path: "index", dir: "desc" }],
-      },
-      limit,
-    )).map((r) => r.body as { index: number; role: string; content?: string | null });
+      }, limit)).map((r) => r.body as { index: number; role: string; content?: string | null });
     const at = rows.findIndex((m) => m.role === "user"); // rows are newest-first
     if (at >= 0) {
       // NEVER the ciphertext. This worker holds no key and must not (phase 0 exists so it does not
@@ -301,10 +294,7 @@ async function capToTurn(
   chosen: string,
 ): Promise<string> {
   if (!body.conversationId || !body.round || body.turnAt === undefined) return chosen; // round 0 sets the bar
-  const rows = await c.query(
-    { kind: "llm_call", match: { conversationId: body.conversationId, turnAt: body.turnAt } },
-    50,
-  );
+  const rows = await c.queryOldest({ kind: "llm_call", match: { conversationId: body.conversationId, turnAt: body.turnAt } }, 50);
   const opening = rows.map((r) => (r.body as { round?: number; tier?: string }))
     .filter((b) => b.tier && (b.round ?? 0) === 0)[0]?.tier;
   if (!opening) return chosen;

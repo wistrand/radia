@@ -192,7 +192,7 @@ async function call(
     }
 
     case "space_query":
-      return pretty(await client.query(pat(a), num(a, "limit") ?? 50));
+      return pretty(await client.queryOldest(pat(a), num(a, "limit") ?? 50));
 
     case "space_read_one":
       return pretty(await client.readOne(pat(a)));

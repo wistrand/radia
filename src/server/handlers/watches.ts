@@ -159,6 +159,11 @@ export async function handleWatchEvents(
           }
         }
         if (closed) break;
+        // The periodic backstop runs on BOTH paths, which the drain below would otherwise skip. It
+        // exists for an authorization-bearing kind missing from `AUTHORIZATION_KINDS`, so a stream
+        // draining a long backlog is exactly when it must not be suspended: that drain is the
+        // longest this loop ever goes without parking.
+        if (Date.now() - lastCheck >= AUTH_RECHECK_MS && !await stillAuthorized()) break;
         // A FULL batch means there is more behind it, so read again instead of parking. Waiting on
         // the 15s keepalive after every full page made a watch resuming from an old cursor over an
         // idle space crawl its backlog at 200 events per 15 seconds: nothing wakes it, because the

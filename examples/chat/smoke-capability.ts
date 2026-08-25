@@ -56,7 +56,7 @@ function check(name: string, ok: boolean, detail = "") {
  *  re-implementation here could only ever prove that this file's own loop was right. */
 async function toolList() {
   const view = await readRegistry<CapabilityBody>(
-    (limit, after) => client.query({ kind: "capability" }, limit, { dir: "desc", after }),
+    (page) => client.queryPage({ kind: "capability" }, page.limit, page).then((r) => r.records),
     capabilityKey,
   );
   return collapseByTool(view.entries);
@@ -111,7 +111,7 @@ check(
 );
 
 // ---- publishing is still cheap ----
-const countCaps = async () => (await client.query({ kind: "capability" }, 500)).length;
+const countCaps = async () => (await client.queryOldest({ kind: "capability" }, 500)).length;
 const before = await countCaps();
 await publishCapability(client, READ_FILE, A);
 check("re-publishing an unchanged advertisement writes nothing", (await countCaps()) === before, `${before} records`);

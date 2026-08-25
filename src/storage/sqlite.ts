@@ -53,7 +53,7 @@ import {
   rowToSeal,
   runtimeInsertValues,
 } from "./row.ts";
-import { firstByOrder, matchesRecord, orderRecords, pageRecords } from "../core/matching.ts";
+import { firstByOrder, matchesRecord, orderRecords, pageClause, pageRecords } from "../core/matching.ts";
 import { isTrivial, type JsonDialect, pushdown } from "./pushdown.ts";
 import { type Candidate, type ClaimCursor, cursorOf, rankClaimable } from "../core/take.ts";
 import { addSeconds, minIso } from "../core/time.ts";
@@ -622,12 +622,11 @@ export class SqliteAdapter implements StorageAdapter {
     // Indexed lookup through the reverse edge table. `record_edges` exists so that finding a
     // record's children is an index seek; matching against the `parent_ids` JSON is a scan of
     // every record in the space to find a handful of children.
-    const dir = page?.dir === "desc" ? "desc" : "asc";
-    const cursor = page?.after ? ` and r.id ${dir === "desc" ? "<" : ">"} ?` : "";
+    const walk = pageClause(page, { column: "r.id", placeholder: () => "?" });
     const rows = this.db.prepare(
       `select r.* from record_edges e join records r on r.id = e.child_id
-        where e.parent_id = ?${cursor} order by r.id ${dir} limit ?`,
-    ).all(recordId, ...(page?.after ? [page.after] : []), limit) as RawRow[];
+        where e.parent_id = ?${walk.where} ${walk.orderBy} limit ?`,
+    ).all(recordId, ...walk.params, limit) as RawRow[];
     return Promise.resolve(rows.map(rowToRecord));
   }
 
@@ -974,9 +973,8 @@ export class SqliteAdapter implements StorageAdapter {
     const where = isTrivial(filter) ? "" : ` and ${filter.sql}`;
     // The cursor is an id comparison, so it is always EXACT: it constrains nothing the oracle
     // would have to re-check, and it applies whether or not the body filter could be pushed.
-    const dir = page?.dir === "desc" ? "desc" : "asc";
-    const cmp = dir === "desc" ? "<" : ">";
-    const cursor = page?.after ? ` and id ${cmp} ?` : "";
+    const walk = pageClause(page, { column: "id", placeholder: () => "?" });
+    const { where: cursor, orderBy, cmp } = walk;
     // The author restriction is an exact column predicate, so it never needs the oracle's help and
     // never blocks the pushed limit.
     const author = scope?.createdBy ? ` and created_by in (${qmarks(scope.createdBy.length)})` : "";
@@ -984,7 +982,7 @@ export class SqliteAdapter implements StorageAdapter {
     const bounded = want !== undefined && filter.exact && !match.orderBy?.length;
     if (bounded) {
       const rows = this.db
-        .prepare(`select * from records where kind = ?${where}${cursor}${author} order by id ${dir} limit ?`)
+        .prepare(`select * from records where kind = ?${where}${cursor}${author} ${orderBy} limit ?`)
         .all(...head, want) as RawRow[];
       return rows.map(rowToRecord).filter((rec) => matchesRecord(rec, match));
     }
@@ -994,9 +992,9 @@ export class SqliteAdapter implements StorageAdapter {
     // what lets another principal's request run, which a single `.all()` over a million rows does
     // not (this adapter's driver is synchronous, so nothing else yields).
     const chunk = this.db
-      .prepare(`select * from records where kind = ?${where}${cursor}${author} and id ${cmp} ? order by id ${dir} limit ?`);
+      .prepare(`select * from records where kind = ?${where}${cursor}${author} and id ${cmp} ? ${orderBy} limit ?`);
     const first = this.db
-      .prepare(`select * from records where kind = ?${where}${cursor}${author} order by id ${dir} limit ?`);
+      .prepare(`select * from records where kind = ?${where}${cursor}${author} ${orderBy} limit ?`);
     const size = scanChunkSize(match.scanBudget);
     const out: RadiaRecord[] = [];
     let examined = 0;

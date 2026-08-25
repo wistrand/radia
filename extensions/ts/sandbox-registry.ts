@@ -47,7 +47,7 @@ export async function declareSandbox(client: RadiaClient, spec: SandboxSpec): Pr
 
 /** The current declaration for a name, or null. Latest-wins, bounded, like `readWorkspace`. */
 export async function readSandbox(client: RadiaClient, name: string): Promise<(SandboxSpec & { id: string }) | null> {
-  const rows = await client.query({ kind: "sandbox", match: { name } }, 1, { dir: "desc" });
+  const rows = await client.queryNewest({ kind: "sandbox", match: { name } }, 1);
   if (rows.length === 0) return null;
   return { id: rows[0].id, ...(rows[0].body as unknown as SandboxSpec) };
 }
@@ -55,7 +55,7 @@ export async function readSandbox(client: RadiaClient, name: string): Promise<(S
 /** Every declared sandbox: "what can this space execute, and under what guarantees". An operator
  *  question that used to be answerable only by reading a deployment script. */
 export async function listSandboxes(client: RadiaClient): Promise<(SandboxSpec & { id: string })[]> {
-  const rows = await client.query({ kind: "sandbox" }, 200, { dir: "desc" });
+  const rows = await client.queryNewest({ kind: "sandbox" }, 200);
   const newest = new Map<string, { id: string; body: unknown }>();
   for (const r of rows) {
     const name = (r.body as { name?: string }).name;

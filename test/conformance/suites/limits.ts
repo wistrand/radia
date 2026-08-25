@@ -9,7 +9,7 @@
 // The rejections matter more than the acceptances: a limit nobody has seen refuse anything is a
 // number in a constant.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import type { Suite } from "../harness.ts";
 import type { StorageAdapter } from "../../../src/storage/adapter.ts";
 import { Space } from "../../../src/core/space.ts";
@@ -35,6 +35,165 @@ async function codeOf(fn: () => Promise<unknown>): Promise<string> {
 }
 
 export const limitSuites: Suite[] = [
+  {
+    // `kind_def` is uncompactable like the two below and gets NO ceiling, because neither shape
+    // fits: a cap per kind NAME would not bound what `loadKinds` pays (that read is over the whole
+    // kind), and a cap on the TOTAL would refuse declaring a new kind, which is the one thing here
+    // that legitimately grows. The absorb is the whole fix, and it is enough because the growth has
+    // exactly one source: `registerKind` is content-keyed, so a re-declaration dedupes for the
+    // idempotency window and appends past it, and a fleet declaring its kinds on every start
+    // appends one record per kind per start forever.
+    name: "an identical re-declaration is absorbed, and a real schema change still writes",
+    run: async (adapter) => {
+      const space = new Space(adapter, { idempotencyRetentionSeconds: 0 });
+      const def = (paths: { path: string; type: string }[]) => ({
+        kind: "kind_def",
+        body: { kind: "memo", indexedPaths: paths, claimable: false },
+      });
+
+      // A fleet restarting past the idempotency window, in fast motion.
+      for (let i = 0; i < 25; i++) await space.put(def([{ path: "tag", type: "keyword" }]));
+      assertEquals(
+        (await space.query({ kind: "kind_def", match: { kind: "memo" } }, 100)).length,
+        1,
+        "25 identical declarations are one record",
+      );
+
+      // A REAL change still writes, which is what keeps the declaration history this kind is
+      // excluded from compaction for.
+      await space.put(def([{ path: "tag", type: "keyword" }, { path: "seq", type: "integer" }]));
+      const rows = await space.query({ kind: "kind_def", match: { kind: "memo" } }, 100, { dir: "desc" });
+      assertEquals(rows.length, 2, "a changed declaration is a successor, not an absorbed duplicate");
+      // And it is the one in force: the newest declaration wins.
+      assertEquals((rows[0].body as { indexedPaths: unknown[] }).indexedPaths.length, 2);
+      await space.put({ kind: "memo", body: { tag: "t", seq: 1 } });
+      assertEquals((await space.query({ kind: "memo", match: { seq: 1 } }, 5)).length, 1, "the new path matches");
+
+      // Declaring a DIFFERENT kind is never refused: there is no ceiling on variety.
+      for (let i = 0; i < 30; i++) {
+        await space.put({ kind: "kind_def", body: { kind: `k${i}`, indexedPaths: [], claimable: false } });
+      }
+      assert((await space.query({ kind: "kind_def" }, 200)).length >= 31);
+    },
+  },
+  {
+    // The SAME rule on the registry the OPS-PLANE GATE reads. `Space.opsPowers` walks a principal's
+    // whole `ops_grant` history on every `/v0/ops/*` request and the kind is never compacted, so an
+    // unbounded history is a permanent tax on every ops call. A registry is either compactable or
+    // capped, never neither (agent_docs/plan-bounded-reads.md).
+    //
+    // What reaches it is assigning powers ON A SCHEDULE, which a shipped example does:
+    // `examples/analysis/run.ts` calls `grantObserve` for every enrolled principal on every launch.
+    name: "a principal's ops-power HISTORY is capped, because the ops gate re-reads it",
+    run: async (adapter) => {
+      const space = new Space(adapter, { maxOpsGrantRecordsPerPrincipal: 8, idempotencyRetentionSeconds: 0 });
+      const power = (ops: string[]) => ({ kind: "ops_grant", body: { principal: "human:ops", operations: ops } });
+
+      // A launcher republishing the same power, past the idempotency window: the analysis example's
+      // shape in fast motion. It must keep working AND must not grow the history AT ALL. Content
+      // keying dedupes for the window and not past it, so before the absorb this appended a record
+      // per launch forever, on a kind nothing can sweep.
+      for (let i = 0; i < 30; i++) await space.put(power(["observe"]));
+      const kept = await space.query({ kind: "ops_grant", match: { principal: "human:ops" } }, 100);
+      assertEquals(kept.length, 1, "an identical re-put is answered with the record already carrying the power");
+      // And the power is still in force, which is the postcondition that must hold.
+      assert((await space.opsPowers("human:ops")).has("observe"));
+
+      // A WITHDRAWAL is never refused: it is how a caller reduces what the reader projects. Checked
+      // here, while `["observe"]` is the only identity holding that power, or a later identity
+      // carrying it would mask the retirement and this would pass for the wrong reason.
+      await space.put({ kind: "ops_grant", body: { principal: "human:ops", operations: ["observe"], retired: true } });
+      assert(!(await space.opsPowers("human:ops")).has("observe"), "and it takes effect");
+
+      // A NEW identity is refused once the ceiling is REACHED, which now takes distinct identities
+      // rather than repetition: the absorb means repetition never gets there. An identity is
+      // (principal, sorted operations) over a closed five-power vocabulary, so this walks distinct
+      // subsets until the ceiling of 8 is met.
+      // Two records exist already (the grant and its retirement), so six more distinct identities
+      // meet the ceiling of 8 and the seventh is refused.
+      const subsets = [["sweep"], ["purge"], ["declassify"], ["remediate"], ["sweep", "purge"], ["sweep", "declassify"]];
+      for (const ops of subsets) await space.put(power(ops));
+      assertEquals((await space.query({ kind: "ops_grant", match: { principal: "human:ops" } }, 100)).length, 8);
+      const e = await assertRejects(() => space.put(power(["declassify", "remediate"])), RadiaError);
+      assertEquals((e as RadiaError).code, "too_many_ops_grants");
+
+      // Another principal is unaffected: the ceiling is per principal, the granularity the
+      // expensive read uses.
+      await space.put({ kind: "ops_grant", body: { principal: "human:other", operations: ["observe"] } });
+      assert((await space.opsPowers("human:other")).has("observe"));
+    },
+  },
+  {
+    // `Space.access` re-reads a (principal, kind)'s whole grant history on EVERY authorized
+    // request, and `GRANT` is in NEVER_COMPACT so nothing sweeps it: measured, `authorize()` goes
+    // from 1.72ms at one record to 93.57ms at 5,000 on Postgres. The ceiling refuses the write that
+    // would make the hot path slower, at the site of the bug (a fleet republishing grants), rather
+    // than degrading the space forever. See agent_docs/plan-registry-cost.md.
+    name: "a principal's grant HISTORY is capped per kind, because every authorize re-reads it",
+    run: async (adapter) => {
+      const space = new Space(adapter, { maxGrantRecordsPerPrincipalKind: 8 });
+      space.registerKind({ kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }] });
+      const write = (i: number) =>
+        space.put({
+          kind: "grant",
+          body: { principal: "agent:w", kind: "task", operations: ["put"], pattern: { tag: `t${i}` } },
+        });
+      for (let i = 0; i < 8; i++) await write(i);
+
+      const e = await assertRejects(() => write(99), RadiaError);
+      assertEquals((e as RadiaError).code, "too_many_grants");
+
+      // A WITHDRAWAL is always allowed: it is how a caller shrinks what the reader projects, and
+      // refusing it would trap exactly the state the ceiling exists to prevent.
+      await space.put({
+        kind: "grant",
+        body: { principal: "agent:w", kind: "task", operations: ["put"], pattern: { tag: "t0" }, retired: true },
+      });
+
+      // A re-put of a LIVE identity must keep working (a fleet at the ceiling has to restart) and
+      // must NOT grow the history. Content-keying dedupes only inside the idempotency window, so
+      // this exercises the case past it, which is a weekly-restarting fleet in fast motion: the
+      // first version of this ceiling exempted such a re-put and 40 of them sailed past a ceiling
+      // of 10, leaving it unable to bound the very case it was built for.
+      {
+        const past = new Space(adapter, { maxGrantRecordsPerPrincipalKind: 8, idempotencyRetentionSeconds: 0 });
+        past.registerKind({ kind: "note", indexedPaths: [] });
+        const body = { principal: "agent:r", kind: "note", operations: ["put"] };
+        for (let i = 0; i < 30; i++) await past.put({ kind: "grant", body });
+        const kept = await past.query({ kind: "grant", match: { principal: "agent:r", kind: "note" } }, 100);
+        assertEquals(kept.length, 1, "an identical re-put never grows the history, ceiling or not");
+        await past.authorize("agent:r", "put", "note"); // and the grant is still in force
+      }
+      // A ceiling must never block a write that REDUCES authority. `grantKey` excludes `scope`, so
+      // a narrowing carries the SAME identity with a different body; absorbing it on identity alone
+      // dropped it silently and left the wider grant standing, and refusing it would trap a
+      // maxed-out pair as un-tightenable. It is a replacement, so it writes.
+      {
+        const tight = new Space(adapter, { maxGrantRecordsPerPrincipalKind: 4, idempotencyRetentionSeconds: 0 });
+        tight.registerKind({ kind: "memo", indexedPaths: [] });
+        const base = { principal: "agent:n", kind: "memo", operations: ["query"] };
+        for (let i = 0; i < 6; i++) await tight.put({ kind: "grant", body: base });
+        await tight.put({ kind: "grant", body: { ...base, scope: { createdBy: "self" } } });
+        const perms = await tight.effectivePermissions("agent:n") as { kinds: { kind: string; readsScopedToSelf?: boolean }[] };
+        assertEquals(
+          perms.kinds.find((k) => k.kind === "memo")?.readsScopedToSelf,
+          true,
+          "narrowing at the ceiling must take effect, not be absorbed as a duplicate",
+        );
+      }
+      await write(1);
+
+      // Another principal is unaffected, and so is another kind: the ceiling is per pair, which is
+      // the granularity the expensive read uses.
+      await space.put({ kind: "grant", body: { principal: "agent:other", kind: "task", operations: ["put"] } });
+      space.registerKind({ kind: "job", indexedPaths: [] });
+      await space.put({ kind: "grant", body: { principal: "agent:w", kind: "job", operations: ["put"] } });
+
+      // And the grant that was refused never landed.
+      const rows = await space.query({ kind: "grant", match: { principal: "agent:w", kind: "task" } }, 100);
+      assert(!rows.some((r) => (r.body as { pattern?: { tag?: string } }).pattern?.tag === "t99"));
+    },
+  },
   {
     name: "a pattern too large to evaluate cheaply is refused",
     run: async (adapter) => {

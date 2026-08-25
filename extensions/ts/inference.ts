@@ -201,7 +201,7 @@ async function contextFor(
   // a caller cannot use a miss to make the classifier answer about nothing.
   if (body.classifyOf) {
     const { conversationId, owner, index, context } = body.classifyOf;
-    const rows = await c.query({ kind: "message", match: { conversationId, owner, index } }, 1);
+    const rows = await c.queryOldest({ kind: "message", match: { conversationId, owner, index } }, 1);
     const referenced = rows[0] ? await open(rows[0].body as ThreadRow) : undefined;
     if (referenced) assertReadable(referenced, "contextFor(classifyOf)");
     const text = referenced?.content ?? "";
@@ -232,10 +232,7 @@ async function contextFor(
    */
   const mine = { conversationId: body.conversationId, owner: body.owner };
   if (window <= 0) {
-    const rows = await c.query(
-      { kind: "message", match: mine, orderBy: [{ path: "index" }] },
-      2000,
-    );
+    const rows = await c.queryOrdered({ kind: "message", match: mine, orderBy: [{ path: "index" }] }, 2000);
     const opened = await Promise.all(rows.map((r) => open(r.body as ThreadRow)));
     return {
       messages: opened.filter((m) => m.index <= upTo).map(toMessage),
@@ -248,7 +245,7 @@ async function contextFor(
   // `assembleContext` folds in can be a pointer rather than a summary.
   const tail = await selectWindow(
     async (limit) =>
-      (await c.query({
+      (await c.queryOrdered({
         kind: "message",
         match: { ...mine, index: { $lte: upTo } },
         orderBy: [{ path: "index", dir: "desc" }],
@@ -259,7 +256,7 @@ async function contextFor(
   // The standing instructions are the NEWEST system message, not index 0: that is what lets a
   // RESUMED conversation run under a current disposition rather than whatever was written when it
   // started. One indexed query, because `role` is a declared path.
-  const newestSystem = (await c.query({
+  const newestSystem = (await c.queryOrdered({
     kind: "message",
     match: { ...mine, role: "system", index: { $lte: upTo } },
     orderBy: [{ path: "index", dir: "desc" }],

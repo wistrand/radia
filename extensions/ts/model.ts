@@ -15,7 +15,6 @@
 // registry growth itself is handled now (the kind declares `contentKey`, so `radia gc` compacts it).
 
 import type { RadiaClient } from "../../sdk/ts/client.ts";
-import { activeByKey } from "../../sdk/ts/registry.ts";
 
 export interface ModelAd {
   tier: string;
@@ -40,8 +39,13 @@ export interface ModelAd {
  * newest-first, for the other half of that rule: a bounded page hides the newest advertisement.
  */
 export async function liveModels(client: RadiaClient): Promise<ModelAd[]> {
-  const rows = await client.queryAll({ kind: "model" });
-  return [...activeByKey<{ tier?: string }>(rows, (b) => b?.tier).values()]
+  // Projected by the SERVER from the key the kind declares. The pair this replaces was
+  // `queryAll` + `activeByKey(b => b.tier)`, which restated `contentKey: ["tier"]` in code, and
+  // `kinds.ts` carried a comment saying a human had checked the two agreed. That check is gone
+  // because the second statement is gone (agent_docs/plan-bounded-reads.md).
+  const view = await client.registry("model");
+  if (!view.complete) throw new Error("could not read the model registry completely; refusing to route on a prefix");
+  return view.entries
     .map((r) => r.body as ModelAd)
     .filter((m) => !m.modalities || m.modalities.includes("text"))
     .sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
@@ -51,7 +55,7 @@ export async function liveModels(client: RadiaClient): Promise<ModelAd[]> {
  *  so an ascending read would return the advertisement it withdrew. */
 async function current(client: RadiaClient, tier: string): Promise<{ id: string; ad: ModelAd } | undefined> {
   try {
-    const rows = await client.query({ kind: "model", match: { tier } }, 1, { dir: "desc" });
+    const rows = await client.queryNewest({ kind: "model", match: { tier } }, 1);
     return rows[0] ? { id: rows[0].id, ad: rows[0].body as ModelAd } : undefined;
   } catch {
     return undefined; // no grant to read models: fall through and publish

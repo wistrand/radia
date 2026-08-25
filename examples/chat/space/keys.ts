@@ -118,7 +118,7 @@ export async function currentFleetKey(
 ): Promise<{ keyId: string; publicKey: string } | undefined> {
   type Body = { keyId: string; publicKey: string; retired?: boolean };
   const view = await readRegistry<Body>(
-    (limit, after) => c.query({ kind: FLEET_KEY_KIND }, limit, { after }),
+    (page) => c.queryPage({ kind: FLEET_KEY_KIND }, page.limit, page).then((r) => r.records),
     (b) => b.keyId,
   );
   if (!view.complete) throw new Error("could not read the fleet key registry completely; refusing to seal");
@@ -178,7 +178,7 @@ export async function livePersonKeys(
 ): Promise<{ keyId: string; publicKey: string }[]> {
   type Body = { principal: string; keyId: string; publicKey: string; retired?: boolean };
   const view = await readRegistry<Body>(
-    (limit, after) => c.query({ kind: PERSON_KEY_KIND, match: { principal } }, limit, { after }),
+    (page) => c.queryPage({ kind: PERSON_KEY_KIND, match: { principal } }, page.limit, page).then((r) => r.records),
     (b) => b.keyId,
   );
   if (!view.complete) throw new Error(`could not read ${principal}'s key registry completely; refusing to seal`);
@@ -219,7 +219,7 @@ export function conversationKeys(
     // NEWEST, and that is not a detail. Enrolling another machine writes a SUCCESSOR key record, so
     // an unordered read — which returns the oldest — would keep handing back the original wrap set
     // and the newly enrolled machine would never appear. Latest wins, like every registry here.
-    const rec = (await c.query({ kind: CONVERSATION_KEY_KIND, match: { conversationId } }, 1, { dir: "desc" }))[0];
+    const rec = (await c.queryNewest({ kind: CONVERSATION_KEY_KIND, match: { conversationId } }, 1))[0];
     if (!rec) return undefined;
     const body = rec.body as { owner?: string; keys?: string };
     if (owner !== undefined && body.owner !== owner) {
@@ -304,11 +304,11 @@ export async function recoverPersonKeys(
   // NEWEST per conversation: enrolment writes successors, and only the latest names the artifact
   // holding every wrap so far.
   const view = await readRegistry<{ conversationId?: string; keys?: string }>(
-    (limit, after) =>
-      admin.query({
+    (page) =>
+      admin.queryPage({
         kind: CONVERSATION_KEY_KIND,
         match: { owner: principal, ...(opts.conversationId ? { conversationId: opts.conversationId } : {}) },
-      }, limit, { after }),
+      }, page.limit, page).then((r) => r.records),
     (b) => b.conversationId,
   );
   if (!view.complete) throw new Error(`could not enumerate ${principal}'s conversations; refusing a partial recovery`);
@@ -359,7 +359,7 @@ export async function eraseConversation(
   conversationId: string,
 ): Promise<{ shredded: string[] }> {
   const records = await readRegistry<{ keys?: string }>(
-    (limit, after) => admin.query({ kind: CONVERSATION_KEY_KIND, match: { conversationId } }, limit, { after }),
+    (page) => admin.queryPage({ kind: CONVERSATION_KEY_KIND, match: { conversationId } }, page.limit, page).then((r) => r.records),
     (_b, r) => r.id, // every version, not the newest: each names an artifact that must go
   );
   if (!records.complete) {

@@ -35,7 +35,7 @@ import { newer } from "./registry.ts";
  *  A runtime key also NEUTRALIZES a hostile redeclaration: `RUNTIME_KEYS[kind] ?? contentKey`
  *  means a `put: kind_def` grant cannot re-key one of these registries into compaction under an
  *  arbitrary key (the move that keeps `shred`/`interest`… out of this table entirely). */
-const RUNTIME_KEYS: Record<string, string[]> = {
+export const RUNTIME_KEYS: Record<string, string[]> = {
   // A run's records (mint, renewals at half-life, the stop) all carry the same `run`; the newest
   // holds the live tokenHash/expiry/status, which is exactly what credential resolution reads.
   [AGENT_RUN]: ["run"],
@@ -83,7 +83,16 @@ const MAX_WALK = 20_000;
 
 /** The latest-wins identity of one record, or null when it cannot be classified (a key path
  *  missing means KEEP: an unclassifiable record must never be deleted on a guess). */
-function keyOf(rec: RadiaRecord, paths: string[]): string | null {
+/**
+ * A record's latest-wins identity, from the paths its kind DECLARES.
+ *
+ * Exported so compaction and the registry read use ONE derivation. The key was otherwise stated
+ * twice per registry: once as `contentKey` (what `gc` compacts by) and again as a `keyOf` closure at
+ * each reader, and nothing checked they agreed. Disagreement is silent and one-directional in the
+ * worst way: `gc` deletes by its key while readers project by theirs, so a record every reader
+ * considers current can be swept.
+ */
+export function keyOf(rec: RadiaRecord, paths: string[]): string | null {
   const parts: unknown[] = [];
   for (const p of paths) {
     const v = getPath(rec.body, p);
@@ -95,7 +104,10 @@ function keyOf(rec: RadiaRecord, paths: string[]): string | null {
 
 export async function compactRegistries(
   host: CompactionHost,
-  opts: { dryRun?: boolean; runId: string },
+  /** `only` restricts the walk to one kind. That is what lets the amortized trigger pay for the
+   *  kind it just dirtied instead of walking every registry in the space (plan-registry-cost.md
+   *  item 3); the `gc` verb passes nothing and walks them all, as before. */
+  opts: { dryRun?: boolean; runId: string; only?: string },
 ): Promise<CompactionResult> {
   const out: CompactionResult = { compacted: 0, superseded: 0, byKind: {}, more: false };
   const record = async (ids: string[], kind: string) => {
@@ -118,6 +130,7 @@ export async function compactRegistries(
   const keyed: { kind: string; paths: string[] }[] = [];
   for (const def of host.listKinds()) {
     if (NEVER_COMPACT.has(def.kind)) continue;
+    if (opts.only !== undefined && def.kind !== opts.only) continue;
     const paths = RUNTIME_KEYS[def.kind] ?? def.contentKey;
     if (paths && paths.length > 0) keyed.push({ kind: def.kind, paths });
   }
@@ -158,7 +171,7 @@ export async function compactRegistries(
   // --- interests: live while their RUN is, so the key is liveness, not succession. An interest
   // is published per run at agentLoop start, which makes every restart append; the dead runs'
   // entries are what `liveInterests` filters on every read, forever, until they are gone.
-  {
+  if (opts.only === undefined || opts.only === INTEREST) {
     const liveness = new Map<string, boolean>();
     const doomed: string[] = [];
     let after: string | undefined;

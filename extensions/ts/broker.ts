@@ -684,7 +684,7 @@ async function perform(
       if (call.op !== "query") {
         return { id: call.id, ok: true, result: (await ctx.client.readOne(p)) ?? null };
       }
-      return { id: call.id, ok: true, result: await ctx.client.query(p, Math.min(Number(limit) || 50, 500)) };
+      return { id: call.id, ok: true, result: await ctx.client.queryOldest(p, Math.min(Number(limit) || 50, 500)) };
     }
     throw new Error(`unsupported op '${call.op}': the broker serves put, query and read_one`);
   } catch (e) {

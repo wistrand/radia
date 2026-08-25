@@ -14,7 +14,7 @@
 
 import type { Space } from "../core/space.ts";
 import type { OpsPower } from "../core/kinds.ts";
-import { handlePut, handleQuery, handleReadOne } from "./handlers/records.ts";
+import { handlePut, handleQuery, handleReadOne, handleRegistry } from "./handlers/records.ts";
 import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from "./handlers/leases.ts";
 import {
   handleCreateDefinition,
@@ -535,6 +535,10 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
         return await handlePut(space, req, principal);
       case "POST /v0/records/read-one":
         return await handleReadOne(space, req, principal);
+      case "POST /v0/records/registry":
+        // A READ, on the coordination plane and authorized as one. Not `/v0/ops/*`: it answers what
+        // a participant may see of a registry it already has a `query` grant on.
+        return await handleRegistry(space, req, principal);
       case "POST /v0/records/query":
         return await handleQuery(space, req, principal);
       case "POST /v0/takes":

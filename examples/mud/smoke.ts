@@ -94,11 +94,11 @@ const say = (who: { principal: string; client: RadiaClient }, text: string) =>
 /** Everything in a room, oldest first. Read as the operator: a test is allowed to see more than a
  *  player, and every assertion below is about what a player COULD see. */
 const feed = async (roomId: string): Promise<EventBody[]> =>
-  (await admin.query({ kind: "event", match: { worldId: WORLD_ID, roomId } }, 200, { dir: "asc" }))
+  (await admin.queryOldest({ kind: "event", match: { worldId: WORLD_ID, roomId } }, 200))
     .map((r: RadiaRecord) => r.body as EventBody);
 
 const where = async (actor: string): Promise<string | null> => {
-  const rows = await admin.query({ kind: "presence", match: { worldId: WORLD_ID, actor } }, 1, { dir: "desc" });
+  const rows = await admin.queryNewest({ kind: "presence", match: { worldId: WORLD_ID, actor } }, 1);
   return rows.length ? (rows[0].body as { roomId: string }).roomId : null;
 };
 
@@ -154,7 +154,7 @@ check("…and the arrival in the room entered",
   await say(bob, "look");
   await until(async () => (await where(bob.principal)) === "gate");
   const view = await readRegistry<{ worldId: string; actor: string; roomId: string }>(
-    (limit, after) => admin.query({ kind: "presence", match: { worldId: WORLD_ID } }, limit, { dir: "desc", after }),
+    (page) => admin.queryPage({ kind: "presence", match: { worldId: WORLD_ID } }, page.limit, page).then((r) => r.records),
     (b) => `${b.worldId}\n${b.actor}`,
   );
   const at = (room: string) =>
@@ -164,7 +164,7 @@ check("…and the arrival in the room entered",
     !at("gate").includes(alice.principal) && at("courtyard").includes(alice.principal),
     `gate=[${at("gate").join(" ")}] courtyard=[${at("courtyard").join(" ")}]`);
   check("…and the raw query would have said otherwise (the trap)",
-    (await admin.query({ kind: "presence", match: { worldId: WORLD_ID, roomId: "gate" } }, 50))
+    (await admin.queryOldest({ kind: "presence", match: { worldId: WORLD_ID, roomId: "gate" } }, 50))
       .some((r) => (r.body as { actor: string }).actor === alice.principal));
   check("…read to exhaustion, so the answer is a population", view.complete);
 }
@@ -232,7 +232,7 @@ check("…and the arrival in the room entered",
 
   // The chain, read back: the cue that produced that line was consumed and its successor exists,
   // deferred. Atomic consume-and-emit is why there can never be one without the other.
-  const cues = (await admin.query({ kind: "npc_turn", match: { worldId: WORLD_ID, npc: "gatekeeper", trigger: "ambient" } }, 50))
+  const cues = (await admin.queryOldest({ kind: "npc_turn", match: { worldId: WORLD_ID, npc: "gatekeeper", trigger: "ambient" } }, 50))
     .map((r) => r.body as { tick: number });
   const ticks = cues.map((c) => c.tick).sort((a, b) => a - b);
   check("…and each beat acked the next one, so the chain carries itself", ticks.length >= 2, `ticks ${ticks.join(",")}`);
@@ -275,7 +275,7 @@ check("…and the arrival in the room entered",
 // room would trade lines until somebody stopped one of them, so the guard is checked here rather
 // than trusted.
 {
-  const cues = await admin.query({ kind: "npc_turn", match: { worldId: WORLD_ID } }, 200);
+  const cues = await admin.queryOldest({ kind: "npc_turn", match: { worldId: WORLD_ID } }, 200);
   const fromNpc = cues.filter((c) => ((c.body as { cause?: { actor?: string } }).cause?.actor ?? "").startsWith("agent:mud-npc-"));
   check("no NPC was ever cued by another NPC's line", fromNpc.length === 0, `${cues.length} cues, ${fromNpc.length} from NPCs`);
 }

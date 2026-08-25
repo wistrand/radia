@@ -93,14 +93,14 @@ check("the thread is longer than the context window", total > 40, `${total} mess
 async function contextAt(upTo: number) {
   const tail = await selectWindow(
     async (limit) =>
-      (await client.query({
+      (await client.queryOrdered({
         kind: "message",
         match: { conversationId: conv, index: { $lte: upTo } },
         orderBy: [{ path: "index", dir: "desc" }],
       }, limit)).map((r) => r.body as ThreadRow),
     { window: 40, cap: 400 },
   );
-  const newestSystem = (await client.query({
+  const newestSystem = (await client.queryOrdered({
     kind: "message",
     match: { conversationId: conv, role: "system", index: { $lte: upTo } },
     orderBy: [{ path: "index", dir: "desc" }],
@@ -147,7 +147,7 @@ check("the hidden-message notice is folded into the system message", String(atEn
 const toolTurnEnd = 32;
 const narrow = await selectWindow(
   async (limit) =>
-    (await client.query({
+    (await client.queryOrdered({
       kind: "message",
       match: { conversationId: conv, index: { $lte: toolTurnEnd } },
       orderBy: [{ path: "index", dir: "desc" }],
@@ -157,11 +157,11 @@ const narrow = await selectWindow(
 check("a window smaller than one turn expands to include it", narrow.some((m) => m.role === "user"), `${narrow.length} rows`);
 
 // Odd payloads survive the round trip through records.
-const odd = await client.query({ kind: "message", match: { conversationId: conv, role: "user" } }, 200);
+const odd = await client.queryOldest({ kind: "message", match: { conversationId: conv, role: "user" } }, 200);
 const contents = odd.map((r) => String((r.body as ThreadRow).content ?? ""));
 check("unicode survives storage", contents.some((c) => c.includes("🐨") && c.includes("中文")));
 check("an empty message is kept, not dropped", contents.some((c) => c === ""));
-const big = await client.query({ kind: "message", match: { conversationId: conv, role: "assistant" } }, 200);
+const big = await client.queryOldest({ kind: "message", match: { conversationId: conv, role: "assistant" } }, 200);
 check("a 20k message round-trips intact", big.some((r) => String((r.body as ThreadRow).content ?? "").length === 20_000));
 
 // U+0000 is valid JSON and has no representation in Postgres `jsonb`, so it must be refused at the

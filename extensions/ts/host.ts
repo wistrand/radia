@@ -164,7 +164,7 @@ export function treeCache(reader: RadiaClient, opts: { max?: number; dir?: strin
   const stats = { hits: 0, misses: 0 };
   let clock = 0;
   const build = async (digest: string): Promise<string> => {
-    const rows = await reader.query({ kind: "workspace", match: { treeDigest: digest } }, 1, { dir: "desc" });
+    const rows = await reader.queryNewest({ kind: "workspace", match: { treeDigest: digest } }, 1);
     if (rows.length === 0) throw new Error(`no workspace manifest for ${digest}`);
     const root = await Deno.makeTempDir({ prefix: "radia-tree-", ...(opts.dir ? { dir: opts.dir } : {}) });
     // deno-lint-ignore no-explicit-any

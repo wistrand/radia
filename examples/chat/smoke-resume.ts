@@ -81,7 +81,7 @@ await waitUp();
 // the credential from before the restart is dead. Re-read it, which is the same thing any CLI
 // invocation does; a client that cached one would 401 here and look like data loss.
 client = new RadiaClient(url, { token: operatorToken(url) });
-check("and comes back on the same database", (await client.query({ kind: "message", match: { conversationId: convId } }, 50)).length > 0);
+check("and comes back on the same database", (await client.queryOldest({ kind: "message", match: { conversationId: convId } }, 50)).length > 0);
 
 // ---- session two: reattach ----
 const resumed = await Thread.resume(client, convId, ADMIN);
@@ -89,10 +89,7 @@ check("resume reattaches to the same conversation", resumed.id === convId);
 check("and recovers where the transcript left off", resumed.resumedFrom === beforeIndex + 1, `resumedFrom=${resumed.resumedFrom}, was upToIndex=${beforeIndex}`);
 
 await resumed.append({ role: "user", content: "still here?" });
-const all = await client.query(
-  { kind: "message", match: { conversationId: convId }, orderBy: [{ path: "index" }] },
-  100,
-);
+const all = await client.queryOrdered({ kind: "message", match: { conversationId: convId }, orderBy: [{ path: "index" }] }, 100);
 const indices = all.map((r) => (r.body as { index: number }).index);
 check("indices continue without collision", new Set(indices).size === indices.length, indices.join(","));
 check("the earlier turns are still there", all.some((r) => (r.body as { content?: string }).content === "hello"));
@@ -103,12 +100,12 @@ check("resume appends a current system message", systems.length === 2);
 check("and says the conversation was resumed", String((systems[1].body as { content: string }).content).includes("resumed"));
 
 // The conversation-scoped things come back too (the real payoff of resuming).
-const procs = await client.query({ kind: "procedure", match: { conversationId: convId } }, 10);
+const procs = await client.queryOldest({ kind: "procedure", match: { conversationId: convId } }, 10);
 check("conversation-scoped procedures survive the restart", procs.length === 1);
 
 // `last` resolves to the newest conversation. That is the keyset direction in use.
 await Thread.open(client, ADMIN, (await client.put({ kind: "conversation", body: {} })).id); // a newer conversation
-const newest = await client.query({ kind: "conversation" }, 1, { dir: "desc" });
+const newest = await client.queryNewest({ kind: "conversation" }, 1);
 check("'last' resolves to the most recent conversation", newest.length === 1 && newest[0].id !== convId);
 
 try {

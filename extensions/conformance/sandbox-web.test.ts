@@ -263,7 +263,7 @@ Deno.test("[sandbox-web] effectively-once is per (record, code), which is what a
       keyScope: scope,
     });
   };
-  const written = async () => (await operator.query({ kind }, 50)).length;
+  const written = async () => (await operator.queryOldest({ kind }, 50)).length;
 
   await run("codeA", "one");
   const afterFirst = await written();

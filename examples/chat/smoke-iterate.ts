@@ -79,7 +79,7 @@ const worker = new Deno.Command(Deno.execPath(), {
   stdin: "null",
 }).spawn();
 for (let i = 0; i < 100; i++) {
-  if ((await admin.query({ kind: "capability", match: { tool: "run_javascript" } }, 1)).length > 0) break;
+  if ((await admin.queryOldest({ kind: "capability", match: { tool: "run_javascript" } }, 1)).length > 0) break;
   await new Promise((r) => setTimeout(r, 200));
 }
 
@@ -132,21 +132,18 @@ const ids = lineage.map((n) => n.record.id);
 check("lineage from the last attempt reaches the first", ids.includes(a1.id) && ids.includes(a2.id), `${ids.length} records`);
 check("…and the conversation, so the chain is anchored", ids.includes(conv));
 
-const chain = await admin.query(
-  { kind: "tool_call", match: { conversationId: conv, tool: "run_javascript" }, orderBy: [{ path: "attempt", dir: "asc" }] },
-  50,
-);
+const chain = await admin.queryOrdered({ kind: "tool_call", match: { conversationId: conv, tool: "run_javascript" }, orderBy: [{ path: "attempt", dir: "asc" }] }, 50);
 check("the chain reads in attempt order", chain.map((r) => (r.body as { attempt: number }).attempt).join(",") === "1,2,3");
 check("…and each retry names the one it replaces", (chain[2].body as { retryOf: string }).retryOf === a2.id);
 // "How many tries did this take" is a count, not a graph walk.
 check("the last attempt knows it was the third", (chain[2].body as { attempt: number }).attempt === 3);
 
 // ── 2. a verdict is evidence, not a claim ────────────────────────────────────────────────────────
-const checks = await admin.query({ kind: "check", match: { conversationId: conv } }, 50);
+const checks = await admin.queryOldest({ kind: "check", match: { conversationId: conv } }, 50);
 check("one check per attempt that stated an expectation", checks.length === 3, `${checks.length}`);
 check(
   "failures are one query, which is the question an auditor asks",
-  (await admin.query({ kind: "check", match: { conversationId: conv, verdict: "fail" } }, 50)).length === 2,
+  (await admin.queryOldest({ kind: "check", match: { conversationId: conv, verdict: "fail" } }, 50)).length === 2,
 );
 const passing = checks.find((r) => (r.body as { verdict: string }).verdict === "pass");
 check("a check records what was CLAIMED, not just the outcome", JSON.stringify((passing?.body as { expected: unknown }).expected).includes("stdout_equals"));
@@ -157,7 +154,7 @@ check("…and is attributed to the worker that ran the code", String(passing?.ru
 // THE property. If a session could write one of these, a verdict would be the model grading itself,
 // which is what prose already does.
 const session = new RadiaClient(url, { token: await mintSession(admin, OWNER, { conversationId: conv }) });
-check("the session may READ verdicts", (await session.query({ kind: "check", match: { conversationId: conv } }, 50)).length === 3);
+check("the session may READ verdicts", (await session.queryOldest({ kind: "check", match: { conversationId: conv } }, 50)).length === 3);
 let forged = "wrote it";
 try {
   await session.put({ kind: "check", body: { callId: a1.id, conversationId: conv, owner: OWNER, verdict: "pass" } });
@@ -177,7 +174,7 @@ const plain = await attempt("console.log('no claim made')", { attempt: 1 });
 check("a run with no expectation returns no verdict", plain.output.check === undefined);
 check(
   "…and writes no check record",
-  (await admin.query({ kind: "check", match: { callId: plain.id } }, 5)).length === 0,
+  (await admin.queryOldest({ kind: "check", match: { callId: plain.id } }, 5)).length === 0,
 );
 
 // A timeout must not satisfy exit_zero: a killed process has a null exit code, and reading that as

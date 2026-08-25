@@ -113,7 +113,7 @@ check("…nor diagnostics", await forbidden(() => session.diagnostics()));
 //    other session could claim. So the assertion moved from "published" to "offered", and the
 //    absence from the registry is asserted too, because that is the property that lets one fleet
 //    serve many people.
-const published = (await admin.query({ kind: "capability" }, 500, { dir: "desc" }))
+const published = (await admin.queryNewest({ kind: "capability" }, 500))
   .map((c) => (c.body as { tool: string }).tool);
 check("request_grant is NOT advertised: only this session can serve it", !published.includes("request_grant"));
 
@@ -143,7 +143,7 @@ const [asked0] = await Promise.all([
     // asked about. Getting that wrong killed a live session: narrowing `query` on `message` retired
     // the bootstrap {put, query} grant wholesale, and the chat died writing its next message.
     for (let i = 0; i < 60; i++) {
-      const pending = await admin.query({ kind: "grant_request", match: { conversationId: conv } }, 10, { dir: "desc" });
+      const pending = await admin.queryNewest({ kind: "grant_request", match: { conversationId: conv } }, 10);
       if (pending.some((r) => !(r.body as { decision?: string }).decision)) break;
       await new Promise((r) => setTimeout(r, 100));
     }
@@ -157,7 +157,7 @@ const decision = asked0.output as { decision?: string; granted?: { scope?: strin
 check("…and returns the human's decision to the caller", decision.decision === "granted", JSON.stringify(decision).slice(0, 90));
 check("…including the scope actually granted", decision.granted?.scope === "own records only", decision.granted?.scope ?? "(none)");
 
-const asked = await session.query({ kind: "grant_request", match: { conversationId: conv } }, 10);
+const asked = await session.queryOldest({ kind: "grant_request", match: { conversationId: conv } }, 10);
 check("the request is a record the human can read", asked.length >= 1);
 check("and the asker is recorded by the server, not by the body", asked[0].runtimeMeta.createdBy.startsWith("run:"));
 check("the session still cannot grant itself anything", await forbidden(() =>
@@ -237,7 +237,7 @@ check("remediation is still refused", await forbidden(() => session.remediate("r
 //     agent actually reads records through, not only on the ops aggregates. This was live: a
 //     session granted self-scoped `message` saw its own records in ops/stats and ALL of them via
 //     query, and noticed the contradiction itself.
-const viaQuery = await session.query({ kind: "message" }, 100);
+const viaQuery = await session.queryOldest({ kind: "message" }, 100);
 check(
   "a self-scoped grant narrows query too, not just the aggregates",
   viaQuery.length === 4,
@@ -248,7 +248,7 @@ check(
   "the records really are the session's own",
   viaQuery.every((r) => r.runtimeMeta.createdBy.startsWith("run:")),
 );
-const someoneElses = await admin.query({ kind: "message", match: { conversationId: "other" } }, 10);
+const someoneElses = await admin.queryOldest({ kind: "message", match: { conversationId: "other" } }, 10);
 check("the other author's records exist but are unreachable", someoneElses.length === 2);
 
 // 7. An operator still sees everything. The scope narrowed the caller, not the space.
@@ -256,7 +256,7 @@ const all = await admin.getStats();
 check("the operator still sees both authors", all.filter((s) => s.kind === "message").reduce((a, s) => a + s.count, 0) === 6);
 
 // 8. The `role` index: the aggregation the model reached for four times and could not make.
-const byRole = await session.query({ kind: "message", match: { conversationId: conv, role: "user" } }, 50);
+const byRole = await session.queryOldest({ kind: "message", match: { conversationId: conv, role: "user" } }, 50);
 check("messages are countable by role", byRole.length === 4, `role=user -> ${byRole.length}`);
 
 // 9. Approving a grant for a kind that DOES NOT EXIST must not manufacture one.
@@ -271,7 +271,7 @@ const [askedBogus] = await Promise.all([
   callTool("request_grant", { kind: bogus, operations: ["query"], scope: "all", why: "full history" }, conv, 30_000),
   (async () => {
     for (let i = 0; i < 60; i++) {
-      const rows = await admin.query({ kind: "grant_request", match: { conversationId: conv } }, 20, { dir: "desc" });
+      const rows = await admin.queryNewest({ kind: "grant_request", match: { conversationId: conv } }, 20);
       if (rows.some((r) => {
         const b = r.body as { kind?: string; decision?: string };
         return b.kind === bogus && !b.decision;
@@ -287,10 +287,10 @@ check("approving a nonexistent kind reports no_such_kind", bogusOut.decision ===
 check("…and tells the caller it got nothing", bogusOut.ok === false);
 check("…and hands back the real kind names", (bogusOut.kindsOnThisSpace ?? []).includes("message"));
 
-const bogusGrants = await admin.query({ kind: "grant", match: { principal: CHAT_USER, kind: bogus } }, 20);
+const bogusGrants = await admin.queryOldest({ kind: "grant", match: { principal: CHAT_USER, kind: bogus } }, 20);
 check("no grant record is written for a kind that does not exist", bogusGrants.length === 0, `${bogusGrants.length} found`);
 
-const decidedBogus = (await admin.query({ kind: "grant_request", match: { conversationId: conv } }, 50, { dir: "desc" }))
+const decidedBogus = (await admin.queryNewest({ kind: "grant_request", match: { conversationId: conv } }, 50))
   .map((r) => r.body as Record<string, unknown>)
   .find((b) => b.kind === bogus && b.decision);
 check("the decision record says why", decidedBogus?.decision === "no_such_kind", String(decidedBogus?.decision));
@@ -306,7 +306,7 @@ await session.put({
   body: { conversationId: conv, kind: "llm_call", operations: ["query"], why: "count my calls" },
 });
 await reviewGrantRequests(session, admin, CHAT_USER, conv, () => Promise.resolve("own"));
-const realGrants = await admin.query({ kind: "grant", match: { principal: CHAT_USER, kind: "llm_call" } }, 20);
+const realGrants = await admin.queryOldest({ kind: "grant", match: { principal: CHAT_USER, kind: "llm_call" } }, 20);
 check(
   "the same approval on a REAL kind still writes a grant",
   realGrants.some((r) => !(r.body as { retired?: boolean }).retired),

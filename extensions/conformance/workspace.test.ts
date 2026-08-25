@@ -268,10 +268,10 @@ Deno.test("workspace: churn stays cheap to read, and listing is honest about com
 
     // Nothing is lost: every version stays addressable. This is why last-writer-wins is divergence
     // rather than data loss.
-    assertEquals((await c.query({ kind: "workspace", match: { name: "churn" } }, 100)).length, CHURN);
+    assertEquals((await c.queryOldest({ kind: "workspace", match: { name: "churn" } }, 100)).length, CHURN);
 
     // Churn costs what CHANGED. The unchanged file is one blob across every version.
-    const all = await c.query({ kind: "workspace", match: { name: "churn" } }, 100);
+    const all = await c.queryOldest({ kind: "workspace", match: { name: "churn" } }, 100);
     const digests = new Set(
       all.map((r) => (r.body as { files: WorkspaceFile[] }).files.find((f) => f.path === "README.md")!.digest),
     );
@@ -318,7 +318,7 @@ Deno.test("workspace: a summary answers what EXISTS, which a raw query cannot", 
     }
     await writeWorkspace(c, { name: "single", owner: OWNER, files: { "x.txt": "1\n", "y.txt": "2\n" } });
 
-    const raw = await c.query({ kind: "workspace", match: { name: "iterated" } }, 100);
+    const raw = await c.queryOldest({ kind: "workspace", match: { name: "iterated" } }, 100);
     assertEquals(raw.length, 3, "three records, as the space should hold");
 
     const s = await summarizeWorkspaces(c);
@@ -673,7 +673,7 @@ Deno.test("workspace: an edit changes what it names and keeps every artifact it 
 
     assertEquals(new TextDecoder().decode(await c.getArtifact(after.get("main.py")!)), "print(2)\n");
     // One successor, based on the head, so the history is a chain rather than a pile.
-    const versions = await c.query({ kind: "workspace", match: { name: "edited" } }, 10);
+    const versions = await c.queryOldest({ kind: "workspace", match: { name: "edited" } }, 10);
     assertEquals(versions.length, 2);
     assertEquals((await readWorkspace(c, "edited"))!.basedOn, v1.id);
   });
@@ -690,7 +690,7 @@ Deno.test("workspace: a non-unique match is REFUSED, which is the safety propert
     );
     assert(/appears 2 times/.test(err.message), err.message);
     assertEquals((await readWorkspace(c, "dup"))!.files.length, 1);
-    assertEquals((await c.query({ kind: "workspace", match: { name: "dup" } }, 10)).length, 1, "nothing was written");
+    assertEquals((await c.queryOldest({ kind: "workspace", match: { name: "dup" } }, 10)).length, 1, "nothing was written");
 
     // …and replaceAll is the explicit opt-in.
     const r = await editWorkspace(c, {
@@ -727,7 +727,7 @@ Deno.test("workspace: a batch is validated whole, reports EVERY problem, and wri
       assert(err.message.includes(fragment), `expected ${fragment} in:\n${err.message}`);
     }
     // Validate-then-write means there is no partial version to explain.
-    assertEquals((await c.query({ kind: "workspace", match: { name: "batch" } }, 10)).length, 1);
+    assertEquals((await c.queryOldest({ kind: "workspace", match: { name: "batch" } }, 10)).length, 1);
   });
 });
 
@@ -746,7 +746,7 @@ Deno.test("workspace: one batch mixing edit, add and remove is ONE version", asy
     assertEquals(r.added, ["lib/util.py"]);
     assertEquals(r.removed, ["drop.py"]);
     assertEquals(r.files.map((f) => f.path), ["lib/util.py", "main.py"]);
-    assertEquals((await c.query({ kind: "workspace", match: { name: "mixed" } }, 10)).length, 2, "one version, not three");
+    assertEquals((await c.queryOldest({ kind: "workspace", match: { name: "mixed" } }, 10)).length, 2, "one version, not three");
   });
 });
 
@@ -1425,14 +1425,14 @@ Deno.test("sandbox: a declaration is a record an operator can query and a policy
 
     // THE reason this is a record rather than prose: a policy can bind the property that matters.
     // (Scoped by this test's own name, because the space — and its sandbox registry — is shared.)
-    const noNetwork = await c.query({ kind: "sandbox", match: { network: false, name } }, 10);
+    const noNetwork = await c.queryOldest({ kind: "sandbox", match: { network: false, name } }, 10);
     assertEquals(noNetwork.length, 1, "'which of my sandboxes cannot reach the network' is a query");
 
     // A changed jail is a successor, not a conflict: the guarantee moved, and the old claim stays
     // readable so a verdict reached under it still means something.
     await declareSandbox(c, { ...spec, memoryMb: 64 });
     assertEquals((await readSandbox(c, name))!.memoryMb, 64);
-    assertEquals((await c.query({ kind: "sandbox", match: { name } }, 10)).length, 2);
+    assertEquals((await c.queryOldest({ kind: "sandbox", match: { name } }, 10)).length, 2);
   });
 });
 
@@ -1522,12 +1522,12 @@ Deno.test("sandbox: two backends coexist as records a policy can tell apart", as
     // The guarantee stopped being uniform, and that is now a QUERY rather than tribal knowledge:
     // an operator asking "which of these can reach a filesystem" gets an answer from the space.
     // (Filtered to this test's own declarations, because the registry is shared across the file.)
-    const byIsolation = mine(await c.query({ kind: "sandbox", match: { isolation: "bubblewrap" } }, 50));
+    const byIsolation = mine(await c.queryOldest({ kind: "sandbox", match: { isolation: "bubblewrap" } }, 50));
     assertEquals(byIsolation.length, 1);
     assertEquals((byIsolation[0].body as { language: string }).language, "python");
 
     // Both still claim no network, which is what makes them comparable at all…
-    assertEquals(mine(await c.query({ kind: "sandbox", match: { network: false } }, 50)).length, 2);
+    assertEquals(mine(await c.queryOldest({ kind: "sandbox", match: { network: false } }, 50)).length, 2);
     // …and they differ on the axis that a latency table hides.
     const js = await readSandbox(c, jsName);
     const py = await readSandbox(c, pyName);

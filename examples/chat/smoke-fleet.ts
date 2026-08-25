@@ -53,7 +53,7 @@ async function liveTiers(): Promise<string[]> {
   return (await liveModels(client)).map((m) => m.tier);
 }
 
-const countModels = async () => (await client.query({ kind: "model" }, 500)).length;
+const countModels = async () => (await client.queryOldest({ kind: "model" }, 500)).length;
 
 const FAST = { tier: "fast", model: "vendor/small", rank: 0 };
 const DEEP = { tier: "deep", model: "vendor/large", rank: 2 };
@@ -74,7 +74,7 @@ check("re-publishing an unchanged advertisement writes nothing", await countMode
 // A real change IS a successor. That is how a worker moves to a new model.
 await publishModel(client, { ...FAST, model: "vendor/small-v2" });
 check("a changed advertisement is a successor", await countModels() === afterFirst + 1);
-const moved = (await client.query({ kind: "model", match: { tier: "fast" } }, 1, { dir: "desc" }))[0];
+const moved = (await client.queryNewest({ kind: "model", match: { tier: "fast" } }, 1))[0];
 check("…and the newest one wins", (moved.body as { model: string }).model === "vendor/small-v2");
 
 // ---- withdrawal ----
@@ -83,7 +83,7 @@ check("a retired tier leaves rotation", (await liveTiers()).join(",") === "deep"
 check("the other tier is untouched", (await liveTiers()).includes("deep"));
 
 // Nothing is deleted: the audit trail of what was offered, and when, survives the withdrawal.
-check("the history is still there", (await client.query({ kind: "model", match: { tier: "fast" } }, 50)).length >= 3);
+check("the history is still there", (await client.queryOldest({ kind: "model", match: { tier: "fast" } }, 50)).length >= 3);
 
 // ---- revival ----
 // The restart path. This is the trap in retire-then-republish: if the publish key collided with the
@@ -259,7 +259,7 @@ check("the rule holds at three tiers too", ["fast", "balanced", "deep"][heuristi
   const TOOL = { type: "function" as const, function: { name: "smoke_share", description: "d", parameters: {} } };
   const PROVIDER = "agent:chat-tools";
   const advertised = async () => {
-    const rows = await client.query({ kind: "capability", match: { tool: "smoke_share", provider: PROVIDER } }, 1, { dir: "desc" });
+    const rows = await client.queryNewest({ kind: "capability", match: { tool: "smoke_share", provider: PROVIDER } }, 1);
     return rows.length > 0 && !(rows[0].body as { retired?: boolean }).retired;
   };
   await publishCapability(client, TOOL, PROVIDER);

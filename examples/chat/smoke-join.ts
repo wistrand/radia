@@ -71,12 +71,12 @@ const conv = await session.put({ kind: "conversation", body: {} });
 check("it starts its own conversation", typeof conv.id === "string" && conv.id.length > 0, conv.id);
 
 // And it can see what the fleet advertises, which is how the tool list is built.
-check("it can read the capability registry", Array.isArray(await session.query({ kind: "capability" }, 5)));
+check("it can read the capability registry", Array.isArray(await session.queryOldest({ kind: "capability" }, 5)));
 
 // ---- what it must NOT be able to do ----
 check(
   "it cannot ENUMERATE conversations, which is why `put` alone is safe",
-  await forbidden(() => session.query({ kind: "conversation" }, 10)),
+  await forbidden(() => session.queryOldest({ kind: "conversation" }, 10)),
 );
 check(
   "it cannot register a kind",
@@ -101,7 +101,7 @@ check(
 
 // ---- and the turn traffic it exists for still works ----
 await session.put({ kind: "message", body: { conversationId: conv.id, owner, index: 0, role: "user", content: "hi" } });
-const mine = await session.query({ kind: "message", match: { conversationId: conv.id } }, 10);
+const mine = await session.queryOldest({ kind: "message", match: { conversationId: conv.id } }, 10);
 check("it writes and reads its own conversation", mine.length === 1, `${mine.length} message`);
 
 // A second person's records stay invisible, which is what the grant pattern is for.
@@ -111,7 +111,7 @@ const otherSession = new RadiaClient(url, { token: await mintSession(admin, othe
 await otherSession.put({ kind: "message", body: { conversationId: conv.id, owner: other, index: 0, role: "user", content: "theirs" } });
 check(
   "two joined sessions on one space read only their own records",
-  (await session.query({ kind: "message", match: { conversationId: conv.id } }, 10)).length === 1,
+  (await session.queryOldest({ kind: "message", match: { conversationId: conv.id } }, 10)).length === 1,
 );
 
 // ---- --auto-grant: the policy that removes the per-person chore ----

@@ -117,8 +117,8 @@ for (const target of checkpoints) {
   // Serial, so these are the latency of ONE operation with the whole stack in the path.
   at(await measure("put (serial)", 150, (i) => client.put({ kind: DOC, body: { tag: "common", seq: 2e9 + i, owner: "human:t0", labels: ["l0"] } })));
   at(await measure("read_one indexed", 150, (i) => client.readOne({ kind: DOC, match: { seq: Math.abs(i) % filled } })));
-  at(await measure("query limit=25", 80, () => client.query({ kind: DOC, match: { tag: "rare" } }, 25)));
-  at(await measure("query owner-scoped", 80, () => client.query({ kind: DOC, match: { owner: "human:t3" } }, 25)));
+  at(await measure("query limit=25", 80, () => client.queryOldest({ kind: DOC, match: { tag: "rare" } }, 25)));
+  at(await measure("query owner-scoped", 80, () => client.queryOldest({ kind: DOC, match: { owner: "human:t3" } }, 25)));
   // The row this file was written for, and the pair is the point. `$any` is pushed into SQL and
   // exact, so the caller's LIMIT rides with it; `$each` is not (see `pushdown.ts`), so the pre-filter
   // is TRUE and the whole kind is pulled into JS for the oracle to decide, single-threaded.
@@ -126,12 +126,12 @@ for (const target of checkpoints) {
   // The first run measured `$any: ["l3"]`, an element compared against a one-element ARRAY, which
   // matches nothing at all. It timed the scan correctly and it is not a pattern anyone writes; the
   // scalar below is.
-  at(await measure("query $any (pushed)", 20, () => client.query({ kind: DOC, match: { labels: { $any: "l3" } } }, 25)));
+  at(await measure("query $any (pushed)", 20, () => client.queryOldest({ kind: DOC, match: { labels: { $any: "l3" } } }, 25)));
   // The same predicate matching NOTHING, which is the only honest before/after: a limit cannot cut
   // a scan short when no row satisfies it, so this row is a full pass over the kind either way and
   // the difference is purely where the pass happens. `$each` below is the shape the pre-pushdown
   // `$any` row had (unpushable AND empty), kept so the oracle path stays measured.
-  at(await measure("query $any miss (pushed)", 5, () => client.query({ kind: DOC, match: { labels: { $any: "zz" } } }, 25)));
+  at(await measure("query $any miss (pushed)", 5, () => client.queryOldest({ kind: DOC, match: { labels: { $any: "zz" } } }, 25)));
   // Past `maxScanRows` (200k by default) this is REFUSED rather than served, which is the scan
   // budget doing its job: an unpushable pattern is bounded by the work it may cause instead of by
   // the size of the kind. The refusal is timed like anything else, because the number that matters
@@ -146,7 +146,7 @@ for (const target of checkpoints) {
   const each = await measure("query $each (oracle)", 5, async () => {
     attempts++;
     try {
-      await client.query({ kind: DOC, match: { labels: { $each: "l3" } } }, 25);
+      await client.queryOldest({ kind: DOC, match: { labels: { $each: "l3" } } }, 25);
     } catch (e) {
       if (e instanceof RadiaClientError && e.code === "scan_budget_exceeded") refused++;
       else throw e;

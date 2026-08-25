@@ -81,7 +81,7 @@ Deno.test("[compartment] a RETIRED grant stops making a principal a crosser", as
     // Withdrawal is a successor carrying `retired: true`, and the audit must read the REGISTRY
     // rather than the records: the retirement does not delete anything, so a raw scan still sees
     // the grant and would report a crossing that no longer exists.
-    const rows = await c.query({ kind: "grant", match: { principal: analyst, kind: "public_summary" } }, 10, { dir: "desc" });
+    const rows = await c.queryNewest({ kind: "grant", match: { principal: analyst, kind: "public_summary" } }, 10);
     assertEquals(rows.length, 1);
     await c.put({ kind: "grant", body: { ...(rows[0].body as object), retired: true } }, `grant-retire:${rows[0].id}`);
 

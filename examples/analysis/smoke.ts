@@ -134,19 +134,19 @@ check("…chained by content digest",
 // The pin vocabulary: requests and results carry {workspace, tier}, the exact paths promotion's
 // grant pattern binds, which is what step 4's enforcement claims and refuses on.
 {
-  const [req] = await admin.query({ kind: "stage_request", match: { workspace: published.clean, tier: "prod" } }, 1);
+  const [req] = await admin.queryOldest({ kind: "stage_request", match: { workspace: published.clean, tier: "prod" } }, 1);
   check("requests carry the pin vocabulary {workspace, tier}, matchable", req !== undefined);
-  const [res] = await admin.query({ kind: "stage_result", match: { workspace: published.report } }, 1);
+  const [res] = await admin.queryOldest({ kind: "stage_result", match: { workspace: published.report } }, 1);
   check("results name the tree that produced them, matchable", res !== undefined);
 }
 
 // A stage run in the jail knows its output's DIGEST, not the artifact id the capture assigned, so
 // readers resolve content-addressed: the same move the planner makes when chaining.
 const reportOf = async () => {
-  const r = (await admin.query({ kind: "stage_result", match: { stage: "report", ok: "yes" } }, 1, { dir: "desc" }))[0];
+  const r = (await admin.queryNewest({ kind: "stage_result", match: { stage: "report", ok: "yes" } }, 1))[0];
   const b = r?.body as { outputDigest?: string } | undefined;
   if (!b?.outputDigest) return null;
-  const [art] = await admin.query({ kind: "artifact", match: { digest: b.outputDigest } }, 1, { dir: "desc" });
+  const [art] = await admin.queryNewest({ kind: "artifact", match: { digest: b.outputDigest } }, 1);
   return art ? JSON.parse(new TextDecoder().decode(await admin.getArtifact(art.id))) : null;
 };
 const first = await reportOf();
@@ -156,9 +156,9 @@ check("…and the bad row was dropped by clean", first?.rows === 3, `rows=${firs
 // The host stamped the output artifact with the REQUEST's owner (binding.outputMeta), which is
 // what keeps the person's {owner}-scoped artifact grant reaching bytes an agent authored.
 {
-  const r = (await admin.query({ kind: "stage_result", match: { stage: "report", ok: "yes" } }, 1, { dir: "desc" }))[0];
+  const r = (await admin.queryNewest({ kind: "stage_result", match: { stage: "report", ok: "yes" } }, 1))[0];
   const digest = (r?.body as { outputDigest?: string })?.outputDigest ?? "";
-  const [mine] = await admin.query({ kind: "artifact", match: { digest, owner: alice } }, 1);
+  const [mine] = await admin.queryOldest({ kind: "artifact", match: { digest, owner: alice } }, 1);
   check("the report artifact carries the person as owner, not the agent", mine !== undefined);
 }
 
@@ -182,19 +182,19 @@ check("…and the bad row was dropped by clean", first?.rows === 3, `rows=${firs
   const noise = steps1b.filter((s) => s.dataset === "noise");
   check("an all-garbage upload still runs every stage to done", noise.length === STAGES.length && noise.every((s) => s.state === "done"),
     noise.map((s) => `${s.stage}:${s.state}`).join(" "));
-  const [r] = await admin.query({ kind: "stage_result", match: { stage: "report", dataset: "noise", ok: "yes" } }, 1, { dir: "desc" });
+  const [r] = await admin.queryNewest({ kind: "stage_result", match: { stage: "report", dataset: "noise", ok: "yes" } }, 1);
   const digest = (r?.body as { outputDigest?: string })?.outputDigest ?? "";
-  const [art] = await admin.query({ kind: "artifact", match: { digest } }, 1, { dir: "desc" });
+  const [art] = await admin.queryNewest({ kind: "artifact", match: { digest } }, 1);
   const report = art ? JSON.parse(new TextDecoder().decode(await admin.getArtifact(art.id))) : null;
   check("…and its report says so instead of headlining a column with no values",
     report?.headline === "no numeric data was found", JSON.stringify(report?.headline));
 }
 
 // ---- 2. changing NOTHING re-runs nothing ----
-const before = (await admin.query({ kind: "stage_result" }, 100)).length;
+const before = (await admin.queryOldest({ kind: "stage_result" }, 100)).length;
 for (let i = 0; i < 3; i++) await planAll(planner, { apply: true });
 await new Promise((r) => setTimeout(r, 400));
-const after = (await admin.query({ kind: "stage_result" }, 100)).length;
+const after = (await admin.queryOldest({ kind: "stage_result" }, 100)).length;
 check("re-planning an unchanged pipeline computes nothing", after === before, `${before} → ${after}`);
 
 // ---- 3. changing a STAGE's code re-runs it and everything downstream ----
@@ -203,7 +203,7 @@ check("re-planning an unchanged pipeline computes nothing", after === before, `$
 // Editing a stage's tree and redeploying would do it too, and cannot be done from inside a
 // running test.
 const bumped = "s1:deadbeefdeadbeefdeadbeefdeadbeef";
-const cleanResultsBefore = (await admin.query({ kind: "stage_result", match: { stage: "clean" } }, 50)).length;
+const cleanResultsBefore = (await admin.queryOldest({ kind: "stage_result", match: { stage: "clean" } }, 50)).length;
 await admin.put({
   kind: BINDING,
   body: { agent: stageAgent("features"), workspaceDigest: bumped, entrypoint: "features/main.ts" },
@@ -213,7 +213,7 @@ const featuresStep = steps.find((s) => s.stage === "features");
 check("the planner asks for the CHANGED stage", featuresStep?.state === "requested" && featuresStep.workspace === bumped,
   JSON.stringify(featuresStep));
 check("…and leaves the stage before it alone",
-  (await admin.query({ kind: "stage_result", match: { stage: "clean" } }, 50)).length === cleanResultsBefore);
+  (await admin.queryOldest({ kind: "stage_result", match: { stage: "clean" } }, 50)).length === cleanResultsBefore);
 check("…and nothing downstream is asked for yet, because its input does not exist",
   !steps.some((s) => s.stage === "report" && s.state === "requested"));
 
@@ -221,7 +221,7 @@ check("…and nothing downstream is asked for yet, because its input does not ex
 // promoting deploys nothing, by construction, and the request waits for the missing half of the
 // two locks rather than being answered by whatever code is around.
 await new Promise((r) => setTimeout(r, 800));
-const orphan = (await admin.query({ kind: "stage_result", match: { stage: "features", workspace: bumped } }, 5)).length;
+const orphan = (await admin.queryOldest({ kind: "stage_result", match: { stage: "features", workspace: bumped } }, 5)).length;
 check("a request whose digest no pin covers is left unclaimed, never answered by the wrong version", orphan === 0);
 
 // ASKING TWICE IS ONE REQUEST. The planner runs on every result, so an in-flight stage is planned
@@ -231,7 +231,7 @@ check("a request whose digest no pin covers is left unclaimed, never answered by
 for (let i = 0; i < 4; i++) await planAll(planner, { apply: true });
 // PER DATASET, which is the unit the dedupe key covers: each dataset legitimately queues its own
 // features request under the bumped digest, and each must do so exactly once.
-const bumpedReqs = await admin.query({ kind: "stage_request", match: { stage: "features", workspace: bumped } }, 20);
+const bumpedReqs = await admin.queryOldest({ kind: "stage_request", match: { stage: "features", workspace: bumped } }, 20);
 const perDataset = new Map<string, number>();
 for (const r of bumpedReqs) {
   const d = (r.body as { dataset: string }).dataset;
@@ -289,7 +289,7 @@ check("planning an in-flight stage repeatedly queues it ONCE per dataset",
       outputMeta: ["owner", "dataset"],
     },
   });
-  const countOf = async (stage: string) => (await admin.query({ kind: "stage_result", match: { stage } }, 50)).length;
+  const countOf = async (stage: string) => (await admin.queryOldest({ kind: "stage_result", match: { stage } }, 50)).length;
   const before: Record<string, number> = {};
   for (const s of STAGES) before[s] = await countOf(s);
 
@@ -349,7 +349,7 @@ export default (record) => runStage(record, (input) => {
   check("…chained onto report's output", tldrStep !== undefined && tldrStep.inputDigest === reportStep?.outputDigest);
   const untouched = await Promise.all(STAGES.map(async (s) => (await countOf(s)) === before[s]));
   check("…and nothing already computed re-ran", untouched.every(Boolean));
-  const [tldrArt] = await admin.query({ kind: "artifact", match: { digest: tldrStep?.outputDigest ?? "" } }, 1, { dir: "desc" });
+  const [tldrArt] = await admin.queryNewest({ kind: "artifact", match: { digest: tldrStep?.outputDigest ?? "" } }, 1);
   const text = tldrArt ? new TextDecoder().decode(await admin.getArtifact(tldrArt.id)) : "";
   check("…and its output is the headline alone", text.startsWith("c varies most"), JSON.stringify(text.slice(0, 40)));
 }

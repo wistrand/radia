@@ -49,7 +49,7 @@ import {
   rowToSeal,
   runtimeInsertValues,
 } from "./row.ts";
-import { firstByOrder, matchesRecord, orderRecords, pageRecords } from "../core/matching.ts";
+import { firstByOrder, matchesRecord, orderRecords, pageClause, pageRecords } from "../core/matching.ts";
 import { isTrivial, type JsonDialect, pushablePath, pushdown } from "./pushdown.ts";
 import { type Candidate, type ClaimCursor, cursorOf, rankClaimable } from "../core/take.ts";
 import { addSeconds, minIso } from "../core/time.ts";
@@ -531,13 +531,12 @@ export class PgSqlAdapter implements StorageAdapter {
     // would have to re-check, and it applies whether or not the body filter could be pushed.
     // `collate "C"` for the same reason the ordering uses it: the oracle compares ids as JS
     // strings, and a linguistic collation would put a different set of records "after" the cursor.
-    const dir = page?.dir === "desc" ? "desc" : "asc";
-    const cmp = dir === "desc" ? "<" : ">";
-    let cursor = "";
-    if (page?.after) {
-      params.push(page.after);
-      cursor = ` and id collate "C" ${cmp} $${params.length}`;
-    }
+    const walk = pageClause(page, {
+      column: 'id collate "C"',
+      placeholder: () => `$${params.push(page!.after) }`,
+    });
+    const { cmp, orderBy } = walk;
+    let cursor = walk.where;
     // The author restriction is an exact column predicate, so it never needs the oracle's help and
     // never blocks the pushed limit.
     if (scope?.createdBy) {
@@ -547,7 +546,7 @@ export class PgSqlAdapter implements StorageAdapter {
     const select = `select ${RECORD_COLS} from records where kind = $1${where}${cursor}`;
     if (want !== undefined && filter.exact && !match.orderBy?.length) {
       const res = await this.sql.query<RawRow>(
-        `${select} order by id collate "C" ${dir} limit $${params.length + 1}`,
+        `${select} ${orderBy} limit $${params.length + 1}`,
         [...params, want],
       );
       return res.rows.map(rowToRecord).filter((rec) => matchesRecord(rec, match));
@@ -563,8 +562,8 @@ export class PgSqlAdapter implements StorageAdapter {
     for (;;) {
       const args = after === undefined ? [...params, size] : [...params, after, size];
       const tail = after === undefined
-        ? ` order by id collate "C" ${dir} limit $${params.length + 1}`
-        : ` and id collate "C" ${cmp} $${params.length + 1} order by id collate "C" ${dir} limit $${params.length + 2}`;
+        ? ` ${orderBy} limit $${params.length + 1}`
+        : ` and id collate "C" ${cmp} $${params.length + 1} ${orderBy} limit $${params.length + 2}`;
       const res = await this.sql.query<RawRow>(select + tail, args);
       if (res.rows.length === 0) return out;
       examined += res.rows.length;
@@ -869,18 +868,17 @@ export class PgSqlAdapter implements StorageAdapter {
     // Indexed lookup through the reverse edge table. `record_edges` exists so that finding a
     // record's children is an index seek; matching against the `parent_ids` JSON is a scan of
     // every record in the space to find a handful of children.
-    const dir = page?.dir === "desc" ? "desc" : "asc";
     const params: unknown[] = [recordId];
-    let cursor = "";
-    if (page?.after) {
-      params.push(page.after);
-      cursor = ` and r.id collate "C" ${dir === "desc" ? "<" : ">"} $${params.length}`;
-    }
+    // The placeholder callback PUSHES, so the bind number and the parameter cannot drift apart.
+    const walk = pageClause(page, {
+      column: 'r.id collate "C"',
+      placeholder: () => `$${params.push(page!.after) }`,
+    });
     params.push(limit);
     const res = await this.sql.query<RawRow>(
       `select ${RECORD_COLS_R} from record_edges e join records r on r.id = e.child_id
-        where e.parent_id = $1${cursor}
-        order by r.id collate "C" ${dir} limit $${params.length}`,
+        where e.parent_id = $1${walk.where}
+        ${walk.orderBy} limit $${params.length}`,
       params,
     );
     return res.rows.map(rowToRecord);

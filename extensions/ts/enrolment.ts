@@ -49,7 +49,7 @@ export type GrantFor = (admin: RadiaClient, principal: string) => Promise<void>;
  */
 export async function enrolledPrincipals(admin: RadiaClient): Promise<string[]> {
   const view = await readRegistry<OidcMapping>(
-    (limit, after) => admin.query({ kind: "oidc_identity" }, limit, { dir: "desc", after }),
+    (page) => admin.queryPage({ kind: "oidc_identity" }, page.limit, page).then((r) => r.records),
     oidcIdentityKey,
   );
   if (!view.complete) throw new Error("the identity registry could not be read to the end");
@@ -86,7 +86,7 @@ export async function sweepEnrolments(
   // never be granted. `activeByKey` (inside `readRegistry`) drops retired mappings, so a ban needs
   // no test here — it is absent from the view.
   const view = await readRegistry<OidcMapping>(
-    (limit, after) => admin.query({ kind: "oidc_identity" }, limit, { dir: "desc", after }),
+    (page) => admin.queryPage({ kind: "oidc_identity" }, page.limit, page).then((r) => r.records),
     oidcIdentityKey,
   );
   if (!view.complete) {

@@ -72,7 +72,7 @@ check("…and is not the shared default principal", alice.owner !== CHAT_USER);
 // which is reference data like `capability`. Missing from the standard set, every new sign-in
 // (OIDC or `radia login`) 403'd on it while long-lived identities worked from one-off manual
 // grants — drift a suite full of pre-provisioned principals never sees, hence this check.
-const discovery = await alice.client.query({ kind: "kind_def" }, 5).then(() => "ok", (e) => String(e));
+const discovery = await alice.client.queryOldest({ kind: "kind_def" }, 5).then(() => "ok", (e) => String(e));
 check("a fresh session can discover kinds (space_kinds' underlying read)", discovery === "ok", discovery);
 
 // The token names a RUN, not the human. The chat must map it back through the space, because the
@@ -87,13 +87,13 @@ check("a second login is a different principal", bob.owner === "human:bob", bob.
 await alice.client.put({ kind: "message", body: { conversationId: conv, owner: alice.owner, index: 1, role: "user", content: "from alice" } });
 await bob.client.put({ kind: "message", body: { conversationId: conv, owner: bob.owner, index: 2, role: "user", content: "from bob" } });
 
-const aSees = (await alice.client.query({ kind: "message" }, 50)).map((r) => (r.body as { content: string }).content);
-const bSees = (await bob.client.query({ kind: "message" }, 50)).map((r) => (r.body as { content: string }).content);
+const aSees = (await alice.client.queryOldest({ kind: "message" }, 50)).map((r) => (r.body as { content: string }).content);
+const bSees = (await bob.client.queryOldest({ kind: "message" }, 50)).map((r) => (r.body as { content: string }).content);
 check("alice reads her own message", aSees.includes("from alice"));
 check("…and not bob's, in the SAME conversation", !aSees.includes("from bob"), aSees.join(","));
 check("bob reads his own message", bSees.includes("from bob"));
 check("…and not alice's", !bSees.includes("from alice"), bSees.join(","));
-check("the operator sees both", (await admin.query({ kind: "message" }, 50)).length === 2);
+check("the operator sees both", (await admin.queryOldest({ kind: "message" }, 50)).length === 2);
 
 // ── the grant is the enforcement, not the stamp ──────────────────────────────────────────────────
 // The session stamps `owner` on what it writes, and the grant pattern is matched against the write
@@ -134,7 +134,7 @@ const aliceConv = (await admin.put({ kind: "conversation", body: { title: "promp
 // are the same value or nothing is written at all.
 setSessionOwner(alice.owner);
 const t = await Thread.open(alice.client, { principal: alice.owner, privileged: alice.privileged }, aliceConv);
-const sys = (await admin.query({ kind: "message", match: { conversationId: t.id, role: "system" } }, 1))
+const sys = (await admin.queryOldest({ kind: "message", match: { conversationId: t.id, role: "system" } }, 1))
   .map((r) => (r.body as { content: string }).content)[0] ?? "";
 check("the system prompt names the session's real principal", sys.includes(alice.owner), alice.owner);
 check("…and not the shared constant it used to hardcode", !sys.includes(CHAT_USER), CHAT_USER);
@@ -188,7 +188,7 @@ await admin.putArtifact(new TextEncoder().encode("<h1>theirs</h1>"), {
   filename: "theirs.html",
   meta: { conversationId: idConv, owner: "human:bob" },
 });
-const listed = await alice.client.query({ kind: "artifact" }, 50);
+const listed = await alice.client.queryOldest({ kind: "artifact" }, 50);
 check("a session can LIST its own artifacts", listed.some((r) => r.id === art.id), `${listed.length} visible`);
 check("…and only its own", listed.every((r) => (r.body as { owner?: string }).owner === idOwner), listed.map((r) => (r.body as { owner?: string }).owner).join(","));
 

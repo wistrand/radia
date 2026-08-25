@@ -67,14 +67,14 @@ await threadA.append({ role: "user", content: "first, from A" });
 //
 // Checked BEFORE anything else writes, so the count is unambiguous.
 {
-  const before = (await client.query({ kind: "message", match: { conversationId } }, 100)).length;
+  const before = (await client.queryOldest({ kind: "message", match: { conversationId } }, 100)).length;
   const viewer = await Thread.attach(client, conversationId);
-  const after = (await client.query({ kind: "message", match: { conversationId } }, 100)).length;
+  const after = (await client.queryOldest({ kind: "message", match: { conversationId } }, 100)).length;
   check("attaching as a viewer writes nothing", after === before, `${before} -> ${after}`);
   check("and still recovers the cursor", viewer.upToIndex === threadA.upToIndex, `${viewer.upToIndex} vs ${threadA.upToIndex}`);
 
   const resumed = await Thread.resume(client, conversationId, { principal: "human:b", privileged: false });
-  const afterResume = (await client.query({ kind: "message", match: { conversationId } }, 100)).length;
+  const afterResume = (await client.queryOldest({ kind: "message", match: { conversationId } }, 100)).length;
   check("while RESUMING takes the thread up (a system message)", afterResume === after + 1, `${after} -> ${afterResume}`);
   check("and resume leaves the cursor past it", resumed.upToIndex === after, String(resumed.upToIndex));
 }
@@ -142,10 +142,7 @@ await threadA.append({ role: "user", content: "first, from A" });
   check("both messages are written", idA !== idB && !!idA && !!idB);
   check("…at DIFFERENT slots", a.upToIndex !== b.upToIndex, `${a.upToIndex} vs ${b.upToIndex}`);
 
-  const rows = await client.query(
-    { kind: "message", match: { conversationId, role: "user" }, orderBy: [{ path: "index" }] },
-    50,
-  );
+  const rows = await client.queryOrdered({ kind: "message", match: { conversationId, role: "user" }, orderBy: [{ path: "index" }] }, 50);
   const texts = rows.map((r) => (r.body as { content?: string }).content);
   check("…and both survive in the transcript", texts.includes("from A") && texts.includes("from B"), texts.join(" | "));
   const indices = rows.map((r) => (r.body as { index?: number }).index);

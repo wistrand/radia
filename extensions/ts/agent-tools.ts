@@ -140,11 +140,7 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
         // The decision comes back as a SUCCESSOR grant_request carrying `decision`. The session
         // can read its own requests but has no grant on `grant` itself, so this is the only channel
         // that does not widen it.
-        const rows = await client.query(
-          { kind: "grant_request", match: { conversationId: ctx?.conversationId } },
-          50,
-          { dir: "desc" },
-        );
+        const rows = await client.queryNewest({ kind: "grant_request", match: { conversationId: ctx?.conversationId } }, 50);
         const decided = rows.map((r) => r.body as Record<string, unknown>).find((b) => b.decision && mine(b));
         if (!decided) continue;
         // The kind does not exist, so whatever was decided, the grant authorizes nothing. Say that

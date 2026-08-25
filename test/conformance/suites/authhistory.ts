@@ -190,7 +190,11 @@ export const authHistorySuites: Suite[] = [
   {
     name: "a registry view reports itself incomplete rather than returning a plausible prefix",
     run: async (adapter) => {
-      const space = new Space(adapter);
+    // OPTS OUT of the grant-history ceiling, deliberately and only here. This test is about the
+    // READ (does it page to exhaustion, and does it say so when it cannot), so it has to construct
+    // a history that `maxGrantRecordsPerPrincipalKind` exists to prevent through the ordinary path.
+    // The ceiling's own guard lives in `suites/limits.ts`.
+      const space = new Space(adapter, { maxGrantRecordsPerPrincipalKind: Number.MAX_SAFE_INTEGER });
       space.registerKind({ kind: "task", indexedPaths: [] });
       // Well past any single page: the point is that the read pages to exhaustion rather than
       // stopping at a limit someone guessed, and says so if it cannot.

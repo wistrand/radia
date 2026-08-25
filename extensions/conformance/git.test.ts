@@ -378,7 +378,7 @@ Deno.test("[git] an iteration history exports as a commit chain a person can bis
       // author line came from the body would let a record name whoever it liked as its writer. The
       // owner claim still travels, as a trailer, where it reads as the claim it is.
       const author = await git(["--git-dir", dir, "log", "--format=%an", "-1", "main"]);
-      const writer = (await c.query({ kind: "workspace", match: { name: "primes" } }, 1, { dir: "desc" }))[0].runtimeMeta.createdBy;
+      const writer = (await c.queryNewest({ kind: "workspace", match: { name: "primes" } }, 1))[0].runtimeMeta.createdBy;
       assertEquals(author.out.trim(), writer);
       assert(author.out.trim() !== OWNER, "the body's owner field must not become the git author");
       const ownerTrailer = await git(["--git-dir", dir, "log", "--format=%(trailers:key=Radia-Owner,valueonly)", "-1", "main"]);

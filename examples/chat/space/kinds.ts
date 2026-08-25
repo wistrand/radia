@@ -144,8 +144,9 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     // live: 747 llm_calls held 8 MB of the 10 MB of all bodies. A week covers any debugging.
     defaultRetentionSeconds: 7 * 24 * 3600,
   });
-  // `contentKey: tier` matches `liveModels`' own projection (activeByKey on body.tier), so what
-  // compaction keeps is exactly what the router reads.
+  // `contentKey: tier` IS what `liveModels` projects by: it reads the registry server-side, so the
+  // key is stated here and nowhere else, and what compaction keeps is what the router reads by
+  // construction rather than by a comment claiming somebody checked.
   await client.registerKind({
     kind: "model",
     indexedPaths: [{ path: "tier", type: "keyword" }],

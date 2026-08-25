@@ -159,7 +159,7 @@ const openRead = await admin.queryPage({ kind: "message" }, 5);
 check("an unrestricted read carries no scope at all", openRead.scope === undefined);
 check(
   "…while the other conversation's messages are really there",
-  (await admin.query({ kind: "message", match: { conversationId: conv } }, 5)).length === 5,
+  (await admin.queryOldest({ kind: "message", match: { conversationId: conv } }, 5)).length === 5,
 );
 
 // A pattern scope binds writes too: the body must match, so a session cannot file records into
@@ -186,7 +186,7 @@ check("another conversation's llm_result is unreadable even with its callId",
 check("…its tool_result too",
   (await session.readOne({ kind: "tool_result", match: { callId: theirCall } })) === null);
 check("…and its streamed chunks",
-  (await session.query({ kind: "llm_chunk", match: { callId: theirCall } }, 10)).length === 0);
+  (await session.queryOldest({ kind: "llm_chunk", match: { callId: theirCall } }, 10)).length === 0);
 
 // The other direction, which is what breaks the chat if a writer forgets the field: the session
 // must still read its OWN results. A missed stamp is not a leak, it is a hang.
@@ -196,7 +196,7 @@ await admin.put({ kind: "tool_result", body: { callId: myCall, conversationId: m
 await admin.put({ kind: "llm_chunk", body: { callId: myCall, conversationId: mine, index: 0, delta: "ok" } });
 check("its own llm_result is readable", (await session.readOne({ kind: "llm_result", match: { callId: myCall } })) !== null);
 check("its own tool_result is readable", (await session.readOne({ kind: "tool_result", match: { callId: myCall } })) !== null);
-check("its own chunks are readable", (await session.query({ kind: "llm_chunk", match: { callId: myCall } }, 10)).length === 1);
+check("its own chunks are readable", (await session.queryOldest({ kind: "llm_chunk", match: { callId: myCall } }, 10)).length === 1);
 
 // Artifacts. The last kind a session could not be scoped on: the body is computed from the bytes,
 // so until `putArtifact` accepted application fields there was nothing for a pattern to bind and
@@ -341,7 +341,7 @@ check(
   modelRows.records.length === 0,
   `${modelRows.records.length} model records`,
 );
-const asOperator = await admin.query({ kind: "model" }, 10);
+const asOperator = await admin.queryOldest({ kind: "model" }, 10);
 check("…while the space really does have models", asOperator.length > 0, `${asOperator.length} tiers`);
 
 
@@ -385,7 +385,7 @@ async function askAndAnswer(
     tools.request_grant(request, { callId: "smoke", conversationId: mine }),
     (async () => {
       for (let i = 0; i < 100; i++) {
-        const pending = await admin.query({ kind: "grant_request", match: { conversationId: mine } }, 10, { dir: "desc" });
+        const pending = await admin.queryNewest({ kind: "grant_request", match: { conversationId: mine } }, 10);
         if (pending.some((r) => !(r.body as { decision?: string }).decision)) break;
         await new Promise((r) => setTimeout(r, 50));
       }
@@ -430,7 +430,7 @@ check(
 
 const afterNarrow = await tools.space_query({ kind: "procedure", limit: 25 }) as { count: number };
 check("the approved grant really does return nothing", afterNarrow.count === 0, `${afterNarrow.count} records`);
-check("…while the records are plainly there", (await admin.query({ kind: "procedure" }, 25)).length === 3);
+check("…while the records are plainly there", (await admin.queryOldest({ kind: "procedure" }, 25)).length === 3);
 
 // --- the fix: the asker can say which it needs, and the prompt shows it ---
 const wide = await askAndAnswer(
@@ -451,7 +451,7 @@ check("and approving that way actually answers the question", listed.kinds.lengt
 // The same ask at the narrower scope is a DIFFERENT request, not a duplicate of the one already
 // handled. Otherwise re-asking un-scoped after a scoped grant disappointed would be silently
 // dropped as "already reviewed".
-const requests = await session.query({ kind: "grant_request", match: { conversationId: mine } }, 50);
+const requests = await session.queryOldest({ kind: "grant_request", match: { conversationId: mine } }, 50);
 const scopes = new Set(requests.map((r) => (r.body as { kind: string; scope?: string }).kind + ":" + ((r.body as { scope?: string }).scope ?? "own")));
 check("a re-ask at a different scope is its own request", scopes.has("kind_def:all") && scopes.has("procedure:own"), [...scopes].join(" "));
 
@@ -518,16 +518,13 @@ await spend(2, 41000, 0.00065);
 await admin.put({ kind: "message", body: { conversationId: priced, owner: CHAT_USER, index: 3, role: "user", content: "asks" }, parentIds: [priced] });
 
 const rank = async (path: string) =>
-  (await admin.query(
-    { kind: "message", match: { conversationId: priced, role: "assistant" }, orderBy: [{ path, dir: "desc" }] },
-    3,
-  )).map((r) => (r.body as { usage?: Record<string, number> }).usage ?? {});
+  (await admin.queryOrdered({ kind: "message", match: { conversationId: priced, role: "assistant" }, orderBy: [{ path, dir: "desc" }] }, 3)).map((r) => (r.body as { usage?: Record<string, number> }).usage ?? {});
 const topTokens = await rank("usage.total_tokens");
 const topCost = await rank("usage.cost");
 check("the biggest call by TOKENS is a query", topTokens[0]?.total_tokens === 41000, JSON.stringify(topTokens.map((u) => u.total_tokens)));
 check("…and the priciest is a DIFFERENT one", topCost[0]?.cost === 0.00283, JSON.stringify(topCost.map((u) => u.cost)));
 check("…so cost is not inferable from tokens", topTokens[0]?.total_tokens !== undefined && topCost[0]?.cost !== 0.00065);
-const pricey = await admin.query({ kind: "message", match: { conversationId: priced, "usage.cost": { $gt: 0.002 } } }, 10);
+const pricey = await admin.queryOldest({ kind: "message", match: { conversationId: priced, "usage.cost": { $gt: 0.002 } } }, 10);
 check("a fractional path is matchable too, not only sortable", pricey.length === 1, `${pricey.length} over $0.002`);
 
 // THROUGH THE TOOL, not only the client — a wrapper is a place a bug can hide from every test of
@@ -563,17 +560,14 @@ check("…and to query the kind that DECLARES the field", /DECLARES the field/.t
 
 // THE TRAP, pinned so it is not rediscovered: `desc` negates the whole comparison, including the
 // missing-value rule, so a record with NO usage sorts FIRST. "The biggest" would be a user message.
-const unfiltered = await admin.query(
-  { kind: "message", match: { conversationId: priced }, orderBy: [{ path: "usage.total_tokens", dir: "desc" }] },
-  1,
-);
+const unfiltered = await admin.queryOrdered({ kind: "message", match: { conversationId: priced }, orderBy: [{ path: "usage.total_tokens", dir: "desc" }] }, 1);
 check(
   "a descending sort puts records with NO value first, so the match must exclude them",
   (unfiltered[0]?.body as { role?: string }).role === "user",
   JSON.stringify((unfiltered[0]?.body as { role?: string }).role),
 );
 
-const stamped = await admin.query({ kind: "llm_chunk", match: { callId: myCall } }, 1);
+const stamped = await admin.queryOldest({ kind: "llm_chunk", match: { callId: myCall } }, 1);
 check("an llm_chunk is born with the kind's retention stamped in", Boolean(stamped[0]?.retentionUntil), stamped[0]?.retentionUntil ?? "(none)");
 const { id: callRec } = await admin.put({ kind: "llm_call", body: { conversationId: mine } });
 check("an llm_call too", Boolean((await admin.getRecord(callRec))?.retentionUntil));

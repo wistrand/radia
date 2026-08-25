@@ -416,6 +416,49 @@ export function orderRecords(
  * second, conflicting answer to the same question. `Space.query` rejects the combination, and
  * this ignores it if one reaches here anyway.
  */
+/**
+ * The whole page clause for one keyset walk: the direction, the cursor comparison, and the ORDER BY,
+ * decided together in one place.
+ *
+ * A PAIR is not enough, and that is the lesson rather than a preference. This default was written
+ * five times in three forms (twice per dialect, plus `pageRecords` below), and the SQL paths derive
+ * the comparison from the direction while the oracle path reverses a sorted array. Changing four of
+ * the five produced not a test failure but a silently broken cursor: a 25-record kind paged 139
+ * records with repeats and never terminated, because SQL walked one way while the oracle ordered the
+ * other and `after` therefore pointed backwards. Emitting the clause leaves nothing to mismatch.
+ *
+ * `column` is the qualified id column (`id`, `r.id`) and `placeholder` renders the dialect's bind
+ * marker, the same injection the `JsonDialect` in `storage/pushdown.ts` already uses. `params` holds
+ * the cursor value when there is one, so a caller splices rather than deciding.
+ *
+ * The default is ASCENDING, deliberately: it matches the claim order (`take` ranks
+ * `available_at asc, record_id asc`), which is what makes `after` a forward walk through time.
+ * See agent_docs/plan-bounded-reads.md.
+ */
+export function pageClause(
+  page: { after?: string; dir?: "asc" | "desc" } | undefined,
+  o: { column: string; placeholder: () => string },
+): { where: string; orderBy: string; params: string[]; dir: "asc" | "desc"; cmp: "<" | ">" } {
+  const dir = page?.dir === "desc" ? "desc" : "asc";
+  const cmp = dir === "desc" ? "<" : ">";
+  return {
+    where: page?.after ? ` and ${o.column} ${cmp} ${o.placeholder()}` : "",
+    orderBy: `order by ${o.column} ${dir}`,
+    params: page?.after ? [page.after] : [],
+    // For a caller that must build a SECOND cursor on the same axis: the chunked scan walks the
+    // kind in pieces and needs its own comparison, which must be the one this page already chose.
+    // Handed back rather than re-derived, so the two cannot disagree.
+    dir,
+    cmp,
+  };
+}
+
+/** Whether a natural-order page walks newest-first. The oracle path has no cursor to render, so it
+ *  takes only this half, from the same decision `pageClause` makes. */
+export function pageIsDescending(page?: { dir?: "asc" | "desc" }): boolean {
+  return page?.dir === "desc";
+}
+
 export function pageRecords(
   records: RadiaRecord[],
   orderBy: OrderBy[] | undefined,
@@ -424,7 +467,7 @@ export function pageRecords(
 ): RadiaRecord[] {
   const ordered = orderRecords(records, orderBy);
   const natural = !orderBy || orderBy.length === 0;
-  if (natural && page?.dir === "desc") ordered.reverse();
+  if (natural && pageIsDescending(page)) ordered.reverse();
   return ordered.slice(0, limit);
 }
 

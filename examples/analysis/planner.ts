@@ -68,7 +68,7 @@ export interface StageDef {
  *  that fell off a page would silently truncate every dataset's pipeline. */
 export async function readStageDefs(c: RadiaClient): Promise<StageDef[]> {
   const view = await readRegistry<StageDef & { retired?: boolean }>(
-    (limit, after) => c.query({ kind: "stage_def" }, limit, { after }),
+    (page) => c.queryPage({ kind: "stage_def" }, page.limit, page).then((r) => r.records),
     (b) => b.stage,
   );
   if (!view.complete) throw new Error("could not read the stage_def registry completely");
@@ -122,7 +122,7 @@ async function readPass(c: RadiaClient, names: string[]): Promise<PassReads> {
   if (names.length === 0) return { defs, code, results: new Map(), requests: new Map(), artifacts: new Map() };
   const bulk = async (kind: string) => {
     const view = await readRegistry<Record<string, unknown>>(
-      (limit, after) => c.query({ kind, match: { dataset: { $in: names } } }, limit, { dir: "desc", after }),
+      (page) => c.queryPage({ kind, match: { dataset: { $in: names } } }, page.limit, page).then((r) => r.records),
       (b) => workKey(b as { dataset?: string }),
     );
     if (!view.complete) throw new Error(`could not read every ${kind} for this pass; refusing to plan on a prefix`);
@@ -138,7 +138,7 @@ async function readPass(c: RadiaClient, names: string[]): Promise<PassReads> {
   const artifacts = new Map<string, string>();
   if (unresolved.length > 0) {
     const view = await readRegistry<{ digest?: string }>(
-      (limit, after) => c.query({ kind: "artifact", match: { digest: { $in: [...new Set(unresolved)] } } }, limit, { dir: "desc", after }),
+      (page) => c.queryPage({ kind: "artifact", match: { digest: { $in: [...new Set(unresolved)] } } }, page.limit, page).then((r) => r.records),
       (b) => b.digest,
     );
     if (!view.complete) throw new Error("could not resolve every output digest to an artifact; refusing to plan on a prefix");
@@ -230,7 +230,7 @@ export async function planDataset(
 export async function datasets(c: RadiaClient, limit = 50): Promise<
   { id: string; name: string; digest: string; artifactId: string; owner: string; createdAt: string }[]
 > {
-  const rows = await c.query({ kind: "dataset" }, limit, { dir: "desc" });
+  const rows = await c.queryNewest({ kind: "dataset" }, limit);
   return rows.map((r) => {
     const b = r.body as { name: string; digest: string; artifactId: string; owner: string };
     return { id: r.id, ...b, createdAt: r.runtimeMeta.createdAt };

@@ -518,7 +518,7 @@ Deno.test("reactor: a credential_invalid revocation re-watches under a fresh run
       signal: stop.signal,
       log: (m) => lines.push(m),
       reconcile: async () => {
-        seen = (await client.query({ kind: "task" }, 50)).length;
+        seen = (await client.queryOldest({ kind: "task" }, 50)).length;
       },
     });
     await eventually(() => seen === 1, "the boot reconcile ran");
@@ -565,7 +565,7 @@ Deno.test("reactor: a record no wakeup ever announces is healed by the tick", as
       signal: stop.signal,
       log: () => {},
       reconcile: async () => {
-        seen = (await s.client.query({ kind: "task" }, 50)).length;
+        seen = (await s.client.queryOldest({ kind: "task" }, 50)).length;
         passes++;
       },
     });
@@ -601,7 +601,7 @@ Deno.test("reactor: a refused watch is reported ONCE and the tick keeps the reac
       signal: stop.signal,
       log: (m) => lines.push(m),
       reconcile: async () => {
-        seen = (await s.client.query({ kind: "task" }, 50)).length;
+        seen = (await s.client.queryOldest({ kind: "task" }, 50)).length;
       },
     });
     await eventually(() => lines.some((l) => l.includes("FORBIDDEN")), "the refusal is loud");

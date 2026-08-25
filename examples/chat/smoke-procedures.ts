@@ -102,7 +102,7 @@ check("save_procedure succeeds", saved.ok, JSON.stringify(saved.output).slice(0,
 // 2. The code is a WORKSPACE, and the record points at it by name and entrypoint. It used to be a
 // lone artifact, which is a shape that could not grow: one file, JavaScript whatever it contained,
 // no versions to read back, nothing an agent could be bound to.
-const procs = await admin.query({ kind: "procedure", match: { name: "add_nums", conversationId: convA } }, 10);
+const procs = await admin.queryOldest({ kind: "procedure", match: { name: "add_nums", conversationId: convA } }, 10);
 const body = procs[0]?.body as { workspace?: string; entrypoint?: string } | undefined;
 check("a procedure record exists, scoped to the conversation", procs.length === 1);
 check("it points at a workspace, not an artifact", body?.workspace === "proc-add_nums" && body?.entrypoint === "main.js", JSON.stringify(body));
@@ -188,7 +188,7 @@ check("and it runs again", ran3.ok && (ran3.output as { stdout?: string }).stdou
 //     it should be answerable from the space instead of from recall.
 const provRun = await callTool("add_nums", { a: 1, b: 2 }, convA);
 check("the procedure still runs", provRun.ok);
-const results = await admin.query({ kind: "tool_result" }, 200);
+const results = await admin.queryOldest({ kind: "tool_result" }, 200);
 // One record, read both ways. Citing the last result but reading the first one's parents is how
 // this test failed the first time.
 const withProc = results.filter((r) => (r.body as { procedure?: unknown }).procedure);
@@ -215,7 +215,7 @@ await callTool("save_procedure", {
 }, convA);
 const after = await callTool("add_nums", { a: 1, b: 1 }, convA);
 check("the edited procedure runs the NEW code", (after.output as { stdout?: string }).stdout?.trim() === "6", JSON.stringify(after.output));
-const afterResults = await admin.query({ kind: "tool_result" }, 200);
+const afterResults = await admin.queryOldest({ kind: "tool_result" }, 200);
 const afterProc = afterResults.filter((r) => (r.body as { procedure?: unknown }).procedure);
 const afterCited = (afterProc[afterProc.length - 1].body as { procedure: { treeDigest?: string } }).procedure;
 check("…and the pinned digest MOVED with the edit", Boolean(afterCited.treeDigest) && afterCited.treeDigest !== beforeDigest, `${beforeDigest} -> ${afterCited.treeDigest}`);

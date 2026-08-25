@@ -257,11 +257,7 @@ async function nextCall(client: RadiaClient, conversationId: string, afterId: st
   const deadline = Date.now() + INFERENCE_DEADLINE_MS;
   while (Date.now() < deadline) {
     if (cancel?.signal.aborted) throw new TurnCancelled();
-    const rows = await client.query(
-      { kind: "llm_call", match: { conversationId, tier: { $exists: false } } },
-      1,
-      { dir: "desc" },
-    );
+    const rows = await client.queryNewest({ kind: "llm_call", match: { conversationId, tier: { $exists: false } } }, 1);
     if (rows[0] && rows[0].id > afterId) return rows[0].id;
     // MATCHED ON `turnAt`, because a conversation accumulates one terminus per turn: unscoped, this
     // found the PREVIOUS turn's and reported "round limit" after a single tool call, on every turn
@@ -291,11 +287,7 @@ export interface OpenTurn {
  * answer with no tool calls, which is a final answer and the end of the turn.
  */
 export async function findOpenTurn(client: RadiaClient, conversationId: string): Promise<OpenTurn | null> {
-  const rows = await client.query(
-    { kind: "llm_call", match: { conversationId, tier: { $exists: false } } },
-    1,
-    { dir: "desc" },
-  );
+  const rows = await client.queryNewest({ kind: "llm_call", match: { conversationId, tier: { $exists: false } } }, 1);
   const call = rows[0];
   if (!call) return null;
   const turnAt = (call.body as { turnAt?: number }).turnAt;
@@ -457,10 +449,7 @@ async function streamResult(client: RadiaClient, callId: string, key?: Conversat
     // Incremental read: ask for what is past the watermark instead of re-scanning the stream every
     // tick. `index` is an indexed integer, so this is a range scan; the batch size caps a burst,
     // not the answer.
-    const chunks = await client.query(
-      { kind: "llm_chunk", match: { callId, index: { $gt: lastIndex } }, orderBy: [{ path: "index" }] },
-      500,
-    );
+    const chunks = await client.queryOrdered({ kind: "llm_chunk", match: { callId, index: { $gt: lastIndex } }, orderBy: [{ path: "index" }] }, 500);
     for (const chunk of chunks) {
       const raw = chunk.body as { index: number; delta: string; reset?: boolean };
       // A delta goes straight to the terminal, so it is the one prose read with no later checkpoint.
@@ -746,7 +735,7 @@ export class ToolSet {
     // one silently overwriting the other; `collapseByTool` folds them back into the single name a
     // model can call, and says when the fold hid a disagreement.
     const view = await readRegistry<CapabilityBody>(
-      (limit, after) => this.client.query({ kind: "capability" }, limit, { dir: "desc", after }),
+      (page) => this.client.queryPage({ kind: "capability" }, page.limit, page).then((r) => r.records),
       capabilityKey,
     );
     // A partial read means the tool list is a guess. Say so once rather than running a turn that
@@ -787,7 +776,10 @@ export class ToolSet {
       // `activeByKey`, not `newestByKey`: retirement is dropped by the shared projection, so this
       // loop never has to remember to check the flag.
       const procs = activeByKey<ProcedureBody>(
-        await this.client.query({ kind: "procedure", match: { conversationId: this.conversationId } }, 200, { dir: "desc" }),
+        // EXHAUSTIVE: the history is per conversation and every save appends, so a page drops
+        // whole procedures rather than stale versions of them. Same defect the lookup path carried
+        // twice; the brand on `activeByKey` is what finally made all three visible at once.
+        await this.client.queryAll({ kind: "procedure", match: { conversationId: this.conversationId } }),
         (b) => b.name,
       );
       for (const [name, rec] of procs) {

@@ -156,7 +156,7 @@ try {
   // `token_expired` forever, because `bootstrap` handed out run tokens and threw the durable half
   // away. A definition token has no expiry and can only mint, so the SDK exchanges it (see
   // test/exchange.test.ts) and the worker survives its own credential dying.
-  const runs = await admin.query({ kind: "agent_run", match: { agent: "agent:chat-inference" } }, 10, { dir: "desc" });
+  const runs = await admin.queryNewest({ kind: "agent_run", match: { agent: "agent:chat-inference" } }, 10);
   const live = (runs[0]?.body as { run?: string } | undefined)?.run;
   check("the inference worker minted its own run from the durable half", !!live, String(live));
   if (live) {
@@ -195,7 +195,7 @@ try {
   }).spawn();
   try {
     for (let i = 0; i < 150; i++) {
-      if ((await admin.query({ kind: "capability", match: { tool: "run_javascript" } }, 1)).length > 0) break;
+      if ((await admin.queryOldest({ kind: "capability", match: { tool: "run_javascript" } }, 1)).length > 0) break;
       await new Promise((r) => setTimeout(r, 200));
     }
     const slotted = await admin.put({
@@ -323,13 +323,13 @@ try {
     check("a turn runs to completion with no client driving it", finish !== null);
     check("…and says why it ended", (finish?.body as { why?: string })?.why === "answered", JSON.stringify(finish?.body));
 
-    const transcript = await admin.query({ kind: "message", match: { conversationId: c2 } }, 50, { dir: "asc" });
+    const transcript = await admin.queryOldest({ kind: "message", match: { conversationId: c2 } }, 50);
     const roles = transcript.map((r) => (r.body as { role?: string }).role);
     check("…having run the model, a tool, and the model again", roles.join(",") === "user,assistant,tool,assistant", roles.join(","));
     const toolMsg = transcript.find((r) => (r.body as { role?: string }).role === "tool");
     check("…with the tool's real output in the transcript", String((toolMsg?.body as { content?: string })?.content).includes("42"), String((toolMsg?.body as { content?: string })?.content).slice(0, 60));
     // Exactly one of each: the keyed emissions did not double under the watch's re-sweeps.
-    const calls = await admin.query({ kind: "tool_call", match: { conversationId: c2 } }, 20);
+    const calls = await admin.queryOldest({ kind: "tool_call", match: { conversationId: c2 } }, 20);
     check("…and emitted each link exactly once", calls.length === 1, `${calls.length} tool_calls`);
 
     // Neither stale conversation carries a turn deadline, which is true of every record written
@@ -339,7 +339,7 @@ try {
     for (const [name, id] of [["already finished", stale], ["abandoned mid-call", abandoned]] as const) {
       check(
         `a turn ${name} is left alone: no live deadline, nobody waiting`,
-        (await admin.query({ kind: "tool_call", match: { conversationId: id } }, 10)).length === 0,
+        (await admin.queryOldest({ kind: "tool_call", match: { conversationId: id } }, 10)).length === 0,
       );
     }
 
@@ -394,10 +394,10 @@ try {
     const orphaned = body.filter((l) => l.startsWith("["));
     check("…and no round's label lost its prompt to the redraw", orphaned.length === 0, JSON.stringify(orphaned));
 
-    const t3 = (await admin.query({ kind: "message", match: { conversationId: c3 } }, 50, { dir: "asc" }))
+    const t3 = (await admin.queryOldest({ kind: "message", match: { conversationId: c3 } }, 50))
       .map((r) => (r.body as { role?: string }).role);
     check("the REAL client runs a turn it does not drive", t3.join(",") === "system,user,assistant,tool,assistant", t3.join(","));
-    const seeds = await admin.query({ kind: "llm_call", match: { conversationId: c3 } }, 20);
+    const seeds = await admin.queryOldest({ kind: "llm_call", match: { conversationId: c3 } }, 20);
     check("…and the client's own writes are the seed alone", seeds.length >= 2, `${seeds.length} llm_calls (seed + worker rounds)`);
     // On the THREAD's cursor, not on the transcript: the workers write the transcript whatever the
     // client does, so asserting roles alone passes even when the render loop stops following. The
@@ -411,7 +411,7 @@ try {
     // tool results.
     await thread.append({ role: "user", content: "compute twice" });
     await runTurn(session, thread, toolset);
-    const tm = await admin.query({ kind: "message", match: { conversationId: c3 } }, 50, { dir: "asc" });
+    const tm = await admin.queryOldest({ kind: "message", match: { conversationId: c3 } }, 50);
     const tail = tm.slice(-4).map((r) => (r.body as { role?: string }).role);
     check("a round asking for TWO tools answers both before the next round", tail.join(",") === "assistant,tool,tool,assistant", tail.join(","));
     const replies = tm.filter((r) => (r.body as { role?: string; of?: number }).role === "tool" && (r.body as { of?: number }).of === 2);
@@ -444,7 +444,7 @@ try {
       });
       const end = await awaitOne({ kind: "turn_complete", match: { conversationId: capped } }, 300);
       check("a turn that keeps calling tools STOPS at the round cap", (end?.body as { why?: string })?.why === "round_cap", JSON.stringify(end?.body));
-      const rounds = (await admin.query({ kind: "llm_call", match: { conversationId: capped } }, 30))
+      const rounds = (await admin.queryOldest({ kind: "llm_call", match: { conversationId: capped } }, 30))
         .map((r) => (r.body as { round?: number }).round ?? 0);
       // On the COUNT, not on "some round > 0": with the counter reset the rounds read [0,1,1,1…] and a
       // distinct-values check passes while the turn runs forever. What the cap buys is a BOUND.
@@ -461,7 +461,7 @@ try {
     // SDK mints another for ordinary calls, but the SSE stream opened under the old one is REVOKED
     // with `credential_invalid`. Unsupervised, that threw out of the watch loop and killed the whole
     // turn worker, stopping every conversation on the space; the only sign was one stack trace.
-    const turnRuns = await admin.query({ kind: "agent_run", match: { agent: "agent:chat-turn" } }, 10, { dir: "desc" });
+    const turnRuns = await admin.queryNewest({ kind: "agent_run", match: { agent: "agent:chat-turn" } }, 10);
     const turnRun = (turnRuns[0]?.body as { run?: string } | undefined)?.run;
     check("the turn worker minted its own run", !!turnRun, String(turnRun));
     if (turnRun) {
@@ -509,7 +509,7 @@ try {
     await new Promise((r) => setTimeout(r, 2500));
     check(
       "a CANCELLED turn stops advancing, even with a live deadline and work to do",
-      (await admin.query({ kind: "tool_call", match: { conversationId: cancelled } }, 10)).length === 0,
+      (await admin.queryOldest({ kind: "tool_call", match: { conversationId: cancelled } }, 10)).length === 0,
     );
     // And it is scoped: the same conversation's NEXT turn must not inherit the cancel.
     await admin.put({
@@ -539,7 +539,7 @@ try {
     // never hit. Two turns, not one, is the whole difference between green and the live failure.
     await thread.append({ role: "user", content: "compute something" });
     await runTurn(session, thread, toolset);
-    const t4 = (await admin.query({ kind: "message", match: { conversationId: c3 } }, 50, { dir: "asc" }))
+    const t4 = (await admin.queryOldest({ kind: "message", match: { conversationId: c3 } }, 50))
       .map((r) => (r.body as { role?: string }).role);
     check(
       "a SECOND turn in the same conversation runs its rounds too",
@@ -551,7 +551,7 @@ try {
     // writes the terminus after reacting to that same message. Asserting immediately raced it.
     let termini: unknown[] = [];
     for (let i = 0; i < 100; i++) {
-      termini = await admin.query({ kind: "turn_complete", match: { conversationId: c3 } }, 10);
+      termini = await admin.queryOldest({ kind: "turn_complete", match: { conversationId: c3 } }, 10);
       if (termini.length >= 3) break;
       await new Promise((r) => setTimeout(r, 100));
     }
@@ -571,7 +571,7 @@ try {
     // its timeout blamed a missing fleet for a call the router had already claimed.
     const byIdentity = new RadiaClient(url, { token: await mintSession(admin, "human:t", { owner: "human:t" }) });
     const seenStages = new Set(
-      (await byIdentity.query({ kind: "progress", match: { conversationId: c3 } }, 100))
+      (await byIdentity.queryOldest({ kind: "progress", match: { conversationId: c3 } }, 100))
         .map((r) => String((r.body as { stage?: string }).stage)),
     );
     for (const stage of ["routing", "routed", "generating"]) {
@@ -584,7 +584,7 @@ try {
     // the feature relies on would let one bug satisfy both sides.
     const byTurn = new Map<number, Set<string>>();
     for (const kind of ["message", "llm_call", "tool_call", "turn_complete"]) {
-      for (const r of await admin.query({ kind, match: { conversationId: c3 } }, 200)) {
+      for (const r of await admin.queryOldest({ kind, match: { conversationId: c3 } }, 200)) {
         const t = turnOf(r.body);
         if (t === undefined) continue;
         (byTurn.get(t) ?? byTurn.set(t, new Set()).get(t)!).add(r.id);
@@ -594,9 +594,9 @@ try {
     // as `undeclared_path` until `turnAt` was declared on `tool_call`, though the dispatcher had
     // been writing it all along: a body field its kind does not declare is invisible to matching.
     for (const [t, ids] of byTurn) {
-      const viaQuery = await admin.query({ kind: "tool_call", match: { conversationId: c3, turnAt: t } }, 50);
+      const viaQuery = await admin.queryOldest({ kind: "tool_call", match: { conversationId: c3, turnAt: t } }, 50);
       const viaBody = [...ids].length; // the grouping above already knows the answer
-      const expected = (await admin.query({ kind: "tool_call", match: { conversationId: c3 } }, 200))
+      const expected = (await admin.queryOldest({ kind: "tool_call", match: { conversationId: c3 } }, 200))
         .filter((r) => turnOf(r.body) === t).length;
       check(
         `tool calls of turn ${t} are reachable by query`,
@@ -608,11 +608,7 @@ try {
     // The head of a turn is its FIRST untiered `llm_call`: the client's seed. Later rounds are
     // untiered too (the router adds the tier), so they are grouped out by turnAt rather than by a
     // round number, which `llm_call` does not declare as an indexed path.
-    const untiered = await admin.query(
-      { kind: "llm_call", match: { conversationId: c3, tier: { $exists: false } } },
-      50,
-      { dir: "asc" },
-    );
+    const untiered = await admin.queryOldest({ kind: "llm_call", match: { conversationId: c3, tier: { $exists: false } } }, 50);
     // FIRST per turn, and `new Map(entries)` would give the last: that picked each turn's final
     // round as its head, whose subtree is legitimately just the closing answer.
     const heads = new Map<number, typeof untiered[number]>();

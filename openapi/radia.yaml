@@ -145,6 +145,47 @@ paths:
                   - { type: "null" }
         "400": { $ref: "#/components/responses/Problem" }
 
+  /records/registry:
+    post:
+      operationId: registry
+      summary: The current set of a keyed registry kind, projected server-side
+      description: >
+        Newest record per key, retirements dropped, read to exhaustion. The key is the one the KIND
+        DECLARES (`contentKey`, or the runtime's own key for a reserved kind), which is the same
+        statement `gc` compacts by, so a caller supplies no key function, no direction, no cursor and
+        no page size. A kind with no declared key is refused (`kind_not_keyed`).
+
+        Authorized exactly as a query: the grant's pattern is ANDed in and an author scope applies, so
+        a scoped caller gets the current set OF WHAT IT MAY READ, and `scope` says so when anything
+        was narrowed. `complete: false` means the walk was capped and the set is a prefix; treat that
+        as a reason to refuse widening, never as a full picture. Use `/records/query` when you must
+        SEE a retirement, since this answers what is in force.
+      x-stability: experimental
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind: { type: string }
+                match: { type: object, additionalProperties: true, description: "narrows the set, ANDed with any grant pattern" }
+      responses:
+        "200":
+          description: the current set
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries: { type: array, items: { $ref: "#/components/schemas/Record" } }
+                  complete: { type: boolean, description: "false when the walk was capped: the set is a prefix" }
+                  scanned: { type: integer, description: "records examined to produce the set" }
+                  scope: { type: object, additionalProperties: true, description: "present only when a grant narrowed the read" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+
   /records/query:
     post:
       operationId: query
@@ -153,8 +194,10 @@ paths:
         Ordered by the pattern, capped at limit. `after`/`dir` are KEYSET pagination over record
         id: a cursor, not an offset, so a page stays correct while records are being written.
         Records without an explicit order_by come back in ASCENDING id order, so a plain limit
-        returns the OLDEST matches; `dir: desc` is what expresses "the newest N". A cursor is
-        defined for that natural id order only. Combining after/dir with order_by is a 400,
+        returns the OLDEST matches; `dir: desc` is what expresses "the newest N". Walk a kind by
+        sending `nextCursor` back as `cursor`: it carries the direction, so a multi-page walk
+        cannot reverse part way. A cursor is
+        defined for that natural id order only. Combining after/dir/cursor with order_by is a 400,
         because a keyset over a body field would need the whole sort key plus the matcher's type
         rules. Note that ids order by time only to the millisecond (ULID), so `desc` is
         newest-first at that resolution, not a strict write order.
@@ -177,6 +220,15 @@ paths:
                       enum: [asc, desc]
                       default: asc
                       description: Direction of the natural (record id) order.
+                    cursor:
+                      type: string
+                      description: >
+                        A `nextCursor` from a previous page. It CARRIES THE DIRECTION, so it
+                        replaces after+dir rather than joining them: sending either alongside it is
+                        a 400, because the only thing that could mean is a walk that changes
+                        direction half way, re-reading a page it already returned and skipping one
+                        it never did. Opaque; the `a:`/`d:` prefix exists so a bare record id in
+                        this field is refused rather than misread.
                     explain:
                       type: boolean
                       default: false
@@ -193,9 +245,12 @@ paths:
                 type: object
                 properties:
                   records: { type: array, items: { $ref: "#/components/schemas/Record" } }
-                  nextAfter:
+                  nextCursor:
                     type: string
-                    description: Cursor for the next page; absent on the last page (a short page ends the walk).
+                    description: >
+                      Opaque cursor for the next page, to send back as `cursor`. Absent on the last
+                      page (a short page ends the walk), and absent entirely for an `order_by`
+                      read, whose order a record-id cursor cannot express.
                   scope:
                     type: object
                     description: >

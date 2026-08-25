@@ -11,7 +11,7 @@ import type { StorageAdapter } from "../../../src/storage/adapter.ts";
 import { Space } from "../../../src/core/space.ts";
 import { MemoryBlobStore } from "../../../src/storage/blobs.ts";
 import { RadiaError } from "../../../src/core/errors.ts";
-import { activeByKey } from "../../../sdk/ts/registry.ts";
+import { activeByKey, unsafeAsPopulation } from "../../../sdk/ts/registry.ts";
 import { SealKey } from "../../../src/core/seal.ts";
 import { newUlid, sha256Hex } from "../../../src/core/ids.ts";
 import { rawExec } from "./integrity.ts";
@@ -346,7 +346,10 @@ export const gcSuites: Suite[] = [
 
       const projection = async () => {
         const rows = await space.query({ kind: "cap" }, 100, { dir: "desc" });
-        return [...activeByKey<{ tool?: string }>(rows, (b) => b?.tool).entries()]
+        return [...activeByKey<{ tool?: string }>(
+          unsafeAsPopulation(rows, "this test wrote six records of the kind; 100 is the whole history"),
+          (b) => b?.tool,
+        ).entries()]
           .map(([k, r]) => `${k}:${(r.body as { v?: number }).v ?? "retired?"}`)
           .sort();
       };
@@ -376,7 +379,11 @@ export const gcSuites: Suite[] = [
     // PAGE per key — would pass the entire suite while resurrecting at scale.
     name: "gc compaction remembers what it saw across page boundaries",
     run: async (adapter) => {
-      const space = new Space(adapter);
+      // OPTS OUT of amortized per-kind compaction: this is about the VERB's page walk, and it needs
+      // 512 records of one kind to still exist when `gc` is called. With the trigger on, the writes
+      // compact themselves at 200 and the verb finds 112 left, which is the trigger working rather
+      // than the walk failing. Its own guard is below.
+      const space = new Space(adapter, { compactEveryWritesPerKind: 0 });
       space.registerKind({
         kind: "cap",
         indexedPaths: [{ path: "tool", type: "keyword" }],
@@ -447,7 +454,7 @@ export const gcSuites: Suite[] = [
 
       // The projection is unambiguous about which is current.
       const view = activeByKey<{ tool: string }>(
-        await space.query({ kind: "cap" }, 50),
+        unsafeAsPopulation(await space.query({ kind: "cap" }, 50), "this test wrote exactly two records of the kind"),
         (b) => b.tool,
       );
       assertEquals(view.get("t")?.id, lowId, "the projection reads the newest by the DATABASE clock");
@@ -455,6 +462,66 @@ export const gcSuites: Suite[] = [
       await space.gc();
       assert(await space.getRecord(lowId), "compaction must keep what every reader considers current");
       assertEquals(await space.getRecord(highId), null, "and delete the superseded one, high id or not");
+    },
+  },
+  {
+    // A registry read is linear in HISTORY and compaction makes it exactly FLAT (measured:
+    // 10k successors behind 20 capabilities is 21 pages and 4.9 MiB to learn 20 entries; after a
+    // pass it is 1 page and 10 KiB). Leaving that to a verb nobody runs means every reader pays
+    // forever, so the writer producing the litter pays for it instead, on the shape the retention
+    // sweep already uses (agent_docs/plan-registry-cost.md item 3).
+    name: "a keyed registry compacts itself as it is written, with no verb and no timer",
+    run: async (adapter) => {
+      const space = new Space(adapter, { compactEveryWritesPerKind: 20 });
+      space.registerKind({
+        kind: "cap",
+        indexedPaths: [{ path: "tool", type: "keyword" }],
+        claimable: false,
+        contentKey: ["tool"],
+      });
+      // Two keys, re-declared far past the trigger. Nobody calls `gc`.
+      for (let i = 0; i < 100; i++) {
+        await space.put({ kind: "cap", body: { tool: i % 2 === 0 ? "a" : "b", v: i } });
+      }
+      const rows = await space.query({ kind: "cap" }, 500, { dir: "desc" });
+      assert(rows.length < 100, `the history compacted itself: ${rows.length} of 100 remain`);
+      // What SURVIVES is the projection, exactly: newest per key, nothing else lost.
+      const view = activeByKey<{ tool: string; v: number }>(
+        unsafeAsPopulation(rows, "the assert above proves fewer than 100 records remain, so 500 is the whole history"),
+        (b) => b.tool,
+      );
+      assertEquals(view.get("a")?.body, { tool: "a", v: 98 });
+      assertEquals(view.get("b")?.body, { tool: "b", v: 99 });
+    },
+  },
+  {
+    // The trigger is PER KIND, which is the whole reason it is not `gcEveryWrites`: registry litter
+    // grows per write of a KEYED kind, so a space streaming an unkeyed kind must not pay for walks
+    // over registries nothing touched.
+    name: "compaction rides the kind that was written, never the whole space",
+    run: async (adapter) => {
+      const space = new Space(adapter, { compactEveryWritesPerKind: 20 });
+      space.registerKind({
+        kind: "cap",
+        indexedPaths: [{ path: "tool", type: "keyword" }],
+        claimable: false,
+        contentKey: ["tool"],
+      });
+      space.registerKind({ kind: "chunk", indexedPaths: [], claimable: false });
+
+      // A registry with litter, left just under its own trigger.
+      for (let i = 0; i < 10; i++) await space.put({ kind: "cap", body: { tool: "a", v: i } });
+      // Then a flood of an UNKEYED kind, well past the trigger. It must not compact `cap`.
+      for (let i = 0; i < 60; i++) await space.put({ kind: "chunk", body: { i } });
+
+      assertEquals(
+        (await space.query({ kind: "cap" }, 100, { dir: "desc" })).length,
+        10,
+        "an unkeyed flood must not trigger a walk over somebody else's registry",
+      );
+      // And the keyed kind still compacts on its OWN writes.
+      for (let i = 10; i < 30; i++) await space.put({ kind: "cap", body: { tool: "a", v: i } });
+      assert((await space.query({ kind: "cap" }, 100, { dir: "desc" })).length < 30);
     },
   },
   {

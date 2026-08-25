@@ -121,10 +121,7 @@ export class Waiter {
     if (!force && now < this.nextPoll) return;
     this.nextPoll = now + PROGRESS_POLL_MS;
     try {
-      const rows = await this.client.query(
-        { kind: "progress", match: typeof match === "string" ? { callId: match } : match },
-        20,
-      );
+      const rows = await this.client.queryOldest({ kind: "progress", match: typeof match === "string" ? { callId: match } : match }, 20);
       for (const r of rows.sort((a, b) => (a.id < b.id ? -1 : 1))) {
         if (this.seen.has(r.id)) continue;
         this.seen.add(r.id);

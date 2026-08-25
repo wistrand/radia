@@ -198,6 +198,34 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Registries, and reads that must not truncate
 
+**The current set of a keyed kind is `client.registry(kind)`, projected SERVER-side from the key the
+kind declares.** Prefer it to `queryAll` + `activeByKey`: the key otherwise exists twice per registry
+(`contentKey` for `gc`, a `keyOf` closure at each reader) with nothing checking they agree, and a
+disagreement means `gc` deletes by one key while readers project by another. It is also the only
+correct path from PYTHON, which has no projection helper at all. `complete: false` means a prefix,
+never a set. Use `queryAll` when you must SEE a retirement; this answers what is in force.
+
+**`activeByKey` / `newestByKey` / `activeSet` take a `Population`, not a `RadiaRecord[]`.** Only
+`queryAll` and `readRegistry` mint one, so a projection over a page does not compile. Two live
+defects fell out the day it landed, both in `examples/chat/client/` and both past a grep that had
+been green over them: the grep looks BACKWARD from the projection and both reads were inline
+arguments after it. `unsafeAsPopulation(records, why)` is the way out, and
+`test/registrycost.test.ts` asserts the exact set of sites that use it. Do not reach for
+`as unknown as Population`: it loses the type and the ledger at once.
+
+**A page cursor carries its direction (`nextCursor`, `a:`/`d:` + the id).** `after` is exclusive IN
+THE DIRECTION OF THE READ, so a caller that walked page one `desc` and page two without repeating
+`dir` got records from BEFORE page one, silently, with the walk never terminating and both requests
+individually valid. Send `nextCursor` back as `cursor` and nothing else; `cursor` with `dir` or
+`after` is a 400. `/v0/ops/events` and `children` keep `nextAfter`, and the different name is the
+signal: that one is a forward-only position in a log, with no direction to get wrong.
+
+**`readRegistry` builds the `Page`; a caller passes it through and never names a direction.** The
+contract used to be prose ("must return records NEWEST-FIRST") and five call sites paged ascending
+against it, right only because the function exhausts: on the incomplete path they would have kept
+the OLDEST records, the half missing every retirement, while `complete: false` said only that
+something was missing. A rule a caller can get wrong is one that will be got wrong.
+
 - **A CONSTANT idempotency key latches a registry entry after one transition.** Within the
   idempotency window a replayed key writes nothing and reports success, so `capability:<p>:<t>:retired`
   made a second withdrawal a no-op, and the unchanged content key made a re-publish over a tombstone
@@ -351,8 +379,13 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   and left the boundedness. Measured mid-session on a real space: **737 capability records for 33
   tools**, so the page was within 1.5x of silently dropping tools again. CLAUDE.md already said
   registry state is read through `readRegistry`, never a hand-rolled `query(kind, N)`; this was the
-  hand-rolled one, in the most consequential place, and the failure mode is invisible — "the
+  hand-rolled one, in the most consequential place, and the failure mode is invisible: "the
   assistant does not have that tool" is indistinguishable from "it did not think to use it".
+  IT HAPPENED TWICE MORE IN THE SAME APP, found by the `Population` brand rather than by any grep:
+  the tool list projected the newest 200 `procedure` records and grant review the newest 50
+  `grant_request` records. A `desc` page does not drop stale VERSIONS of a key, which is what makes
+  it look careful; it drops whole KEYS, so what vanishes is the earliest-saved procedure and the
+  request that has been waiting longest.
 - **A registry rebuilt only at startup is single-instance by accident.** `loadKinds` ran once and a
   `kind_def` put registers in the WRITING process only, so with N instances a kind declared on A was
   unknown to B until restart, and one REDECLARED on A left B compiling the old contract. Reads
@@ -621,6 +654,21 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   grants, admission, availability, and `claim_until` every time.
 
 ### Storage, SQL and the planner
+
+**The page direction and its cursor comparison come from `pageClause`, together.** It was decided in
+FIVE places in three forms (twice per dialect, plus `pageRecords`), and the SQL paths derive the
+comparison from the direction while the oracle path reverses a sorted array. Changing four of the
+five produced not a test failure but a silently broken cursor: a 25-record kind paged 139 records
+with repeats and never terminated. A shared `{dir, cmp}` pair would not have helped, because the
+pair is what drifted. Guard in `test/registrycost.test.ts`, which flags a comparison against a
+direction literal and leaves a presence check alone.
+
+**Never parent a record onto a REGISTRY entry.** Compaction deletes superseded entries and their
+edges, so the lineage dangles and a later put naming that id fails `parent_not_found`. This was
+always true of the `gc` verb and is now reachable by default, since compaction is amortized per
+keyed kind (`compactEveryWritesPerKind`). Verified: nothing in-repo does it, and the retention sweep
+drops edges the same way. Reference a registry entry by its CONTENT KEY, the way `basedOn` and the
+promotion pins already do.
 
 **`envelopesInState` applies every predicate BEFORE the cap, and nothing may filter after it.**
 `Space.queryEnvelopes` used to evaluate `expired` and `staleSeconds` in memory, after the adapter's
@@ -981,6 +1029,32 @@ on a space with 500 live ones and a stuck one. Fixed 2026-08-21 by pushing both 
   cannot span processes: delete the handoff rather than fixing it.
 
 ### Grants, scopes and narrowed answers
+
+**An identical live re-put of an uncompactable registry is ABSORBED, not written.** `grant`,
+`ops_grant` and `kind_def` answer with the record that already carries the entry
+(`Space.checkRegistryBudget`). Content-keying dedupes only inside the idempotency window, so without
+this a fleet restarting weekly appended one record per entry forever on kinds nothing can sweep.
+Compared by BODY: `grantKey` excludes `scope`, so absorbing on identity dropped a grant that ADDED
+`scope: {createdBy: "self"}` and left the wider one standing, reporting success. A live identity with
+a different body still writes, even past a ceiling, because a ceiling must never block a write that
+REDUCES authority. `signal` and `agent_definition` are excluded: a broadcast repeated is two events,
+and a definition's `tokenHash` is fresh every mint.
+
+**A registry is either compactable or capped, never neither.** An uncompactable registry is read in
+full forever, so its history is a permanent, unrecoverable tax on whoever reads it, and the write is
+the only place to stop it. `grant` (256 per principal+kind) and `ops_grant` (64 per principal) are
+capped by `Space.checkRegistryBudget`; every keyed app kind compacts automatically. `kind_def` is
+still neither, and it is read WHOLE at startup. Four rules the ceiling needs: a withdrawal is never
+refused; an incomplete read refuses rather than guessing; at the ceiling a live identical re-put is
+ANSWERED with the record already carrying it rather than written; and a live identity with a
+DIFFERENT body is WRITTEN even past the ceiling, because it is a replacement rather than a new entry.
+That last one is a silent-widening bug otherwise: `grantKey` excludes `scope`, so a grant adding
+`scope: {createdBy: "self"}` carries the same identity, and absorbing it dropped the narrowing while
+reporting success. Refusing it would be no better, because a ceiling must never block a write that
+REDUCES authority. That last one is not an
+optimisation: exempting it instead (the first version) left the ceiling unable to bound the case it
+was built for, since content-keying dedupes only inside the idempotency window and a weekly-restarting
+fleet appends one record per entry forever. Measured: 40 re-puts sailed past a ceiling of 10.
 
 - **`put` never checks that a parent is READABLE, so ancestry is forgeable.** A scoped principal may
   name any record id in `parentIds`, including one it cannot read. Every upward walk therefore stops

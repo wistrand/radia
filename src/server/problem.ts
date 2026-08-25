@@ -35,6 +35,13 @@ export function statusFor(code: string, fallback: number): number {
   if (code === "too_many_watches") return 429;
   // Same shape: a budget the caller can get back under by retiring what it no longer listens for.
   if (code === "too_many_interests") return 429;
+  // A per-principal ceiling on grant HISTORY, which every authorize re-reads. 429 like the two
+  // above, though the honest difference is that retiring shrinks what the READER projects and not
+  // the history it walks: grants never compact, so this one does not hand the budget back.
+  if (code === "too_many_grants") return 429;
+  // Same rule on the registry the ops-plane gate reads, and the same honest caveat: retiring shrinks
+  // what the reader projects, not the history it walks.
+  if (code === "too_many_ops_grants") return 429;
   // The OIDC subject's active-run ceiling: waits out an expiry or stops a run, then succeeds.
   if (code === "too_many_runs") return 429;
   // 413 with `record_too_large`, because these are the same rule read on a different axis: the

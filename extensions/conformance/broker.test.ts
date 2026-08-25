@@ -143,7 +143,7 @@ Deno.test("[broker] the jail cannot reach the space, so the broker is the only w
     const outcomes = await host.tick();
     assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
 
-    const results = await operator.query({ kind: "exec_result" }, 5, { dir: "desc" });
+    const results = await operator.queryNewest({ kind: "exec_result" }, 5);
     const tried = (results[0].body as { tried: Record<string, string> }).tried;
     // Matched as a PERMISSION denial rather than as any throw, so a typo cannot read as
     // containment, and against both spellings Deno has used (`PermissionDenied` became
@@ -152,7 +152,7 @@ Deno.test("[broker] the jail cannot reach the space, so the broker is the only w
     for (const [route, outcome] of Object.entries(tried)) {
       assert(denied.test(outcome), `the jail reached the space through ${route}: ${outcome}`);
     }
-    assertEquals((await operator.query({ kind: "note", match: { tag: "via-broker" } }, 5)).length, 1, "the broker is the way that works");
+    assertEquals((await operator.queryOldest({ kind: "note", match: { tag: "via-broker" } }, 5)).length, 1, "the broker is the way that works");
   });
 });
 
@@ -166,13 +166,13 @@ Deno.test("[broker] a brokered write is the AGENT's, and carries the claimed rec
     `);
     assertEquals((await host.tick()).map((o) => o.status), ["acked"]);
 
-    const notes = await operator.query({ kind: "note", match: { tag: "from-jail" } }, 5, { dir: "desc" });
+    const notes = await operator.queryNewest({ kind: "note", match: { tag: "from-jail" } }, 5);
     assertEquals(notes.length, 1);
     const perms = await operator.permissions(notes[0].runtimeMeta.createdBy) as { subject: string };
     assertEquals(perms.subject, agent, "a proposal is performed under the AGENT, never the host");
     // Lineage the code never mentioned. A direct put omitting parents is how taint is lost, so
     // the broker prepends the claimed record whatever the entrypoint says.
-    const requests = await operator.query({ kind: EXEC_REQUEST }, 5, { dir: "desc" });
+    const requests = await operator.queryNewest({ kind: EXEC_REQUEST }, 5);
     assertEquals(notes[0].runtimeMeta.parentIds, [requests[0].id]);
   });
 });
@@ -200,7 +200,7 @@ Deno.test("[broker] read_one answers with the record or null, the shape that nam
       };
     `);
     assertEquals((await host.tick()).map((o) => o.status), ["acked"]);
-    const out = (await operator.query({ kind: "exec_result" }, 5, { dir: "desc" }))[0];
+    const out = (await operator.queryNewest({ kind: "exec_result" }, 5))[0];
     const body = out.body as { hitIsArray: boolean; hitTag: string | null; missIsNull: boolean };
     assertEquals(body.hitIsArray, false, "a record, not a one-element array");
     assertEquals(body.hitTag, "findme");
@@ -223,7 +223,7 @@ Deno.test("[broker] the code cannot lie about what it touched, or write outside 
     );
     assertEquals((await host.tick()).map((o) => o.status), ["acked"]);
 
-    const notes = await operator.query({ kind: "note" }, 5, { dir: "desc" });
+    const notes = await operator.queryNewest({ kind: "note" }, 5);
     assertEquals((notes[0].body as { compartment: string }).compartment, "alpha", "the host's stamp wins over the body");
     // `file` is the host's stamp. `foreign` is the RUNTIME's, and it is here only because the
     // broker forced the claimed record as a parent: the output is derived from a record another
@@ -247,14 +247,14 @@ Deno.test("[broker] a retried attempt's writes dedupe, so at-least-once does not
     `);
     const first = await host.tick();
     assertEquals(first.map((o) => o.status), ["failed"], JSON.stringify(first));
-    assertEquals((await operator.query({ kind: "note", match: { tag: "once" } }, 5)).length, 1);
+    assertEquals((await operator.queryOldest({ kind: "note", match: { tag: "once" } }, 5)).length, 1);
 
     // The nack backs the record off, so wait for it and let the same attempt happen again.
     await new Promise((r) => setTimeout(r, 5200));
     const second = await host.tick();
     assertEquals(second.map((o) => o.status), ["failed"], "the entrypoint fails the same way");
     assertEquals(
-      (await operator.query({ kind: "note", match: { tag: "once" } }, 5)).length,
+      (await operator.queryOldest({ kind: "note", match: { tag: "once" } }, 5)).length,
       1,
       "the retry's write is a replay, not a second record",
     );
@@ -289,7 +289,7 @@ Deno.test("[broker] a warm tree is reused, and a new digest is never served from
     await rebind(`export default async (record, space) => ({ kind: "exec_result", body: { tag: "v2" } });`);
     assertEquals((await host.tick()).map((o) => o.status), ["acked"]);
     assertEquals(cache.stats, { hits: 1, misses: 2 }, "a new digest is a new entry, never a warm one");
-    const results = await operator.query({ kind: "exec_result" }, 5, { dir: "desc" });
+    const results = await operator.queryNewest({ kind: "exec_result" }, 5);
     assertEquals((results[0].body as { tag: string }).tag, "v2", "a warm cache must never serve stale code");
     await cache.clear();
   });
@@ -347,7 +347,7 @@ Deno.test({
 
       const outcomes = await host.tick();
       assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
-      const results = await operator.query({ kind: "exec_result" }, 5, { dir: "desc" });
+      const results = await operator.queryNewest({ kind: "exec_result" }, 5);
       assertEquals((results[0].body as { tag: string }).tag, "py:j", "the Python entrypoint's return value is the result");
 
       // The escape probe AGAIN, for this backend. bwrap is safe by PRESENCE (`--unshare-all`),
@@ -357,7 +357,7 @@ Deno.test({
       assertEquals(tried.net, "URLError", `a bubblewrap jail must not reach the space: ${tried.net}`);
 
       // …and the brokered write went through as the AGENT, exactly as it does from JavaScript.
-      const notes = await operator.query({ kind: "note", match: { tag: "from-python" } }, 5, { dir: "desc" });
+      const notes = await operator.queryNewest({ kind: "note", match: { tag: "from-python" } }, 5);
       assertEquals((notes[0].body as { tag: string }).tag, "from-python");
       const perms = await operator.permissions(notes[0].runtimeMeta.createdBy) as { subject: string };
       assertEquals(perms.subject, agent);
@@ -383,8 +383,8 @@ Deno.test("[broker] an entrypoint that writes WITHOUT a newline does not break t
     `);
     const outcomes = await host.tick();
     assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
-    assertEquals((await operator.query({ kind: "note", match: { tag: "after-partial-write" } }, 5)).length, 1, "the brokered call must go through");
-    const results = await operator.query({ kind: "exec_result" }, 5, { dir: "desc" });
+    assertEquals((await operator.queryOldest({ kind: "note", match: { tag: "after-partial-write" } }, 5)).length, 1, "the brokered call must go through");
+    const results = await operator.queryNewest({ kind: "exec_result" }, 5);
     assertEquals((results[0].body as { tag: string }).tag, "survived", "…and the result frame too");
   });
 });
@@ -404,7 +404,7 @@ Deno.test("[broker] an entrypoint that floods stdout is ABSORBED, not fatal", as
     `);
     const outcomes = await host.tick();
     assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
-    assertEquals((await operator.query({ kind: "note", match: { tag: "after-flood" } }, 5)).length, 1, "12MB of chatter, and the call still lands");
+    assertEquals((await operator.queryOldest({ kind: "note", match: { tag: "after-flood" } }, 5)).length, 1, "12MB of chatter, and the call still lands");
   });
 });
 
@@ -422,7 +422,7 @@ Deno.test("[broker] a frame too big for the CHANNEL is refused", async () => {
     const outcomes = await host.tick();
     assertEquals(outcomes.map((o) => o.status), ["failed"], JSON.stringify(outcomes));
     assertStringIncludes((outcomes[0] as { error: string }).error, "wrote more than");
-    assertEquals((await operator.query({ kind: "note", match: { tag: "flood-blob" } }, 5)).length, 0, "and it never became a record");
+    assertEquals((await operator.queryOldest({ kind: "note", match: { tag: "flood-blob" } }, 5)).length, 0, "and it never became a record");
     // The work is not lost: a flood is a failure like any other, so it nacks and can be retried.
     const env = await operator.queryEnvelopes({ state: "available", limit: 500 });
     assert(
@@ -529,7 +529,7 @@ Deno.test("[broker] a DRY RUN rehearses the real thing and writes nothing", asyn
     const host = await hostFor(entry, { stamp: { compartment: "trial" }, labels: ["file"] });
 
     // The tree the host would run, materialised the same way.
-    const ws = await operator.query({ kind: "workspace" }, 1, { dir: "desc" });
+    const ws = await operator.queryNewest({ kind: "workspace" }, 1);
     const root = await Deno.makeTempDir({ prefix: "dry-" });
     try {
       // deno-lint-ignore no-explicit-any
@@ -570,8 +570,8 @@ Deno.test("[broker] a DRY RUN rehearses the real thing and writes nothing", asyn
       assertEquals(scoped.proposals[0].idempotencyKey, "broker:01TESTRECORD:sha-1234ab:1");
 
       // NOTHING was written. This is the assertion the whole feature rests on.
-      assertEquals((await operator.query({ kind: "note", match: { tag: "dry-note" } }, 10)).length, 0, "a dry run must not write");
-      assertEquals((await operator.query({ kind: "exec_result", match: { tag: "job:j" } }, 10)).length, 0);
+      assertEquals((await operator.queryOldest({ kind: "note", match: { tag: "dry-note" } }, 10)).length, 0, "a dry run must not write");
+      assertEquals((await operator.queryOldest({ kind: "exec_result", match: { tag: "job:j" } }, 10)).length, 0);
     } finally {
       await Deno.remove(root, { recursive: true });
     }
@@ -579,7 +579,7 @@ Deno.test("[broker] a DRY RUN rehearses the real thing and writes nothing", asyn
     // …and the real claim, for the same code, does write, with the same shape.
     const outcomes = await host.tick();
     assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
-    const notes = await operator.query({ kind: "note", match: { tag: "dry-note" } }, 10, { dir: "desc" });
+    const notes = await operator.queryNewest({ kind: "note", match: { tag: "dry-note" } }, 10);
     assertEquals(notes.length, 1);
     assertEquals((notes[0].body as { compartment?: string }).compartment, "trial");
   });
@@ -623,7 +623,7 @@ Deno.test("[broker] a dry run refuses reads rather than borrowing a credential",
         return { kind: "exec_result", body: { err } };
       };
     `);
-    const ws = await operator.query({ kind: "workspace" }, 1, { dir: "desc" });
+    const ws = await operator.queryNewest({ kind: "workspace" }, 1);
     const root = await Deno.makeTempDir({ prefix: "dry-read-" });
     try {
       // deno-lint-ignore no-explicit-any
@@ -657,7 +657,7 @@ Deno.test("[broker] a brokered run writes FILES to its output tree and records t
     const [outcome] = await host.tick();
     assertEquals(outcome.status, "acked", JSON.stringify(outcome));
 
-    const notes = await operator.query({ kind: "note" }, 10, { dir: "desc" });
+    const notes = await operator.queryNewest({ kind: "note" }, 10);
     assertEquals((notes[0].body as { via: string }).via, "broker");
 
     const out = await readWorkspace(operator, "brokered-out");
@@ -690,10 +690,10 @@ Deno.test("[broker] a put made with POSITIONAL arguments is told the signature",
     `);
     const [outcome] = await host.tick();
     assertEquals(outcome.status, "acked", JSON.stringify(outcome));
-    const results = await operator.query({ kind: "exec_result" }, 5, { dir: "desc" });
+    const results = await operator.queryNewest({ kind: "exec_result" }, 5);
     const tag = (results[0].body as { tag: string }).tag;
     assertStringIncludes(tag, "space.put({kind, body})");
     assertStringIncludes(tag, "Positional arguments");
-    assertEquals((await operator.query({ kind: "note", match: { tag: "positional" } }, 5)).length, 0, "and nothing was written");
+    assertEquals((await operator.queryOldest({ kind: "note", match: { tag: "positional" } }, 5)).length, 0, "and nothing was written");
   });
 });

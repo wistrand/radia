@@ -17,6 +17,7 @@ import { RadiaError } from "../src/core/errors.ts";
 import { SqliteAdapter } from "../src/storage/sqlite.ts";
 import { makeHandler } from "../src/server/http.ts";
 import type { GrantDef } from "../src/core/kinds.ts";
+import { readRegistry } from "../sdk/ts/registry.ts";
 
 const NOTE = {
   kind: "note",
@@ -619,6 +620,66 @@ Deno.test("delegation: runs are ENUMERABLE by caller, which is what makes a casc
     assertEquals(res.status, 401, "a stopped delegated run resolves no further");
   } finally {
     t.close();
+  }
+});
+
+Deno.test("cli: `runs --for` sees EVERY run, not the oldest page of them", async () => {
+  // The verb that decides who keeps working after somebody is removed read a bounded page of 1000.
+  // A limited query with no `dir` returns the OLDEST matches, so past a thousand records for one
+  // principal it reported "0 active" and `--stop` stopped nothing while their live sessions kept
+  // working. It also hand-rolled the projection over a ULID sort, which no guard could see and which
+  // orders by the WRITING PROCESS's clock rather than the database's
+  // (agent_docs/plan-bounded-reads.md).
+  //
+  // Drives the REAL verb, because the failure was in the call site rather than the technique: a test
+  // that re-implemented the correct read would pass against the broken CLI.
+  const { startServer } = await import("../src/server/http.ts");
+  const { runCli } = await import("../src/surfaces/cli.ts");
+  const adapter = new SqliteAdapter(":memory:");
+  await adapter.init();
+  const stopping = new AbortController();
+  const dir = await Deno.makeTempDir({ prefix: "radia-runs-" });
+  Deno.env.set("RADIA_CREDENTIALS", `${dir}/credentials.json`);
+  const log = console.log;
+  const lines: string[] = [];
+  console.log = (...a: unknown[]) => void lines.push(a.map(String).join(" "));
+  try {
+    const space = new Space(adapter, {} as never);
+    await space.loadKinds();
+    // The staging IS the bug's shape and has to be exact. What defeats a bounded read is many
+    // DISTINCT runs, not a long history of one: the oldest page is then full of long-expired runs
+    // whose newest-per-run projection is still expired, so the verb reports zero active while the
+    // live run sits past the page. Written directly rather than minted, because 1100 real mints is
+    // a slow way to stage a state the verb only ever READS.
+    const stale = new Date(Date.now() - 3_600_000).toISOString();
+    for (let i = 0; i < 1100; i++) {
+      await space.put({
+        kind: "agent_run",
+        body: { run: `run:old${String(i).padStart(4, "0")}`, agent: "human:leaver2", status: "active", expiresAt: stale },
+      });
+    }
+    // The live session, newest and therefore last off an ascending page.
+    const leaver = await agentRun(space, "human:leaver2", [grant("human:leaver2", "note", ["put"])]);
+
+    const port = 7898;
+    const url = `http://127.0.0.1:${port}`;
+    startServer({ port, space, artifactPort: undefined, signal: stopping.signal });
+
+    assertEquals(await runCli("runs", ["--for", "human:leaver2", "--url", url]), 0);
+    const out = lines.join("\n");
+    lines.length = 0;
+    assertStringIncludes(out, leaver.run); // the live run is FOUND behind a page of history
+    assert(/\bactive\b/.test(out), `it must report the run as active, not expired or missing: ${out}`);
+
+    // And --stop actually reaches it, which is the property offboarding rests on.
+    assertEquals(await runCli("runs", ["--for", "human:leaver2", "--stop", "--url", url]), 0);
+    assert(/stopped 1 live run/.test(lines.join("\n")), `--stop must stop it: ${lines.join("\n")}`);
+    assertEquals(await space.authorize(leaver.run, "put", "note"), null, "and their credential resolves no further");
+  } finally {
+    console.log = log;
+    stopping.abort();
+    adapter.close();
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
 });
 

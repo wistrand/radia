@@ -13,7 +13,7 @@ compute identically. The runtime imports these definitions; the SDK imports noth
 | Client      | `RadiaClient`      | `RadiaClient` |
 | Worker loop | `agentLoop`        | `agent_loop` |
 | Reactor loop (fact-side: watch, re-read, decide) | `reactorLoop` | not yet: hand-roll the sweep, or poll |
-| Paging      | `query` / `queryPage` → `{records, nextAfter, scope}` | `query` / `query_page` → `(records, next_after, scope)` |
+| Paging      | `queryNewest` / `queryOldest` / `queryOrdered` / `queryPage` → `{records, nextCursor, scope}` | `query_newest` / `query_oldest` / `query_page` → `(records, next_cursor, scope)` |
 | Watches     | `client.watch()` async generator | `client.watch()` generator |
 | Artifacts   | `putArtifact` / `getArtifact` / `artifactMeta` (HEAD: digest and size, no bytes) / `artifactCapability` | `put_artifact` / `get_artifact` / `artifact_capability` |
 | Remediation | `admin(action, id)` / `remediate(action, selector)` | `admin(action, id)` / `remediate(action, state=…, expired=…, kind=…)` |
@@ -23,6 +23,7 @@ compute identically. The runtime imports these definitions; the SDK imports noth
 | Credential  | `{definitionToken}` exchanges on expiry; `keepAlive(signal, onLost)` renews at half-life | `keep_alive(stop, on_lost)`, renewal only (see below) |
 | Children    | `getChildren` / `getChildrenPage` (paged) | `get_children` / `get_children_page` (paged) |
 | Reads       | `readOne` (the OLDEST match) / `readNewest` | `read_one` (the OLDEST match) / `read_newest` |
+| Registry    | `registry(kind, match?)`: the current set, projected server-side from the kind's declared key | `registry(kind, match=None)`, and the ONLY correct path there: Python has no projection helper |
 | Content key | `contentKey(tag, body)`, async (Web Crypto) | `content_key(tag, body)`, sync (hashlib) |
 | Dependencies| none beyond the runtime | none, standard library only (3.9+) |
 
@@ -32,9 +33,22 @@ run ceiling. Concurrent calls share one exchange, and forbidden operations are n
 currently supports renewal but not definition-token exchange. `test/exchange.test.ts`
 covers the TypeScript behavior.
 
-**Read ordering.** `readOne` returns the oldest matching record. Use `readNewest` for registries,
-versions and other successor-based data. `readNewest` uses the query operation and therefore
-requires a query grant.
+**Read ordering.** Every read names its direction, and there is no bare `query(pattern, limit)` in
+either SDK. It read the OLDEST matches while saying nothing about that at the call site, which is
+how a re-saved procedure kept resolving to a stale version and a re-published tool kept vanishing.
+`queryNewest` and `queryOldest` page the natural record-id order; `queryOrdered` is for a pattern
+carrying `order_by`, which already sets the order (the space refuses a direction combined with it,
+and the directional calls throw locally rather than letting you find that as a 400).
+
+`readOne` returns the oldest matching record. Use `readNewest` for registries, versions and other
+successor-based data. `readNewest` uses the query operation and therefore requires a query grant.
+
+**Paging.** Send `nextCursor` back as `cursor` and nothing else: it carries the direction of the
+walk, so page two cannot run the other way. `cursor` with `dir` or `after` is a 400. An `order_by`
+read is offered no cursor at all, since a record-id keyset cannot express that order. TypeScript's
+`queryAll` returns a `Population`, the brand `activeByKey` / `newestByKey` / `activeSet` require, so
+a latest-wins projection over a page does not compile; Python has no such check, which is why
+`registry(kind)` is the path there.
 
 **Content and identity keys.** `contentKey(tag, body)` keys an idempotent write by its full content. The key functions in
 `registry.ts` (`grantKey`, `opsGrantKey`, `kindDefKey`, `oidcIdentityKey`) answer a different

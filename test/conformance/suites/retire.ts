@@ -8,11 +8,11 @@
 // kind_def is LATEST-WINS (one entry per kind name), grants are ADDITIVE (a principal may hold
 // several on one kind, and revoking one must leave the others standing).
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import type { Suite } from "../harness.ts";
 import { Space } from "../../../src/core/space.ts";
 import { type GrantDef, KIND_DEF } from "../../../src/core/kinds.ts";
-import type { RadiaError } from "../../../src/core/errors.ts";
+import { RadiaError } from "../../../src/core/errors.ts";
 
 /** A fresh Space that reloads its registry from the records already on the adapter. */
 async function reloaded(adapter: Parameters<Suite["run"]>[0]): Promise<Space> {
@@ -31,6 +31,52 @@ async function forbidden(fn: () => Promise<unknown>): Promise<boolean> {
 }
 
 export const retireSuites: Suite[] = [
+  {
+    // The server-side projection. What the caller does NOT supply is the property: no direction, no
+    // cursor, no page size, and no key function. The key comes from what the KIND DECLARES, which is
+    // the same statement `gc` compacts by, so the two cannot drift; every reader otherwise restated
+    // it as a `keyOf` closure with nothing checking they agreed
+    // (agent_docs/plan-bounded-reads.md).
+    name: "registryOf answers the CURRENT set from the key the kind declares",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind({
+        kind: "cap",
+        indexedPaths: [{ path: "tool", type: "keyword" }, { path: "provider", type: "keyword" }],
+        claimable: false,
+        contentKey: ["provider", "tool"],
+      });
+      // Two keys, each with successors, and one of them retired. Written past any single page so the
+      // walk has to exhaust rather than answer from the first one.
+      for (let i = 0; i < 3; i++) await space.put({ kind: "cap", body: { provider: "p", tool: "a", v: i } });
+      for (let i = 0; i < 3; i++) await space.put({ kind: "cap", body: { provider: "p", tool: "b", v: i } });
+      await space.put({ kind: "cap", body: { provider: "p", tool: "b", retired: true } });
+      await space.put({ kind: "cap", body: { provider: "q", tool: "a", v: 9 } });
+
+      const out = await space.registryOf("cap");
+      assert(out.complete, "an uncapped walk reports itself complete");
+      const bodies = out.entries.map((r) => r.body as { provider: string; tool: string; v?: number }).sort(
+        (x, y) => `${x.provider}${x.tool}`.localeCompare(`${y.provider}${y.tool}`),
+      );
+      assertEquals(bodies.map((b) => `${b.provider}/${b.tool}`), ["p/a", "q/a"], "retired keys are dropped");
+      assertEquals(bodies[0].v, 2, "and each surviving key is its NEWEST record");
+
+      // (provider, tool) is the declared key, so two providers offering one tool name are two
+      // entries. A reader that projected by `tool` alone would collapse them, which is exactly the
+      // drift a second statement of the key allows.
+      assertEquals(out.entries.filter((r) => (r.body as { tool: string }).tool === "a").length, 2);
+
+      // `match` narrows the set rather than the page.
+      const one = await space.registryOf("cap", { provider: "q" });
+      assertEquals(one.entries.length, 1);
+
+      // A kind with no declared key is REFUSED, not projected by a guess.
+      space.registerKind({ kind: "plain", indexedPaths: [], claimable: false });
+      await space.put({ kind: "plain", body: { x: 1 } });
+      const e = await assertRejects(() => space.registryOf("plain"), RadiaError);
+      assertEquals((e as RadiaError).code, "kind_not_keyed");
+    },
+  },
   {
     name: "a retired kind_def stops being registered, and re-declaring it revives the kind",
     run: async (adapter) => {

@@ -9,6 +9,7 @@
 
 import { RadiaClient, RadiaClientError } from "../../sdk/ts/client.ts";
 import { RESERVED_KINDS } from "../../sdk/ts/wire.ts";
+import { newestByKey, unsafeAsPopulation } from "../../sdk/ts/registry.ts";
 // TYPE ONLY, which the layering guard exempts because it is erased: a surface may not hold a
 // runtime VALUE from `src/core`, and a shape is not one. Restating it here instead is what let the
 // two drift, and the drift compiled: `doctor` grew a `spotCheckedFrom` the CLI's private copy did
@@ -499,7 +500,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       // and a command are what turn it into something the operator acts on.
       const now = new Date().toISOString();
       const seen = new Map<string, { status?: string; expiresAt?: string }>();
-      for (const rec of await client.query({ kind: "agent_run", match: { agent: who } }, 1000)) {
+      for (const rec of await client.queryOldest({ kind: "agent_run", match: { agent: who } }, 1000)) {
         const b = rec.body as { run?: string; status?: string; expiresAt?: string };
         if (typeof b.run === "string" && !seen.has(b.run)) seen.set(b.run, b);
       }
@@ -910,18 +911,26 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
     case "runs": {
       const who = flag(argv, "--for") ?? flag(argv, "--acting-for");
       if (!who) return usage("runs --for <principal> [--stop]");
+      // EXHAUSTIVE, and projected by the shared comparator. This read decides who keeps working
+      // after somebody is offboarded, and it had three defects at once: a bounded page of 1000
+      // returned the OLDEST runs (a limited query with no `dir` is ascending), so past a thousand
+      // records this reported "0 active" and `--stop` stopped nothing while the person's live
+      // sessions kept working; the projection was hand-rolled, so no guard could see it; and it
+      // ordered by ULID, which is the WRITING PROCESS's clock, where `newestByKey` compares
+      // `created_at`, the database's. See agent_docs/plan-bounded-reads.md.
       const recs = [
-        ...await client.query({ kind: "agent_run", match: { agent: who } }, 1000),
-        ...await client.query({ kind: "agent_run", match: { actingFor: who } }, 1000),
-      ].sort((a, b) => (a.id < b.id ? 1 : -1)); // newest first across both reads
-      // Newest record per run id wins: a stop and a renewal are both successors carrying the run.
-      const latest = new Map<string, { run: string; agent: string; actingFor?: string; status?: string; expiresAt?: string }>();
-      for (const r of recs) {
-        const b = r.body as { run?: string };
-        if (typeof b.run === "string" && !latest.has(b.run)) latest.set(b.run, r.body as never);
-      }
+        ...await client.queryAll({ kind: "agent_run", match: { agent: who } }),
+        ...await client.queryAll({ kind: "agent_run", match: { actingFor: who } }),
+      ];
+      // The newest record per run id, retirements included: a stop and a renewal are both
+      // successors carrying the run, and this caller must SEE a stop rather than have it filtered.
+      const latest = newestByKey<{ run?: unknown }>(
+        unsafeAsPopulation(recs, "both halves are queryAll; the concatenation of two exhaustive reads is exhaustive"),
+        (b) => (typeof b.run === "string" ? b.run : undefined),
+      );
       const now = new Date().toISOString();
-      const rows = [...latest.values()];
+      const rows = [...latest.values()]
+        .map((r) => r.body as { run: string; agent: string; actingFor?: string; status?: string; expiresAt?: string });
       const live = rows.filter((r) => r.status !== "stopped" && (r.expiresAt ?? "") > now);
       const stopped: string[] = [];
       if (has(argv, "--stop")) for (const r of live) if ((await client.stopRun(r.run)).applied) stopped.push(r.run);
@@ -958,7 +967,15 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       // hit this and was fixed; the CLI kept it. `dir` is only defined for the natural order, so an
       // `--order` pattern passes none (`Space.query` rejects the combination).
       const dir = pat.orderBy ? undefined : (has(argv, "--oldest") ? "asc" as const : "desc" as const);
-      const page = dir || after ? { ...(dir ? { dir } : {}), ...(after ? { after } : {}) } : undefined;
+      // A `--cursor` carries its own direction, so it goes ALONE: pairing it with `--oldest` is the
+      // walk-changing-direction bug, and the server refuses the combination rather than picking one.
+      const cursor = flag(argv, "--cursor");
+      if (cursor && (after || has(argv, "--oldest"))) {
+        throw new UsageError("--cursor already carries the direction and position; drop --after/--oldest");
+      }
+      const page = cursor
+        ? { cursor }
+        : (dir || after ? { ...(dir ? { dir } : {}), ...(after ? { after } : {}) } : undefined);
       const r = await client.queryPage(pat, limit, page, { explain: true });
       return out(ctx, r, () => {
         const lines = [recordTable(r.records)];
@@ -966,11 +983,13 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         if (r.scope) lines.push(`note: ${r.scope.note}`);
         // The explain notes say a full page is a page; this is the command that continues it,
         // carrying the flags that shaped the page so the next one is the same query.
-        if (r.nextAfter && pat.orderBy) {
+        if (r.records.length === limit && pat.orderBy) {
           lines.push(`(one page of ${limit}. A cursor is only defined for the natural order, so raise --limit or drop --order)`);
-        } else if (r.nextAfter) {
+        } else if (r.nextCursor) {
+          // The direction rides in the cursor, so the continuation no longer repeats `--oldest`.
+          // It used to, and that was one edit away from a walk that reversed halfway.
           const carry = ["--match", "--order", "--url"].flatMap((f) => (flag(argv, f) ? [`${f} '${flag(argv, f)}'`] : []));
-          const rest = [...carry, `--limit ${limit}`, ...(has(argv, "--oldest") ? ["--oldest"] : []), `--after ${r.nextAfter}`];
+          const rest = [...carry, `--limit ${limit}`, `--cursor ${r.nextCursor}`];
           lines.push(`more (${dir === "asc" ? "oldest" : "newest"} first): radia query ${kind} ${rest.join(" ")}`);
         }
         return lines.join("\n");
@@ -1103,7 +1122,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       // over-reports `radia.open`.
       const claimable = new Map<string, boolean>();
       try {
-        for (const rec of await client.query({ kind: "kind_def" }, 500, { dir: "desc" })) {
+        for (const rec of await client.queryNewest({ kind: "kind_def" }, 500)) {
           const def = rec.body as { kind?: unknown; claimable?: unknown };
           if (def && typeof def.kind === "string" && !claimable.has(def.kind)) claimable.set(def.kind, def.claimable !== false);
         }
@@ -1122,7 +1141,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         let name = principal;
         if (!runReadDenied) {
           try {
-            const recs = await client.query({ kind: "agent_run", match: { run: principal } }, 1, { dir: "desc" });
+            const recs = await client.queryNewest({ kind: "agent_run", match: { run: principal } }, 1);
             const agent = (recs[0]?.body as { agent?: unknown } | undefined)?.agent;
             if (typeof agent === "string" && agent) name = agent;
           } catch {
@@ -1303,7 +1322,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           // or a new reference kind's records would never read as terminal for the whole session.
           if (!claimable.has(rec.kind)) {
             try {
-              const kd = await client.query({ kind: "kind_def", match: { kind: rec.kind } }, 1, { dir: "desc" });
+              const kd = await client.queryNewest({ kind: "kind_def", match: { kind: rec.kind } }, 1);
               claimable.set(rec.kind, kd.length ? (kd[0].body as { claimable?: unknown }).claimable !== false : true);
             } catch {
               claimable.set(rec.kind, true);

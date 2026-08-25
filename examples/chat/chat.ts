@@ -331,7 +331,7 @@ async function resolveConversation(): Promise<{ id: string; resumed: boolean }> 
       write("--conversation last needs the operator credential this session does not hold; starting a new one\n");
     } else {
       // Newest first. That is the keyset direction, which is the only way to ask for the most recent.
-      const recent = await admin.query({ kind: "conversation" }, 1, { dir: "desc" });
+      const recent = await admin.queryNewest({ kind: "conversation" }, 1);
       if (recent.length > 0) return { id: recent[0].id, resumed: true };
       write("no conversation to resume; starting a new one\n");
     }
@@ -412,7 +412,7 @@ await publishPersonKey(session, owner, myKey).catch(() => {});
 // session claims about itself. Banner decoration only; every record still carries the principal.
 let displayName = "";
 try {
-  for (const r of await (admin ?? session).query({ kind: "oidc_identity" }, 200, { dir: "desc" })) {
+  for (const r of await (admin ?? session).queryNewest({ kind: "oidc_identity" }, 200)) {
     const b = r.body as { principal?: string; profile?: string; name?: string; username?: string; retired?: boolean };
     if (b.principal !== owner) continue;
     if (!b.retired) {
@@ -453,7 +453,7 @@ if (!admin) {
   // error. Say so at boot instead — but only when the registry was actually READABLE and empty. A
   // session with no grants cannot read it at all, and reporting that as "nobody is serving" sends
   // someone to restart a fleet that is running fine.
-  const serving = await session.query({ kind: "capability" }, 1).then((r) => r.length).catch(() => -1);
+  const serving = await session.queryOldest({ kind: "capability" }, 1).then((r) => r.length).catch(() => -1);
   if (serving === 0) {
     write(`no worker is advertising a capability on ${url}; turns will wait forever.\n`);
     write(`  Start the fleet:  deno task chat -- --serve\n\n`);
