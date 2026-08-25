@@ -107,12 +107,17 @@ export function activeByKey<T = unknown>(
  * Same rule applied per logical key. The difference is only that the key identifies one ENTRY
  * (a grant's whole content) rather than a slot (a kind name). Retiring one leaves the rest alone,
  * which is exactly what revoking a single grant must do.
+ *
+ * A SET, as the name says. It returned an array, which offers `.at`, `[0]` and a position that
+ * means nothing here: the order is whichever key the projection saw first in a descending walk.
+ * Reading that as recency is how `currentFleetKey` sealed to the fleet key about to be retired, and
+ * these are GRANTS. Ordering by a real field still works through a spread.
  */
 export function activeSet<T = unknown>(
   records: Population,
   keyOf: (body: T, record: RadiaRecord) => string | undefined,
-): RadiaRecord[] {
-  return [...activeByKey(records, keyOf).values()];
+): ReadonlySet<RadiaRecord> {
+  return new Set(activeByKey(records, keyOf).values());
 }
 
 /**

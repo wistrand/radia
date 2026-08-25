@@ -20,6 +20,7 @@
 // six thousand entries) and, unlike a body, an artifact can be erased.
 
 import type { Cursor, RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
+import { activeByKey, newer, type Population, unsafeAsPopulation } from "../../sdk/ts/registry.ts";
 
 /**
  * The media type a path implies, `text/plain` when unknown.
@@ -426,16 +427,9 @@ export async function listWorkspaces(
   maxPages = 40,
 ): Promise<{ workspaces: (WorkspaceManifest & { id: string })[]; complete: boolean; scanned: number }> {
   const { all, complete } = await readAllManifests(client, maxPages);
-  // Newest per name, retirements dropped. Compares ids rather than trusting arrival order.
-  const newest = new Map<string, RadiaRecord>();
-  for (const r of all) {
-    const b = r.body as unknown as WorkspaceManifest;
-    if (!b?.name) continue;
-    const prev = newest.get(b.name);
-    if (!prev || prev.id < r.id) newest.set(b.name, r);
-  }
-  const workspaces = [...newest.values()]
-    .filter((r) => !(r.body as unknown as WorkspaceManifest).retired)
+  // Newest per name, retirements dropped: `activeByKey` IS both halves. The loop this replaces
+  // compared `prev.id < r.id`, which is the process clock rather than the database's.
+  const workspaces = [...activeByKey<WorkspaceManifest>(all, (b) => b?.name).values()]
     .map((r) => ({ id: r.id, ...(r.body as unknown as WorkspaceManifest) }));
   return { workspaces, complete, scanned: all.length };
 }
@@ -448,7 +442,7 @@ export async function listWorkspaces(
 async function readAllManifests(
   client: RadiaClient,
   maxPages: number,
-): Promise<{ all: RadiaRecord[]; complete: boolean }> {
+): Promise<{ all: Population; complete: boolean }> {
   const all: RadiaRecord[] = [];
   let cursor: Cursor | undefined;
   let complete = false;
@@ -466,7 +460,7 @@ async function readAllManifests(
     if (!r.nextCursor) break; // full page, nowhere to continue: `complete` stays false, and says so
     cursor = r.nextCursor;
   }
-  return { all, complete };
+  return { all: unsafeAsPopulation(all, "readAllManifests exhausted the kind or reported it could not"), complete };
 }
 
 /** One line per workspace: what it is now, plus the history behind it. */
@@ -522,10 +516,11 @@ export async function summarizeWorkspaces(
     );
     const heads = rows
       .filter((r) => !superseded.has(r.id))
-      .filter((r) => !(r.body as unknown as WorkspaceManifest).retired)
-      .sort((a, b) => (a.id < b.id ? 1 : -1));
+      .filter((r) => !(r.body as unknown as WorkspaceManifest).retired);
     if (heads.length === 0) continue; // withdrawn: every head carries `retired`
-    const head = heads[0].body as unknown as WorkspaceManifest;
+    // The newest by the SHARED comparator (DB clock, id only to break a tie). Sorting on id alone
+    // orders two writers by their own clocks.
+    const head = heads.reduce((a, b) => (newer(a, b) ? b : a)).body as unknown as WorkspaceManifest;
     workspaces.push({
       name,
       owner: head.owner,

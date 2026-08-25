@@ -163,6 +163,7 @@ Deno.test("[registry-cost] every escape from the Population brand is accounted f
   const allowed = new Map([
     ["sdk/ts/registry.ts", 1], // readAll, where paging to exhaustion earns it
     ["sdk/ts/client.ts", 1], // queryAll, same
+    ["extensions/ts/workspace.ts", 1], // readAllManifests: its own budget (maxPages), same exhaustion rule
     ["src/surfaces/cli.ts", 1], // two queryAll halves concatenated; the type cannot see that
     ["test/conformance/suites/gc.ts", 3], // sets the test itself wrote, small and known
     ["test/registry.test.ts", 1], // one `pop()` helper: a unit test for a projection builds its own

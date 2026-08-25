@@ -17,6 +17,7 @@
 // nobody runs anything, rather than something running under a guarantee that was never true.
 
 import type { RadiaClient } from "../../sdk/ts/client.ts";
+import { activeByKey } from "../../sdk/ts/registry.ts";
 import { type BwrapOptions, probeSandbox, type ProbeResult, type SandboxSpec } from "./sandbox.ts";
 
 /** The kind's indexing contract. Every field a policy might bind is indexed, which is the whole
@@ -55,15 +56,11 @@ export async function readSandbox(client: RadiaClient, name: string): Promise<(S
 /** Every declared sandbox: "what can this space execute, and under what guarantees". An operator
  *  question that used to be answerable only by reading a deployment script. */
 export async function listSandboxes(client: RadiaClient): Promise<(SandboxSpec & { id: string })[]> {
-  const rows = await client.queryNewest({ kind: "sandbox" }, 200);
-  const newest = new Map<string, { id: string; body: unknown }>();
-  for (const r of rows) {
-    const name = (r.body as { name?: string }).name;
-    if (!name) continue;
-    const prev = newest.get(name);
-    if (!prev || prev.id < r.id) newest.set(name, r);
-  }
-  return [...newest.values()].map((r) => ({ id: r.id, ...(r.body as SandboxSpec) }));
+  const live = activeByKey<{ name?: string }>(
+    await client.queryAll({ kind: "sandbox" }),
+    (b) => b.name,
+  );
+  return [...live.values()].map((r) => ({ id: r.id, ...(r.body as unknown as SandboxSpec) }));
 }
 
 /**

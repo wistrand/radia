@@ -9,6 +9,7 @@
 // definitions, legitimate, silent) from two different tools wearing one name (a conflict, reported).
 
 import type { KindDef, RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
+import { newer } from "../../sdk/ts/registry.ts";
 
 export const CAPABILITY = "capability";
 
@@ -189,10 +190,12 @@ export function collapseByTool(entries: Iterable<RadiaRecord>): Map<string, Tool
     // superseded.
     const named = all.filter((g) => g.body.provider);
     const group = named.length > 0 ? named : all;
-    group.sort((a, b) => (a.rec.id < b.rec.id ? 1 : -1)); // ids are monotonic: newest first
+    // The winner by the SHARED comparator. Sorting on id alone is the process clock, and this
+    // group spans PROVIDERS, so its records come from different processes by construction.
+    const winner = group.reduce((a, b) => (newer(a.rec, b.rec) ? b : a));
     const shapes = new Set(group.map((g) => JSON.stringify(g.body.def)));
     out.set(tool, {
-      def: group[0].body.def!,
+      def: winner.body.def!,
       providers: [...new Set(group.map((g) => g.body.provider ?? "?"))].sort(),
       // Only a disagreement between NAMED providers counts. One provider superseding its own older
       // definition is an upgrade: the ordinary case, and it must stay silent.

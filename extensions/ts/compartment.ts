@@ -54,7 +54,7 @@ interface GrantBody {
 /** Live grants across the whole space, projected the way authorization reads them: newest per
  *  identity, retirements dropped. Paged to exhaustion, and `queryAll` throws rather than handing
  *  back a prefix, because an audit that silently missed a page would report a clean boundary. */
-async function liveGrants(client: RadiaClient): Promise<RadiaRecord[]> {
+async function liveGrants(client: RadiaClient): Promise<ReadonlySet<RadiaRecord>> {
   return activeSet(await client.queryAll({ kind: "grant" }), grantKey);
 }
 

@@ -42,10 +42,10 @@ interface RequestBody {
  * choice. Paged to exhaustion, because a grant missed here is a warning not shown.
  */
 async function widerGrants(admin: RadiaClient, subject: string, kind: string, ops: string[]): Promise<string[]> {
-  const live = activeSet(
+  const live = [...activeSet(
     await admin.queryAll({ kind: "grant", match: { principal: subject, kind } }),
     grantKey,
-  ).map((r) => r.body as { operations?: string[]; scope?: unknown; retired?: boolean })
+  )].map((r) => r.body as { operations?: string[]; scope?: unknown; retired?: boolean })
     .filter((g) => !g.retired && !g.scope);
   return [...new Set(live.flatMap((g) => (g.operations ?? []).filter((op) => ops.includes(op))))].sort();
 }
@@ -274,12 +274,12 @@ export async function reviewGrantRequests(
         // could no longer write its own messages. The chat died on the next turn with
         // "no 'put' grant for kind 'message'". So a grant carrying other operations is replaced by
         // one that keeps them, rather than dropped.
-        const live = activeSet(
+        const live = [...activeSet(
           // Paged: a grant missed here is a wider grant left standing beside the narrow one,
           // and grants union, so the narrowing would be theatre.
           await admin.queryAll({ kind: "grant", match: { principal: subject, kind: b.kind } }),
           grantKey,
-        ).map((r) => r.body as { operations?: string[]; scope?: unknown; pattern?: Record<string, unknown>; retired?: boolean })
+        )].map((r) => r.body as { operations?: string[]; scope?: unknown; pattern?: Record<string, unknown>; retired?: boolean })
           .filter((g) => !g.retired && !g.scope && (g.operations ?? []).some((op) => granting.includes(op)));
 
         // Carry the PATTERN of what is being narrowed onto the narrowed grant. The session's base

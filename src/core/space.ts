@@ -611,6 +611,32 @@ function labelFor(rec: RadiaRecord): string {
 
 export type { Diagnostics, FlowReport, FlowShape, LiveInterest, StaleSplit };
 
+/**
+ * A grant's identity where one is REQUIRED, as opposed to projected.
+ *
+ * `grantKey` returns undefined for a shape this build cannot read (a legacy `template` field, a
+ * missing principal or kind), and that sentinel is fail-CLOSED: a projection drops the record
+ * rather than guess what it permits. On the WRITE path there is nothing to drop, and the two
+ * callers here coerced it to `""` instead, which is the same sentinel read the opposite way: every
+ * unreadable grant collapses into ONE identity, so a supersede sees them as each other and skips,
+ * and a retirement replays under a shared key. A fail-open fallback under a fail-closed signal.
+ *
+ * Unreachable today, and stopping is the only safe answer if it ever is reached: declared grants
+ * pass `validateGrantDef` (which refuses an unknown field and demands both strings) and stored ones
+ * arrive through a projection that already dropped the undefined keys.
+ */
+function requireGrantKey(body: unknown): string {
+  const key = grantKey(body);
+  if (key === undefined) {
+    throw new RadiaError(
+      "invalid_grant",
+      "this grant's identity is unreadable in this build, so it cannot be written or superseded " +
+        "without guessing what it permits",
+    );
+  }
+  return key;
+}
+
 export class Space {
   private readonly kinds = new KindRegistry();
   private readonly creds = new CredentialStore();
@@ -1399,7 +1425,7 @@ export class Space {
       views.set(p, view);
     }
     for (const g of grants) {
-      const key = grantKey(g) ?? "";
+      const key = requireGrantKey(g);
       // CONTENT-KEYED, so re-defining an agent with the same grants writes nothing new. Without
       // this, every bootstrap appended a fresh record per grant and a long-lived principal
       // accumulated hundreds. Those then outran the bounded page every authorization read takes,
@@ -1448,14 +1474,14 @@ export class Space {
   private async supersedeGrantsFor(declared: GrantDef[], views: Map<string, RegistryView>): Promise<void> {
     const sameOps = (a: unknown[] = [], b: unknown[] = []) =>
       JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
-    const declaredKeys = new Set(declared.map((g) => grantKey(g)));
+    const declaredKeys = new Set(declared.map(requireGrantKey));
     // Collected by record id, so a triple declared twice retires each stale record once.
     const stale = new Map<string, RadiaRecord>();
     for (const g of declared) {
       for (const rec of views.get(g.principal)?.entries.values() ?? []) {
         const body = rec.body as GrantDef;
         if (body.kind !== g.kind || !sameOps(body.operations, g.operations)) continue;
-        if (declaredKeys.has(grantKey(body))) continue;
+        if (declaredKeys.has(requireGrantKey(body))) continue;
         stale.set(rec.id, rec);
       }
     }
@@ -1466,7 +1492,7 @@ export class Space {
       // would survive the next supersede and stay live: silent misauthorization, widening.
       await this.putRaw(
         { kind: GRANT, body: { ...body, retired: true } },
-        `grant-retire:${await sha256Hex(grantKey(body) ?? "")}:after:${rec.id}`,
+        `grant-retire:${await sha256Hex(requireGrantKey(body))}:after:${rec.id}`,
       );
     }
   }
