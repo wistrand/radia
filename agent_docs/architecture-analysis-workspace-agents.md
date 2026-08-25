@@ -10,10 +10,11 @@ registry (`stage_code`) rather than adding one.
 
 ## Why
 
-The pipeline's memo rests on a claim: each worker hashes its own `stages.ts` and advertises the
-digest (`examples/analysis/worker.ts`, `stagesDigest`). Nothing verifies it. A worker reporting
-digest X while running Y files every result, and caches it, under a version that never produced
-it. The same doc records the second wart this closes: "which code is live" has two mechanisms
+BEFORE this work, the pipeline's memo rested on a claim: each worker hashed its own `stages.ts`
+and advertised the digest, with nothing verifying it. A worker reporting digest X while running Y
+files every result, and caches it, under a version that never produced it. (`worker.ts` and its
+`stagesDigest` are gone: the stages are workspaces now, and `examples/analysis/stages.ts` publishes
+each tree.) The same doc records the second wart this closes: "which code is live" has two mechanisms
 (promotion enforces, `stage_code` discovers) and no convention joining them.
 
 ## The mapping

@@ -21,6 +21,11 @@ console and three examples. At least three security-relevant. Sources: [gotchas.
 [plan-audit-remediation.md](plan-audit-remediation.md), two found while writing this, and two found
 migrating the readers onto step 3.
 
+The census names symbols AS THEY WERE. `readRegistry` became `readCompletely` and then
+`readExhaustively` (2026-08-25) and lost its projection half; a rename applied across historical
+prose is how this section briefly claimed that `readExhaustively` callers page ascending, which
+step 5 below makes impossible by construction.
+
 **Partial read of a population (11).** Tool list read an ascending page of 500 and a live session
 reported "I don't have a request_grant tool" for a tool that was published, granted and working.
 Tool list AGAIN after the `dir: "desc"` fix: 737 records for 33 tools, within 1.5x of dropping them
@@ -29,7 +34,7 @@ restart. Grant reads capped: at 101 records a granted principal was DENIED, at 1
 invisible and the revoked grant kept working. `query_page` dropped `scope`. The SDK's own `grant()`
 revival anchor scanned 500. The chat's procedure lookup read the oldest 50 twice over, so 51 saves
 resolved to the 50th. `runs --for` reads the oldest 1000, so offboarding reports 0 active and
-`--stop` stops nothing. Five `readExhaustively` callers page ascending and keep the wrong half. Three
+`--stop` stops nothing. Five `readRegistry` callers page ascending and keep the wrong half. Three
 minor: `turn.ts` newest-50 global, `forksOf` 500, `listSandboxes` 200.
 
 **Order confusion (8).** `readOne` answers with the OLDEST match, hit TWICE: the second time a newly
@@ -169,7 +174,7 @@ inferring.
 
 | mechanism | incidents |
 |-----------|-----------|
-| server-side registry read | tool list x2, credentials, grants, procedures x2, `runs --for`, the five readExhaustively callers, the minor trio, **and in Python** |
+| server-side registry read | tool list x2, credentials, grants, procedures x2, `runs --for`, the five readRegistry callers, the minor trio, **and in Python** |
 | `Population` brand | tool list x2, credentials, grants, procedures x2, the minor trio (TS only) |
 | `readExhaustively` builds the `Page` | the five callers, by construction |
 | strategy-3 discipline | procedures x2, and the shape behind the credential index |

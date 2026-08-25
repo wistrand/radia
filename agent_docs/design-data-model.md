@@ -178,7 +178,7 @@ flows down **data parents** (taint), and neither leaks into the other.
 
 ## Kind conventions
 
-One of these is enforcement and the rest are vocabulary, which the list used to obscure.
+One of these is enforcement and the rest are vocabulary.
 
 **Reserved by the runtime** (`RESERVED_KINDS`, `src/core/kinds.ts`): `kind_def`, `grant`, `signal`,
 `agent_definition`, `agent_run`, `artifact`, `interest`, `shred`, `ops_grant`. Of those, `grant`,
@@ -386,7 +386,7 @@ Six properties that are decisions, not details:
   opposite posture on the same value and says so: `BlobCipher.storageName` HMACs the digest because
   a storage name "reveals nothing about the content it addresses". The record layer keeps it in
   plaintext, permanently, on purpose — the chain verifies over it and `shredOf` answers `410` from
-  it — so the two layers disagree by design and only one of them used to admit it.
+  it — so the two layers disagree by design.
   **A workspace manifest compounds this**: it carries the path beside the digest, so
   `credentials/prod-db.txt` survives its own payload.
 

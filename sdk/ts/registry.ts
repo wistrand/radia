@@ -270,7 +270,7 @@ export interface RegistryPage {
 const REGISTRY_MAX_PAGES = 40;
 
 /**
- * Read a paged query COMPLETELY, newest-first.
+ * Attempt to exhaust a paged query, newest-first.
  *
  * This exists because registry writes are unbounded while a hand-written read is bounded, with
  * nothing connecting the two. That is the most repeated bug in this codebase. A capped read returns
