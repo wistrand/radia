@@ -303,13 +303,13 @@ await publishCapability(client, RETIRE_PROCEDURE, ME);
 // process and the first handler that touches it throws `Cannot access '<name>' before
 // initialization` (silently, since a handler that throws just nacks and retries).
 
-/** This worker's own tools. A fallback for the check below, for the moment before capabilities
- *  have been read (or if this run has no grant to read them). */
 /** Tool names this worker executes DIRECTLY rather than resolving as a saved procedure. Every
  *  runner must be listed: adding `run_python` while the check compared against ONE name sent every
  *  Python call down the procedure path, where it came back as "no procedure named run_python". */
 const BUILTIN_RUNNERS = new Set(["run_javascript", "run_python"]);
 
+/** This worker's own tools. A fallback for the check below, for the moment before capabilities
+ *  have been read (or if this run has no grant to read them). */
 const RESERVED = new Set([...BUILTIN_RUNNERS, "save_procedure", "read_procedure", "retire_procedure"]);
 
 /** What the caller said the run would do. Data only: no regex, no expression to evaluate, so a
@@ -662,9 +662,9 @@ interface Program {
   /** Set for a procedure saved as a TREE: the code is the workspace's entrypoint, not `code`. */
   workspace?: string;
   entrypoint?: string;
-  /** Set only for a saved procedure: for a builtin runner the program is in the call body. */
   /**
-   * What produced a result, pinned to the exact code.
+   * What produced a result, pinned to the exact code. Set only for a saved procedure: for a
+   * builtin runner the program is in the call body.
    *
    * `recordId` names the PROCEDURE version, which is not the same question: a tree-backed procedure
    * runs whatever its workspace currently holds, so the record alone would leave "which code ran"

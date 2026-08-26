@@ -141,8 +141,6 @@ export async function handleOidcSession(space: Space, req: Request): Promise<Res
   }
 }
 
-/** POST /v0/agent-runs/{id}/stop: operator, or the run's own definition token (Bearer).
- *  Body `{quarantine: true}` upgrades graceful stop to emergency revocation (invalidate leases). */
 /**
  * POST /v0/agent-runs/{id}/renew: extend a live run, presenting its own token (or as operator).
  *
@@ -201,6 +199,8 @@ export async function handleRevokeDefinition(
   return Response.json({ agent, status: "revoked", applied, alreadyRevoked });
 }
 
+/** POST /v0/agent-runs/{id}/stop: operator, or the run's own definition token (Bearer).
+ *  Body `{quarantine: true}` upgrades graceful stop to emergency revocation (invalidate leases). */
 export async function handleStopRun(space: Space, req: Request, principal: string, runId: string): Promise<Response> {
   let allowed = space.isPrivileged(principal);
   if (!allowed) {

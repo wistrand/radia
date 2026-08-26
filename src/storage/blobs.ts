@@ -46,8 +46,6 @@ export interface BlobRef {
   size: number;
 }
 
-/** What one `retainOnly` pass did. `scanned` counts stored payloads examined; `bytes` is the
- *  stored size reclaimed (ciphertext size on an encrypted store). */
 /**
  * What a `retainOnly` sweep needs beyond the keep-set.
  *

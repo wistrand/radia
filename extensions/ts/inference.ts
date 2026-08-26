@@ -165,10 +165,13 @@ async function sealAck(
   return key ? { ...ack, body: await sealBody(ack.body, ack.kind, key) } : ack;
 }
 
-/** Rebuild what the model should see, from `message` records rather than from the call body. */
-/** `contextFor` under test. Exported for `extensions/conformance/inference.test.ts`, which pins
- *  WHOSE conversation a call may load: the check lives in this function's query, so a test that
- *  drove the whole worker would be asserting it three layers away from where it is made. */
+/**
+ * Rebuild what the model should see, from `message` records rather than from the call body.
+ *
+ * `contextFor` under test. Exported for `extensions/conformance/inference.test.ts`, which pins
+ * WHOSE conversation a call may load: the check lives in this function's query, so a test that
+ * drove the whole worker would be asserting it three layers away from where it is made.
+ */
 export function contextForTest(
   c: RadiaClient,
   body: CallBody,

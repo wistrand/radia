@@ -193,13 +193,13 @@ export function labelsForJail(opts: { readRoots?: string[]; net?: boolean } = {}
 
 /**
  * A language's half of the protocol.
- *
  * The frames are the contract; the shim is one language's way of speaking them. That split is the
  * whole reason the frame format is the normative surface and this file is not: a Python worker is
  * a shim, not a second broker, and the host side (perform as the agent, stamp, force the parent,
  * derive the key) never learns which language asked.
+ *
+ * The two pipe paths a shim talks over. Absolute, inside a directory the jail can read and write.
  */
-/** The two pipe paths a shim talks over. Absolute, inside a directory the jail can read and write. */
 export interface Channel {
   /** Requests, child to host. */
   req: string;

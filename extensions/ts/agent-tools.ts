@@ -76,12 +76,12 @@ function distinctKey(records: RadiaRecord[]): { distinct?: { by: string; count: 
   return {};
 }
 
-/** Coerce a model-supplied order_by into valid OrderKeys: keep only elements with a string `path`.
- *  A mis-shaped element (the model guessing `{field:…}` or omitting `path`) then degrades to
- *  no-sort instead of a cryptic `unsortable_path: order_by path 'undefined'`. */
 /**
- * BOTH SPELLINGS, because the key is chosen by a MODEL and a dropped sort key is a wrong answer.
+ * Coerce a model-supplied order_by into valid OrderKeys: keep only elements with a string `path`.
+ * A mis-shaped element (the model guessing `{field:…}` or omitting `path`) then degrades to
+ * no-sort instead of a cryptic `unsortable_path: order_by path 'undefined'`.
  *
+ * BOTH SPELLINGS, because the key is chosen by a MODEL and a dropped sort key is a wrong answer.
  * The schema property is `orderBy`; this tool's own description used to teach `order_by` in prose,
  * and the two readers (`a.orderBy` here, `j.orderBy` at the wire) took the camelCase one and
  * silently ignored anything else. A model following the prose asked for a descending sort, got the

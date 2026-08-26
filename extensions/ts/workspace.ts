@@ -1194,31 +1194,25 @@ export const CAPTURE_LIMITS = { maxFiles: 2_000, maxBytes: 32 * 1024 * 1024 };
 
 /**
  * Read a materialised tree back and store what CHANGED.
- *
  * Hash before, hash after, store the difference: the same operation `git status` performs, and the
  * reason the manifest borrows git's model. An unchanged file costs nothing (its artifact is already
  * there and blobs dedupe by digest), so the cost of an attempt is what it edited.
- *
  * Three rules that are safety rather than bookkeeping:
+ * - SYMLINKS ARE SKIPPED, never followed. A program can create one pointing anywhere, and
+ * following it would capture a file from outside the tree into a record. This is the mirror of
+ * the containment check materialising does, on the way back.
+ * - Ignored paths are dropped, so build output does not become a version.
+ * - A count and a byte budget, both refused rather than truncated: a partial capture presented as
+ * a tree is the bounded-read-as-population bug wearing a filesystem.
  *
- *   - SYMLINKS ARE SKIPPED, never followed. A program can create one pointing anywhere, and
- *     following it would capture a file from outside the tree into a record. This is the mirror of
- *     the containment check materialising does, on the way back.
- *   - Ignored paths are dropped, so build output does not become a version.
- *   - A count and a byte budget, both refused rather than truncated: a partial capture presented as
- *     a tree is the bounded-read-as-population bug wearing a filesystem.
- */
-/**
  * NO `taint` OPTION, deliberately, and the distinction is the whole classification model:
- *
- *   an explicit RAISE  — a caller asserting something the graph does not know ("this tree came off
- *     a filesystem") — is applied wherever the caller says, including every file artifact, because
- *     raising is monotone and needs no trust. That is `writeWorkspace({taint})`.
- *   INHERITANCE — a derived tree carrying what its predecessor carried — travels on the record
- *     graph and nowhere else. `commitWorkspace` writes `parentIds: [manifest.id]`, so
- *     `Space.computeTaint` unions the predecessor's labels into the successor with nothing
- *     explicit anywhere.
- *
+ * an explicit RAISE  — a caller asserting something the graph does not know ("this tree came off
+ * a filesystem") — is applied wherever the caller says, including every file artifact, because
+ * raising is monotone and needs no trust. That is `writeWorkspace({taint})`.
+ * INHERITANCE — a derived tree carrying what its predecessor carried — travels on the record
+ * graph and nowhere else. `commitWorkspace` writes `parentIds: [manifest.id]`, so
+ * `Space.computeTaint` unions the predecessor's labels into the successor with nothing
+ * explicit anywhere.
  * A write-back is pure inheritance: it has nothing of its own to assert. Labelling the artifacts it
  * writes would be a denormalised copy of a graph fact, which is the thing `design-taint.md` argues
  * against. The parameter used to exist and its one caller passed

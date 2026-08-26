@@ -235,18 +235,14 @@ export async function serveFrames(
 
 /**
  * The iframe's CSP, which is the jail's network wall.
- *
  * `connect-src 'none'` is the load-bearing directive: a blob-URL worker inherits its creator's
  * policy, so `fetch` and `WebSocket` throw inside the worker. The usual ways around `connect-src`
  * do not exist in a worker: no `RTCPeerConnection`, no `sendBeacon` on `WorkerNavigator`, and no
  * DOM to smuggle a request through as an image or a stylesheet.
- *
  * `script-src blob:` and nothing else, and NO `unsafe-eval`: the code runs because it was
  * concatenated into the worker's own script, never because a string was evaluated.
- */
-/**
- * The jail's policy, per spawn, carrying a fresh NONCE for the one script allowed to run.
  *
+ * The jail's policy, per spawn, carrying a fresh NONCE for the one script allowed to run.
  * The nonce is the fix for a real failure: the bootstrap is an inline `<script>` in a `srcdoc`, so
  * a bare `script-src blob:` blocks the very program that builds the jail. The frame then listens
  * for nothing, the spawn message is dropped, and the probe reports a timeout naming no cause — a
@@ -254,7 +250,6 @@ export async function serveFrames(
  * because it is generated synchronously (`crypto.getRandomValues`), where a hash would have to be
  * computed before the document exists and would make spawning async for no security gain. It is
  * also strictly tighter than `'unsafe-inline'`, which would admit any inline script.
- *
  * `connect-src 'none'` is the directive doing the real work, and `blob:` in `script-src` is what
  * lets the WORKER's own script load, since a worker inherits its creator's policy. `'unsafe-eval'`
  * is deliberately absent, so no string ever becomes code.

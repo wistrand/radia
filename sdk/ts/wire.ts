@@ -629,7 +629,8 @@ export interface EventGcResult {
   more: boolean;
 }
 
-/** What one blob sweep did. */
+/** What one `retainOnly` pass did. `scanned` counts stored payloads examined; `bytes` is the
+ *  stored size reclaimed (ciphertext size on an encrypted store). */
 export interface BlobGcResult {
   scanned: number;
   deleted: number;

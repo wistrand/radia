@@ -172,8 +172,6 @@ export interface StatsScope {
   alsoReadable?: string[];
 }
 
-/** Selector for `envelopesInState`. An options object rather than positional parameters because
- *  every field here has to be applied in SQL, before the cap, and the list grows. */
 /**
  * The three shapes the sweep half of this port passes back.
  *
@@ -207,6 +205,8 @@ export interface EventSweepResult {
   done: boolean;
 }
 
+/** Selector for `envelopesInState`. An options object rather than positional parameters because
+ *  every field here has to be applied in SQL, before the cap, and the list grows. */
 export interface EnvelopeQuery {
   state: RecordState;
   limit: number;
@@ -418,7 +418,6 @@ export interface StorageAdapter {
   /** Commit an immutable record + its envelope in one transaction. (Phase 1) */
   put(input: PutInput): Promise<PutResult>;
 
-  /** First matching record, or null. (Phase 1) */
   /** `scope.createdBy` restricts reads to records written by those principals. This is how a
    *  self-scoped grant narrows the coordination plane, not only the ops plane. */
   readOne(match: CompiledMatch, scope?: StatsScope): Promise<RadiaRecord | null>;
@@ -437,7 +436,6 @@ export interface StorageAdapter {
    */
   query(match: CompiledMatch, limit: number, page?: Page, scope?: StatsScope): Promise<RadiaRecord[]>;
 
-  /** Record counts grouped by kind and state (dev UI overview / diagnostics). */
   /**
    * Counts by kind and state.
    *
@@ -467,8 +465,9 @@ export interface StorageAdapter {
   /** Extend a held lease, clamped to the cumulative hard cap. Fenced. (Phase 3) */
   renew(ref: LeaseRef, leaseSeconds: number, idem?: IdempotencyKey): Promise<RenewResult>;
 
-  /** Consume the record and optionally emit a result record, in one transaction. Fenced. (Phase 3) */
   /**
+   * Consume the record and optionally emit a result record, in one transaction. Fenced.
+   *
    * `beforeWrite` runs only when this ack is NOT an idempotent replay, and before anything is
    * written. Authorization of the emitted result belongs there: run eagerly in core, it turned a
    * retry of an already-succeeded ack into `forbidden` whenever the worker's put grant had narrowed

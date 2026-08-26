@@ -215,10 +215,6 @@ export class CapabilityStore {
     return this.live.size;
   }
 
-  /** Mint a short-lived capability to download ONE artifact. The caller must already be authorized
-   *  to read it; this delegates that read to a context that cannot send an Authorization header
-   *  (an `<img src>` in the console), which is why the design specifies capabilities rather than
-   *  putting a bearer token in a URL. */
   /**
    * Mint a capability over a SET of artifacts, addressed by path.
    *
@@ -265,6 +261,10 @@ export class CapabilityStore {
     return { capability, expiresAt: new Date(at).toISOString(), at };
   }
 
+  /** Mint a short-lived capability to download ONE artifact. The caller must already be authorized
+   *  to read it; this delegates that read to a context that cannot send an Authorization header
+   *  (an `<img src>` in the console), which is why the design specifies capabilities rather than
+   *  putting a bearer token in a URL. */
   mintDownloadCapability(recordId: string): { capability: string; expiresAt: string } {
     // 16 random bytes as base64url: 22 characters instead of the 64 hex ones this used to emit.
     // These travel in a URL a person is shown, pastes and sometimes reads aloud, and length is the

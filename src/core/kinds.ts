@@ -293,10 +293,10 @@ export interface GrantDef {
   pattern?: Record<string, unknown>;
 }
 
-/** Validate a grant body. Throws RadiaError. Rejects wildcard kinds (kind-scoped invariant). */
 /** Fields a grant body may carry. `retired` is the withdrawal tombstone every registry uses. */
 const GRANT_FIELDS = ["principal", "kind", "operations", "scope", "pattern", "retired"];
 
+/** Validate a grant body. Throws RadiaError. Rejects wildcard kinds (kind-scoped invariant). */
 export function validateGrantDef(def: GrantDef): void {
   // AN UNKNOWN KEY IS REFUSED, and this is the field where that matters most. `pattern` is
   // OPTIONAL and omitting it means the WHOLE KIND, so a misspelled `patern` validated cleanly and
@@ -393,9 +393,6 @@ export const META_KIND_DEF: KindDef = {
   claimable: false, // kind declarations are reference records, never taken
 };
 
-/** Declarations of the reserved control kinds, registered in code (bootstrap) so their own
- *  records can be queried. `grant` is indexed on principal+kind so the authorizer can look up
- *  a principal's grants for a kind directly. */
 /** The body of an `artifact` record: what the bytes are, never the bytes. */
 export interface ArtifactDef {
   digest: string; // sha256 of the plaintext bytes: integrity, and the blob store's address
@@ -454,6 +451,9 @@ export function validateArtifactFields(fields: unknown): void {
  *  `listKinds()`, which reads those records. Anything asking "does this kind exist" must consider these too. */
 export { RESERVED_KINDS } from "../../sdk/ts/wire.ts";
 
+/** Declarations of the reserved control kinds, registered in code (bootstrap) so their own
+ *  records can be queried. `grant` is indexed on principal+kind so the authorizer can look up
+ *  a principal's grants for a kind directly. */
 export const META_RESERVED: KindDef[] = [
   META_KIND_DEF,
   {
@@ -543,7 +543,6 @@ function validPath(path: string): boolean {
   return path.length > 0 && path.split(".").every((s) => s.length > 0);
 }
 
-/** Validate a declaration. Throws RadiaError on any problem (a registration error). */
 /** Fields a kind_def body may carry. `retired` is the withdrawal tombstone (suites/retire.ts). */
 const KIND_DEF_FIELDS = [
   "kind",
@@ -596,6 +595,7 @@ export function assertKnownKindDefFields(body: unknown): void {
   }
 }
 
+/** Validate a declaration. Throws RadiaError on any problem (a registration error). */
 export function validateKindDef(def: KindDef): void {
   if (typeof def.kind !== "string" || def.kind.length === 0) {
     throw new RadiaError("invalid_kind", "kind must be a non-empty string");

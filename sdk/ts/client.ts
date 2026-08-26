@@ -509,7 +509,6 @@ export class RadiaClient {
     return this.req("POST", `/v0/ops/records/${encodeURIComponent(recordId)}/shred`, opts);
   }
 
-  /** Stop a run (operator, or the run's own definition/run token if this client carries it). */
   /** Kill a definition token, permanently. Operator only; existing RUNS are untouched and are
    *  separately revocable with `stopRun`. Idempotent: `alreadyRevoked` says which it was. */
   revokeDefinition(agent: string, opts: { reason?: string } = {}): Promise<
@@ -518,6 +517,7 @@ export class RadiaClient {
     return this.req("POST", `/v0/agent-definitions/${encodeURIComponent(agent)}/revoke`, opts.reason ? { reason: opts.reason } : {});
   }
 
+  /** Stop a run (operator, or the run's own definition/run token if this client carries it). */
   stopRun(run: string): Promise<{ run: string; status: string; applied: boolean }> {
     return this.req("POST", `/v0/agent-runs/${encodeURIComponent(run)}/stop`);
   }
@@ -812,11 +812,14 @@ export class RadiaClient {
     return [...latest.values()].map((r) => r.body);
   }
 
-  /** Ops-plane envelope query: records filtered by runtime state (leased/available/…), optional
-   *  `expired` (lapsed lease) / `stale` (seconds sat available). Returns records with envelopes. */
-  /** Envelopes in a state, narrowed. `kind` restricts the ANSWER, not merely the page: every
-   *  predicate is applied before the cap, so `limit` bounds rows MATCHED. It is ANDed with whatever
-   *  the caller's grants already scope this read to, so it can only narrow. */
+  /**
+   * Ops-plane envelope query: records filtered by runtime state (leased/available/…), optional
+   * `expired` (lapsed lease) / `stale` (seconds sat available). Returns records with envelopes.
+   *
+   * Envelopes in a state, narrowed. `kind` restricts the ANSWER, not merely the page: every
+   * predicate is applied before the cap, so `limit` bounds rows MATCHED. It is ANDed with whatever
+   * the caller's grants already scope this read to, so it can only narrow.
+   */
   async queryEnvelopes(
     q: { state: string; expired?: boolean; stale?: number; limit?: number; kind?: string | string[] },
   ): Promise<{ record: RadiaRecord | null; envelope: Envelope }[]> {
@@ -995,7 +998,6 @@ export class RadiaClient {
     return data as { id: string; digest: string; size: number };
   }
 
-  /** An artifact's bytes by record id. */
   /**
    * An artifact's digest, media type and size, WITHOUT downloading it.
    *
@@ -1023,6 +1025,7 @@ export class RadiaClient {
     });
   }
 
+  /** An artifact's bytes by record id. */
   async getArtifact(recordId: string): Promise<Uint8Array> {
     return await this.authorized(async () => {
       const headers: Record<string, string> = {};
@@ -1040,8 +1043,6 @@ export class RadiaClient {
     });
   }
 
-  /** A short-lived, single-artifact download capability. Use it for contexts that cannot send an
-   *  Authorization header (an `<img src>`). The returned `url` is relative to the space. */
   /** Mint one capability over a SET of artifacts addressed by path, for serving a tree. Every
    *  entry is authorized against this caller's read grant at mint, so the served URL needs none. */
   pathCapability(
@@ -1052,6 +1053,8 @@ export class RadiaClient {
     >;
   }
 
+  /** A short-lived, single-artifact download capability. Use it for contexts that cannot send an
+   *  Authorization header (an `<img src>`). The returned `url` is relative to the space. */
   artifactCapability(recordId: string): Promise<{ capability: string; expiresAt: string; url: string }> {
     return this.req("POST", `/v0/artifacts/${encodeURIComponent(recordId)}/capability`);
   }

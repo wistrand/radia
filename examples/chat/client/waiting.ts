@@ -106,16 +106,16 @@ export class Waiter {
 
   /**
    * Poll this call's progress records and redraw the status line.
-   *
    * `force` skips the throttle, for the one moment that cannot wait for the next tick: the instant
    * before the first token is printed. A routing decision written inside the last poll interval was
    * otherwise never read, because the poll only runs while nothing has been printed, so the label
    * describing the answer arrived AFTER the answer.
+   *
+   * @param match how to find the progress records to report: `{callId}` when the caller wrote the
+   * call and knows its id, `{conversationId}` when a WORKER wrote it and the caller only knows the
+   * turn (plan-chat-turn.md step 4). Only one thing runs at a time in a turn, so the conversation
+   * is as precise in practice and does not need an id the client never saw.
    */
-  /** @param match how to find the progress records to report: `{callId}` when the caller wrote the
-   *   call and knows its id, `{conversationId}` when a WORKER wrote it and the caller only knows the
-   *   turn (plan-chat-turn.md step 4). Only one thing runs at a time in a turn, so the conversation
-   *   is as precise in practice and does not need an id the client never saw. */
   async pump(match: string | Record<string, unknown>, stallHint: string, force = false): Promise<void> {
     const now = Date.now();
     if (!force && now < this.nextPoll) return;

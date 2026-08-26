@@ -277,7 +277,6 @@ async function call(
   }
 }
 
-/** Resolve a claimId to its lease and stop its heartbeat. Settling ends the claim either way. */
 /** Stop renewing a claim we no longer hold, and remember why so the settle can explain it. */
 function lose(claims: Map<string, Claim>, claimId: string, reason: "lease_lost" | "credential"): void {
   const c = claims.get(claimId);
@@ -289,6 +288,7 @@ function lose(claims: Map<string, Claim>, claimId: string, reason: "lease_lost" 
   );
 }
 
+/** Resolve a claimId to its lease and stop its heartbeat. Settling ends the claim either way. */
 function takeClaim(claims: Map<string, Claim>, a: Record<string, unknown>): Claim {
   const id = str(a, "claimId");
   const c = claims.get(id);

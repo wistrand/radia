@@ -99,8 +99,6 @@ const CANDIDATE_COLS = `${RECORD_COLS_R}, rt.record_id, rt.state, rt.attempt, rt
   "rt.effective_priority, rt.lease_id, rt.lease_epoch, rt.lease_owner, rt.leased_until, " +
   "rt.lease_hard_deadline";
 
-/** The DB clock as ISO 8601 UTC. Shared so the backends' `now()` and the in-transaction
- *  `txNow` read it identically. */
 /** Claim order, identical to `rankClaimable`'s: highest priority, then oldest eligible, then id.
  *  The window is only safe to bound because SQL sorts by the same key the ranker does. The head
  *  of this ordering IS the winner the unbounded scan would have picked. Ordering also gives every
@@ -115,6 +113,8 @@ const CLAIM_ORDER = "order by rt.effective_priority desc, rt.available_at asc, r
  *  pages through further windows rather than truncating. */
 const CANDIDATE_WINDOW = 64;
 
+/** The DB clock as ISO 8601 UTC. Shared so the backends' `now()` and the in-transaction
+ *  `txNow` read it identically. */
 export const NOW_SQL =
   "select to_char(now() at time zone 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') as now";
 

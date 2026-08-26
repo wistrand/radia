@@ -456,11 +456,14 @@ async function drive(
 export interface SandboxSpec {
   name: string;
   language: string;
-  /** How the jail is built. The one thing a reader must not have to infer. */
-  /** How the jail is built, and the field a reader must not have to infer. The two differ in a way
-   *  that matters more than the name: `deno-permissions` is safe by ABSENCE (forget every flag and
-   *  you get the safe answer), while `bubblewrap` is safe by PRESENCE (forget `--unshare-net` and
-   *  the jail is silently open). That flip is why every backend is probed before it is served. */
+  /**
+   * How the jail is built. The one thing a reader must not have to infer.
+   *
+   * How the jail is built, and the field a reader must not have to infer. The two differ in a way
+   * that matters more than the name: `deno-permissions` is safe by ABSENCE (forget every flag and
+   * you get the safe answer), while `bubblewrap` is safe by PRESENCE (forget `--unshare-net` and
+   * the jail is silently open). That flip is why every backend is probed before it is served.
+   */
   isolation: "deno-permissions" | "bubblewrap" | "sandbox-exec" | "web-worker";
   network: boolean;
   /**
@@ -548,8 +551,9 @@ const BWRAP_BASE = [
   "/tmp",
 ];
 
-/** Run under bubblewrap. Same contract as `runCode`: source on stdin, output captured and capped. */
 /**
+ * Run under bubblewrap. Same contract as `runCode`: source on stdin, output captured and capped.
+ *
  * The bubblewrap jail's arguments, in ONE place, for the same reason `jailArgs` exists: `runBwrap`
  * feeds a program through stdin, the BROKER cannot (stdin is its response channel) and runs one
  * from a file instead. A second copy of these binds would be a second security boundary, and this
@@ -627,7 +631,6 @@ export function denoSandbox(opts: RunOptions & { name?: string } = {}): SandboxS
   };
 }
 
-/** One thing a probe tried, and whether the jail held. */
 /**
  * The confiner worth TRYING on this host, or none.
  *
@@ -780,6 +783,7 @@ export function seatbeltPythonSandbox(
   };
 }
 
+/** One thing a probe tried, and whether the jail held. */
 export interface ProbeResult {
   claim: string;
   held: boolean;

@@ -56,8 +56,6 @@ export async function liveCode(c: RadiaClient): Promise<Map<string, string>> {
   return out;
 }
 
-/** One entry of the pipeline's SHAPE: which stage, where in the order. A latest-wins registry
- *  (retire to remove), so adding a stage is a `stage_def` put and never a code change. */
 /** What the planner reads off a `stage_result`. One shape, rather than an inline cast per read. */
 export interface StageResult {
   ok?: string;
@@ -66,6 +64,8 @@ export interface StageResult {
   error?: string;
 }
 
+/** One entry of the pipeline's SHAPE: which stage, where in the order. A latest-wins registry
+ *  (retire to remove), so adding a stage is a `stage_def` put and never a code change. */
 export interface StageDef {
   stage: string;
   index: number;
