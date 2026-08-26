@@ -173,7 +173,7 @@ Deno.test("[registry-cost] every escape from the Population brand is accounted f
     for (const file of await tsFiles(root)) {
       const text = code(await Deno.readTextFile(new URL(`../${file}`, import.meta.url)));
       // The definition is not a use. Counted by call, so two escapes in one file cannot hide as one.
-      const uses = text.split(/\bunsafeAsPopulation\s*\(/).length - 1 -
+      const uses = text.split(/\bunsafeAsPopulation\s*(?:<[^>]*>)?\s*\(/).length - 1 -
         (/export function unsafeAsPopulation/.test(text) ? 1 : 0);
       if (uses > 0) found.set(file, uses);
     }

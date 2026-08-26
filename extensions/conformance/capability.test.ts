@@ -42,7 +42,7 @@ async function withSpace<T>(fn: (c: RadiaClient) => Promise<T>): Promise<T> {
 const liveFor = async (c: RadiaClient, tool: string) =>
   new Map(
     [...(await liveCapabilities(c, { tool })).entries]
-      .map((r) => [capabilityKey(r.body as CapabilityBody)!, r] as const),
+      .map((r) => [capabilityKey(r.body)!, r] as const),
   );
 
 Deno.test("[capability] an unchanged re-publish writes nothing; a changed one supersedes", async () => {
@@ -56,7 +56,7 @@ Deno.test("[capability] an unchanged re-publish writes nothing; a changed one su
     const all = await c.queryAll({ kind: CAPABILITY, match: { tool } });
     assertEquals(all.length, 2, "a CHANGED definition is a successor, never a 409");
     const entry = (await liveFor(c, tool)).get(`${w1}|${tool}`);
-    assertEquals((entry?.body as CapabilityBody).def?.function.description, "now does it better", "newest wins");
+    assertEquals(entry?.body.def?.function.description, "now does it better", "newest wins");
   });
 });
 

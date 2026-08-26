@@ -41,9 +41,9 @@ async function withSpace<T>(fn: (c: RadiaClient) => Promise<T>): Promise<T> {
   return await fn(shared);
 }
 
-const awaitOne = async (c: RadiaClient, pattern: { kind: string; match?: Record<string, unknown> }) => {
+const awaitOne = async <T = unknown>(c: RadiaClient, pattern: { kind: string; match?: Record<string, unknown> }) => {
   for (let i = 0; i < 100; i++) {
-    const r = await c.readOne(pattern);
+    const r = await c.readOne<T>(pattern);
     if (r) return r;
     await new Promise((res) => setTimeout(res, 100));
   }
@@ -109,8 +109,9 @@ Deno.test("[tool-worker] unparseable arguments are refused as a PARSE error, bef
         kind: "tool_call",
         body: { tool: "edit", args: { _unparsed: '{"workspace":"ws",', _parseError: "Unexpected end of JSON input" }, conversationId: "c1" },
       });
-      const reply = await awaitOne(c, { kind: "tool_result", match: { callId: call.id } });
-      const body = reply?.body as { ok: boolean; output: string };
+      const reply = await awaitOne<{ ok: boolean; output: string }>(c, { kind: "tool_result", match: { callId: call.id } });
+      assert(reply, "the worker must answer a malformed call rather than leave it outstanding");
+      const body = reply.body;
       assertEquals(body.ok, false);
       assert(body.output.includes("not valid JSON"), body.output);
       assert(body.output.includes("Unexpected end of JSON input"), "the parse error is what makes it actionable");
@@ -140,15 +141,15 @@ Deno.test("[tool-worker] serves what it advertises, and a THROWN failure is an a
       assert(caps, "each tool is advertised under its provider");
 
       const ok = await c.put({ kind: "tool_call", body: { tool: "good", args: { x: 7 }, conversationId: "c1" } });
-      const okReply = await awaitOne(c, { kind: "tool_result", match: { callId: ok.id } });
-      assertEquals((okReply?.body as { ok: boolean; output: { echoed: number } }).output.echoed, 7);
+      const okReply = await awaitOne<{ ok: boolean; output: { echoed: number } }>(c, { kind: "tool_result", match: { callId: ok.id } });
+      assertEquals(okReply?.body.output.echoed, 7);
 
       const bad = await c.put({ kind: "tool_call", body: { tool: "bad", conversationId: "c1" } });
-      const badReply = await awaitOne(c, { kind: "tool_result", match: { callId: bad.id } });
+      const badReply = await awaitOne<{ ok: boolean; output: string }>(c, { kind: "tool_result", match: { callId: bad.id } });
       // The whole point: the model sees WHY and can try something else. A nack would retry the same
       // doomed call at cost and tell nobody.
-      assertEquals((badReply?.body as { ok: boolean; output: string }).ok, false);
-      assertEquals((badReply?.body as { output: string }).output, "nope");
+      assertEquals(badReply?.body.ok, false);
+      assertEquals(badReply?.body.output, "nope");
     } finally {
       stop.abort();
       await serving.catch(() => {});
@@ -174,8 +175,9 @@ Deno.test("[tool-worker] an undecryptable call is ANSWERED, not run and not nack
         kind: "tool_call",
         body: { tool: "edit", args: { path: "Y2lwaGVy" }, enc: "v1", conversationId: "c1" },
       });
-      const reply = await awaitOne(c, { kind: "tool_result", match: { callId: call.id } });
-      const body = reply?.body as { ok: boolean; output: string };
+      const reply = await awaitOne<{ ok: boolean; output: string }>(c, { kind: "tool_result", match: { callId: call.id } });
+      assert(reply, "the worker must answer a call it cannot read rather than nack it");
+      const body = reply.body;
       assertEquals(body.ok, false);
       assert(body.output.includes("encrypted"), body.output);
       assert(body.output.includes("tool edit"), "the refusal names the reader");
@@ -212,10 +214,11 @@ Deno.test("[tool-worker] an encrypted call opens for the tool and seals on the w
           conversationId: "c1",
         },
       });
-      const reply = await awaitOne(c, { kind: "tool_result", match: { callId: call.id } });
+      const reply = await awaitOne<{ enc?: string; output?: unknown }>(c, { kind: "tool_result", match: { callId: call.id } });
       assertEquals(saw?.path, "/secret", "the tool ran on PARSED plaintext, not on a blob");
 
-      const body = reply?.body as { enc?: string; output?: unknown };
+      assert(reply, "a sealed call still gets an answer");
+      const body = reply.body;
       assertEquals(body.enc, ENC_V1, "the answer is sealed under the same key");
       assert(!JSON.stringify(body).includes("/secret"), "…so the tool's output does not undo the thread");
       const opened = await openBody(body as Record<string, unknown>, "tool_result", key);

@@ -2782,7 +2782,7 @@ export class Space {
    * the whole sort key plus the oracle's type rules, so combining them is rejected rather than
    * silently resolved one way.
    */
-  async query(pattern: Pattern, limit = 100, page?: Page, scope?: StatsScope): Promise<RadiaRecord[]> {
+  async query<T = unknown>(pattern: Pattern, limit = 100, page?: Page, scope?: StatsScope): Promise<RadiaRecord<T>[]> {
     const compiled = await this.compileFresh(pattern);
     if (page && (page.after || page.dir) && compiled.orderBy?.length) {
       throw new RadiaError(
@@ -2790,7 +2790,7 @@ export class Space {
         "a keyset page (after/dir) is only defined for the natural id order; drop order_by, or page without a cursor",
       );
     }
-    return await this.storage.query(compiled, limit, page, scope);
+    return await this.storage.query(compiled, limit, page, scope) as RadiaRecord<T>[];
   }
 
   /** Record counts by kind and state (dev UI overview). `scope` makes it a genuine self-aggregate,

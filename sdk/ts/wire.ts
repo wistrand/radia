@@ -144,8 +144,8 @@ export interface Lease {
   expiresAt: string;
 }
 
-export interface TakeResult {
-  record: RadiaRecord;
+export interface TakeResult<T = unknown> {
+  record: RadiaRecord<T>;
   lease: Lease;
 }
 

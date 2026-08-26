@@ -271,9 +271,9 @@ Deno.test("workspace: churn stays cheap to read, and listing is honest about com
     assertEquals((await c.queryOldest({ kind: "workspace", match: { name: "churn" } }, 100)).length, CHURN);
 
     // Churn costs what CHANGED. The unchanged file is one blob across every version.
-    const all = await c.queryOldest({ kind: "workspace", match: { name: "churn" } }, 100);
+    const all = await c.queryOldest<{ files: WorkspaceFile[] }>({ kind: "workspace", match: { name: "churn" } }, 100);
     const digests = new Set(
-      all.map((r) => (r.body as { files: WorkspaceFile[] }).files.find((f) => f.path === "README.md")!.digest),
+      all.map((r) => r.body.files.find((f) => f.path === "README.md")!.digest),
     );
     assertEquals(digests.size, 1);
 
@@ -1513,8 +1513,8 @@ Deno.test("sandbox: two backends coexist as records a policy can tell apart", as
   await withSpace(async (c) => {
     await c.registerKind(SANDBOX_KIND);
     const jsName = uniq("js"), pyName = uniq("py");
-    const mine = (rows: { body: unknown }[]) =>
-      rows.filter((r) => [jsName, pyName].includes((r.body as { name: string }).name));
+    const mine = <T extends { name: string }>(rows: { body: T }[]) =>
+      rows.filter((r) => [jsName, pyName].includes(r.body.name));
     await declareSandbox(c, denoSandbox({ name: jsName }));
     await declareSandbox(c, bwrapSandbox({ command: ["python3", "-"], language: "python", name: pyName }));
 
@@ -1522,12 +1522,12 @@ Deno.test("sandbox: two backends coexist as records a policy can tell apart", as
     // The guarantee stopped being uniform, and that is now a QUERY rather than tribal knowledge:
     // an operator asking "which of these can reach a filesystem" gets an answer from the space.
     // (Filtered to this test's own declarations, because the registry is shared across the file.)
-    const byIsolation = mine(await c.queryOldest({ kind: "sandbox", match: { isolation: "bubblewrap" } }, 50));
+    const byIsolation = mine(await c.queryOldest<{ name: string; language: string }>({ kind: "sandbox", match: { isolation: "bubblewrap" } }, 50));
     assertEquals(byIsolation.length, 1);
-    assertEquals((byIsolation[0].body as { language: string }).language, "python");
+    assertEquals(byIsolation[0].body.language, "python");
 
     // Both still claim no network, which is what makes them comparable at all…
-    assertEquals(mine(await c.queryOldest({ kind: "sandbox", match: { network: false } }, 50)).length, 2);
+    assertEquals(mine(await c.queryOldest<{ name: string }>({ kind: "sandbox", match: { network: false } }, 50)).length, 2);
     // …and they differ on the axis that a latency table hides.
     const js = await readSandbox(c, jsName);
     const py = await readSandbox(c, pyName);

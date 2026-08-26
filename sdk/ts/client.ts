@@ -652,7 +652,7 @@ export class RadiaClient {
     return { records: r.records, nextCursor: r.nextCursor, scope: r.scope, explain: r.explain };
   }
 
-  take(sel: TakeSelector, opts: { leaseSeconds?: number; allowTaint?: string[] } = {}): Promise<TakeResult | null> {
+  take<T = unknown>(sel: TakeSelector, opts: { leaseSeconds?: number; allowTaint?: string[] } = {}): Promise<TakeResult<T> | null> {
     return this.req("POST", "/v0/takes", { ...sel, leaseSeconds: opts.leaseSeconds, allowTaint: opts.allowTaint });
   }
 

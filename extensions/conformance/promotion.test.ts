@@ -76,9 +76,9 @@ Deno.test("[promotion] a pin refuses an unpromoted digest on BOTH the write and 
 
     // The promoted digest works end to end.
     await submitter.put(request(D1, TIER));
-    const claimed = await runner.take({ pattern: { kind: EXEC_REQUEST } });
+    const claimed = await runner.take<{ workspace: string }>({ pattern: { kind: EXEC_REQUEST } });
     assert(claimed, "the runner must claim work at the promoted digest");
-    assertEquals((claimed.record.body as { workspace: string }).workspace, D1);
+    assertEquals(claimed.record.body.workspace, D1);
 
     // An unpromoted digest is refused at the WRITE: the submitter's grant is pattern-scoped, so
     // `bodyMatchesGrant` rejects the body before anything is stored.
@@ -111,9 +111,9 @@ Deno.test("[promotion] rotation leaves no gap, and the old digest stops working"
 
     // NO GAP: the new digest is claimable immediately after the call returns.
     await submitter.put(request(D2, TIER));
-    const claimed = await runner.take({ pattern: { kind: EXEC_REQUEST } });
+    const claimed = await runner.take<{ workspace: string }>({ pattern: { kind: EXEC_REQUEST } });
     assert(claimed, "the new digest must be claimable the moment promotion returns");
-    assertEquals((claimed.record.body as { workspace: string }).workspace, D2);
+    assertEquals(claimed.record.body.workspace, D2);
 
     // …and the replaced digest is closed, on both sides.
     assertEquals(await refused(() => submitter.put(request(D1, TIER))), 403);
@@ -138,9 +138,9 @@ Deno.test("[promotion] rollback to a RETIRED digest actually grants, and repeati
     assertEquals(await pinnedDigests(operator, { principal: RUNNER, tier: TIER }), [D1]);
 
     await submitter.put(request(D1, TIER));
-    const claimed = await runner.take({ pattern: { kind: EXEC_REQUEST } });
+    const claimed = await runner.take<{ workspace: string }>({ pattern: { kind: EXEC_REQUEST } });
     assert(claimed, "a rolled-back digest must be claimable, which is the whole point of the revive key");
-    assertEquals((claimed.record.body as { workspace: string }).workspace, D1);
+    assertEquals(claimed.record.body.workspace, D1);
     assertEquals(await refused(() => submitter.put(request(D2, TIER))), 403, "the digest rolled back FROM is closed");
 
     // Promotion is idempotent: calling again writes no new grant and retires nothing.

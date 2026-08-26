@@ -149,8 +149,8 @@ Deno.test("[broker] the jail cannot reach the space, so the broker is the only w
     const outcomes = await host.tick();
     assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
 
-    const results = await operator.queryNewest({ kind: "exec_result" }, 5);
-    const tried = (results[0].body as { tried: Record<string, string> }).tried;
+    const results = await operator.queryNewest<{ tried: Record<string, string> }>({ kind: "exec_result" }, 5);
+    const tried = results[0].body.tried;
     // Matched as a PERMISSION denial rather than as any throw, so a typo cannot read as
     // containment, and against both spellings Deno has used (`PermissionDenied` became
     // `NotCapable`), so the contract survives a runtime upgrade.
@@ -206,8 +206,8 @@ Deno.test("[broker] read_one answers with the record or null, the shape that nam
       };
     `);
     assertEquals((await host.tick()).map((o) => o.status), ["acked"]);
-    const out = (await operator.queryNewest({ kind: "exec_result" }, 5))[0];
-    const body = out.body as { hitIsArray: boolean; hitTag: string | null; missIsNull: boolean };
+    const out = (await operator.queryNewest<{ hitIsArray: boolean; hitTag: string | null; missIsNull: boolean }>({ kind: "exec_result" }, 5))[0];
+    const body = out.body;
     assertEquals(body.hitIsArray, false, "a record, not a one-element array");
     assertEquals(body.hitTag, "findme");
     assertEquals(body.missIsNull, true, "and null when nothing matched, never an empty array");
@@ -229,8 +229,8 @@ Deno.test("[broker] the code cannot lie about what it touched, or write outside 
     );
     assertEquals((await host.tick()).map((o) => o.status), ["acked"]);
 
-    const notes = await operator.queryNewest({ kind: "note" }, 5);
-    assertEquals((notes[0].body as { compartment: string }).compartment, "alpha", "the host's stamp wins over the body");
+    const notes = await operator.queryNewest<{ compartment: string }>({ kind: "note" }, 5);
+    assertEquals(notes[0].body.compartment, "alpha", "the host's stamp wins over the body");
     // `file` is the host's stamp. `foreign` is the RUNTIME's, and it is here only because the
     // broker forced the claimed record as a parent: the output is derived from a record another
     // principal wrote, which is exactly what that label means. Forcing lineage does not only
@@ -295,8 +295,8 @@ Deno.test("[broker] a warm tree is reused, and a new digest is never served from
     await rebind(`export default async (record, space) => ({ kind: "exec_result", body: { tag: "v2" } });`);
     assertEquals((await host.tick()).map((o) => o.status), ["acked"]);
     assertEquals(cache.stats, { hits: 1, misses: 2 }, "a new digest is a new entry, never a warm one");
-    const results = await operator.queryNewest({ kind: "exec_result" }, 5);
-    assertEquals((results[0].body as { tag: string }).tag, "v2", "a warm cache must never serve stale code");
+    const results = await operator.queryNewest<{ tag: string }>({ kind: "exec_result" }, 5);
+    assertEquals(results[0].body.tag, "v2", "a warm cache must never serve stale code");
     await cache.clear();
   });
 });
@@ -353,18 +353,18 @@ Deno.test({
 
       const outcomes = await host.tick();
       assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
-      const results = await operator.queryNewest({ kind: "exec_result" }, 5);
-      assertEquals((results[0].body as { tag: string }).tag, "py:j", "the Python entrypoint's return value is the result");
+      const results = await operator.queryNewest<{ tag: string; tried: Record<string, string> }>({ kind: "exec_result" }, 5);
+      assertEquals(results[0].body.tag, "py:j", "the Python entrypoint's return value is the result");
 
       // The escape probe AGAIN, for this backend. bwrap is safe by PRESENCE (`--unshare-all`),
       // the Deno jail by absence, so the Deno probe proves nothing here: a new runner inherits
       // the plan's rule, never its conclusion.
-      const tried = (results[0].body as { tried: Record<string, string> }).tried;
+      const tried = results[0].body.tried;
       assertEquals(tried.net, "URLError", `a bubblewrap jail must not reach the space: ${tried.net}`);
 
       // …and the brokered write went through as the AGENT, exactly as it does from JavaScript.
-      const notes = await operator.queryNewest({ kind: "note", match: { tag: "from-python" } }, 5);
-      assertEquals((notes[0].body as { tag: string }).tag, "from-python");
+      const notes = await operator.queryNewest<{ tag: string }>({ kind: "note", match: { tag: "from-python" } }, 5);
+      assertEquals(notes[0].body.tag, "from-python");
       const perms = await operator.permissions(notes[0].runtimeMeta.createdBy) as { subject: string };
       assertEquals(perms.subject, agent);
     });
@@ -390,8 +390,8 @@ Deno.test("[broker] an entrypoint that writes WITHOUT a newline does not break t
     const outcomes = await host.tick();
     assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
     assertEquals((await operator.queryOldest({ kind: "note", match: { tag: "after-partial-write" } }, 5)).length, 1, "the brokered call must go through");
-    const results = await operator.queryNewest({ kind: "exec_result" }, 5);
-    assertEquals((results[0].body as { tag: string }).tag, "survived", "…and the result frame too");
+    const results = await operator.queryNewest<{ tag: string }>({ kind: "exec_result" }, 5);
+    assertEquals(results[0].body.tag, "survived", "…and the result frame too");
   });
 });
 
@@ -585,9 +585,9 @@ Deno.test("[broker] a DRY RUN rehearses the real thing and writes nothing", asyn
     // …and the real claim, for the same code, does write, with the same shape.
     const outcomes = await host.tick();
     assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
-    const notes = await operator.queryNewest({ kind: "note", match: { tag: "dry-note" } }, 10);
+    const notes = await operator.queryNewest<{ compartment?: string }>({ kind: "note", match: { tag: "dry-note" } }, 10);
     assertEquals(notes.length, 1);
-    assertEquals((notes[0].body as { compartment?: string }).compartment, "trial");
+    assertEquals(notes[0].body.compartment, "trial");
   });
 });
 
@@ -663,8 +663,8 @@ Deno.test("[broker] a brokered run writes FILES to its output tree and records t
     const [outcome] = await host.tick();
     assertEquals(outcome.status, "acked", JSON.stringify(outcome));
 
-    const notes = await operator.queryNewest({ kind: "note" }, 10);
-    assertEquals((notes[0].body as { via: string }).via, "broker");
+    const notes = await operator.queryNewest<{ via: string }>({ kind: "note" }, 10);
+    assertEquals(notes[0].body.via, "broker");
 
     const out = await readWorkspace(operator, "brokered-out");
     assertEquals(out!.files.map((f) => f.path), ["out.bin"]);
@@ -696,8 +696,8 @@ Deno.test("[broker] a put made with POSITIONAL arguments is told the signature",
     `);
     const [outcome] = await host.tick();
     assertEquals(outcome.status, "acked", JSON.stringify(outcome));
-    const results = await operator.queryNewest({ kind: "exec_result" }, 5);
-    const tag = (results[0].body as { tag: string }).tag;
+    const results = await operator.queryNewest<{ tag: string }>({ kind: "exec_result" }, 5);
+    const tag = results[0].body.tag;
     assertStringIncludes(tag, "space.put({kind, body})");
     assertStringIncludes(tag, "Positional arguments");
     assertEquals((await operator.queryOldest({ kind: "note", match: { tag: "positional" } }, 5)).length, 0, "and nothing was written");

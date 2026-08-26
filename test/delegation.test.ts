@@ -599,8 +599,8 @@ Deno.test("delegation: runs are ENUMERABLE by caller, which is what makes a casc
     // Indexed, so this is one query rather than a scan: `actingFor` is a declared path on
     // `agent_run`. Two DIFFERENT workers' runs come back, which is the point — the caller is the
     // axis a deprovisioning cascade needs, and the worker is not.
-    const rows = await t.space.query({ kind: "agent_run", match: { actingFor: "human:alice" } }, 100);
-    const runs = new Set(rows.map((r) => (r.body as { run: string }).run));
+    const rows = await t.space.query<{ run: string }>({ kind: "agent_run", match: { actingFor: "human:alice" } }, 100);
+    const runs = new Set(rows.map((r) => r.body.run));
     assertEquals(runs, new Set([d1.run, d2.run]));
 
     // Revoking the DEFINITION deliberately leaves runs alive, which is why the cascade exists.
@@ -696,9 +696,9 @@ Deno.test("delegation: offboarding needs BOTH run classes, not just the delegate
     const seed = await t.space.put({ kind: "note", body: { owner: "leaver", topic: "x" } }, undefined, leaver.run);
     const delegated = await t.space.mintDelegatedRun(worker.run, seed.id);
 
-    const byActingFor = await t.space.query({ kind: "agent_run", match: { actingFor: "human:leaver" } }, 50);
-    const byAgent = await t.space.query({ kind: "agent_run", match: { agent: "human:leaver" } }, 50);
-    const runsIn = (rows: { body: unknown }[]) => new Set(rows.map((r) => (r.body as { run: string }).run));
+    const byActingFor = await t.space.query<{ run: string }>({ kind: "agent_run", match: { actingFor: "human:leaver" } }, 50);
+    const byAgent = await t.space.query<{ run: string }>({ kind: "agent_run", match: { agent: "human:leaver" } }, 50);
+    const runsIn = (rows: { body: { run: string } }[]) => new Set(rows.map((r) => r.body.run));
     assertEquals(runsIn(byActingFor), new Set([delegated.run]), "actingFor finds ONLY the delegated run");
     assertEquals(runsIn(byAgent), new Set([leaver.run]), "…and the person's own session is under `agent`, not `actingFor`");
 

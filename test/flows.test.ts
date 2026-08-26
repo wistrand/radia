@@ -32,7 +32,7 @@ async function runJob(space: Space, words: string[]): Promise<void> {
 }
 
 function w(rec: { body: unknown }): string {
-  return String((rec.body as { input: string }).input).toUpperCase();
+  return String((rec.body as { input: unknown }).input).toUpperCase();
 }
 
 async function pipelineSpace(): Promise<{ space: Space; close: () => Promise<void> }> {
