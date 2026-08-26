@@ -32,10 +32,17 @@ export async function handleCreateDefinition(space: Space, req: Request, princip
     return problem(400, "invalid_body", "expected {agent: string, grants?: GrantDef[]}");
   }
   const grants = Array.isArray(j.grants) ? j.grants as GrantDef[] : [];
+  // Present-but-null is meaningful ("there was no prior definition"), so the ABSENCE of the key is
+  // what selects the unconditional write, never its value.
+  if ("supersedes" in j && j.supersedes !== null && typeof j.supersedes !== "string") {
+    return problem(400, "invalid_body", "'supersedes' wants an agent_definition record id, or null");
+  }
+  const opts = "supersedes" in j ? { supersedes: j.supersedes as string | null } : {};
   try {
-    const out = await space.createAgentDefinition(j.agent, grants);
+    const out = await space.createAgentDefinition(j.agent, grants, opts);
     return new Response(JSON.stringify(out), { status: 201, headers: { "content-type": "application/json" } });
   } catch (e) {
+    if (e instanceof RadiaError && e.code === "definition_conflict") return problem(409, e.code, e.message);
     if (e instanceof RadiaError) return problem(422, e.code, e.message);
     throw e;
   }

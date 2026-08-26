@@ -280,7 +280,26 @@ function requireGrantKey(body: unknown): string {
  * sha256 of a freshly minted **definition token**, optionally assign its grants, and return the
  * token once. The definition token mints runs (`mintRun`); it is never stored in plaintext.
  */
-export async function createAgentDefinition(host: IdentityHost, agent: string, grants: GrantDef[] = []): Promise<{ agent: string; definitionToken: string }> {
+export async function createAgentDefinition(
+  host: IdentityHost,
+  agent: string,
+  grants: GrantDef[] = [],
+  /**
+   * OPTIONAL COMPARE-AND-SET on the definition this one replaces: the id of the record the caller
+   * read as newest, or `null` for "there was none".
+   *
+   * Without it the read-then-create is a race, and the thing it races into is the hazard the whole
+   * rotation dance exists to avoid: two callers both see one active definition, both revoke it,
+   * both create, and the agent ends with TWO live tokens minting while `revokeDefinition` reaches
+   * only the newest. Passing it keys the write to the state it was decided on, so the loser gets
+   * `idempotency_conflict` instead of a second credential.
+   *
+   * Opt-in because re-creating a definition for a live agent is legitimate elsewhere: the chat
+   * fleet mints its workers' definitions on every start (plan-startup-ergonomics item 8), and a
+   * blanket refusal would break that rather than fix anything.
+   */
+  opts: { supersedes?: string | null } = {},
+): Promise<{ agent: string; definitionToken: string }> {
   // `human:` is allowed so a PERSON can hold ordinary scoped grants and log in as themselves.
   // They are not an operator unless `ctx.operators` names them; see `isPrivileged`.
   if (!agent.startsWith("agent:") && !agent.startsWith("human:")) {
@@ -305,7 +324,23 @@ export async function createAgentDefinition(host: IdentityHost, agent: string, g
     );
   }
   const { token, hash } = await mintCredential();
-  await host.putRaw({ kind: AGENT_DEFINITION, body: { agent, tokenHash: hash } });
+  // The key names the state this create was DECIDED on, so two racers deciding on the same state
+  // write the same key with different bodies (the token hash differs) and exactly one lands.
+  const guard = opts.supersedes === undefined
+    ? undefined
+    : `agent-def:${await sha256Hex(agent)}:after:${opts.supersedes ?? "none"}`;
+  try {
+    await host.putRaw({ kind: AGENT_DEFINITION, body: { agent, tokenHash: hash } }, guard);
+  } catch (e) {
+    if (e instanceof RadiaError && e.code === "idempotency_conflict") {
+      throw new RadiaError(
+        "definition_conflict",
+        `'${agent}' was defined concurrently by somebody else; this create was decided on a state ` +
+          `that no longer holds. Re-read the definition and retry, or the agent ends with two live tokens.`,
+      );
+    }
+    throw e;
+  }
   for (const g of grants) {
     validateGrantDef(g);
     host.checkGrantPattern(g);

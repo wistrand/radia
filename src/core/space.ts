@@ -709,8 +709,12 @@ export class Space {
     };
   }
 
-  createAgentDefinition(agent: string, grants: GrantDef[] = []): Promise<{ agent: string; definitionToken: string }> {
-    return identity.createAgentDefinition(this.identityHost, agent, grants);
+  createAgentDefinition(
+    agent: string,
+    grants: GrantDef[] = [],
+    opts: { supersedes?: string | null } = {},
+  ): Promise<{ agent: string; definitionToken: string }> {
+    return identity.createAgentDefinition(this.identityHost, agent, grants, opts);
   }
 
   mintRun(definitionToken: string, opts: { reuse?: boolean } = {}): Promise<MintedRun> {

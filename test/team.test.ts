@@ -15,7 +15,7 @@ import { makeHandler } from "../src/server/http.ts";
 import { Space } from "../src/core/space.ts";
 import { SqliteAdapter } from "../src/storage/sqlite.ts";
 import { RadiaClient } from "../sdk/ts/client.ts";
-import { addMember, DEFAULT_TEAM, declareTeamKinds, definitionState, mergeKind, NOTE, removeMember, TASK, TEAM_FIELD, teamRoster } from "../extensions/ts/team.ts";
+import { addMember, DEFAULT_TEAM, declareTeamKinds, definitionState, mergeKind, NOTE, readDefinition, removeMember, TASK, TEAM_FIELD, teamRoster } from "../extensions/ts/team.ts";
 import { configLocation, mcpInvocation, renderMcpConfig, renderMcpInstall } from "../src/surfaces/mcp/config.ts";
 import { ScopeFiller } from "../src/surfaces/mcp/scope.ts";
 import { newer, newestByKey } from "../sdk/ts/registry.ts";
@@ -1020,6 +1020,83 @@ Deno.test("[team] the scope filler learns from the runtime's REAL refusal, not a
     const [rec] = await member.queryNewest<{ team?: string }>({ kind: TASK, match: { [TEAM_FIELD]: "alpha" } }, 1);
     assertEquals(rec.body.team, "alpha");
     assertEquals(filler.known(TASK), { [TEAM_FIELD]: "alpha" });
+  } finally {
+    await s.close();
+  }
+});
+
+Deno.test("[team] two concurrent adds cannot leave one agent two live definitions", async () => {
+  const s = await newSpace();
+  try {
+    await declareTeamKinds(s.admin);
+    const prior = await readDefinition(s.admin, "agent:raced");
+    assertEquals(prior.state, "none");
+
+    // Both racers DECIDE on the same state, exactly as two `radia team add` in two terminals do.
+    // Unconditional, both writes land and the agent ends with two tokens minting, while
+    // `revokeDefinition` reaches only the newest: a credential nobody can later stop.
+    const both = await Promise.allSettled([
+      addMember(s.admin, "agent:raced", { teams: ["alpha"], supersedes: prior.id }),
+      addMember(s.admin, "agent:raced", { teams: ["alpha"], supersedes: prior.id }),
+    ]);
+    const won = both.filter((r) => r.status === "fulfilled");
+    const lost = both.filter((r) => r.status === "rejected");
+    assertEquals(won.length, 1, "both creates landed: the agent has two live definitions");
+    assertEquals(lost.length, 1);
+    assert(
+      String((lost[0] as PromiseRejectedResult).reason).includes("concurrently"),
+      `the loser must say why: ${(lost[0] as PromiseRejectedResult).reason}`,
+    );
+
+    // ENFORCEMENT: exactly one definition record, so revoking reaches the only token there is.
+    const defs = await s.admin.queryAll({ kind: "agent_definition", match: { agent: "agent:raced" } });
+    assertEquals(defs.length, 1, "a second definition record was written");
+  } finally {
+    await s.close();
+  }
+});
+
+Deno.test("[team] the unconditional create still works, because a fleet re-mints on every start", async () => {
+  const s = await newSpace();
+  try {
+    // `supersedes` is OPT-IN. The chat fleet creates its workers' definitions on every `--serve`
+    // (plan-startup-ergonomics item 8), so a blanket refusal would break that rather than fix it.
+    const a = await s.admin.createAgentDefinition("agent:fleet", []);
+    const b = await s.admin.createAgentDefinition("agent:fleet", []);
+    assert(a.definitionToken !== b.definitionToken, "the unconditional path must keep re-minting");
+  } finally {
+    await s.close();
+  }
+});
+
+Deno.test("[team] a revoked principal still holding ops powers is REPORTED, not filtered out", async () => {
+  const s = await newSpace();
+  try {
+    await declareTeamKinds(s.admin);
+    await addMember(s.admin, "agent:ghost", { teams: ["alpha"], observe: true });
+    // `radia revoke` stops MINTING and nothing else, deliberately. The power outlives it, keyed to
+    // the PRINCIPAL, and every warning list filtered on `active`, so it was invisible.
+    await s.admin.revokeDefinition("agent:ghost");
+
+    const roster = await teamRoster(s.admin);
+    const ghost = roster.find((m) => m.agent === "agent:ghost")!;
+    assertEquals(ghost.active, false);
+    assertEquals(ghost.opsPowers, ["observe"], "the roster must still report a revoked principal's powers");
+  } finally {
+    await s.close();
+  }
+});
+
+Deno.test("[team] the roster bounds its in-flight reads, and reports every definition", async () => {
+  const s = await newSpace();
+  try {
+    await declareTeamKinds(s.admin);
+    for (let i = 0; i < 20; i++) await addMember(s.admin, `agent:m${i}`, { teams: ["alpha"] });
+    const roster = await teamRoster(s.admin);
+    assertEquals(roster.length, 20, "concurrency must not drop or duplicate a member");
+    // Order is preserved through the parallel map, so the sort below is the only thing deciding it.
+    assertEquals(roster.map((m) => m.agent), [...roster.map((m) => m.agent)].sort((a, b) => a.localeCompare(b)));
+    assert(roster.every((m) => m.member && m.teams.length === 1), "a parallel read returned a wrong row");
   } finally {
     await s.close();
   }

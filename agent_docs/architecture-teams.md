@@ -249,6 +249,26 @@ and every new chat grant naming `conversationId` was refused as an undeclared pa
 authorization scoping, broken by a verb that never mentions it. The declaration now unions with
 what is already there, keeping paths this build does not know.
 
+**`team add` is a compare-and-set, not a read-then-write.** Two of them racing on one name both saw
+one active definition, both revoked it and both created, leaving the agent TWO live tokens minting
+where `revokeDefinition` reaches only the newest: the hazard the CLI's own refusal exists to
+prevent, reachable around it. `createAgentDefinition` now takes an optional `supersedes` (the id of
+the record the caller read as newest, or null), which keys the write to the state it was decided on,
+so the loser gets `definition_conflict` instead of a second credential. OPT-IN, because re-creating
+a definition for a live agent is legitimate: the chat fleet mints its workers' on every start
+(plan-startup-ergonomics item 8), and a blanket refusal would break that rather than fix anything.
+
+**The roster reports a REVOKED principal's ops powers** rather than filtering them out. `radia
+revoke` stops minting and nothing else, deliberately, so an `ops_grant` outlives it, keyed to the
+PRINCIPAL. Nothing can use it while the name cannot authenticate; filtering it from every warning
+made it invisible to the one verb an operator reads to believe a power is gone.
+
+**One `permissions` read per definition is the DESIGN, and what is bounded is wall clock**
+(`ROSTER_CONCURRENCY`). The roster's value is that it reports enforcement rather than what a setup
+command once assigned; folding the raw `grant` registry here instead would be a second
+implementation of `authorize`'s pattern and operation logic, which is the bug class the verb exists
+to catch. So the reads run 8 at a time rather than serially, and the space does the same work.
+
 **Removal is a cascade, and the definition is the smallest part of it** (`removeMember`). Revoke
 first so nothing new mints, then retire the grants, then the ops powers, then stop the runs.
 Grants are retired rather than left: a revoked definition cannot authenticate, but `mintDelegatedRun`

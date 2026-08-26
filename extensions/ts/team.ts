@@ -252,10 +252,20 @@ export function teamsOf(perms: { kinds: { patterns: Record<string, unknown>[] }[
  * (`Space.definitionRecord` takes the newest record's status). Rotating means revoke, then create.
  */
 export async function definitionState(admin: RadiaClient, agent: string): Promise<"none" | "active" | "revoked"> {
+  return (await readDefinition(admin, agent)).state;
+}
+
+/** The same read, plus the RECORD ID the answer rests on, which is what makes acting on it atomic:
+ *  `createAgentDefinition({supersedes})` keys the write to this id, so a caller that decided on a
+ *  state somebody else has since changed loses rather than adding a second live definition. */
+export async function readDefinition(
+  admin: RadiaClient,
+  agent: string,
+): Promise<{ state: "none" | "active" | "revoked"; id: string | null }> {
   const rows = await admin.queryAll<DefinitionBody>({ kind: AGENT_DEFINITION, match: { agent } });
   const newest = newestByKey<DefinitionBody>(rows, (b) => b.agent).get(agent);
-  if (!newest) return "none";
-  return newest.body.status === "revoked" ? "revoked" : "active";
+  if (!newest) return { state: "none", id: null };
+  return { state: newest.body.status === "revoked" ? "revoked" : "active", id: newest.id };
 }
 
 /**
@@ -271,7 +281,14 @@ export async function definitionState(admin: RadiaClient, agent: string): Promis
 export async function addMember(
   admin: RadiaClient,
   agent: string,
-  opts: { teams?: string[]; observe?: boolean; extra?: { kind: string; operations: string[] }[] } = {},
+  opts: {
+    teams?: string[];
+    observe?: boolean;
+    extra?: { kind: string; operations: string[] }[];
+    /** The definition record this create replaces, from `readDefinition`. Passing it makes the
+     *  read-then-create atomic; omitting it keeps the unconditional write. */
+    supersedes?: string | null;
+  } = {},
 ): Promise<TeamMember & { observe: ObserveChange }> {
   const teams = opts.teams?.length ? opts.teams : [DEFAULT_TEAM];
   // An `extra` grant is scoped the same way, per team: a grant handed out beside the standard set
@@ -279,7 +296,11 @@ export async function addMember(
   const extra = teams.flatMap((team) =>
     (opts.extra ?? []).map((g) => ({ principal: agent, ...g, pattern: { [TEAM_FIELD]: team } }))
   );
-  const def = await admin.createAgentDefinition(agent, [...memberGrants(agent, teams), ...extra]);
+  const def = await admin.createAgentDefinition(
+    agent,
+    [...memberGrants(agent, teams), ...extra],
+    "supersedes" in opts ? { supersedes: opts.supersedes ?? null } : {},
+  );
   // The DECLARED state, so an omitted `observe` takes the power back rather than leaving it. That
   // is the same rule `createAgentDefinition` already applies to grants (it supersedes what it
   // declares), and without it the power had no removal path at all: rotation revokes the
@@ -359,12 +380,11 @@ export async function reconcileObserve(admin: RadiaClient, agent: string, want: 
  */
 export async function teamRoster(admin: RadiaClient): Promise<RosterEntry[]> {
   const rows = await admin.queryAll<DefinitionBody>({ kind: AGENT_DEFINITION });
-  const newest = newestByKey<DefinitionBody>(rows, (b) => b.agent);
-  const out: RosterEntry[] = [];
-  for (const [agent, rec] of newest) {
+  const newest = [...newestByKey<DefinitionBody>(rows, (b) => b.agent)];
+  const out = await mapWithConcurrency(newest, ROSTER_CONCURRENCY, async ([agent, rec]) => {
     const perms = await admin.permissions(agent);
     const onTeamKinds = perms.kinds.filter((k) => k.kind === TASK || k.kind === NOTE);
-    out.push({
+    return {
       agent,
       active: rec.body.status !== "revoked",
       member: onTeamKinds.length > 0,
@@ -372,9 +392,41 @@ export async function teamRoster(admin: RadiaClient): Promise<RosterEntry[]> {
       teams: teamsOf(perms),
       kinds: perms.kinds,
       opsPowers: perms.opsPowers ?? [],
-    });
-  }
+    };
+  });
   return out.sort((a, b) => a.agent.localeCompare(b.agent));
+}
+
+/**
+ * How many `permissions` reads the roster has in flight.
+ *
+ * ONE READ PER DEFINITION IS THE DESIGN, not an oversight to optimise away. The roster's whole
+ * value is that it reports ENFORCEMENT rather than what a setup command once assigned, and every
+ * grant bug in this codebase so far was a promise that did not match enforcement. Folding the raw
+ * `grant` registry here instead would be a second implementation of `authorize`'s pattern and
+ * operation logic, which is the bug class the verb exists to catch.
+ *
+ * So what is bounded is WALL CLOCK, not cost: the space still does the same work, and each call is
+ * O(that principal's grant history), measured at 93ms against 5,000 grant records
+ * (agent_docs/plan-registry-cost.md), capped per principal since then. Serial, a space with fifty
+ * definitions spent fifty round trips end to end for a table nobody paginates.
+ */
+const ROSTER_CONCURRENCY = 8;
+
+/** `Promise.all` with a ceiling, so a roster does not open one connection per definition. Order is
+ *  preserved, because the caller sorts and a shuffled intermediate would hide that. */
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
 }
 
 /** What offboarding actually closed. Every field is a COUNT of work done, not an intention, so the

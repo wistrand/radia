@@ -247,6 +247,11 @@ def kind_def_key(definition: Dict[str, Any]) -> str:
     return f"kind_def:{definition['kind']}:{','.join(paths)}:{','.join(sortable)}:{shape}{ck}{rt}"
 
 
+# A sentinel for "argument not given", where None is itself a meaningful value: `supersedes=None`
+# means "there was no prior definition" and must reach the wire, while omitting it must not.
+_UNSET: Any = object()
+
+
 class RadiaClient:
     """A client for one space. Thread-safe: it holds no per-request state."""
 
@@ -534,9 +539,20 @@ class RadiaClient:
         self,
         agent: str,
         grants: Optional[List[Dict[str, Any]]] = None,
+        supersedes: Any = _UNSET,
     ) -> Dict[str, str]:
-        """Operator: define an agent with its grants. Returns the definition token, shown once."""
-        return self._req("POST", "/v0/agent-definitions", {"agent": agent, "grants": grants or []})
+        """Operator: define an agent with its grants. Returns the definition token, shown once.
+
+        `supersedes` is an optional compare-and-set on the definition being replaced: pass the id
+        of the record you read as newest (or None for "there was none") and a concurrent create
+        loses with `definition_conflict` rather than leaving the agent two live minting tokens.
+        Omitted, the write is unconditional, which is what a fleet re-minting on every start needs.
+        PRESENT-BUT-NONE IS MEANINGFUL, so the sentinel is what selects the unconditional path.
+        """
+        body: Dict[str, Any] = {"agent": agent, "grants": grants or []}
+        if supersedes is not _UNSET:
+            body["supersedes"] = supersedes
+        return self._req("POST", "/v0/agent-definitions", body)
 
     def create_run(self, definition_token: str, reuse: bool = False) -> Dict[str, Any]:
         """Mint a short-lived run token from a definition token.

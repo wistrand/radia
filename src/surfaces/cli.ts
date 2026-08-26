@@ -22,7 +22,7 @@ import { declareExecRequest, pinnedDigests, promote } from "../../extensions/ts/
 import { BINDING, type Binding, declareBinding, type Outcome, readBindings, sandboxInvoker, WorkspaceHost } from "../../extensions/ts/host.ts";
 import { brokeredInvoker } from "../../extensions/ts/broker.ts";
 import { auditCompartment } from "../../extensions/ts/compartment.ts";
-import { addMember, DEFAULT_TEAM, declareTeamKinds, definitionState, type MemberRemoval, type ObserveChange, removeMember, TEAM_FIELD, teamRoster } from "../../extensions/ts/team.ts";
+import { addMember, DEFAULT_TEAM, declareTeamKinds, type MemberRemoval, type ObserveChange, readDefinition, removeMember, TEAM_FIELD, teamRoster } from "../../extensions/ts/team.ts";
 import { configLocation, type Harness, mcpInvocation, renderMcpConfig, renderMcpInstall } from "./mcp/config.ts";
 import { extensionFor, mediaTypeForPath } from "./media.ts";
 import {
@@ -534,6 +534,12 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         const crossers = live.filter((m) => m.teams.length > 1);
         const seers = live.filter((m) => m.member && m.opsPowers.includes("observe"));
         const others = live.filter((m) => !m.member && m.opsPowers.includes("observe"));
+        // A REVOKED definition still holding powers. Harmless while it cannot authenticate, and
+        // reported anyway: the audit is what an operator reads to believe a power is gone, and
+        // filtering these out of every warning made a live `ops_grant` invisible unless somebody
+        // thought to pass `--all`. `radia team remove` retires them; `radia revoke` deliberately
+        // does not, since it stops MINTING and nothing else.
+        const dormant = roster.filter((m) => !m.active && m.opsPowers.length);
         return out(ctx, roster, () =>
           lines([
             shown.length
@@ -571,6 +577,12 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
               ? `\nTHESE MEMBERS READ EVERY TEAM. \`observe\` is unscoped, so it ignores the grants above:\n` +
                 seers.map((m) => `  ${m.agent}${m.teams.length ? `  (team ${m.teams.join(",")})` : ""}`).join("\n") +
                 `\n  Take it back with: radia team add ${seers[0].agent.replace(/^agent:/, "")} --rotate  (no --observe)`
+              : null,
+            dormant.length
+              ? `\nREVOKED, BUT STILL HOLDING OPS POWERS. They cannot authenticate, so nothing can use\n` +
+                `  these today; an \`ops_grant\` is keyed to the PRINCIPAL, so they come back with the name:\n` +
+                dormant.map((m) => `  ${m.agent}  ${m.opsPowers.join(",")}`).join("\n") +
+                `\n  Take them back with: radia team remove ${dormant[0].agent.replace(/^agent:/, "")}`
               : null,
             others.length
               ? `\n\`observe\` is also held by ${others.map((m) => m.agent).join(", ")}, ${
@@ -644,7 +656,12 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         observe: ObserveChange;
       }[] = [];
       for (const agent of names) {
-        const state = await definitionState(client, agent);
+        // The record id the decision rests on, carried into the create so the whole read-revoke-
+        // create is atomic. Two `team add` racing on one name both saw one active definition, both
+        // revoked it and both created, leaving two live tokens minting where `revoke` reaches only
+        // the newest: the exact hazard the refusal below exists to prevent, reachable around it.
+        const prior = await readDefinition(client, agent);
+        const state = prior.state;
         if (state === "active" && !rotate) {
           throw new UsageError(
             `${agent} already holds a definition, and its token cannot be read back (it is shown once).\n` +
@@ -662,7 +679,10 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         // this verb ADVERTISES (`--rotate`, no `--observe`) removed nothing, because `ops_grant` is
         // keyed to the principal and rotation does not change that. `reconcileObserve` reads what
         // is in force and writes only on a real change, which closes the trap properly.
-        const member = await addMember(client, agent, { teams: lanes, observe, extra });
+        // `supersedes` names what was read: after a rotation that is the REVOCATION successor, so a
+        // racer that revoked in between loses instead of adding a second definition.
+        const after = state === "active" ? (await readDefinition(client, agent)).id : prior.id;
+        const member = await addMember(client, agent, { teams: lanes, observe, extra, supersedes: after });
         const short = agent.replace(/^agent:/, "");
         // The harness follows the NAME when the name is one, which is what makes the common case
         // (`radia team add claude codex`) print the right block for each without a flag.

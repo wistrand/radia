@@ -417,8 +417,16 @@ export class RadiaClient {
   createAgentDefinition(
     agent: string,
     grants: { principal: string; kind: string; operations: string[] }[] = [],
+    /** `supersedes` is an optional compare-and-set on the definition this replaces: pass the id of
+     *  the record you read as newest (or null for none) and a concurrent create loses with
+     *  `definition_conflict` instead of leaving the agent two live minting tokens. */
+    opts: { supersedes?: string | null } = {},
   ): Promise<{ agent: string; definitionToken: string }> {
-    return this.req("POST", "/v0/agent-definitions", { agent, grants });
+    return this.req("POST", "/v0/agent-definitions", {
+      agent,
+      grants,
+      ...("supersedes" in opts ? { supersedes: opts.supersedes ?? null } : {}),
+    });
   }
 
   /** Mint a short-lived run token from a definition token. `reuse` returns the run this credential

@@ -1023,6 +1023,9 @@ paths:
               properties:
                 agent: { type: string, description: "the principal this definition mints runs for: agent:* for a worker, human:* for a person (radia login). A human: principal is NOT privileged by its name; privilege is the space's named operator set." }
                 grants: { type: array, items: { $ref: "#/components/schemas/GrantDef" } }
+                supersedes:
+                  description: "OPTIONAL compare-and-set: the id of the agent_definition record the caller read as newest, or null for \"there was none\". Without it, read-then-create is a race that ends with TWO live definitions for one agent, both minting, while revocation reaches only the newest. With it the loser gets 409 definition_conflict. Omit to keep the unconditional behaviour (a fleet re-minting its workers' definitions on every start)."
+                  oneOf: [{ type: string }, { type: "null" }]
       responses:
         "201":
           description: created (definitionToken shown once)
@@ -1034,6 +1037,7 @@ paths:
                   agent: { type: string }
                   definitionToken: { type: string }
         "403": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
         "422": { $ref: "#/components/responses/Problem" }
 
   /agent-runs:
