@@ -83,6 +83,23 @@ required. One refusal per kind per process teaches it; everything after is a sin
 
 Ambiguity is asked about, never guessed: a crosser gets both team names back and must name one.
 
+## `space_watch` answers two questions, and one of them needs `newOnly`
+
+The default RECONCILES FIRST: a matching record that already exists comes back at once. That is
+right for CLAIMABLE work, where taking the record is what removes it from the next answer, and it
+is what makes "is there anything for me?" and "tell me when there is" the same call.
+
+On a FACT kind nothing consumes anything, so the read behind it returns the same record for ever.
+An agent asked to watch for new messages was handed a two-minute-old broadcast, twice, and
+narrowing the pattern did not help because the pattern was not the problem. `newOnly: true` takes a
+BASELINE at call time and reports only something written after it; the reply says which you got
+(`existing`). The baseline is compared by `created_at`, the database clock, never by id: a ULID
+carries the WRITING process's clock, so two agents' records can order backwards.
+
+The result also stopped telling a model to `space_take` a record of a `claimable: false` kind. That
+advice reads as authoritative because it comes from the tool rather than a prompt, and it sends the
+model after an operation the space will never satisfy.
+
 ## Two grant sets, and mixing them is a trap
 
 `MEMBER_GRANTS` carry the team pattern; `DISCOVERY_GRANTS` must not. `kind_def: query` is what

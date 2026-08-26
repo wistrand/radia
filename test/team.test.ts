@@ -17,7 +17,7 @@ import { SqliteAdapter } from "../src/storage/sqlite.ts";
 import { RadiaClient } from "../sdk/ts/client.ts";
 import { addMember, DEFAULT_TEAM, declareTeamKinds, definitionState, NOTE, TASK, TEAM_FIELD, teamRoster } from "../extensions/ts/team.ts";
 import { configLocation, mcpInvocation, renderMcpConfig, renderMcpInstall } from "../src/surfaces/mcp/config.ts";
-import { newestByKey } from "../sdk/ts/registry.ts";
+import { newer, newestByKey } from "../sdk/ts/registry.ts";
 
 async function newSpace() {
   const adapter = new SqliteAdapter(":memory:");
@@ -447,6 +447,35 @@ Deno.test("[team] a member can DISCOVER kinds, and that grant is not team-scoped
     const bc = new RadiaClient(s.base, { definitionToken: b.definitionToken });
     await c.put({ kind: TASK, body: { [TEAM_FIELD]: "alpha", title: "mine" } });
     assertEquals((await bc.queryNewest({ kind: TASK }, 20)).length, 0, "discovery leaked the data scope");
+  } finally {
+    await s.close();
+  }
+});
+
+Deno.test("[team] space_watch can wait for the NEXT record, not be handed the same one", async () => {
+  const s = await newSpace();
+  try {
+    await declareTeamKinds(s.admin);
+    const m = await addMember(s.admin, "agent:m", { teams: ["t"] });
+    const c = new RadiaClient(s.base, { definitionToken: m.definitionToken });
+    await c.put({ kind: NOTE, body: { [TEAM_FIELD]: "t", to: "all", message: "old" } });
+
+    // The default RECONCILES FIRST, which is right for claimable work (taking it removes it from
+    // the next answer) and wrong for a mailbox: nothing consumes a fact, so `readOne` returns the
+    // same record for ever however the match is narrowed. An agent asked to watch for new messages
+    // was handed a two-minute-old broadcast, twice.
+    const first = await c.readOne<{ message: string }>({ kind: NOTE });
+    const again = await c.readOne<{ message: string }>({ kind: NOTE });
+    assertEquals(first!.id, again!.id, "the read that backs a default watch is pinned to one record");
+
+    // `newOnly` needs a BASELINE rather than a filter, because "new" is relative to when the call
+    // started, and the baseline is compared by `created_at` (the database clock) rather than by id:
+    // a ULID carries the WRITING process's clock, so two agents' ids can order backwards.
+    const baseline = await c.readNewest({ kind: NOTE });
+    await c.put({ kind: NOTE, body: { [TEAM_FIELD]: "t", to: "all", message: "new" } });
+    const latest = await c.readNewest<{ message: string }>({ kind: NOTE });
+    assert(newer(baseline!, latest!), "the newer arrival must sort after the baseline");
+    assertEquals(latest!.body.message, "new");
   } finally {
     await s.close();
   }

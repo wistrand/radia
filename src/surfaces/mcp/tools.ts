@@ -176,18 +176,27 @@ export const TOOLS: McpTool[] = [
   {
     name: "space_watch",
     description:
-      "Wait for a record matching a pattern, and return the first one. Use it to pick up work " +
-      "another agent left, without polling in a loop yourself. It RECONCILES FIRST: if a matching " +
-      "record already exists you get it immediately, so this answers 'is there anything for me?' " +
-      "as well as 'tell me when there is'. It does NOT claim anything — call space_take to claim, " +
-      "which is also what stops two agents doing the same work. Returns {found:false} on timeout, " +
-      "which is an ordinary outcome and not an error: nobody wrote one in time.",
+      "Wait for a record matching a pattern, and return one. Use it to pick up work another agent " +
+      "left, without polling in a loop yourself. By default it RECONCILES FIRST: a matching record " +
+      "that already exists comes back immediately, so this answers 'is there anything for me?'. " +
+      "Set newOnly:true for 'tell me when the NEXT one arrives' — you need that for a MAILBOX, " +
+      "because nothing consumes a fact: on a kind that is not claimable the default hands you the " +
+      "same record every time, however you narrow the match. The reply says which you got " +
+      "(`existing`). It does NOT claim anything: call space_take to claim, which is what stops two " +
+      "agents doing the same work. Returns {found:false} on timeout, an ordinary outcome and not " +
+      "an error: nobody wrote one in time.",
     inputSchema: {
       type: "object",
       properties: {
         kind: KIND,
         match: MATCH,
         timeoutSeconds: { type: "number", description: "How long to wait. Default 30, capped at 120." },
+        newOnly: {
+          type: "boolean",
+          description:
+            "Only report a record written AFTER this call started. What a mailbox wants: without it, " +
+            "a kind that is not claimable returns the same existing record every time.",
+        },
       },
       required: ["kind"],
     },

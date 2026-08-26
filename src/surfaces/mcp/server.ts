@@ -28,6 +28,7 @@ import type { Lease, RadiaRecord } from "../../storage/adapter.ts";
 import type { Pattern } from "../../core/matching.ts";
 import { TOOLS } from "./tools.ts";
 import { ScopeFiller } from "./scope.ts";
+import { newer } from "../../../sdk/ts/registry.ts";
 import { ARTIFACT } from "../../../sdk/ts/wire.ts";
 import { flag } from "../../flags.ts";
 import { stdin, writeStderr, writeStdout } from "../../platform.ts";
@@ -115,6 +116,9 @@ export async function runMcp(argv: string[]): Promise<void> {
   const claims = new Map<string, Claim>();
   // Fills in the body fields the caller's own grants require, learned from a refusal (scope.ts).
   const scope = new ScopeFiller(client);
+  // `claimable` per kind, read once and kept: it decides what a tool result ADVISES, never what it
+  // does, so a stale value costs a sentence rather than a wrong operation.
+  const kinds = new Map<string, boolean>();
 
   log(`radia mcp: space=${base} auth=${
     observer
@@ -136,7 +140,7 @@ export async function runMcp(argv: string[]): Promise<void> {
   }
 
   for await (const msg of frames(stdin())) {
-    const res = await handle(msg, client, claims, base, scope);
+    const res = await handle(msg, client, claims, base, scope, kinds);
     if (res) write(res);
   }
   // Stdin closed: the harness is gone. Release anything still held rather than making the space
@@ -162,6 +166,7 @@ async function handle(
   claims: Map<string, Claim>,
   base: string,
   scope: ScopeFiller,
+  kinds: Map<string, boolean>,
 ): Promise<unknown | null> {
   const { id, method } = req;
   // A notification (no id) never gets a reply, per JSON-RPC.
@@ -197,7 +202,7 @@ async function handle(
       const name = String(req.params?.name ?? "");
       const args = (req.params?.arguments ?? {}) as Record<string, unknown>;
       try {
-        const text = await call(name, args, client, claims, scope);
+        const text = await call(name, args, client, claims, scope, kinds);
         return reply(id, { content: [{ type: "text", text }] });
       } catch (e) {
         // Tool-level failures are results with isError, not JSON-RPC errors, so the model should
@@ -230,6 +235,7 @@ async function call(
   client: RadiaClient,
   claims: Map<string, Claim>,
   scope: ScopeFiller,
+  kinds: Map<string, boolean>,
 ): Promise<string> {
   switch (name) {
     case "space_health":
@@ -289,28 +295,61 @@ async function call(
       // to N seconds", never a subscription, and a timeout is an ordinary outcome the model is
       // told about rather than an error it has to interpret.
       //
-      // RECONCILE FIRST is what makes it useful rather than surprising: `awaitResult` reads before
-      // it waits, so work that is already sitting there comes back immediately. An agent asking
-      // "anything for me?" and an agent asking "tell me when" call the same tool.
+      // TWO QUESTIONS, and answering the second with the first is what broke a mailbox. The
+      // default RECONCILES FIRST, so work already sitting there comes back immediately: right for
+      // "is there anything for me?", and right for a CLAIMABLE kind, where taking the record is
+      // what removes it from the next answer. On a fact kind nothing consumes anything, so the
+      // read returns the same record for ever: an agent asked to watch for new messages was handed
+      // a two-minute-old broadcast, twice, and narrowing the pattern did not help because the
+      // problem was not the pattern. `newOnly` is the second question, and it needs a BASELINE
+      // rather than a filter, because "new" is relative to when the call started.
       //
       // POLLED, not a stream, and deliberately: `sdk/ts/await.ts` states the reason (a watch per
       // outstanding call is a stream per call), and one adapter may have several waits open.
       const seconds = Math.min(Math.max(num(a, "timeoutSeconds") ?? 30, 1), 120);
-      const out = await awaitResult(client, pat(a), { timeoutMs: seconds * 1000, pollMs: 500 });
-      if (out.status !== "ok") {
-        return pretty({
-          found: false,
-          waitedSeconds: seconds,
-          note: "nothing matched in time. This is not an error: no agent has written one yet. " +
-            "Wait again, widen the match, or do something else.",
-        });
+      const pattern = pat(a);
+      const newOnly = a.newOnly === true;
+      // The baseline is a RECORD, not an id: ULIDs carry the WRITING PROCESS's clock, so comparing
+      // ids across two agents can order a second of writes backwards. `newer` compares `created_at`
+      // (the database clock) and falls back to the id only as a tie-break.
+      const baseline = newOnly ? await client.readNewest(pattern) : undefined;
+      const deadline = Date.now() + seconds * 1000;
+      let firstRead = true;
+      for (;;) {
+        // NEWEST-first when watching for something new; `readOne` otherwise, which is the
+        // reconcile-first read and returns whatever matches.
+        const rec = newOnly ? await client.readNewest(pattern) : await client.readOne(pattern);
+        if (rec && (!newOnly || !baseline || newer(baseline, rec))) {
+          const claimable = await isClaimable(client, kinds, rec.kind);
+          return pretty({
+            found: true,
+            // Whether it was ALREADY there or arrived while waiting. A caller treating a watch as a
+            // mailbox cannot tell those apart from the record alone, and the difference is the
+            // whole question it asked.
+            existing: firstRead && !newOnly,
+            record: rec,
+            note: claimable
+              ? "NOT claimed. Another agent can still take this. Call space_take with the same " +
+                "pattern to claim it, which is what stops two agents doing the same work."
+              : `'${rec.kind}' is not claimable, so there is nothing to take: it is a fact, and ` +
+                "every agent granted it sees the same one. Pass newOnly:true to wait for the NEXT " +
+                "one instead of being handed this one again.",
+          });
+        }
+        firstRead = false;
+        if (Date.now() >= deadline) {
+          return pretty({
+            found: false,
+            waitedSeconds: seconds,
+            note: newOnly
+              ? "nothing NEW matched in time. Records matching this pattern may already exist; " +
+                "this was waiting for one written after the call started."
+              : "nothing matched in time. This is not an error: no agent has written one yet. " +
+                "Wait again, widen the match, or do something else.",
+          });
+        }
+        await new Promise((r) => setTimeout(r, 500));
       }
-      return pretty({
-        found: true,
-        record: out.record,
-        note: "NOT claimed. Another agent can still take this. Call space_take with the same " +
-          "pattern to claim it, which is what stops two agents doing the same work.",
-      });
     }
 
     case "space_put_artifact": {
@@ -506,6 +545,25 @@ function pat(a: Record<string, unknown>): Pattern {
     // here, because this rebuilds the pattern and the model's key never crosses the socket.
     orderBy: (a.orderBy ?? a.order_by ?? undefined) as Pattern["orderBy"],
   };
+}
+
+/**
+ * Is this kind claimed as WORK, or is it a fact?
+ *
+ * Only ever used to choose what a result SAYS. Telling a model to `space_take` a record of a
+ * `claimable: false` kind sends it after an operation the space will never satisfy, and the advice
+ * reads as authoritative because it comes from the tool rather than the prompt.
+ *
+ * Fails OPEN to "claimable", the pre-existing wording: a member that cannot read `kind_def` should
+ * lose a sentence, not a tool call.
+ */
+async function isClaimable(client: RadiaClient, cache: Map<string, boolean>, kind: string): Promise<boolean> {
+  const held = cache.get(kind);
+  if (held !== undefined) return held;
+  try {
+    for (const def of await client.listKinds()) cache.set(def.kind, def.claimable !== false);
+  } catch { /* no kind_def grant: say what the old wording said */ }
+  return cache.get(kind) ?? true;
 }
 
 /** Same cap the chat's file reads use, and for the same reason: a tool result goes into a context
