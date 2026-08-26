@@ -61,6 +61,14 @@ export interface LoopOptions<T = unknown> {
    * `lease_lost`, and before this parameter existed the only observation point was the final ack,
    * i.e. after all the work was already done. Ignoring it is safe but keeps the old behaviour:
    * delivery is at-least-once either way, so effects still need idempotency at their boundary.
+   *
+   * RETURNING A `PutRequest` IS NOT THE SAME AS WRITING ONE. It becomes the ack's result, which
+   * means: settled in ONE transaction with the claim, refused as `lease_lost` if this worker was
+   * fenced meanwhile, parented to the claimed record automatically (`parentIds = [claim, …]`,
+   * `Space.settle`), and keyed per attempt so a redelivery replays instead of duplicating.
+   * `await client.put(...)` inside the handler is a separate, unfenced, unparented write that a
+   * redelivery writes twice. Return the answer; use `put` for records that are not the answer (an
+   * NPC's next beat, a narrator's events). `void` acks with no result at all.
    */
   handle: (record: RadiaRecord<T>, client: RadiaClient, signal: AbortSignal) => Promise<PutRequest | void>;
   /**
