@@ -48,15 +48,8 @@ export interface BlobRef {
 
 /** What one `retainOnly` pass did. `scanned` counts stored payloads examined; `bytes` is the
  *  stored size reclaimed (ciphertext size on an encrypted store). */
-export interface BlobGcResult {
-  scanned: number;
-  deleted: number;
-  bytes: number;
-  /** Payloads KEPT because they were sealed under a key this space does not hold. Absent or 0 in
-   *  the ordinary case. A rotation that dropped a retired key shows up here rather than as bytes
-   *  quietly disappearing, which is the one outcome a sweep must never produce silently. */
-  foreign?: number;
-}
+import type { BlobGcResult } from "../../sdk/ts/wire.ts";
+export type { BlobGcResult };
 
 /** What one `rewrap` pass did. `already` counts payloads found under the CURRENT key, which is the
  *  number that must equal `scanned` before a retired key can be destroyed. */

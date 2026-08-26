@@ -1268,6 +1268,7 @@ paths:
                   interestsWithheld: { type: integer, description: "interests hidden by the caller's scope" }
                   interestsNote: { type: string, description: "present when interests were withheld, so an empty list is not read as an idle fleet" }
                   permissions: { type: object, description: "what the CALLING principal may do" }
+                  scope: { type: object, description: "present when the caller is self-scoped: what the digest was narrowed to" }
                   complete: { type: boolean, description: "false when a registry read was truncated" }
 
   /ops/dry-run:
@@ -1405,8 +1406,8 @@ paths:
               schema:
                 type: object
                 properties:
-                  granularity: { type: string }
-                  counts: { type: string }
+                  granularity: { type: string, enum: [kind, "kind+agent"], description: "echoes the setting mined under" }
+                  counts: { type: string, enum: [bucketed, exact] }
                   flows:
                     type: array
                     items:

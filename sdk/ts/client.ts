@@ -21,8 +21,18 @@ import type {
   RadiaRecord,
   RenewResult,
   SettleResult,
+  BlobGcResult,
+  CompactionResult,
+  DigestResponse,
+  EventGcResult,
+  FlowReport,
+  FlowShape,
+  FlowsResponse,
+  GcReport,
   IntegrityReport,
   IntegrityResponse,
+  OpsScope,
+  SpaceDigest,
   SpaceEvent,
   TakeResult,
 } from "./wire.ts";
@@ -49,7 +59,11 @@ export type { Population } from "./registry.ts";
 export { awaitResult } from "./await.ts";
 export type { AwaitOptions, AwaitOutcome } from "./await.ts";
 
-export type { AckResult, Cursor, IntegrityReport, IntegrityResponse, KindDef, Lease, Page, PutRequest, RadiaRecord, SpaceEvent, Pattern };
+export type {
+  AckResult, BlobGcResult, CompactionResult, Cursor, DigestResponse, EventGcResult, FlowReport, FlowShape,
+  FlowsResponse, GcReport, IntegrityReport, IntegrityResponse, KindDef, Lease, OpsScope, Page, Pattern,
+  PutRequest, RadiaRecord, SpaceDigest, SpaceEvent,
+};
 
 export interface KindStateCount {
   kind: string;
@@ -333,17 +347,7 @@ export class RadiaClient {
 
   /** One read that orients an investigator: kinds and their indexed paths, record counts, who is
    *  listening, and what this caller may do. Generated from records, so it cannot drift. */
-  digest(): Promise<{
-    api: string;
-    kinds: { kind: string; indexedPaths: string[]; sortablePaths?: string[]; claimable: boolean; reserved: boolean }[];
-    counts: { kind: string; state: string; count: number }[];
-    /** Routing topology as an edge list: one row per (kind, agent). */
-    interests: { kind: string; agent: string; runs: number; patterns: number }[];
-    interestsWithheld?: number;
-    interestsNote?: string;
-    permissions: unknown;
-    complete: boolean;
-  }> {
+  digest(): Promise<DigestResponse> {
     return this.req("GET", "/v0/ops/digest");
   }
 
@@ -366,28 +370,7 @@ export class RadiaClient {
     hubDegree?: number;
     /** Body paths (max 4) summed per shape, e.g. `["usage.cost"]`: where the metric goes, by shape. */
     sum?: string[];
-  } = {}): Promise<{
-    granularity: string;
-    counts: string;
-    flows: {
-      signature: string;
-      occurrences: number;
-      outcomes: { complete: number; open: number; failed: number };
-      successRate: number;
-      medianDurationMs: number;
-      totalDurationMs: number;
-      medianRecords: number;
-      sums?: Record<string, { total: number; records: number }>;
-      exemplars: string[];
-    }[];
-    scanned: { records: number; kinds: string[]; subgraphs: number };
-    fragments: number;
-    singletons: number;
-    hubs: number;
-    complete: boolean;
-    notes?: string[];
-    note?: string;
-  }> {
+  } = {}): Promise<FlowsResponse> {
     const q = new URLSearchParams();
     if (opts.granularity) q.set("granularity", opts.granularity);
     if (opts.counts) q.set("counts", opts.counts);
@@ -722,7 +705,7 @@ export class RadiaClient {
 
   /** Stats plus, for a SCOPED caller, what the answer was narrowed to. Prefer this when the result
    *  will be shown to someone (or something) that could read an empty list as an empty space. */
-  async getStatsReport(): Promise<{ stats: KindStateCount[]; scope?: { self: boolean; kinds: string[]; note: string } }> {
+  async getStatsReport(): Promise<{ stats: KindStateCount[]; scope?: OpsScope }> {
     const r = await this.req("GET", "/v0/ops/stats");
     return { stats: r.stats, scope: r.scope };
   }
@@ -862,35 +845,7 @@ export class RadiaClient {
    *  neither is permanent. Nothing runs on a timer: the space amortizes small batches onto its own
    *  write path, and this verb drains backlogs and runs compaction.
    *  `diagnostics().sweepable` says whether it is worth calling; `dryRun` counts without deleting. */
-  gc(opts: { limit?: number; dryRun?: boolean; compact?: boolean } = {}): Promise<{
-    swept: number;
-    eligible: number;
-    idempotency: number;
-    byKind: Record<string, number>;
-    more: boolean;
-    passes: number;
-    /** Registry compaction (superseded latest-wins successors, dead runs' interests), unless
-     *  `compact: false`. Kinds opt in by declaring a `contentKey` on their kind_def. */
-    compaction?: { compacted: number; superseded: number; byKind: Record<string, number>; more: boolean };
-    /** Event-log retention (present when the space configures `eventRetentionSeconds`): the log
-     *  truncated to the window ∩ the sealed head, anchored and attested so integrity can tell
-     *  honest GC from tampering. `unsealed: 1` means a seal-first debt remains (reported as N+). */
-    events?: {
-      enabled: boolean;
-      sealed: number;
-      unsealed: number;
-      swept: number;
-      eligible: number;
-      anchorIdx?: number;
-      attested?: boolean;
-      more: boolean;
-    };
-    /** Reference-aware blob GC, on LIVE runs only (a dry pass would walk the whole store to predict
-     *  what a live one reports anyway). `foreign` counts payloads KEPT because they were sealed
-     *  under a key this space does not hold, which is a rotation missing its retired key rather
-     *  than bytes to reclaim: see `rewrapBlobs`. */
-    blobs?: { scanned: number; deleted: number; bytes: number; foreign?: number };
-  }> {
+  gc(opts: { limit?: number; dryRun?: boolean; compact?: boolean } = {}): Promise<GcReport> {
     return this.req("POST", "/v0/ops/gc", opts);
   }
 

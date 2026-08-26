@@ -68,46 +68,11 @@ const FLOW_HUB_PIECES = 3;
  *  One same-kind edge is ambiguous and two is a coin flip; three is a thing being saved again. */
 const FLOW_CHAIN_MIN = 3;
 
-/** A recurring shape of work, mined from what happened. Never declared: the runtime has no
- *  topology to assert, which is the whole reason this has to be recovered rather than read. */
-export interface FlowShape {
-  /** `job → task×4-7 → result×4-7 → summary`: one segment per causal depth, tokens sorted. */
-  signature: string;
-  occurrences: number;
-  /** Mechanical, never a model's verdict: `failed` = a `dead_letter` in the subgraph, `open` = work
-   *  still claimable or claimed, `complete` = everything settled or terminal by design. */
-  outcomes: { complete: number; open: number; failed: number };
-  successRate: number;
-  medianDurationMs: number;
-  /** The whole shape's wall-clock, summed across occurrences: `count x median` misestimates a
-   *  skewed shape, and "which shape burns the most time" is the question a total exists for. */
-  totalDurationMs: number;
-  medianRecords: number;
-  /** Totals for the caller's `sum` paths: `{ "usage.cost": { total, records } }`. Present only
-   *  when sums were requested. `records` keeps an empty metric honest: a zero with records: 0 is
-   *  "nothing here carries this field", not "this shape is free". */
-  sums?: Record<string, { total: number; records: number }>;
-  /** Roots of the newest occurrences, so a reader can go look at the thing itself. */
-  exemplars: string[];
-}
-
-export interface FlowReport {
-  granularity: "kind" | "kind+agent";
-  counts: "bucketed" | "exact";
-  flows: FlowShape[];
-  scanned: { records: number; kinds: string[]; subgraphs: number };
-  /** Subgraphs with a parent outside the scan, whose signature is therefore a FRAGMENT: the flow
-   *  started somewhere this caller could not see, or before the record cap. */
-  fragments: number;
-  /** Records linked to nothing, excluded from `flows` unless asked for. Counted rather than
-   *  dropped: a large number is a real finding (registry churn), just not a flow. */
-  singletons: number;
-  /** Hub records cut out so the work hanging off them could be mined separately. A non-zero count
-   *  means the signatures below are the pieces, and the `X ⇒` prefix names what they hung from. */
-  hubs: number;
-  complete: boolean;
-  notes?: string[];
-}
+// Both shapes cross `/v0`, so they are defined in the wire vocabulary and re-exported here. The
+// client restating them is how its copy came to widen `granularity`/`counts` to `string` and drop
+// `scope` (agent_docs/plan-bounded-reads.md is the same disease one layer down).
+import type { FlowReport, FlowShape } from "../../sdk/ts/wire.ts";
+export type { FlowReport, FlowShape };
 
 export async function mineFlows(
 src: FlowSource,

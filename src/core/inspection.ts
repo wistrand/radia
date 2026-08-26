@@ -92,21 +92,8 @@ export interface Diagnostics {
 }
 
 /** What the digest reports about a space. Generated from records, never hand-written. */
-export interface SpaceDigest {
-  api: string;
-  kinds: { kind: string; indexedPaths: string[]; sortablePaths?: string[]; claimable: boolean; reserved: boolean }[];
-  counts: { kind: string; state: string; count: number }[];
-  /** The routing topology as an EDGE LIST, one row per (kind, agent), not one per pattern. A
-   *  worker that serves twenty tools publishes twenty interests; listing them all buries the
-   *  shape this read exists to show. `patterns` counts them, and `POST /v0/ops/dry-run` answers
-   *  which one a given record would reach. */
-  interests: { kind: string; agent: string; runs: number; patterns: number }[];
-  /** Interests hidden by the caller's scope. An empty list means "none you may see", never
-   *  "nobody is listening", and the difference has to be stated or it gets reported as fact. */
-  interestsWithheld?: number;
-  permissions: unknown;
-  complete: boolean;
-}
+import type { SpaceDigest } from "../../sdk/ts/wire.ts";
+export type { SpaceDigest };
 
 /**
  * The reads inspection composes, and nothing else.

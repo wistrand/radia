@@ -354,6 +354,186 @@ export function kindDefKey(def: KindDef): string {
   return `kind_def:${def.kind}:${ip}:${sp}:${def.claimable === false ? "ref" : "work"}${ck}${rt}`;
 }
 
+/**
+ * What a SCOPED caller was narrowed to on the ops plane, sent by every `/v0/ops` read that can
+ * return a slice. Absent for an operator.
+ *
+ * Its whole job is stopping a partial answer from reading as a total, so a client that cannot see
+ * this field reports somebody's own records as the space. Defined here because twelve handlers
+ * send it and the SDK's private copy was already missing `alsoReadableInFull`.
+ */
+export interface OpsScope {
+  self: true;
+  /** The kinds this caller is scoped on. */
+  kinds: string[];
+  /** Kinds it may READ in full even though the numbers above cover only its own records: a
+   *  specific, checkable statement that a query there returns more. */
+  alsoReadableInFull?: string[];
+  note: string;
+}
+
+// ---------------------------------------------------------------------------
+// Space digest (`GET /v0/ops/digest`)
+// ---------------------------------------------------------------------------
+
+/** One read that orients an investigator: what kinds exist, what is in them, who is listening, and
+ *  what the caller may do. Generated from records, so it cannot drift from the space. */
+export interface SpaceDigest {
+  api: string;
+  kinds: { kind: string; indexedPaths: string[]; sortablePaths?: string[]; claimable: boolean; reserved: boolean }[];
+  counts: { kind: string; state: string; count: number }[];
+  /** The routing topology as an EDGE LIST, one row per (kind, agent), not one per pattern. A
+   *  worker that serves twenty tools publishes twenty interests; listing them all buries the
+   *  shape this read exists to show. `patterns` counts them, and `POST /v0/ops/dry-run` answers
+   *  which one a given record would reach. */
+  interests: { kind: string; agent: string; runs: number; patterns: number }[];
+  /** Interests hidden by the caller's scope. An empty list means "none you may see", never
+   *  "nobody is listening", and the difference has to be stated or it gets reported as fact. */
+  interestsWithheld?: number;
+  permissions: unknown;
+  complete: boolean;
+}
+
+/** What `GET /v0/ops/digest` sends: the digest, plus what only the handler knows. */
+export interface DigestResponse extends SpaceDigest {
+  /** Present when a grant narrowed the read. */
+  scope?: OpsScope;
+  /** Present when interests were withheld: why an empty list is not "nobody is listening". */
+  interestsNote?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Garbage collection (`POST /v0/ops/gc`)
+// ---------------------------------------------------------------------------
+
+/** What one compaction pass deleted: superseded latest-wins successors, and dead runs' interests. */
+export interface CompactionResult {
+  /** Records deleted (0 on dryRun). */
+  compacted: number;
+  /** Records found superseded or dead (== compacted unless dryRun or a lease intervened). */
+  superseded: number;
+  byKind: Record<string, number>;
+  /** A kind's walk hit the page cap: more may remain. Never read a capped count as the total. */
+  more: boolean;
+}
+
+/** What one event-log retention pass did (plan-gc.md phase 3). */
+export interface EventGcResult {
+  /** False when `eventRetentionSeconds` is unset: the log is never truncated. */
+  enabled: boolean;
+  /** Links sealed by the seal-first pass this call ran. */
+  sealed: number;
+  /** Seal-first debt after the budget: 0 = fully sealed, 1 = at least one unsealed (a probe,
+   *  like `IntegrityReport.unsealed`; report it as "N+"). Unsealed events can never sweep. */
+  unsealed: number;
+  /** Events deleted (0 on a dry run). */
+  swept: number;
+  /** Events at or below the anchor (dry run: what would go). */
+  eligible: number;
+  /** The chosen anchor: the newest sealed event outside the retention window, cursor-group safe. */
+  anchorIdx?: number;
+  /** Whether the horizon statement sealed; false aborts the sweep with `more: true`. */
+  attested?: boolean;
+  /** Work remains: a seal backlog, an unsealed statement, or pairs past this call's limit. */
+  more: boolean;
+}
+
+/** What one blob sweep did. */
+export interface BlobGcResult {
+  scanned: number;
+  deleted: number;
+  bytes: number;
+  /** Payloads KEPT because they were sealed under a key this space does not hold. Absent or 0 in
+   *  the ordinary case. A rotation that dropped a retired key shows up here rather than as bytes
+   *  quietly disappearing, which is the one outcome a sweep must never produce silently. */
+  foreign?: number;
+}
+
+/**
+ * What one `gc` call did, across all four sweeps.
+ *
+ * The handler adds nothing, so this is both what core returns and what the wire sends. `more` is
+ * the field that matters: a capped pass is normal, and reading its counts as the total is how a
+ * backlog goes unnoticed.
+ */
+export interface GcReport {
+  swept: number;
+  eligible: number;
+  idempotency: number;
+  byKind: Record<string, number>;
+  more: boolean;
+  passes: number;
+  /** Registry compaction, unless `compact: false`. Kinds opt in by declaring a `contentKey`. */
+  compaction?: CompactionResult;
+  /** Present when the space configures `eventRetentionSeconds`. */
+  events?: EventGcResult;
+  /** Reference-aware blob GC, on LIVE runs only: a dry pass would walk the whole store to predict
+   *  what a live one reports anyway. */
+  blobs?: BlobGcResult;
+}
+
+// ---------------------------------------------------------------------------
+// Mined flows (`GET /v0/ops/flows`)
+// ---------------------------------------------------------------------------
+
+/** A recurring shape of work, mined from what happened. Never declared: the runtime has no
+ *  topology to assert, which is the whole reason this has to be recovered rather than read. */
+export interface FlowShape {
+  /** `job → task×4-7 → result×4-7 → summary`: one segment per causal depth, tokens sorted. */
+  signature: string;
+  occurrences: number;
+  /** Mechanical, never a model's verdict: `failed` = a `dead_letter` in the subgraph, `open` = work
+   *  still claimable or claimed, `complete` = everything settled or terminal by design. */
+  outcomes: { complete: number; open: number; failed: number };
+  successRate: number;
+  medianDurationMs: number;
+  /** The whole shape's wall-clock, summed across occurrences: `count x median` misestimates a
+   *  skewed shape, and "which shape burns the most time" is the question a total exists for. */
+  totalDurationMs: number;
+  medianRecords: number;
+  /** Totals for the caller's `sum` paths: `{ "usage.cost": { total, records } }`. Present only
+   *  when sums were requested. `records` keeps an empty metric honest: a zero with records: 0 is
+   *  "nothing here carries this field", not "this shape is free". */
+  sums?: Record<string, { total: number; records: number }>;
+  /** Roots of the newest occurrences, so a reader can go look at the thing itself. */
+  exemplars: string[];
+}
+
+/** What mining produced. The RESPONSE adds what the handler knows and the miner does not
+ *  (`FlowsResponse`). */
+export interface FlowReport {
+  granularity: "kind" | "kind+agent";
+  counts: "bucketed" | "exact";
+  flows: FlowShape[];
+  scanned: { records: number; kinds: string[]; subgraphs: number };
+  /** Subgraphs with a parent outside the scan, whose signature is therefore a FRAGMENT: the flow
+   *  started somewhere this caller could not see, or before the record cap. */
+  fragments: number;
+  /** Records linked to nothing, excluded from `flows` unless asked for. Counted rather than
+   *  dropped: a large number is a real finding (registry churn), just not a flow. */
+  singletons: number;
+  /** Hub records cut out so the work hanging off them could be mined separately. A non-zero count
+   *  means the signatures below are the pieces, and the `X ⇒` prefix names what they hung from. */
+  hubs: number;
+  complete: boolean;
+  notes?: string[];
+}
+
+/**
+ * What `GET /v0/ops/flows` sends: the mined report, plus what only the handler knows.
+ *
+ * DEFINED HERE rather than restated in the client. The client's private copy had drifted three
+ * ways: no `scope`, so a SCOPED caller could not see that the diagram covered only its own
+ * records; and `granularity`/`counts` widened to `string`, so the unions the server actually sends
+ * could not be narrowed on.
+ */
+export interface FlowsResponse extends FlowReport {
+  /** Present when a grant narrowed the mining: a diagram of a slice, said so. */
+  scope?: OpsScope;
+  /** Present when nothing was mined: why an empty diagram is not the same as no work. */
+  note?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Event chain (tamper evidence)
 // ---------------------------------------------------------------------------

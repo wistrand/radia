@@ -66,15 +66,8 @@ export interface CompactionHost {
   runIsLive(run: string): Promise<boolean>;
 }
 
-export interface CompactionResult {
-  /** Records deleted (0 on dryRun). */
-  compacted: number;
-  /** Records found superseded or dead (== compacted unless dryRun or a lease intervened). */
-  superseded: number;
-  byKind: Record<string, number>;
-  /** A kind's walk hit the page cap: more may remain. Never read a capped count as the total. */
-  more: boolean;
-}
+import type { CompactionResult } from "../../sdk/ts/wire.ts";
+export type { CompactionResult };
 
 const PAGE = 500;
 /** Most records one call walks per kind: bounds a pathological registry without a config knob.

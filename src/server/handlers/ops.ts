@@ -7,7 +7,7 @@
 
 import type { Space } from "../../core/space.ts";
 import type { RecordState, StatsScope } from "../../storage/adapter.ts";
-import type { IntegrityResponse } from "../../../sdk/ts/wire.ts";
+import type { DigestResponse, FlowsResponse, IntegrityResponse, OpsScope } from "../../../sdk/ts/wire.ts";
 import { problem, rejectUnknown, statusFor } from "../problem.ts";
 import { RadiaError } from "../../core/errors.ts";
 
@@ -19,7 +19,7 @@ import { RadiaError } from "../../core/errors.ts";
  * healthy". Every scoped response therefore carries what it was narrowed to, so "nothing here" can
  * be read as "nothing YOU can see, of these kinds".
  */
-function describeScope(scope?: StatsScope | null) {
+function describeScope(scope?: StatsScope | null): OpsScope | undefined {
   if (!scope) return undefined;
   const more = scope.alsoReadable ?? [];
   return {
@@ -400,37 +400,31 @@ export async function handleFlows(space: Space, url: URL, scope?: StatsScope | n
     ...(sum.length > 0 ? { sum } : {}),
     scope: scope ?? undefined,
   });
-  return Response.json({
-    ...r,
-    scope: describeScope(scope),
-    // A mined shape read as the population is this feature's version of the bounded-read bug, and
-    // it is worse here than elsewhere: the answer LOOKS like a complete diagram either way.
-    ...(r.flows.length === 0
-      ? {
-        note: "no shapes were mined. Either nothing has run yet, or every record here is unrelated " +
-          "to every other: a flow needs parent_ids, and work that never links is work with no shape.",
-      }
-      : {}),
-  });
+  // A mined shape read as the population is this feature's version of the bounded-read bug, and it
+  // is worse here than elsewhere: the answer LOOKS like a complete diagram either way. Assigned
+  // rather than conditionally spread, or the type below checks nothing (see `handleIntegrity`).
+  const extra: Pick<FlowsResponse, "scope" | "note"> = { scope: describeScope(scope) };
+  if (r.flows.length === 0) {
+    extra.note = "no shapes were mined. Either nothing has run yet, or every record here is unrelated " +
+      "to every other: a flow needs parent_ids, and work that never links is work with no shape.";
+  }
+  return Response.json({ ...r, ...extra } satisfies FlowsResponse);
 }
 
 /** One read that orients an investigator: what kinds exist, what is in them, who is listening,
  *  and what the caller may do. Generated from records so it cannot drift. */
 export async function handleDigest(space: Space, principal: string, scope?: StatsScope | null): Promise<Response> {
   const d = await space.digest(principal, scope);
-  return Response.json({
-    ...d,
-    scope: describeScope(scope),
-    // Never let an empty scoped list read as an empty space. A session sees only the interests it
-    // published, and it publishes none unless it is a worker, so without this it reports "nothing
-    // is listening" about a fleet that is running.
-    ...(d.interestsWithheld
-      ? {
-        interestsNote: `${d.interestsWithheld} interests belong to other principals and are not shown. ` +
-          "This does NOT mean nothing is listening; seeing the whole routing table needs an operator session.",
-      }
-      : {}),
-  });
+  // Never let an empty scoped list read as an empty space. A session sees only the interests it
+  // published, and it publishes none unless it is a worker, so without this it reports "nothing is
+  // listening" about a fleet that is running. Assigned, not conditionally spread (see
+  // `handleIntegrity`): a spread widens to `{}` and the type below would check nothing.
+  const extra: Pick<DigestResponse, "scope" | "interestsNote"> = { scope: describeScope(scope) };
+  if (d.interestsWithheld) {
+    extra.interestsNote = `${d.interestsWithheld} interests belong to other principals and are not shown. ` +
+      "This does NOT mean nothing is listening; seeing the whole routing table needs an operator session.";
+  }
+  return Response.json({ ...d, ...extra } satisfies DigestResponse);
 }
 
 /** The causally ordered story around a record: its lineage root, then everything descended from it. */

@@ -303,25 +303,8 @@ const DEFAULT_CONTEXT: SpaceContext = {
 };
 
 /** What one event-log retention pass did (`Space.gcEvents`; rides the `gc` verb). */
-export interface EventGcResult {
-  /** False when `eventRetentionSeconds` is unset: the log is never truncated. */
-  enabled: boolean;
-  /** Links sealed by the seal-first pass this call ran. */
-  sealed: number;
-  /** Seal-first debt after the budget: 0 = fully sealed, 1 = at least one unsealed (a probe,
-   *  like `IntegrityReport.unsealed`; report it as "N+"). Unsealed events can never sweep. */
-  unsealed: number;
-  /** Events deleted (0 on a dry run). */
-  swept: number;
-  /** Events at or below the anchor (dry run: what would go). */
-  eligible: number;
-  /** The chosen anchor: the newest sealed event outside the retention window, cursor-group safe. */
-  anchorIdx?: number;
-  /** Whether the horizon statement sealed; false aborts the sweep with `more: true`. */
-  attested?: boolean;
-  /** Work remains: a seal backlog, an unsealed statement, or pairs past this call's limit. */
-  more: boolean;
-}
+import type { EventGcResult, GcReport } from "../../sdk/ts/wire.ts";
+export type { EventGcResult, GcReport };
 
 /** How a caller selects work to take. */
 export type TakeInput =
@@ -3675,17 +3658,7 @@ export class Space {
    * ON DEMAND, never on a timer, like sealing and for the same reason: an idle space should hold
    * no background work. `radia doctor` reports the backlog; `POST /v0/ops/gc` runs the sweep.
    */
-  async gc(opts: { limit?: number; dryRun?: boolean; compact?: boolean; principal?: string } = {}): Promise<{
-    swept: number;
-    eligible: number;
-    idempotency: number;
-    byKind: Record<string, number>;
-    more: boolean;
-    passes: number;
-    compaction?: CompactionResult;
-    events?: EventGcResult;
-    blobs?: BlobGcResult;
-  }> {
+  async gc(opts: { limit?: number; dryRun?: boolean; compact?: boolean; principal?: string } = {}): Promise<GcReport> {
     const limit = Math.min(Math.max(opts.limit ?? 1000, 1), 10_000);
     const totals = { swept: 0, eligible: 0, idempotency: 0, byKind: {} as Record<string, number>, more: false, passes: 0 };
     // Bounded batches rather than one unbounded delete: each pass is one transaction, so a crash
@@ -3741,7 +3714,14 @@ export class Space {
     if (!opts.dryRun) {
       blobs = await this.blobs.retainOnly(await this.referencedDigests(), { graceMs: this.ctx.blobGcGraceSeconds * 1000 });
     }
-    return { ...totals, ...(compaction ? { compaction } : {}), ...(events ? { events } : {}), ...(blobs ? { blobs } : {}) };
+    // Assembled into a typed value rather than spread into the return, so a sweep that grows a
+    // field `GcReport` does not declare is a compile error. Conditional spreads widen to `{}` and
+    // check nothing (see `handleIntegrity`).
+    const out: GcReport = { ...totals };
+    if (compaction) out.compaction = compaction;
+    if (events) out.events = events;
+    if (blobs) out.blobs = blobs;
+    return out;
   }
 
   /**
