@@ -196,6 +196,19 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   the one a writer may SEED (`PutRequest.availableAt`, delayed visibility), and it stays the
   runtime's afterwards: nack, requeue and quarantine all rewrite it.
 
+**A `kind_def` field left OUT of `kindDefKey` can never be set on an existing kind.** `registerKind`
+puts under that key, so a declaration that changes only an unkeyed field re-puts the same key with a
+different body: `idempotency_conflict`. Found by adding `usage` and reasoning that prose "carries no
+contract so should not key". It participates as its LENGTH plus an FNV-1a digest (a 600-character
+idempotency key is one nothing wants to store), omitted when absent so keys minted before the field
+stay byte-identical. The same rule is why `contentKey` and `defaultRetentionSeconds` are in there.
+
+**Never pattern-scope a grant on a kind whose bodies lack the field.** `radia team` scopes members
+with `pattern: {team: …}`, and adding `kind_def: query` to that set made `space_kinds` fail exactly
+as its ABSENCE did: a `kind_def` body carries no `team`, so the pattern matches nothing and refuses
+every declaration. Discovery grants are a separate, deliberately unscoped set (`DISCOVERY_GRANTS`).
+The rule: a scope belongs on kinds that carry DATA, never on the ones that describe them.
+
 ### Registries, and reads that must not truncate
 
 **The current set of a keyed kind is `client.registry(kind)`, projected SERVER-side from the key the

@@ -90,30 +90,41 @@ dies with the harness, and it is polling, so it spends tokens while it waits.
 For work that must be picked up with no session alive at all, the answer is a worker on `agentLoop`
 (the SDK's event-driven loop, which holds a real watch stream), not a harness on MCP.
 
-**Do not record this as "MCP cannot push", which is false and would stop the next person looking.**
-As of the 2026-07-28 revision there is a NAMED mechanism: `subscriptions/listen`, a client-initiated
-long-lived request whose response is an open stream of notifications, and it works on stdio (every
-frame carries `io.modelcontextprotocol/subscriptionId` so several subscriptions demultiplex on the
-one channel). Three things stack up to the limit, and only the first is ours:
+**"MCP cannot push" is false as a statement about the PROTOCOL and true as one about the clients,
+and the second is what decides whether to build anything.** Since 2026-07-28 there is a named
+mechanism: `subscriptions/listen`, a client-initiated long-lived request whose response is an open
+stream of notifications, working on stdio as well as HTTP (each frame carries
+`io.modelcontextprotocol/subscriptionId`, so several subscriptions demultiplex on one channel).
 
-1. **This adapter sends nothing.** `write()` is a general frame writer and only reply paths call
-   it; we advertise `capabilities: {tools: {listChanged: false}}`. That is a choice, not a wall.
+Three things stack up, and the third is the one that settles it:
+
+1. **This adapter sends nothing.** `write()` is a general frame writer and only reply paths call it;
+   we advertise `capabilities: {tools: {listChanged: false}}`. A choice, not a wall.
 2. **The notification filter is a CLOSED set**: `toolsListChanged`, `promptsListChanged`,
-   `resourcesListChanged`, and `resourceSubscriptions` (resource URIs). There is no arbitrary
-   domain event, so pushing "a note arrived for you" means exposing a mailbox as a RESOURCE and
-   letting `notifications/resources/updated` carry it. We expose no resources at all today.
-3. **A notification reaches the HARNESS, not the model.** Whether any harness turns one into a
-   turn is its own behaviour and is not something this repo has tested.
+   `resourcesListChanged`, `resourceSubscriptions` (resource URIs). No arbitrary domain event, so
+   pushing "a note arrived for you" means publishing a mailbox as a RESOURCE and letting
+   `notifications/resources/updated` carry it.
+3. **Nothing consumes resource subscriptions.** They are unsupported by most clients including
+   Claude Desktop and Claude Code, and a server cannot even detect support, because whether a client
+   subscribes was never part of capability negotiation. The evidence that matters is MCP APPS, the
+   most widely adopted extension and the one whose headline case is a live dashboard: it USES
+   resources (a tool declares `_meta.ui.resourceUri`, the host fetches a `ui://` resource) and
+   routes its live updates around subscriptions entirely, over a postMessage app bridge.
+
+**So do not build resources in order to get push.** Resources themselves are well adopted; the
+SUBSCRIPTION half is a path the ecosystem's own flagship extension declined to walk, and today's
+clients are built around a request/response prompt cycle that has nowhere to deliver an unsolicited
+message into. An earlier version of this section called closing the gap "a scoped project against a
+standard", which reads as encouragement; a standard nobody implements is a WEAKER reason to build
+than an untested one, not a stronger.
+
+What remains true: the subagent watch loop above already covers the case a running session cares
+about, and it works today with no protocol work at all.
 
 `sampling/createMessage` used to be listed here as the affordance that would drive model work.
 **Sampling is DEPRECATED** in 2026-07-28 (with Roots and Logging, on a twelve-month support window),
-so do not build on it. Mid-flight input is now MRTR (`resultType: "input_required"`) or the Tasks
-extension's `inputRequests`.
-
-So the honest form is: nothing pushes work into an agent TODAY, because this adapter emits no frames
-and exposes no resources for a subscription to name. Closing it is now a scoped project against a
-standard rather than an open question. And it matters less than it looks, because the subagent loop
-above already covers the case a running session cares about.
+so do not build on it either. Mid-flight input is now MRTR (`resultType: "input_required"`) or the
+Tasks extension's `inputRequests`.
 
 **It is not a security boundary against the agent itself.** A member's token IS its authority and it
 sits in a config file the harness reads. Teams separate honest agents from each other's work; they

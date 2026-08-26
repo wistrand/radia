@@ -196,7 +196,23 @@ cause. But BOTH readers of a stored declaration swallow a validation failure and
 validator would turn a stored `kind_def` into an UNLOADABLE KIND and, through `refreshKind`, mean a
 kind declared on another instance never registers on this one. `assertKnownKindDefFields` therefore
 hangs off `validateReservedBody` and never off `kindDefFromBody`. Allowed: `kind`, `indexedPaths`,
-`sortablePaths`, `claimable`, `contentKey`, `defaultRetentionSeconds`, `retired`.
+`sortablePaths`, `claimable`, `contentKey`, `defaultRetentionSeconds`, `usage`, `retired`.
+
+**`usage` is prose for whoever DISCOVERS the kind, and it participates in the content key.** It says
+how to use the kind (what a body holds, how to match it), is never interpreted, and is bounded at
+`MAX_KIND_USAGE` because `loadKinds` reads every declaration at startup. It exists because an agent
+discovers WHICH kinds a space has and previously learned nothing about what to put in one: two
+agents on one space invented incompatible conventions unprompted, one writing `{to, text}` and the
+other `{to, message}`, plus a broadcast recipient (`to: "all"`) that no reader's pattern accounted
+for. A tool description cannot carry that, because the kinds are the app's and the tools are
+generic.
+
+Keeping it OUT of `kindDefKey` was tried and is unusable: adding or re-wording a line on an existing
+kind then re-puts the same key with a different body, which is `idempotency_conflict`, so the field
+could never be set on any kind that already existed. It participates as its LENGTH plus an FNV-1a
+digest rather than its text, since a 600-character idempotency key is one nothing wants to store,
+and it is omitted entirely when absent so every key minted before the field existed stays
+byte-identical.
 
 **Suggested names, which the runtime has never heard of:** `task` · `fact` / `hypothesis` ·
 `request` / `bid` / `award` (see [design-marketplace.md](design-marketplace.md)) · `result`. These
