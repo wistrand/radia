@@ -43,10 +43,10 @@ export async function liveModels(client: RadiaClient): Promise<ModelAd[]> {
   // `queryAll` + `activeByKey(b => b.tier)`, which restated `contentKey: ["tier"]` in code, and
   // `kinds.ts` carried a comment saying a human had checked the two agreed. That check is gone
   // because the second statement is gone (agent_docs/plan-bounded-reads.md).
-  const view = await client.registry("model");
+  const view = await client.registry<ModelAd>("model");
   if (!view.complete) throw new Error("could not read the model registry completely; refusing to route on a prefix");
   return [...view.entries]
-    .map((r) => r.body as ModelAd)
+    .map((r) => r.body)
     .filter((m) => !m.modalities || m.modalities.includes("text"))
     .sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
 }

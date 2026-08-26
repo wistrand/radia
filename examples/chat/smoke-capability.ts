@@ -19,6 +19,7 @@ import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import {
   collapseByTool,
+  liveCapabilities,
   publishCapability,
   retireProviderCapabilities,
 } from "../../extensions/ts/capability.ts";
@@ -53,7 +54,7 @@ function check(name: string, ok: boolean, detail = "") {
 /** The tool list exactly as `ToolSet.refresh` builds it: the shared projection, not a copy. A
  *  re-implementation here could only ever prove that this file's own loop was right. */
 async function toolList() {
-  const view = await client.registry("capability");
+  const view = await liveCapabilities(client);
   return collapseByTool(view.entries);
 }
 

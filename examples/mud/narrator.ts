@@ -25,6 +25,7 @@ import { agentLoop } from "../../sdk/ts/loop.ts";
 import { RadiaClient, RadiaClientError, type RadiaRecord } from "../../sdk/ts/client.ts";
 import { WORLD_ID } from "./kinds.ts";
 import { type EventBody, writeEvent } from "./feed.ts";
+import { livePresence, type PresenceBody } from "./presence.ts";
 
 interface CommandBody {
   worldId: string;
@@ -38,12 +39,6 @@ interface RoomBody {
   name: string;
   description: string;
   exits: Record<string, string>;
-}
-
-interface PresenceBody {
-  worldId: string;
-  actor: string;
-  roomId: string;
 }
 
 interface NpcBody {
@@ -304,9 +299,9 @@ async function occupantsOf(
   roomId: string,
   actor: string,
 ): Promise<{ here: string[]; complete: boolean }> {
-  const view = await client.registry("presence", { worldId });
+  const view = await livePresence(client, worldId);
   const here = [...view.entries]
-    .map((r) => r.body as PresenceBody)
+    .map((r) => r.body)
     .filter((p) => p.roomId === roomId && p.actor !== actor)
     .map((p) => `${displayName(p.actor)} is here.`);
   return { here, complete: view.complete };

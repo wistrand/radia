@@ -21,6 +21,7 @@ import { registerMudKinds, WORLD_ID } from "./kinds.ts";
 import { seedAmbient, seedWorld } from "./world.ts";
 import { bootstrap, npcAgent, playerGrants } from "./roles.ts";
 import { narratorLoop } from "./narrator.ts";
+import { livePresence } from "./presence.ts";
 import { npcLoop } from "./npc.ts";
 import type { EventBody } from "./feed.ts";
 
@@ -152,9 +153,9 @@ check("…and the arrival in the room entered",
 {
   await say(bob, "look");
   await until(async () => (await where(bob.principal)) === "gate");
-  const view = await admin.registry("presence", { worldId: WORLD_ID });
+  const view = await livePresence(admin, WORLD_ID);
   const at = (room: string) =>
-    [...view.entries].map((r) => r.body as { actor: string; roomId: string })
+    [...view.entries].map((r) => r.body)
       .filter((p) => p.roomId === room).map((p) => p.actor).sort();
   check("somebody who left is not still standing there",
     !at("gate").includes(alice.principal) && at("courtyard").includes(alice.principal),

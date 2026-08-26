@@ -11,7 +11,7 @@ import { activeByKey, awaitResult } from "../../../sdk/ts/client.ts";
 import type { ChatMessage, ToolDef } from "../provider/openrouter.ts";
 import type { Thread } from "./thread.ts";
 import { sessionOwner } from "../space/roles.ts";
-import { collapseByTool } from "../../../extensions/ts/capability.ts";
+import { collapseByTool, liveCapabilities } from "../../../extensions/ts/capability.ts";
 import { assertReadable, type ConversationKey, openBody } from "../../../extensions/ts/encrypted.ts";
 import { answerStream, columns, dim, endStatus, ensureLine, holdLine, notice, showArtifact, statusLineOn, trunc, write } from "./ui.ts";
 import { Waiter, waitWake } from "./waiting.ts";
@@ -735,7 +735,7 @@ export class ToolSet {
     // advertising one name are two entries rather than one silently overwriting the other, and the
     // key is not restated here to drift from the one `radia gc` compacts by. `collapseByTool` folds
     // them back into the single name a model can call, and says when the fold hid a disagreement.
-    const view = await this.client.registry("capability");
+    const view = await liveCapabilities(this.client);
     // A partial read means the tool list is a guess. Say so once rather than running a turn that
     // silently lacks something: "the assistant does not have that tool" is indistinguishable from
     // "the assistant did not think to use it", and the second is what everyone assumes.

@@ -118,7 +118,7 @@ export async function currentFleetKey(
   c: RadiaClient,
 ): Promise<{ keyId: string; publicKey: string } | undefined> {
   type Body = { keyId: string; publicKey: string; retired?: boolean };
-  const view = await c.registry(FLEET_KEY_KIND);
+  const view = await c.registry<Body>(FLEET_KEY_KIND);
   if (!view.complete) throw new Error("could not read the fleet key registry completely; refusing to seal");
   // `entries` is already latest-wins minus tombstones. Newest wins among what is left: several live
   // keys means a rotation in flight, and sealing to the newest is what makes the old private half
@@ -127,9 +127,9 @@ export async function currentFleetKey(
   // Chosen with the SHARED COMPARATOR, never by position. This took the LAST entry, and a
   // projection is ordered by when each key was first seen, so during a rotation it sealed to the
   // OLDEST live key: the one whose private half is about to be retired.
-  let live: RadiaRecord | undefined;
+  let live: RadiaRecord<Body> | undefined;
   for (const rec of view.entries) if (!live || newer(live, rec)) live = rec;
-  return live ? { keyId: (live.body as Body).keyId, publicKey: (live.body as Body).publicKey } : undefined;
+  return live ? { keyId: live.body.keyId, publicKey: live.body.publicKey } : undefined;
 }
 
 /** The kind a person's PUBLIC keys are published under, one per machine. A registry: latest wins
@@ -180,12 +180,9 @@ export async function livePersonKeys(
   principal: string,
 ): Promise<{ keyId: string; publicKey: string }[]> {
   type Body = { principal: string; keyId: string; publicKey: string; retired?: boolean };
-  const view = await c.registry(PERSON_KEY_KIND, { principal });
+  const view = await c.registry<Body>(PERSON_KEY_KIND, { principal });
   if (!view.complete) throw new Error(`could not read ${principal}'s key registry completely; refusing to seal`);
-  return [...view.entries].map((r) => ({
-    keyId: (r.body as Body).keyId,
-    publicKey: (r.body as Body).publicKey,
-  }));
+  return [...view.entries].map((r) => ({ keyId: r.body.keyId, publicKey: r.body.publicKey }));
 }
 
 /** Re-derive a key id from a stored public half, for callers that hold one without its id. */

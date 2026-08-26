@@ -58,6 +58,21 @@ export function capabilityKey(b: CapabilityBody): string | undefined {
 }
 
 /**
+ * Every advertisement in force: newest per (provider, tool), retirements dropped.
+ *
+ * THE ONE PLACE the kind name and the body shape are stated together. A consumer that called
+ * `client.registry<CapabilityBody>(CAPABILITY)` wrote both at every read, which is the same fact
+ * twice with nothing checking they agree; here it is beside the `CAPABILITY_KIND` declaration that
+ * makes it true. `complete: false` still means a prefix, and a tool list built on one is a guess.
+ */
+export function liveCapabilities(
+  client: RadiaClient,
+  match?: Record<string, unknown>,
+): Promise<{ entries: ReadonlySet<RadiaRecord<CapabilityBody>>; complete: boolean; scanned: number }> {
+  return client.registry<CapabilityBody>(CAPABILITY, match);
+}
+
+/**
  * Advertise one tool. Safe to call on every startup.
  *
  * The definition is HASHED into the content key rather than embedded: an `Idempotency-Key` is a
@@ -137,10 +152,10 @@ export async function retireProviderCapabilities(client: RadiaClient, providers:
   const wanted = new Set(providers);
   let retired = 0;
   try {
-    const live = await client.registry(CAPABILITY);
+    const live = await liveCapabilities(client);
     await Promise.all(
       [...live.entries].map(async (rec) => {
-        const b = rec.body as CapabilityBody;
+        const b = rec.body;
         if (!b.provider || !wanted.has(b.provider)) return;
         try {
           // Anchored on the record being withdrawn: this projection already read it, so a repeat

@@ -579,8 +579,8 @@ export class RadiaClient {
    * If what you want is "the current set", this is still the wrong call: use `registry` or
    * `queryAll`, which exhaust. A page can only ever be a page.
    */
-  queryNewest(pattern: Pattern, limit = 100): Promise<RadiaRecord[]> {
-    return this.queryDirected(pattern, limit, { dir: "desc" });
+  queryNewest<T = unknown>(pattern: Pattern, limit = 100): Promise<RadiaRecord<T>[]> {
+    return this.queryDirected(pattern, limit, { dir: "desc" }) as Promise<RadiaRecord<T>[]>;
   }
 
   /**
@@ -589,8 +589,8 @@ export class RadiaClient {
    * The old default, now something a caller asks for on purpose. Right for a claim-ordered read or
    * a replay from the beginning; wrong for anything that accumulates successors.
    */
-  queryOldest(pattern: Pattern, limit = 100): Promise<RadiaRecord[]> {
-    return this.queryDirected(pattern, limit, { dir: "asc" });
+  queryOldest<T = unknown>(pattern: Pattern, limit = 100): Promise<RadiaRecord<T>[]> {
+    return this.queryDirected(pattern, limit, { dir: "asc" }) as Promise<RadiaRecord<T>[]>;
   }
 
   /**
@@ -601,7 +601,7 @@ export class RadiaClient {
    * with `orderBy` rather than silently resolving one of them. This is the call that expresses it,
    * and the two directional verbs point here rather than letting a caller discover it as a 400.
    */
-  async queryOrdered(pattern: Pattern, limit = 100): Promise<RadiaRecord[]> {
+  async queryOrdered<T = unknown>(pattern: Pattern, limit = 100): Promise<RadiaRecord<T>[]> {
     const r = await this.req("POST", "/v0/records/query", { ...pattern, limit });
     return r.records;
   }
@@ -794,7 +794,7 @@ export class RadiaClient {
     return { ...out, entries: new Set(out.entries as RadiaRecord<T>[]) };
   }
 
-  async queryAll(pattern: Pattern, maxPages = 40): Promise<Population> {
+  async queryAll<T = unknown>(pattern: Pattern, maxPages = 40): Promise<Population<T>> {
     const out: RadiaRecord[] = [];
     // Walks by CURSOR rather than pairing `after` with a `dir` it has to remember. That pairing is
     // the bug this loop would otherwise be one edit away from: the direction lives in the cursor,
@@ -810,7 +810,7 @@ export class RadiaClient {
       // the read that REFUSES to truncate into one that truncates silently and brands the result a
       // Population. A short page is the only evidence of exhaustion that cannot go missing.
       if (records.length < PAGE) {
-        return unsafeAsPopulation(out, "queryAll exhausted the kind; it throws rather than truncating");
+        return unsafeAsPopulation(out, "queryAll exhausted the kind; it throws rather than truncating") as Population<T>;
       }
       if (!nextCursor) {
         throw new Error(
@@ -850,7 +850,7 @@ export class RadiaClient {
     return r.records;
   }
 
-  async getRecord(recordId: string): Promise<RadiaRecord | null> {
+  async getRecord<T = unknown>(recordId: string): Promise<RadiaRecord<T> | null> {
     try {
       return await this.req("GET", `/v0/ops/records/${encodeURIComponent(recordId)}`);
     } catch (e) {

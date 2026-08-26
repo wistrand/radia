@@ -67,10 +67,10 @@ export interface StageDef {
 /** The pipeline's stages, in order, from the `stage_def` registry. Read to exhaustion: a def
  *  that fell off a page would silently truncate every dataset's pipeline. */
 export async function readStageDefs(c: RadiaClient): Promise<StageDef[]> {
-  const view = await c.registry("stage_def");
+  const view = await c.registry<StageDef>("stage_def");
   if (!view.complete) throw new Error("could not read the stage_def registry completely");
   return [...view.entries]
-    .map((r) => r.body as StageDef)
+    .map((r) => r.body)
     .sort((a, b) => a.index - b.index);
 }
 

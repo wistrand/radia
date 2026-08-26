@@ -71,13 +71,15 @@ export function newer(a: RadiaRecord, b: RadiaRecord): boolean {
 export function newestByKey<T = unknown>(
   records: Population,
   keyOf: (body: T, record: RadiaRecord) => string | undefined,
-): Map<string, RadiaRecord> {
-  const out = new Map<string, RadiaRecord>();
+): Map<string, RadiaRecord<T>> {
+  // T flows OUT, not in: the input is any exhaustive read, and the caller's claim about the bodies
+  // is asserted once here rather than re-cast at every read of the result.
+  const out = new Map<string, RadiaRecord<T>>();
   for (const r of records) {
     const key = keyOf(r.body as T, r);
     if (key === undefined) continue;
     const prev = out.get(key);
-    if (!prev || newer(prev, r)) out.set(key, r);
+    if (!prev || newer(prev, r)) out.set(key, r as RadiaRecord<T>);
   }
   return out;
 }
@@ -95,7 +97,7 @@ export function newestByKey<T = unknown>(
 export function activeByKey<T = unknown>(
   records: Population,
   keyOf: (body: T, record: RadiaRecord) => string | undefined,
-): Map<string, RadiaRecord> {
+): Map<string, RadiaRecord<T>> {
   const newest = newestByKey(records, keyOf);
   for (const [key, rec] of newest) if (isRetired(rec.body)) newest.delete(key);
   return newest;
@@ -116,7 +118,7 @@ export function activeByKey<T = unknown>(
 export function activeSet<T = unknown>(
   records: Population,
   keyOf: (body: T, record: RadiaRecord) => string | undefined,
-): ReadonlySet<RadiaRecord> {
+): ReadonlySet<RadiaRecord<T>> {
   return new Set(activeByKey(records, keyOf).values());
 }
 
@@ -238,7 +240,7 @@ function canonicalJson(v: unknown): string {
  * A caller still has to read `complete`.
  */
 declare const exhaustive: unique symbol;
-export type Population = RadiaRecord[] & { readonly [exhaustive]: true };
+export type Population<T = unknown> = RadiaRecord<T>[] & { readonly [exhaustive]: true };
 
 /**
  * Records the caller KNOWS to be a whole set, for the cases the type cannot see: a concatenation of
