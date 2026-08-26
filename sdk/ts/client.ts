@@ -656,6 +656,16 @@ export class RadiaClient {
     return this.req("POST", "/v0/takes", { ...sel, leaseSeconds: opts.leaseSeconds, allowTaint: opts.allowTaint });
   }
 
+  /**
+   * THE FOUR SETTLES. Identical shapes, and choosing between them is not style.
+   *
+   * `ack` consumes the record; a `result` is emitted in the SAME transaction, fenced and parented
+   * to the claim (see `LoopOptions.handle`). `nack` bumps `attempt`, defers by `backoffSeconds`,
+   * and DEAD-LETTERS past the space's `maxAttempts`. `release` hands the claim back untouched:
+   * `attempt` is not bumped, so the record is immediately claimable and can NEVER dead-letter. A
+   * retry loop built on `release` spins forever with no backstop. `renew` extends the lease
+   * without settling at all.
+   */
   ack(lease: Lease, result?: PutRequest, idempotencyKey?: string): Promise<AckResult> {
     return this.req("POST", "/v0/leases/ack", { lease, result }, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {});
   }

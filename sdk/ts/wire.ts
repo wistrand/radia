@@ -118,7 +118,13 @@ export interface PutRequest {
    * kind can be redeclared claimable later.
    */
   availableAt?: string;
+  /** When the work stops being worth doing. STORED AND NEVER READ by the runtime: nothing claims,
+   *  orders or sweeps on it, so it is a fact for app code (a turn worker resumes only while it is
+   *  in the future). Never reach for it to defer a claim: that is `availableAt` above. */
   deadlineAt?: string;
+  /** GC eligibility, and the ONLY thing that makes a record sweepable. Absent, with no
+   *  `defaultRetentionSeconds` on the kind, means PERMANENT. Materialized at commit, so a later
+   *  redeclaration never changes history (plan-gc.md). */
   retentionUntil?: string;
   /** Source attestation: classification labels the client RAISES on its own output, from the closed
    *  vocabulary (`TAINT_LABELS`). Raising is monotone, so it needs no trust: a client can only ever

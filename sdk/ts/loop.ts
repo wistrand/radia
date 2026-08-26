@@ -69,6 +69,13 @@ export interface LoopOptions<T = unknown> {
    * `await client.put(...)` inside the handler is a separate, unfenced, unparented write that a
    * redelivery writes twice. Return the answer; use `put` for records that are not the answer (an
    * NPC's next beat, a narrator's events). `void` acks with no result at all.
+   *
+   * THROWING IS THE THIRD OUTCOME and it is not an error path: the loop nacks, which bumps the
+   * record's `attempt`, defers it by the space's backoff, and DEAD-LETTERS it past `maxAttempts`.
+   * So throw for "this work did not happen, send it again", never for "the work happened and the
+   * answer is a failure", which is an ordinary result to return (`extensions/ts/tool-worker.ts`
+   * states the same rule for tool calls, because an undecryptable or invalid call will not
+   * decrypt or validate on redelivery either).
    */
   handle: (record: RadiaRecord<T>, client: RadiaClient, signal: AbortSignal) => Promise<PutRequest | void>;
   /**
