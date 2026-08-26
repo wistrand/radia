@@ -15,7 +15,7 @@ import { makeHandler } from "../src/server/http.ts";
 import { Space } from "../src/core/space.ts";
 import { SqliteAdapter } from "../src/storage/sqlite.ts";
 import { RadiaClient } from "../sdk/ts/client.ts";
-import { addMember, DEFAULT_TEAM, declareTeamKinds, definitionState, NOTE, TASK, TEAM_FIELD, teamRoster } from "../extensions/ts/team.ts";
+import { addMember, DEFAULT_TEAM, declareTeamKinds, definitionState, NOTE, removeMember, TASK, TEAM_FIELD, teamRoster } from "../extensions/ts/team.ts";
 import { configLocation, mcpInvocation, renderMcpConfig, renderMcpInstall } from "../src/surfaces/mcp/config.ts";
 import { newer, newestByKey } from "../sdk/ts/registry.ts";
 import { kindDefKey } from "../sdk/ts/wire.ts";
@@ -724,4 +724,192 @@ Deno.test("[cli] artifact put/get is a verb, closing the one-directional gap", a
   assert(src.includes('dest === "-"'), "there is no explicit stdout form");
   assert(src.includes("writeStdoutBytes"), "bytes to stdout would go through the text encoder");
   assert(src.includes("ensureParent"), "a --out path into a missing directory would fail on the write");
+});
+
+Deno.test("[team] observe can be TAKEN BACK, which the printed remediation promised and did not do", async () => {
+  const s = await newSpace();
+  try {
+    await declareTeamKinds(s.admin);
+    await addMember(s.admin, "agent:claude", { observe: true });
+    assert((await s.admin.permissions("agent:claude")).opsPowers?.includes("observe"));
+
+    // The advertised take-back: re-declare without it. Rotation revokes the DEFINITION, but an
+    // `ops_grant` is keyed to the PRINCIPAL, which rotation does not change, so nothing here
+    // removed the power and `team list` re-printed the same advice forever.
+    await s.admin.revokeDefinition("agent:claude");
+    const back = await addMember(s.admin, "agent:claude", {});
+    assertEquals(back.observe, "retired", "rotating without --observe must take the power back");
+    assert(
+      !(await s.admin.permissions("agent:claude")).opsPowers?.includes("observe"),
+      "the power survived the rotation that claims to remove it",
+    );
+  } finally {
+    await s.close();
+  }
+});
+
+Deno.test("[team] observe survives being taken back TWICE, so the retire key cannot be constant", async () => {
+  const s = await newSpace();
+  try {
+    await declareTeamKinds(s.admin);
+    const held = async () => (await s.admin.permissions("agent:m")).opsPowers?.includes("observe") ?? false;
+
+    await addMember(s.admin, "agent:m", { observe: true });
+    assert(await held(), "first grant");
+    await s.admin.revokeDefinition("agent:m");
+    assertEquals((await addMember(s.admin, "agent:m", {})).observe, "retired");
+    assert(!await held(), "first retirement");
+
+    // The revive, which needs its own anchor: a plain re-put under the content key replays the
+    // record the tombstone already superseded, so the power would never come back.
+    await s.admin.revokeDefinition("agent:m");
+    assertEquals((await addMember(s.admin, "agent:m", { observe: true })).observe, "granted");
+    assert(await held(), "a power taken back must be grantable again");
+
+    // And the SECOND retirement, which a constant key would make an idempotent replay of the
+    // first, leaving the power live while reporting success.
+    await s.admin.revokeDefinition("agent:m");
+    assertEquals((await addMember(s.admin, "agent:m", {})).observe, "retired");
+    assert(!await held(), "a power can be taken back only once if the retire key is constant");
+  } finally {
+    await s.close();
+  }
+});
+
+Deno.test("[team] an already-correct observe state writes nothing: a re-put outranks a tombstone", async () => {
+  const s = await newSpace();
+  try {
+    await declareTeamKinds(s.admin);
+    await addMember(s.admin, "agent:m", { observe: true });
+    await s.admin.revokeDefinition("agent:m");
+    // Asking for what is already true must be a NO-OP rather than a re-assertion. `ops_grant` never
+    // compacts and a plain re-put outranks a `retired: true` tombstone, so a setup script run on a
+    // schedule would otherwise silently undo an operator's withdrawal.
+    assertEquals((await addMember(s.admin, "agent:m", { observe: true })).observe, "unchanged");
+    const rows = await s.admin.queryAll({ kind: "ops_grant", match: { principal: "agent:m" } });
+    assertEquals(rows.length, 1, "re-asserting a held power appended a record");
+  } finally {
+    await s.close();
+  }
+});
+
+Deno.test("[team] a wider ops_grant is refused rather than silently narrowed", async () => {
+  const s = await newSpace();
+  try {
+    await declareTeamKinds(s.admin);
+    await addMember(s.admin, "agent:m", {});
+    // An operator's own combined power. Taking `observe` back from this would drop `remediate` as
+    // a side effect, so the verb refuses and names it instead.
+    await s.admin.put({ kind: "ops_grant", body: { principal: "agent:m", operations: ["observe", "remediate"] } });
+    await s.admin.revokeDefinition("agent:m");
+    let threw = "";
+    try {
+      await addMember(s.admin, "agent:m", {});
+    } catch (e) {
+      threw = String(e);
+    }
+    assert(threw.includes("wider power"), `expected a refusal naming the wider power, got: ${threw}`);
+    assert(
+      (await s.admin.permissions("agent:m")).opsPowers?.includes("remediate"),
+      "the refusal must leave the wider power intact",
+    );
+  } finally {
+    await s.close();
+  }
+});
+
+Deno.test("[team] removal closes every door membership opened, not just the definition", async () => {
+  const s = await newSpace();
+  try {
+    await declareTeamKinds(s.admin);
+    await addMember(s.admin, "agent:gone", { teams: ["alpha"], observe: true });
+    const before = await s.admin.permissions("agent:gone");
+    assert(before.kinds.length > 0 && before.opsPowers?.includes("observe"));
+
+    const r = await removeMember(s.admin, "agent:gone");
+    assert(r.revoked, "the definition must be revoked");
+    assert(r.grantsRetired > 0, "grants were left standing");
+    assertEquals(r.observe, "retired");
+
+    // ENFORCEMENT, not the return value: `mintDelegatedRun` intersects with the caller's LIVE
+    // grants and never consults whether their definition still mints, so a grant left standing is
+    // authority a worker can still act under on their behalf.
+    const after = await s.admin.permissions("agent:gone");
+    assertEquals(after.kinds.length, 0, "a removed member still holds grants");
+    assertEquals(after.opsPowers ?? [], [], "a removed member still holds ops powers");
+    assertEquals(await definitionState(s.admin, "agent:gone"), "revoked");
+  } finally {
+    await s.close();
+  }
+});
+
+Deno.test("[team] removal stops BOTH run classes, not only the member's own sessions", async () => {
+  const s = await newSpace();
+  try {
+    await declareTeamKinds(s.admin);
+    const m = await addMember(s.admin, "agent:gone", { teams: ["alpha"] });
+    // Their own session.
+    const own = await s.space.mintRun(m.definitionToken);
+
+    // A run a WORKER holds on their behalf. Written directly, because what offboarding has to find
+    // is an `agent_run` carrying `actingFor`, however it got there: `radia runs --for` covers this
+    // class because it once shipped covering only it, and this verb shipped covering only the other.
+    const worker = await addMember(s.admin, "agent:worker", { teams: ["alpha"] });
+    const wr = await s.space.mintRun(worker.definitionToken);
+    await s.space.put({
+      kind: "agent_run",
+      body: {
+        run: wr.run,
+        agent: "agent:worker",
+        tokenHash: "f".repeat(64),
+        status: "active",
+        expiresAt: new Date(Date.parse(await s.space.now()) + 3_600_000).toISOString(),
+        actingFor: "agent:gone",
+      },
+    });
+
+    const r = await removeMember(s.admin, "agent:gone");
+    assertEquals(r.stoppedOwn, [own.run], "the member's own live session was not stopped");
+    assertEquals(r.stoppedDelegated, [wr.run], "a run held on their behalf was left live");
+  } finally {
+    await s.close();
+  }
+});
+
+Deno.test("[team] offboarding reads the DATABASE clock, so a fast local clock cannot skip a live run", async () => {
+  const s = await newSpace();
+  // The WHOLE Date, not `Date.now`: the filter this guards was written `new Date().toISOString()`,
+  // and a no-arg construction reads the system clock without going through `Date.now`, so patching
+  // that alone left the defect untouched and this test green against it.
+  const RealDate = Date;
+  const SKEW = 3_600_000; // a run token lives 15 minutes, so an hour fast reads every one as expired
+  class FastDate extends RealDate {
+    // deno-lint-ignore no-explicit-any
+    constructor(...args: any[]) {
+      if (args.length === 0) super(RealDate.now() + SKEW);
+      else super(...(args as []));
+    }
+    static override now() {
+      return RealDate.now() + SKEW;
+    }
+  }
+  try {
+    await declareTeamKinds(s.admin);
+    const m = await addMember(s.admin, "agent:gone", { teams: ["alpha"] });
+    const own = await s.space.mintRun(m.definitionToken);
+
+    // Skipping the stop is not a delay: the run then RENEWS itself to the 12h ceiling, because
+    // `renewRun` checks the run's own status and never the definition behind it.
+    globalThis.Date = FastDate as DateConstructor;
+    let r;
+    try {
+      r = await removeMember(s.admin, "agent:gone");
+    } finally {
+      globalThis.Date = RealDate;
+    }
+    assertEquals(r.stoppedOwn, [own.run], "a live run was skipped because this process's clock ran fast");
+  } finally {
+    globalThis.Date = RealDate;
+    await s.close();
+  }
 });

@@ -22,7 +22,7 @@ import { declareExecRequest, pinnedDigests, promote } from "../../extensions/ts/
 import { BINDING, type Binding, declareBinding, type Outcome, readBindings, sandboxInvoker, WorkspaceHost } from "../../extensions/ts/host.ts";
 import { brokeredInvoker } from "../../extensions/ts/broker.ts";
 import { auditCompartment } from "../../extensions/ts/compartment.ts";
-import { addMember, DEFAULT_TEAM, declareTeamKinds, definitionState, TEAM_FIELD, teamRoster } from "../../extensions/ts/team.ts";
+import { addMember, DEFAULT_TEAM, declareTeamKinds, definitionState, type MemberRemoval, type ObserveChange, removeMember, TEAM_FIELD, teamRoster } from "../../extensions/ts/team.ts";
 import { configLocation, type Harness, mcpInvocation, renderMcpConfig, renderMcpInstall } from "./mcp/config.ts";
 import { extensionFor, mediaTypeForPath } from "./media.ts";
 import {
@@ -584,28 +584,27 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       if (names.length === 0) return usage(USAGE);
 
       if (sub === "remove") {
-        // The offboarding cascade, in the order that actually closes the door: revoke first so
-        // nothing new can be minted, THEN stop what is already running. The other order leaves a
-        // window in which the definition mints a replacement for the run just stopped.
-        const removed: { agent: string; revoked: boolean; stopped: number }[] = [];
-        for (const agent of names) {
-          const r = await client.revokeDefinition(agent);
-          const runs = await client.queryAll<{ run?: string; status?: string; expiresAt?: string }>(
-            { kind: "agent_run", match: { agent } },
-          );
-          const now = new Date().toISOString();
-          const live = [...newestByKey<{ run?: string; status?: string; expiresAt?: string }>(runs, (b) => b.run).values()]
-            .map((rec) => rec.body)
-            .filter((b) => b.status !== "stopped" && (b.expiresAt ?? "") > now);
-          let stopped = 0;
-          for (const b of live) if (b.run && (await client.stopRun(b.run)).applied) stopped++;
-          removed.push({ agent, revoked: r.applied && !r.alreadyRevoked, stopped });
-        }
+        // The whole cascade lives in `removeMember` rather than here: it closes four doors in an
+        // order that matters, and a CLI verb is the wrong place for a rule other clients need too.
+        const removed: MemberRemoval[] = [];
+        for (const agent of names) removed.push(await removeMember(client, agent));
         return out(ctx, removed, () =>
-          removed.map((r) =>
-            `${r.agent}: ${r.revoked ? "definition revoked" : "definition already revoked"}, ${r.stopped} live run(s) stopped`
-          ).join("\n") +
-          "\nIts records stay, and still attribute to it. That is the point of a durable principal");
+          lines([
+            ...removed.map((r) =>
+              lines([
+                `${r.agent}`,
+                `  definition   ${r.revoked ? "revoked" : "already revoked"}`,
+                `  grants       ${r.grantsRetired} retired`,
+                `  observe      ${r.observe === "retired" ? "taken back" : r.observe === "granted" ? "granted" : "none held"}`,
+                `  own runs     ${r.stoppedOwn.length} stopped`,
+                // NAMED even at zero: a worker holding a run on their behalf is the class that is
+                // easy to forget exists, and a silent zero reads as "there were none to check".
+                `  delegated    ${r.stoppedDelegated.length} stopped (runs a worker held on their behalf)`,
+              ])
+            ),
+            ``,
+            `Its records stay, and still attribute to it. That is the point of a durable principal.`,
+          ]));
       }
 
       // ---- add ----
@@ -634,7 +633,16 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       // TRUE when this ran from source, so there is no binary for the block to name. Read from the
       // invocation rather than re-derived, or the warning and the block could disagree.
       let fromSource = false;
-      const added: { agent: string; rotated: boolean; harness: Harness; install?: string; config: string; can: string[] }[] = [];
+      const added: {
+        agent: string;
+        rotated: boolean;
+        harness: Harness;
+        install?: string;
+        config: string;
+        can: string[];
+        opsPowers: string[];
+        observe: ObserveChange;
+      }[] = [];
       for (const agent of names) {
         const state = await definitionState(client, agent);
         if (state === "active" && !rotate) {
@@ -648,7 +656,13 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         // Rotating is revoke-then-create for that same reason. Revoked first, so the old token
         // stops minting even if the create below fails.
         if (state === "active") await client.revokeDefinition(agent, { reason: "rotated by radia team add --rotate" });
-        const member = await addMember(client, agent, { teams: lanes, observe: observe && state !== "active", extra });
+        // The DECLARED state, not "only on create". Suppressing it on rotation was a guard against
+        // the re-put-outranks-a-tombstone trap, and it cost both directions: `--rotate --observe`
+        // silently granted nothing while still printing the warning that it had, and the take-back
+        // this verb ADVERTISES (`--rotate`, no `--observe`) removed nothing, because `ops_grant` is
+        // keyed to the principal and rotation does not change that. `reconcileObserve` reads what
+        // is in force and writes only on a real change, which closes the trap properly.
+        const member = await addMember(client, agent, { teams: lanes, observe, extra });
         const short = agent.replace(/^agent:/, "");
         // The harness follows the NAME when the name is one, which is what makes the common case
         // (`radia team add claude codex`) print the right block for each without a flag.
@@ -663,6 +677,10 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           install: renderMcpInstall(harness, target),
           config: renderMcpConfig(harness, target),
           can: perms.kinds.map((k) => `${k.kind}:${k.operations.join(",")}`),
+          // From ENFORCEMENT, so the line cannot claim a power the space does not hold. `can` is
+          // grants; ops powers are a separate registry and were reported by neither.
+          opsPowers: perms.opsPowers ?? [],
+          observe: member.observe,
         });
       }
 
@@ -679,10 +697,18 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           `team ${lanes.join(" + ")}: ${lanes.length === 1 ? "these members see" : "these members see"} only records labelled ${
             lanes.map((t) => `${TEAM_FIELD}:"${t}"`).join(" or ")
           }.`,
-          observe
-            ? `\nWARNING: --observe gives these members UNSCOPED ops reads, so they see EVERY team's records\n` +
-              `  whatever the grants say. It buys space_get / space_lineage / space_children / space_stats /\n` +
-              `  space_events, which have no team-scoped tier. Leave it off for isolation.`
+          // Gated on ENFORCEMENT, never on the flag. Keyed on the flag, `--rotate --observe` printed
+          // this while granting nothing, and a rotation that took the power back printed nothing.
+          added.some((m) => m.opsPowers.includes("observe"))
+            ? `\nWARNING: these members hold UNSCOPED ops reads, so they see EVERY team's records whatever\n` +
+              `  the grants say. It buys space_get / space_lineage / space_children / space_stats /\n` +
+              `  space_events, which have no team-scoped tier. Leave it off for isolation:\n` +
+              added.filter((m) => m.opsPowers.includes("observe")).map((m) => `    ${m.agent}`).join("\n")
+            : null,
+          added.some((m) => m.observe === "retired")
+            ? `\nobserve TAKEN BACK from ${
+              added.filter((m) => m.observe === "retired").map((m) => m.agent).join(", ")
+            }.\n  They keep their team grants and lose the unscoped ops reads.`
             : null,
           // A config pointing at the SOURCE pins whatever project pastes it to this checkout's
           // path and needs Deno wherever the harness runs. Say so where the block is printed,
@@ -699,9 +725,20 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
               ``,
               `${m.agent}  ${m.rotated ? "rotated (the previous token no longer mints)" : "created"}`,
               `  can: ${m.can.join("  ")}`,
-              observe ? `  plus the ops-plane READS space_get / space_lineage / space_children / space_stats / space_events need` : null,
-              m.install ? `\n  Run this IN the project directory that agent works in:\n    ${m.install}` : null,
-              `\n  ${m.install ? "or paste" : "Paste"} into ${configLocation(m.harness)}:\n${indent(m.config, "  ")}`,
+              m.opsPowers.length
+                ? `  ops: ${m.opsPowers.join(",")}${
+                  m.opsPowers.includes("observe") ? "  (space_get / space_lineage / space_children / space_stats / space_events, UNSCOPED)" : ""
+                }`
+                : null,
+              // PASTE FIRST, deliberately. Both paths end with the token in a plaintext config
+              // file, so the one-liner adds shell history and the process list while removing no
+              // exposure. It stays, because it is the fastest path and the token is mint-only and
+              // revocable, but it is offered second and says what it costs.
+              `\n  Paste into ${configLocation(m.harness)} in the project that agent works in:\n${indent(m.config, "  ")}`,
+              m.install
+                ? `\n  or, if you would rather run a command (this puts the token in your shell history\n` +
+                  `  and briefly in the process list; it lands in the same file either way):\n    ${m.install}`
+                : null,
             ])
           ),
           ``,
@@ -743,13 +780,17 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       // switch and is not one: it stops MINTING, deliberately, so a rotation does not take every
       // worker down mid-call. Saying "runs keep working" in the abstract was not enough — a number
       // and a command are what turn it into something the operator acts on.
-      const now = new Date().toISOString();
-      const seen = new Map<string, { status?: string; expiresAt?: string }>();
-      for (const rec of await client.queryOldest({ kind: "agent_run", match: { agent: who } }, 1000)) {
-        const b = rec.body as { run?: string; status?: string; expiresAt?: string };
-        if (typeof b.run === "string" && !seen.has(b.run)) seen.set(b.run, b);
-      }
-      const live = [...seen.values()].filter((b) => b.status !== "stopped" && (b.expiresAt ?? "") > now).length;
+      //
+      // The DB clock and an EXHAUSTIVE read, for the two reasons this count had wrong. Hand-rolled,
+      // it kept the OLDEST record per run (a page read oldest-first, first-wins), which is the mint
+      // rather than the stop, so an already-stopped run counted as live; and a bounded 1,000 is a
+      // page treated as a population. `newestByKey` compares `created_at`, the database's clock.
+      const now = (await client.health()).now;
+      const runRows = await client.queryAll<{ run?: string; status?: string; expiresAt?: string }>(
+        { kind: "agent_run", match: { agent: who } },
+      );
+      const live = [...newestByKey<{ run?: string; status?: string; expiresAt?: string }>(runRows, (b) => b.run).values()]
+        .filter((r) => r.body.status !== "stopped" && (r.body.expiresAt ?? "") > now).length;
       return out(ctx, { ...r, liveRuns: live }, () =>
         r.alreadyRevoked
           ? `${r.agent}: already revoked, nothing to do`
@@ -1242,7 +1283,12 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         unsafeAsPopulation(recs, "both halves are queryAll; the concatenation of two exhaustive reads is exhaustive"),
         (b) => (typeof b.run === "string" ? b.run : undefined),
       );
-      const now = new Date().toISOString();
+      // The DATABASE clock. `expiresAt` is stamped by the space, so comparing it to this process's
+      // clock is the one comparison CLAUDE.md names ("All time comparisons use the database
+      // clock"): a local clock running fast reads a live run as expired and `--stop` skips it,
+      // and that run then renews itself up to the 12h ceiling, because `renewRun` checks the run's
+      // own status and never the definition behind it.
+      const now = (await client.health()).now;
       const rows = [...latest.values()]
         .map((r) => r.body as { run: string; agent: string; actingFor?: string; status?: string; expiresAt?: string });
       const live = rows.filter((r) => r.status !== "stopped" && (r.expiresAt ?? "") > now);

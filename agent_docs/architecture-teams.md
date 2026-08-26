@@ -141,6 +141,16 @@ than implying parity.
 **`observe` still crosses teams**, which is why it is opt-in. A member holding it reads every other
 team off the ops plane while its own coordination query correctly answers empty.
 
+**It is now the DECLARED state, not a create-time flag** (`reconcileObserve`, `extensions/ts/team.ts`).
+Re-declaring a member without `--observe` takes the power back, which is what the roster already
+advertised and did not do: rotation revokes the DEFINITION, while an `ops_grant` is keyed to the
+PRINCIPAL and rotation does not change that, so the advice looped forever. Both writes are
+conditional on a read of what is in force and ANCHORED on the record they supersede
+(`:after:<id>`), which is what keeps the two traps closed: an unconditional re-put would outrank an
+operator's `retired: true` tombstone (`ops_grant` never compacts), and a constant retire key would
+make the second withdrawal an idempotent replay of the first, leaving the power live. A grant
+carrying `observe` alongside another power is REFUSED rather than narrowed.
+
 **The aggregates do not cover pattern-scoped kinds.** `space_stats`, `space_events` and
 `space_doctor` report nothing for `task`/`note`, because an exact count needs the oracle rather than
 the SQL pre-filter, which is a sound OVER-approximation by contract. The kinds are NAMED in
@@ -229,6 +239,15 @@ names and nothing server-side will add it, because a body is the client's claim.
 
 `radia compartment` is NOT this audit and reads as though it is: it answers a kind-compartment
 question, so it calls every member a crosser for reading `task` and writing `artifact`.
+
+**Removal is a cascade, and the definition is the smallest part of it** (`removeMember`). Revoke
+first so nothing new mints, then retire the grants, then the ops powers, then stop the runs.
+Grants are retired rather than left: a revoked definition cannot authenticate, but `mintDelegatedRun`
+resolves its caller from a RECORD's author and intersects with that principal's LIVE grants without
+consulting whether the definition still mints, so a worker holding one of their leftover records
+could still act on their behalf. Both RUN CLASSES are stopped: `agent_run{agent: X}` is their own
+sessions and `agent_run{actingFor: X}` is a run a worker holds for them, and the count for each is
+printed even at zero, since a silent zero reads as "there were none to check".
 
 Detection has one stated limit: an unscoped grant contributes no entry to
 `EffectivePermissions.kinds[].patterns`, so one sitting beside a scoped grant is invisible here

@@ -14,7 +14,7 @@
 
 import type { RadiaClient } from "../../sdk/ts/client.ts";
 import { AGENT_DEFINITION, ARTIFACT, KIND_DEF, type KindDef } from "../../sdk/ts/wire.ts";
-import { newestByKey, opsGrantKey } from "../../sdk/ts/registry.ts";
+import { activeByKey, grantKey, isRetired, newestByKey, opsGrantKey } from "../../sdk/ts/registry.ts";
 
 export const TASK = "task";
 export const NOTE = "note";
@@ -227,7 +227,7 @@ export async function addMember(
   admin: RadiaClient,
   agent: string,
   opts: { teams?: string[]; observe?: boolean; extra?: { kind: string; operations: string[] }[] } = {},
-): Promise<TeamMember> {
+): Promise<TeamMember & { observe: ObserveChange }> {
   const teams = opts.teams?.length ? opts.teams : [DEFAULT_TEAM];
   // An `extra` grant is scoped the same way, per team: a grant handed out beside the standard set
   // must not be the one unscoped hole that reads across every team.
@@ -235,14 +235,74 @@ export async function addMember(
     (opts.extra ?? []).map((g) => ({ principal: agent, ...g, pattern: { [TEAM_FIELD]: team } }))
   );
   const def = await admin.createAgentDefinition(agent, [...memberGrants(agent, teams), ...extra]);
-  if (opts.observe) {
-    const power = { principal: agent, operations: ["observe"] };
-    // Content-keyed, and written only when a member is CREATED. An `ops_grant` never compacts and
-    // a re-put outranks a `retired: true` tombstone, so re-asserting one on any schedule would
-    // silently undo an operator's deliberate withdrawal (CLAUDE.md, registry writes).
-    await admin.put({ kind: "ops_grant", body: power }, opsGrantKey(power));
+  // The DECLARED state, so an omitted `observe` takes the power back rather than leaving it. That
+  // is the same rule `createAgentDefinition` already applies to grants (it supersedes what it
+  // declares), and without it the power had no removal path at all: rotation revokes the
+  // definition, `ops_grant` is keyed to the PRINCIPAL, and rotation does not change that.
+  const observe = await reconcileObserve(admin, agent, opts.observe === true);
+  // REPORTED, never re-derived by the caller: what was asked for and what happened differ whenever
+  // the power was already in the requested state, and a caller that assumes prints the wrong line.
+  return { ...def, observe };
+}
+
+/** What `reconcileObserve` did, for a caller that has to report it rather than assume it. */
+export type ObserveChange = "granted" | "retired" | "unchanged";
+
+/** An `ops_grant` body, as this verb writes it and as an operator may have written one. */
+interface OpsGrantBody {
+  principal?: string;
+  operations?: string[];
+  retired?: boolean;
+}
+
+/**
+ * Bring `observe` to the state asked for, by READING what is in force first.
+ *
+ * Conditional on the current state rather than unconditional, which is what keeps the re-put trap
+ * closed: an `ops_grant` never compacts and a plain re-put OUTRANKS a `retired: true` tombstone, so
+ * asserting the power on any schedule would silently undo an operator's withdrawal. Reading first
+ * makes the healthy case a no-op.
+ *
+ * Both writes ANCHOR on the record they supersede (`:after:<id>`). A constant key would let a power
+ * be taken back exactly once, ever: the second retirement would be an idempotent replay of the
+ * first and the power would stay live. Same rule, and the same reason, as `supersedeGrantsFor`.
+ *
+ * A record granting `observe` ALONGSIDE other powers is REFUSED rather than retired. This verb
+ * wrote `["observe"]` and speaks for that; dropping somebody's `remediate` as a side effect of
+ * taking back `observe` is not a thing to do quietly.
+ */
+export async function reconcileObserve(admin: RadiaClient, agent: string, want: boolean): Promise<ObserveChange> {
+  const power = { principal: agent, operations: ["observe"] };
+  const key = opsGrantKey(power)!;
+  const rows = await admin.queryAll<OpsGrantBody>({ kind: "ops_grant", match: { principal: agent } });
+  // Newest per identity, TOMBSTONES INCLUDED: a retirement is the record a revive has to anchor on,
+  // so this cannot be `activeByKey`, which drops exactly those.
+  const newest = newestByKey<OpsGrantBody>(rows, opsGrantKey);
+  const live = [...newest.values()].filter((r) => !isRetired(r.body) && (r.body.operations ?? []).includes("observe"));
+
+  if (want) {
+    if (live.length) return "unchanged";
+    const prior = newest.get(key);
+    await admin.put({ kind: "ops_grant", body: power }, prior ? `${key}:after:${prior.id}` : key);
+    return "granted";
   }
-  return def;
+  if (live.length === 0) return "unchanged";
+  const mixed = live.filter((r) => (r.body.operations ?? []).some((op) => op !== "observe"));
+  if (mixed.length) {
+    throw new Error(
+      `'${agent}' holds observe as part of a wider power (${
+        mixed.map((r) => (r.body.operations ?? []).join(",")).join("; ")
+      }), which this verb did not write and will not silently narrow. ` +
+        `Retire that ops_grant deliberately, or leave it.`,
+    );
+  }
+  for (const rec of live) {
+    await admin.put(
+      { kind: "ops_grant", body: { ...rec.body, retired: true } },
+      `${opsGrantKey(rec.body)}:retire:after:${rec.id}`,
+    );
+  }
+  return "retired";
 }
 
 /**
@@ -270,4 +330,87 @@ export async function teamRoster(admin: RadiaClient): Promise<RosterEntry[]> {
     });
   }
   return out.sort((a, b) => a.agent.localeCompare(b.agent));
+}
+
+/** What offboarding actually closed. Every field is a COUNT of work done, not an intention, so the
+ *  verb can report the cascade rather than assert it. */
+export interface MemberRemoval {
+  agent: string;
+  /** False when the definition was already revoked: the door was shut before this ran. */
+  revoked: boolean;
+  grantsRetired: number;
+  observe: ObserveChange;
+  /** Run ids actually stopped, split by the two classes a principal acts through. */
+  stoppedOwn: string[];
+  stoppedDelegated: string[];
+}
+
+/**
+ * Remove a member: close every door membership opened, in the order that keeps them closed.
+ *
+ * REVOKE FIRST so nothing new can be minted, then withdraw authority, then stop what is already
+ * running. The other order leaves a window in which the definition mints a replacement for the run
+ * just stopped.
+ *
+ * The two RUN CLASSES both count, and this is the half that is easy to miss: `agent_run{agent: X}`
+ * is the member's own sessions, and `agent_run{actingFor: X}` is a run some WORKER holds on their
+ * behalf. `radia runs --for` covers both because it shipped covering only one and left the other
+ * live for up to the run ceiling; the same mistake is available here and is why the query is two.
+ *
+ * GRANTS ARE RETIRED, not left. A revoked definition cannot authenticate, but `mintDelegatedRun`
+ * resolves its caller from a RECORD's author and intersects with that principal's live grants
+ * without consulting whether the definition still mints. Leaving them standing means a worker
+ * processing one of the member's leftover records can still act on their behalf.
+ */
+export async function removeMember(admin: RadiaClient, agent: string): Promise<MemberRemoval> {
+  const revocation = await admin.revokeDefinition(agent);
+  const revoked = revocation.applied && !revocation.alreadyRevoked;
+
+  // Live grants, retired as successors ANCHORED on the record each supersedes, the same rule
+  // `supersedeGrantsFor` keeps: a constant key retires an identity once ever, so a later re-grant
+  // of the same content would outlive the next removal.
+  const grantRows = await admin.queryAll<GrantBody>({ kind: "grant", match: { principal: agent } });
+  let grantsRetired = 0;
+  for (const rec of activeByKey<GrantBody>(grantRows, grantKey).values()) {
+    await admin.put(
+      { kind: "grant", body: { ...rec.body, retired: true } },
+      `${grantKey(rec.body)}:remove:after:${rec.id}`,
+    );
+    grantsRetired++;
+  }
+  const observe = await reconcileObserve(admin, agent, false);
+
+  // The DATABASE clock, never this process's: `expiresAt` is stamped by the space, and a local
+  // clock running fast reads a live run as expired and skips stopping it. That run then RENEWS
+  // itself up to the 12h ceiling, because `renewRun` checks the run's own status and never the
+  // definition behind it (CLAUDE.md, "All time comparisons use the database clock").
+  const now = (await admin.health()).now;
+  const stoppedOwn: string[] = [];
+  const stoppedDelegated: string[] = [];
+  for (const [field, out] of [["agent", stoppedOwn], ["actingFor", stoppedDelegated]] as const) {
+    const rows = await admin.queryAll<RunBody>({ kind: "agent_run", match: { [field]: agent } });
+    // Newest per run, RETIREMENTS INCLUDED: a stop is a successor, and this caller must see it
+    // rather than have it projected away and stop the run a second time.
+    for (const rec of newestByKey<RunBody>(rows, (b) => b.run).values()) {
+      const b = rec.body;
+      if (!b.run || b.status === "stopped" || !((b.expiresAt ?? "") > now)) continue;
+      if ((await admin.stopRun(b.run)).applied) out.push(b.run);
+    }
+  }
+  return { agent, revoked, grantsRetired, observe, stoppedOwn, stoppedDelegated };
+}
+
+/** The half of a `grant` body this file rewrites. */
+interface GrantBody {
+  principal?: string;
+  kind?: string;
+  operations?: string[];
+  retired?: boolean;
+}
+
+/** The half of an `agent_run` body offboarding reads. */
+interface RunBody {
+  run?: string;
+  status?: string;
+  expiresAt?: string;
 }
