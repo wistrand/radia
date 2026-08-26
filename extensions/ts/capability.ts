@@ -90,8 +90,8 @@ export async function publishCapability(client: RadiaClient, def: ToolDef, provi
     // Narrowed to THIS provider: another worker's advertisement of the same name must not read as
     // "unchanged, nothing to say" and suppress this one.
     const match = provider ? { tool, provider } : { tool };
-    const existing = await client.queryNewest({ kind: CAPABILITY, match }, 1);
-    const current = existing[0]?.body as (CapabilityBody & { retired?: boolean }) | undefined;
+    const existing = await client.queryNewest<CapabilityBody & { retired?: boolean }>({ kind: CAPABILITY, match }, 1);
+    const current = existing[0]?.body;
     if (current?.retired) {
       // REVIVAL. Re-publishing an unchanged definition after a retirement replays the original write
       // under the same key: nothing is written, the call reports success, and the retirement is
@@ -188,10 +188,10 @@ export interface ToolEntry {
  * that DIFFER are two tools wearing one name; the newest wins, as everywhere else in a latest-wins
  * registry, and the caller is told rather than left to infer it from behaviour.
  */
-export function collapseByTool(entries: Iterable<RadiaRecord>): Map<string, ToolEntry> {
-  const byTool = new Map<string, { rec: RadiaRecord; body: CapabilityBody }[]>();
+export function collapseByTool(entries: Iterable<RadiaRecord<CapabilityBody>>): Map<string, ToolEntry> {
+  const byTool = new Map<string, { rec: RadiaRecord<CapabilityBody>; body: CapabilityBody }[]>();
   for (const rec of entries) {
-    const body = rec.body as CapabilityBody;
+    const body = rec.body;
     if (typeof body?.tool !== "string" || typeof body.def?.function?.name !== "string") continue;
     const group = byTool.get(body.tool);
     if (group) group.push({ rec, body });

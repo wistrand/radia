@@ -332,7 +332,7 @@ export async function writeWorkspace(
   const { id } = await client.put(
     {
       kind: "workspace",
-      body: body as unknown as Record<string, unknown>,
+      body,
       // The predecessor is a data PARENT, not only a body field. `basedOn` alone makes the chain
       // queryable; the edge makes it a graph, so `lineage` walks a project's history and a fork is
       // a shape somebody can SEE rather than a coincidence of two body values.
@@ -388,14 +388,12 @@ export async function forksOf(
 ): Promise<{ heads: (WorkspaceManifest & { id: string })[]; forked: boolean; versions: number }> {
   const match: Record<string, unknown> = { name };
   if (conversationId !== undefined) match.conversationId = conversationId;
-  const rows = await client.queryNewest({ kind: "workspace", match }, 500);
-  const superseded = new Set(
-    rows.map((r) => (r.body as unknown as WorkspaceManifest).basedOn).filter(Boolean) as string[],
-  );
+  const rows = await client.queryNewest<WorkspaceManifest>({ kind: "workspace", match }, 500);
+  const superseded = new Set(rows.map((r) => r.body.basedOn).filter(Boolean) as string[]);
   const heads = rows
     .filter((r) => !superseded.has(r.id))
-    .filter((r) => !(r.body as unknown as WorkspaceManifest).retired)
-    .map((r) => ({ id: r.id, ...(r.body as unknown as WorkspaceManifest) }));
+    .filter((r) => !r.body.retired)
+    .map((r) => ({ id: r.id, ...r.body }));
   return { heads, forked: heads.length > 1, versions: rows.length };
 }
 
@@ -411,9 +409,9 @@ export async function readWorkspace(
 ): Promise<(WorkspaceManifest & { id: string }) | null> {
   const match: Record<string, unknown> = { name };
   if (conversationId !== undefined) match.conversationId = conversationId;
-  const rows = await client.queryNewest({ kind: "workspace", match }, 1);
+  const rows = await client.queryNewest<WorkspaceManifest>({ kind: "workspace", match }, 1);
   if (rows.length === 0) return null;
-  return { id: rows[0].id, ...(rows[0].body as unknown as WorkspaceManifest) };
+  return { id: rows[0].id, ...rows[0].body };
 }
 
 /** Every live workspace, and whether the answer is complete.
@@ -430,7 +428,7 @@ export async function listWorkspaces(
   // Newest per name, retirements dropped: `activeByKey` IS both halves. The loop this replaces
   // compared `prev.id < r.id`, which is the process clock rather than the database's.
   const workspaces = [...activeByKey<WorkspaceManifest>(all, (b) => b?.name).values()]
-    .map((r) => ({ id: r.id, ...(r.body as unknown as WorkspaceManifest) }));
+    .map((r) => ({ id: r.id, ...r.body }));
   return { workspaces, complete, scanned: all.length };
 }
 
@@ -442,13 +440,13 @@ export async function listWorkspaces(
 async function readAllManifests(
   client: RadiaClient,
   maxPages: number,
-): Promise<{ all: Population; complete: boolean }> {
-  const all: RadiaRecord[] = [];
+): Promise<{ all: Population<WorkspaceManifest>; complete: boolean }> {
+  const all: RadiaRecord<WorkspaceManifest>[] = [];
   let cursor: Cursor | undefined;
   let complete = false;
   const PAGE = 500;
   for (let page = 0; page < maxPages; page++) {
-    const r = await client.queryPage({ kind: "workspace" }, PAGE, cursor ? { cursor } : { dir: "desc" });
+    const r = await client.queryPage<WorkspaceManifest>({ kind: "workspace" }, PAGE, cursor ? { cursor } : { dir: "desc" });
     all.push(...r.records);
     // A SHORT page is what proves exhaustion; `nextCursor` only says where to resume. Reading its
     // absence as "that was all" would let a space that does not send it report a first page as the
@@ -499,9 +497,9 @@ export async function summarizeWorkspaces(
   opts: { conversationId?: string; maxPages?: number } = {},
 ): Promise<{ workspaces: WorkspaceSummary[]; complete: boolean; scanned: number }> {
   const { all, complete } = await readAllManifests(client, opts.maxPages ?? 40);
-  const byName = new Map<string, RadiaRecord[]>();
+  const byName = new Map<string, RadiaRecord<WorkspaceManifest>[]>();
   for (const r of all) {
-    const b = r.body as unknown as WorkspaceManifest;
+    const b = r.body;
     if (!b?.name) continue;
     if (opts.conversationId !== undefined && b.conversationId !== opts.conversationId) continue;
     const list = byName.get(b.name);
@@ -511,16 +509,14 @@ export async function summarizeWorkspaces(
 
   const workspaces: WorkspaceSummary[] = [];
   for (const [name, rows] of byName) {
-    const superseded = new Set(
-      rows.map((r) => (r.body as unknown as WorkspaceManifest).basedOn).filter(Boolean) as string[],
-    );
+    const superseded = new Set(rows.map((r) => r.body.basedOn).filter(Boolean) as string[]);
     const heads = rows
       .filter((r) => !superseded.has(r.id))
-      .filter((r) => !(r.body as unknown as WorkspaceManifest).retired);
+      .filter((r) => !r.body.retired);
     if (heads.length === 0) continue; // withdrawn: every head carries `retired`
     // The newest by the SHARED comparator (DB clock, id only to break a tie). Sorting on id alone
     // orders two writers by their own clocks.
-    const head = heads.reduce((a, b) => (newer(a, b) ? b : a)).body as unknown as WorkspaceManifest;
+    const head = heads.reduce((a, b) => (newer(a, b) ? b : a)).body;
     workspaces.push({
       name,
       owner: head.owner,
@@ -1026,7 +1022,7 @@ export async function editWorkspace(
   const { id } = await client.put(
     {
       kind: "workspace",
-      body: body as unknown as Record<string, unknown>,
+      body,
       // Inheritance rides this edge and nothing else: the successor carries the predecessor's label
       // union through `Space.computeTaint`. See §10.0. An attached artifact joins it as a parent,
       // so a tree that takes in a classified payload inherits its labels the same way.
@@ -1323,7 +1319,7 @@ export async function commitWorkspace(
   const { id } = await client.put(
     {
       kind: "workspace",
-      body: body as unknown as Record<string, unknown>,
+      body,
       // The predecessor ALWAYS, plus whatever caused this version (the host passes the claimed
       // record). Lineage is how "what produced these bytes" is answered, and a version whose only
       // parent is the version before it can only answer "the one before that".

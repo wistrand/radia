@@ -642,12 +642,12 @@ export class RadiaClient {
    */
   /** Present when a grant narrowed the read: what it was narrowed BY. An answer that does not say
    *  it is a slice gets reported as the whole kind. */
-  async queryPage(
+  async queryPage<T = unknown>(
     pattern: Pattern,
     limit = 100,
     page?: Page,
     opts: { explain?: boolean } = {},
-  ): Promise<{ records: RadiaRecord[]; nextCursor?: Cursor; scope?: ReadScope; explain?: string[] }> {
+  ): Promise<{ records: RadiaRecord<T>[]; nextCursor?: Cursor; scope?: ReadScope; explain?: string[] }> {
     const r = await this.req("POST", "/v0/records/query", { ...pattern, limit, ...page, ...(opts.explain ? { explain: true } : {}) });
     return { records: r.records, nextCursor: r.nextCursor, scope: r.scope, explain: r.explain };
   }

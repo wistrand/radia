@@ -373,7 +373,7 @@ export async function buildWorkspaceRepo(
   const exported: ExportedVersion[] = [];
 
   for (const version of versions) {
-    const manifest = version.body as unknown as WorkspaceManifest;
+    const manifest = version.body;
     const entries: GitBlobEntry[] = [];
     const versionErased: string[] = [];
 
@@ -474,7 +474,7 @@ export async function buildWorkspaceRepo(
   // would be this layer inventing a merge policy, so every head becomes a branch and the divergence
   // is visible in the tool the reader already has (`git log --graph --all`).
   const basedOn = new Set(
-    versions.map((v) => (v.body as unknown as WorkspaceManifest).basedOn).filter((x): x is string => !!x),
+    versions.map((v) => v.body.basedOn).filter((x): x is string => !!x),
   );
   const heads = versions.filter((v) => !basedOn.has(v.id));
   const newest = heads[heads.length - 1];
@@ -560,16 +560,16 @@ async function collectVersions(
   client: RadiaClient,
   name: string,
   opts: GitExportOptions,
-): Promise<RadiaRecord[]> {
+): Promise<RadiaRecord<WorkspaceManifest>[]> {
   const match: Record<string, unknown> = { name };
   if (opts.conversationId !== undefined) match.conversationId = opts.conversationId;
   const maxPages = opts.maxPages ?? 40;
   const PAGE = 500;
-  const all: RadiaRecord[] = [];
+  const all: RadiaRecord<WorkspaceManifest>[] = [];
   let cursor: Cursor | undefined;
   let complete = false;
   for (let page = 0; page < maxPages; page++) {
-    const r = await client.queryPage({ kind: "workspace", match }, PAGE, cursor ? { cursor } : { dir: "desc" });
+    const r = await client.queryPage<WorkspaceManifest>({ kind: "workspace", match }, PAGE, cursor ? { cursor } : { dir: "desc" });
     all.push(...r.records);
     // A SHORT page is what proves exhaustion; `nextCursor` only says where to resume. Reading its
     // absence as "that was all" would let a space that does not send it report a first page as the

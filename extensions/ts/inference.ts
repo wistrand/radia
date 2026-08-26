@@ -245,11 +245,11 @@ async function contextFor(
   // `assembleContext` folds in can be a pointer rather than a summary.
   const tail = await selectWindow(
     async (limit) =>
-      (await c.queryOrdered({
+      (await c.queryOrdered<ThreadRow>({
         kind: "message",
         match: { ...mine, index: { $lte: upTo } },
         orderBy: [{ path: "index", dir: "desc" }],
-      }, limit)).map((r) => r.body as ThreadRow),
+      }, limit)).map((r) => r.body),
     { window, cap },
   );
   const opened = await Promise.all(tail.map(open));
@@ -272,7 +272,7 @@ export async function runInferenceWorker(client: RadiaClient, opts: InferenceOpt
   const window = opts.window ?? 40;
   const cap = opts.windowCap ?? 400;
 
-  await agentLoop(client, {
+  await agentLoop<CallBody>(client, {
     name: `inference:${tier ?? "all"}`,
     patterns: [tier ? { kind: "llm_call", match: { tier } } : { kind: "llm_call" }],
     leaseSeconds: opts.leaseSeconds ?? 60, // inference is slow; the heartbeat keeps the lease alive
@@ -280,7 +280,7 @@ export async function runInferenceWorker(client: RadiaClient, opts: InferenceOpt
     ...(opts.signal ? { signal: opts.signal } : {}),
     handle: async (rec, c) => {
       const callId = rec.id;
-      const body = rec.body as CallBody;
+      const body = rec.body;
       // A router re-dispatches under a new id but sets `replyTo` to the ORIGINAL call the caller
       // awaits. Key the chunks and the result to that, so the caller never sees the indirection.
       const resultKey = body.replyTo ?? callId;

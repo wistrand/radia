@@ -363,11 +363,11 @@ export async function runTurnWorker(
       const i = m.i ?? 0, of = m.of ?? 1;
       if (i + 1 < of) {
         // The assistant message this reply belongs to, BY IDENTITY: which turn, which round.
-        const assistant = await client.readOne({
+        const assistant = await client.readOne<TurnMessage>({
           kind: k.message,
           match: { conversationId: m.conversationId, turnAt: m.turnAt, round, role: "assistant" },
         });
-        const calls = (assistant?.body as TurnMessage | undefined)?.tool_calls ?? [];
+        const calls = assistant?.body.tool_calls ?? [];
         // Unreadable or disagreeing: stall visibly rather than dispatch a call nobody asked for.
         if (calls.length <= i + 1) return;
         // Parented to the assistant message, not to the sibling reply that woke this: a round reads
@@ -398,14 +398,14 @@ export async function runTurnWorker(
   const seen = new Set<string>();
 
   const sweep = async (): Promise<void> => {
-    const rows = await client.queryNewest({ kind: k.message }, sweepSize);
+    const rows = await client.queryNewest<TurnMessage>({ kind: k.message }, sweepSize);
     const now = await dbNow();
     // ONLY THE HEAD of each conversation. Anything older has been answered already, and a turn is
     // live only at its head. Without this a boot reconcile walks history and re-dispatches dead
     // turns' tool calls, starving the live one.
     const head = new Set<string>();
     for (const rec of rows) {
-      const conv = (rec.body as TurnMessage).conversationId;
+      const conv = rec.body.conversationId;
       if (!conv || head.has(conv)) continue;
       head.add(conv);
       // NOBODY IS WAITING, for either of the two reasons there are: the deadline passed (or never
@@ -422,7 +422,7 @@ export async function runTurnWorker(
       if (seen.has(rec.id)) continue;
       seen.add(rec.id);
       try {
-        await advance(rec.id, rec.body as TurnMessage);
+        await advance(rec.id, rec.body);
       } catch (e) {
         log(`[turn] ${rec.id}: ${e instanceof Error ? e.message : e}`);
       }

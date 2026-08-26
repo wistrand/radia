@@ -192,7 +192,7 @@ export async function serveTools(client: RadiaClient, opts: ServeOptions): Promi
     served.push(name);
   }
 
-  await agentLoop(client, {
+  await agentLoop<ToolCallBody>(client, {
     name: opts.name ?? provider,
     // One pattern per NAME, never `tool_call` wholesale: claiming the kind would steal other
     // workers' work, and content-routing per name is the whole point.
@@ -200,8 +200,8 @@ export async function serveTools(client: RadiaClient, opts: ServeOptions): Promi
     ...(opts.leaseSeconds ? { leaseSeconds: opts.leaseSeconds } : {}),
     ...(opts.concurrency ? { concurrency: opts.concurrency } : {}),
     ...(opts.watch === false ? { watch: false } : {}),
-    handle: async (rec: RadiaRecord, c: RadiaClient) => {
-      const raw = rec.body as ToolCallBody;
+    handle: async (rec, c) => {
+      const raw = rec.body;
       const callId = rec.id;
       const ctx: ToolContext = { callId, conversationId: raw.conversationId, owner: raw.owner, caller: () => callerClient(rec) };
       const stage = opts.stage?.(raw.tool ?? "");

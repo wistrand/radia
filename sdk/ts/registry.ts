@@ -250,9 +250,9 @@ export type Population<T = unknown> = RadiaRecord<T>[] & { readonly [exhaustive]
  * the type and the grep at once. Every use is legal, visible and countable; a rising count is the
  * signal that the brand is being routed around rather than the escape being needed.
  */
-export function unsafeAsPopulation(records: RadiaRecord[], why: string): Population {
+export function unsafeAsPopulation<T = unknown>(records: RadiaRecord<T>[], why: string): Population<T> {
   if (!why) throw new Error("unsafeAsPopulation needs a reason: say why these records are a whole set");
-  return records as Population;
+  return records as Population<T>;
 }
 
 /** Pages one registry read takes before giving up. Generous: a content-keyed registry holds one

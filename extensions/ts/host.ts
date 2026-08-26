@@ -134,7 +134,7 @@ export async function declareBinding(client: RadiaClient): Promise<void> {
 export async function readBindings(client: RadiaClient): Promise<Binding[]> {
   const rows = await client.queryAll({ kind: BINDING });
   const latest = activeByKey<Binding>(rows, (b) => (typeof b?.agent === "string" ? b.agent : undefined));
-  return [...latest.values()].map((r) => r.body as unknown as Binding);
+  return [...latest.values()].map((r) => r.body);
 }
 
 /**

@@ -78,9 +78,9 @@ const sameOps = (a: unknown, b: string[]) =>
  * missed a page would leave an older digest live while reporting success, which is the
  * bounded-read-as-population bug wearing a promotion hat.
  */
-async function liveGrants(client: RadiaClient, principal: string, kind: string): Promise<RadiaRecord[]> {
-  const rows = await client.queryAll({ kind: "grant", match: { principal, kind } });
-  const newest = new Map<string, RadiaRecord>();
+async function liveGrants(client: RadiaClient, principal: string, kind: string): Promise<RadiaRecord<GrantBody>[]> {
+  const rows = await client.queryAll<GrantBody>({ kind: "grant", match: { principal, kind } });
+  const newest = new Map<string, RadiaRecord<GrantBody>>();
   // `queryAll` pages newest-first, so the first record seen per identity is the current one.
   for (const rec of rows) {
     const key = grantKey(rec.body);
@@ -113,7 +113,7 @@ export async function promote(
 
     // 2. Retire the same pin on the same tier at any OTHER digest.
     for (const rec of live) {
-      const body = rec.body as GrantBody;
+      const body = rec.body;
       if (body.kind !== kind || !sameOps(body.operations, pin.operations)) continue;
       if (body.pattern?.tier !== opts.tier) continue;
       const was = body.pattern?.workspace;
@@ -156,7 +156,7 @@ export async function pinnedDigests(
   const kind = opts.kind ?? EXEC_REQUEST;
   const digests = new Set<string>();
   for (const rec of await liveGrants(client, opts.principal, kind)) {
-    const body = rec.body as GrantBody;
+    const body = rec.body;
     if (body.pattern?.tier !== opts.tier) continue;
     if (typeof body.pattern?.workspace === "string") digests.add(body.pattern.workspace);
   }
