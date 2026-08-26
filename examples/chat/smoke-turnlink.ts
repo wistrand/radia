@@ -111,9 +111,12 @@ const worker = new Deno.Command(Deno.execPath(), {
   stderr: "inherit",
 }).spawn();
 
-const awaitOne = async (pattern: { kind: string; match?: Record<string, unknown> }, tries = 100) => {
+/** What this file reads off a `message`: one shape, rather than an inline cast per assertion. */
+type Msg = { role?: string; content?: string; i?: number; of?: number; round?: number; stage?: string };
+
+const awaitOne = async <T = unknown>(pattern: { kind: string; match?: Record<string, unknown> }, tries = 100) => {
   for (let i = 0; i < tries; i++) {
-    const r = await admin.readOne(pattern);
+    const r = await admin.readOne<T>(pattern);
     if (r) return r;
     await new Promise((res) => setTimeout(res, 100));
   }
@@ -156,8 +159,8 @@ try {
   // `token_expired` forever, because `bootstrap` handed out run tokens and threw the durable half
   // away. A definition token has no expiry and can only mint, so the SDK exchanges it (see
   // test/exchange.test.ts) and the worker survives its own credential dying.
-  const runs = await admin.queryNewest({ kind: "agent_run", match: { agent: "agent:chat-inference" } }, 10);
-  const live = (runs[0]?.body as { run?: string } | undefined)?.run;
+  const runs = await admin.queryNewest<{ run?: string }>({ kind: "agent_run", match: { agent: "agent:chat-inference" } }, 10);
+  const live = runs[0]?.body.run;
   check("the inference worker minted its own run from the durable half", !!live, String(live));
   if (live) {
     await admin.stopRun(live);
@@ -319,15 +322,15 @@ try {
       parentIds: [c2],
     });
 
-    const finish = await awaitOne({ kind: "turn_complete", match: { conversationId: c2 } }, 300);
+    const finish = await awaitOne<{ why?: string }>({ kind: "turn_complete", match: { conversationId: c2 } }, 300);
     check("a turn runs to completion with no client driving it", finish !== null);
-    check("…and says why it ended", (finish?.body as { why?: string })?.why === "answered", JSON.stringify(finish?.body));
+    check("…and says why it ended", finish?.body.why === "answered", JSON.stringify(finish?.body));
 
-    const transcript = await admin.queryOldest({ kind: "message", match: { conversationId: c2 } }, 50);
-    const roles = transcript.map((r) => (r.body as { role?: string }).role);
+    const transcript = await admin.queryOldest<Msg>({ kind: "message", match: { conversationId: c2 } }, 50);
+    const roles = transcript.map((r) => r.body.role);
     check("…having run the model, a tool, and the model again", roles.join(",") === "user,assistant,tool,assistant", roles.join(","));
-    const toolMsg = transcript.find((r) => (r.body as { role?: string }).role === "tool");
-    check("…with the tool's real output in the transcript", String((toolMsg?.body as { content?: string })?.content).includes("42"), String((toolMsg?.body as { content?: string })?.content).slice(0, 60));
+    const toolMsg = transcript.find((r) => r.body.role === "tool");
+    check("…with the tool's real output in the transcript", String(toolMsg?.body.content).includes("42"), String(toolMsg?.body.content).slice(0, 60));
     // Exactly one of each: the keyed emissions did not double under the watch's re-sweeps.
     const calls = await admin.queryOldest({ kind: "tool_call", match: { conversationId: c2 } }, 20);
     check("…and emitted each link exactly once", calls.length === 1, `${calls.length} tool_calls`);
@@ -394,8 +397,8 @@ try {
     const orphaned = body.filter((l) => l.startsWith("["));
     check("…and no round's label lost its prompt to the redraw", orphaned.length === 0, JSON.stringify(orphaned));
 
-    const t3 = (await admin.queryOldest({ kind: "message", match: { conversationId: c3 } }, 50))
-      .map((r) => (r.body as { role?: string }).role);
+    const t3 = (await admin.queryOldest<Msg>({ kind: "message", match: { conversationId: c3 } }, 50))
+      .map((r) => r.body.role);
     check("the REAL client runs a turn it does not drive", t3.join(",") === "system,user,assistant,tool,assistant", t3.join(","));
     const seeds = await admin.queryOldest({ kind: "llm_call", match: { conversationId: c3 } }, 20);
     check("…and the client's own writes are the seed alone", seeds.length >= 2, `${seeds.length} llm_calls (seed + worker rounds)`);
@@ -411,11 +414,11 @@ try {
     // tool results.
     await thread.append({ role: "user", content: "compute twice" });
     await runTurn(session, thread, toolset);
-    const tm = await admin.queryOldest({ kind: "message", match: { conversationId: c3 } }, 50);
-    const tail = tm.slice(-4).map((r) => (r.body as { role?: string }).role);
+    const tm = await admin.queryOldest<Msg>({ kind: "message", match: { conversationId: c3 } }, 50);
+    const tail = tm.slice(-4).map((r) => r.body.role);
     check("a round asking for TWO tools answers both before the next round", tail.join(",") === "assistant,tool,tool,assistant", tail.join(","));
-    const replies = tm.filter((r) => (r.body as { role?: string; of?: number }).role === "tool" && (r.body as { of?: number }).of === 2);
-    check("…and each reply names its position in the round", replies.map((r) => (r.body as { i?: number }).i).join(",") === "0,1", JSON.stringify(replies.map((r) => (r.body as { i?: number }).i)));
+    const replies = tm.filter((r) => r.body.role === "tool" && r.body.of === 2);
+    check("…and each reply names its position in the round", replies.map((r) => r.body.i).join(",") === "0,1", JSON.stringify(replies.map((r) => r.body.i)));
 
     // THE ROUND CAP, which only bites if `round` actually advances. It did not: the counter lives on
     // the `llm_call`, the assistant message dropped it, and the worker read undefined and emitted
@@ -442,10 +445,10 @@ try {
         deadlineAt: new Date(Date.now() + 600_000).toISOString(),
         parentIds: [capped],
       });
-      const end = await awaitOne({ kind: "turn_complete", match: { conversationId: capped } }, 300);
-      check("a turn that keeps calling tools STOPS at the round cap", (end?.body as { why?: string })?.why === "round_cap", JSON.stringify(end?.body));
-      const rounds = (await admin.queryOldest({ kind: "llm_call", match: { conversationId: capped } }, 30))
-        .map((r) => (r.body as { round?: number }).round ?? 0);
+      const end = await awaitOne<{ why?: string }>({ kind: "turn_complete", match: { conversationId: capped } }, 300);
+      check("a turn that keeps calling tools STOPS at the round cap", end?.body.why === "round_cap", JSON.stringify(end?.body));
+      const rounds = (await admin.queryOldest<{ round?: number }>({ kind: "llm_call", match: { conversationId: capped } }, 30))
+        .map((r) => r.body.round ?? 0);
       // On the COUNT, not on "some round > 0": with the counter reset the rounds read [0,1,1,1…] and a
       // distinct-values check passes while the turn runs forever. What the cap buys is a BOUND.
       // Loose, because the suite's other turn worker (cap 8) watches every conversation too and the
@@ -461,8 +464,8 @@ try {
     // SDK mints another for ordinary calls, but the SSE stream opened under the old one is REVOKED
     // with `credential_invalid`. Unsupervised, that threw out of the watch loop and killed the whole
     // turn worker, stopping every conversation on the space; the only sign was one stack trace.
-    const turnRuns = await admin.queryNewest({ kind: "agent_run", match: { agent: "agent:chat-turn" } }, 10);
-    const turnRun = (turnRuns[0]?.body as { run?: string } | undefined)?.run;
+    const turnRuns = await admin.queryNewest<{ run?: string }>({ kind: "agent_run", match: { agent: "agent:chat-turn" } }, 10);
+    const turnRun = turnRuns[0]?.body.run;
     check("the turn worker minted its own run", !!turnRun, String(turnRun));
     if (turnRun) {
       await admin.stopRun(turnRun);
@@ -539,8 +542,8 @@ try {
     // never hit. Two turns, not one, is the whole difference between green and the live failure.
     await thread.append({ role: "user", content: "compute something" });
     await runTurn(session, thread, toolset);
-    const t4 = (await admin.queryOldest({ kind: "message", match: { conversationId: c3 } }, 50))
-      .map((r) => (r.body as { role?: string }).role);
+    const t4 = (await admin.queryOldest<Msg>({ kind: "message", match: { conversationId: c3 } }, 50))
+      .map((r) => r.body.role);
     check(
       "a SECOND turn in the same conversation runs its rounds too",
       t4.join(",") === "system,user,assistant,tool,assistant,user,assistant,tool,tool,assistant,user,assistant,tool,assistant",
@@ -571,8 +574,8 @@ try {
     // its timeout blamed a missing fleet for a call the router had already claimed.
     const byIdentity = new RadiaClient(url, { token: await mintSession(admin, "human:t", { owner: "human:t" }) });
     const seenStages = new Set(
-      (await byIdentity.queryOldest({ kind: "progress", match: { conversationId: c3 } }, 100))
-        .map((r) => String((r.body as { stage?: string }).stage)),
+      (await byIdentity.queryOldest<Msg>({ kind: "progress", match: { conversationId: c3 } }, 100))
+        .map((r) => String(r.body.stage)),
     );
     for (const stage of ["routing", "routed", "generating"]) {
       check(`an identity-scoped session sees '${stage}' progress`, seenStages.has(stage), [...seenStages].join(",") || "none");
@@ -630,8 +633,8 @@ try {
       else {
         const kinds = [];
         for (const id of missing) {
-          const r = await admin.getRecord(id);
-          kinds.push(`${r?.kind}:${(r?.body as {role?: string}).role ?? ""}:${id.slice(-4)}<-[${(r?.runtimeMeta.parentIds ?? []).map((x) => x.slice(-4)).join(",")}]`);
+          const r = await admin.getRecord<Msg>(id);
+          kinds.push(`${r?.kind}:${r?.body.role ?? ""}:${id.slice(-4)}<-[${(r?.runtimeMeta.parentIds ?? []).map((x) => x.slice(-4)).join(",")}]`);
         }
         // Parents are in the detail because they name the fault: every unreachable record pointing
         // at the same id means the chain went back to the conversation instead of to its cause.

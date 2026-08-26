@@ -380,7 +380,7 @@ async function capabilityNames(c: RadiaClient): Promise<Set<string>> {
     // drop it from this set while another provider still served it, and a procedure could then be
     // saved under a name a live worker answers.
     const live = activeByKey<CapabilityBody>(caps, capabilityKey);
-    return new Set([...live.values()].map((r) => (r.body as CapabilityBody).tool));
+    return new Set([...live.values()].map((r) => r.body.tool));
   } catch {
     return RESERVED; // no grant to read capabilities: fall back to what this worker knows it serves
   }
@@ -482,8 +482,8 @@ const served = new Set<string>();
 async function adoptProcedures(): Promise<void> {
   try {
     const builtin = await capabilityNames(client);
-    for (const rec of await client.queryAll({ kind: "procedure" })) {
-      const name = String((rec.body as { name?: string }).name ?? "");
+    for (const rec of await client.queryAll<{ name?: string }>({ kind: "procedure" })) {
+      const name = String(rec.body.name ?? "");
       // Never claim a name a worker serves: that is the race described on `capabilityNames`. A
       // procedure saved before that worker published simply stops being claimed here.
       if (!NAME_RE.test(name) || served.has(name) || builtin.has(name)) continue;
@@ -519,22 +519,19 @@ async function lookupProcedure(c: RadiaClient, name: string, conversationId?: st
   //
   // A RETIREMENT is returned rather than filtered: this caller must see one to report it, where the
   // chat's tool list wants it already gone.
-  const latest = await c.readNewest({ kind: "procedure", match: { name, conversationId: conversationId ?? "" } });
+  const latest = await c.readNewest<{
+    name: string;
+    artifactId?: string;
+    workspace?: string;
+    entrypoint?: string;
+    description?: string;
+    retired?: boolean;
+  }>({ kind: "procedure", match: { name, conversationId: conversationId ?? "" } });
   if (!latest) return null;
   // The RECORD, not just its body: a caller has to be able to name the exact version it used.
   // Re-saving a name is a successor, so "the procedure called X" is not a stable referent; only
   // a record id is.
-  return {
-    id: latest.id,
-    ...(latest.body as {
-      name: string;
-      artifactId?: string;
-      workspace?: string;
-      entrypoint?: string;
-      description?: string;
-      retired?: boolean;
-    }),
-  };
+  return { id: latest.id, ...latest.body };
 }
 
 // PROVE THE JAIL BEFORE SERVING ANYTHING. The operator declared what this environment guarantees;
@@ -1124,7 +1121,7 @@ async function sessionClient(rec: RadiaRecord, c: RadiaClient): Promise<RadiaCli
   }
 }
 
-await agentLoop(client, {
+await agentLoop<{ conversationId?: string; owner?: string }>(client, {
   name: "exec",
   patterns,
   leaseSeconds: 60,
@@ -1136,7 +1133,7 @@ await agentLoop(client, {
   handle: async (rec, c) => {
     // One key per claim, for both directions: the arguments this worker runs on, and the answer
     // plus verdict it writes back (plan-encryption.md phase 4).
-    const b = rec.body as { conversationId?: string; owner?: string };
+    const b = rec.body;
     const key = b.conversationId && fleet
       ? await conversationKeys(c, { kind: "fleet", privateKey: fleet.privateKey, keyId: fleet.keyId })(
         b.conversationId,
@@ -1359,9 +1356,9 @@ async function serve(rec: any, c: RadiaClient, key?: ConversationKey): Promise<{
  * dedups, a changed one is a successor and latest wins), so "save it again under the same name"
  * is an update, never a 409.
  */
-async function saveProcedure(rec: RadiaRecord, c: RadiaClient, s: RadiaClient) {
+async function saveProcedure(rec: RadiaRecord<{ args?: Record<string, unknown>; conversationId?: string; owner?: string }>, c: RadiaClient, s: RadiaClient) {
   const callId = rec.id;
-  const b = rec.body as { args?: Record<string, unknown>; conversationId?: string; owner?: string };
+  const b = rec.body;
   const a = b.args ?? {};
   const name = String(a.name ?? "");
   const description = String(a.description ?? "");
@@ -1446,9 +1443,9 @@ async function saveProcedure(rec: RadiaRecord, c: RadiaClient, s: RadiaClient) {
  * Every version is still on the space (records are immutable, so a re-save is a successor, not an
  * overwrite), which is why this also reports how many there have been.
  */
-async function readProcedure(rec: RadiaRecord, c: RadiaClient) {
+async function readProcedure(rec: RadiaRecord<{ args?: { name?: string }; conversationId?: string; owner?: string }>, c: RadiaClient) {
   const callId = rec.id;
-  const b = rec.body as { args?: { name?: string }; conversationId?: string; owner?: string };
+  const b = rec.body;
   const name = String(b.args?.name ?? "");
   if (!name) {
     return toolResult(callId, b, answer("read_procedure needs a `name`", { ok: false, taint: [] }));
@@ -1463,8 +1460,8 @@ async function readProcedure(rec: RadiaRecord, c: RadiaClient) {
   if (rows.length === 0) {
     return toolResult(callId, b, answer(`no procedure '${name}' saved in this conversation`, { ok: false, taint: [] }));
   }
-  const latest = newestByKey<{ name?: string }>(rows, (bb) => bb?.name).get(name)!;
-  const body = latest.body as { name: string; description: string; artifactId?: string; workspace?: string; entrypoint?: string };
+  const latest = newestByKey<{ name: string; description: string; artifactId?: string; workspace?: string; entrypoint?: string }>(rows, (bb) => bb?.name).get(name)!;
+  const body = latest.body;
   // A procedure is a TREE now, so its source is a file in it. The artifact path stays for the ones
   // saved before that, which is the whole migration: nothing to run, nothing to rewrite.
   let code: string;
@@ -1507,9 +1504,9 @@ async function readProcedure(rec: RadiaRecord, c: RadiaClient) {
  * that is not retired. A delete would also be the wrong shape for a space where every earlier
  * version of the procedure is still referenced by the tool_calls that ran it.
  */
-async function retireProcedure(rec: RadiaRecord, c: RadiaClient, s: RadiaClient) {
+async function retireProcedure(rec: RadiaRecord<{ args?: { name?: string; reason?: string }; conversationId?: string; owner?: string }>, c: RadiaClient, s: RadiaClient) {
   const callId = rec.id;
-  const b = rec.body as { args?: { name?: string; reason?: string }; conversationId?: string; owner?: string };
+  const b = rec.body;
   const name = String(b.args?.name ?? "");
   const fail = (output: string) => toolResult(callId, b, answer(output, { ok: false, taint: [] }));
   if (!name) return fail("retire_procedure needs a `name`");

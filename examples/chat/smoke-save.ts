@@ -95,8 +95,8 @@ for (let i = 0; i < 100; i++) {
 }
 
 const caps = new Map(
-  (await admin.queryAll({ kind: "capability" }))
-    .map((r) => r.body as { tool: string; def: ToolDef })
+  (await admin.queryAll<{ tool: string; def: ToolDef }>({ kind: "capability" }))
+    .map((r) => r.body)
     .map((b) => [b.tool, b.def.function.description ?? ""]),
 );
 const runCode = caps.get("run_javascript") ?? "";
@@ -164,8 +164,8 @@ for (const def of WORKSPACE_SCHEMAS) await publishCapability(admin, def);
 // writes nothing.
 for (const def of SHARE_SCHEMAS) await publishCapability(admin, def);
 const desc = new Map(
-  (await admin.queryAll({ kind: "capability" }))
-    .map((r) => r.body as { tool: string; def: ToolDef })
+  (await admin.queryAll<{ tool: string; def: ToolDef }>({ kind: "capability" }))
+    .map((r) => r.body)
     .map((b) => [b.tool, b.def.function.description ?? ""]),
 );
 const saveWs = desc.get("save_workspace") ?? "";
@@ -269,8 +269,8 @@ check("a missing path is an error that LISTS what is there", Array.isArray(missi
 // it gets nothing it can use.
 const doomed = await toolCall("save_workspace", { name: "leaky", files: { "keep.py": "ok\n", "secret.txt": "OOPS\n" } }) as Record<string, unknown>;
 void doomed;
-const leaky = (await admin.queryNewest({ kind: "workspace", match: { name: "leaky" } }, 1))[0];
-const secret = (leaky.body as { files: { path: string; artifactId: string }[] }).files.find((f) => f.path === "secret.txt")!;
+const leaky = (await admin.queryNewest<{ files: { path: string; artifactId: string }[] }>({ kind: "workspace", match: { name: "leaky" } }, 1))[0];
+const secret = leaky.body.files.find((f) => f.path === "secret.txt")!;
 await admin.shredArtifact(secret.artifactId, { acknowledgeShared: true, reason: "leaked" });
 const erased = await toolCall("read_workspace", { workspace: "leaky", path: "secret.txt" }) as Record<string, unknown>;
 check("an erased file reports the erasure", erased.erased === true, JSON.stringify(erased.error).slice(0, 80));
@@ -438,8 +438,8 @@ try {
   const viaWorker = async (tool: string, args: unknown) => {
     const { id } = await admin.put({ kind: "tool_call", body: { tool, args, conversationId: wConv, owner: "human:alice" } });
     for (let i = 0; i < 150; i++) {
-      const r = await admin.readOne({ kind: "tool_result", match: { callId: id } });
-      if (r) return (r.body as { output: Record<string, unknown> }).output;
+      const r = await admin.readOne<{ output: Record<string, unknown> }>({ kind: "tool_result", match: { callId: id } });
+      if (r) return r.body.output;
       await new Promise((res) => setTimeout(res, 200));
     }
     throw new Error(`no tool_result for ${tool}`);
@@ -481,8 +481,9 @@ check("…and the byte count of what was passed", saved.size === new TextEncoder
 const bytes = new TextDecoder().decode(await admin.getArtifact(saved.artifactId));
 check("…and the bytes come back unchanged", bytes === page);
 
-const rec = await admin.getRecord(saved.artifactId);
-const body = rec?.body as { conversationId?: string; owner?: string; mediaType?: string; filename?: string };
+const rec = await admin.getRecord<{ conversationId?: string; owner?: string; mediaType?: string; filename?: string }>(saved.artifactId);
+check("the artifact record exists at all", !!rec, saved.artifactId);
+const body = rec!.body;
 check("the artifact record is pinned to the conversation", body.conversationId === conv, String(body.conversationId));
 check("…and stamped with the session owner, so a grant pattern can bind it", body.owner === "human:alice", String(body.owner));
 check("…and carries the filename for the download", body.filename === "clock.html", String(body.filename));
@@ -501,13 +502,13 @@ check("lineage reaches the tool_call that produced it", parents.includes(callRec
 // needs an Authorization header, which a browser cannot attach to a typed address or an <img src>,
 // and nothing let it mint the alternative. So it quoted a URL that 401s, or invented one.
 const shareCaps = new Map(
-  (await admin.queryAll({ kind: "capability" }))
-    .map((r) => r.body as { tool: string; def: ToolDef })
+  (await admin.queryAll<{ tool: string; def: ToolDef }>({ kind: "capability" }))
+    .map((r) => r.body)
     .map((b) => [b.tool, b.def.function.description ?? ""]),
 );
 for (const def of SHARE_SCHEMAS) await publishCapability(admin, def);
-const shareDesc = (await admin.queryAll({ kind: "capability", match: { tool: "share_artifact" } }))
-  .map((r) => (r.body as { def: ToolDef }).def.function.description ?? "")[0] ?? "";
+const shareDesc = (await admin.queryAll<{ def: ToolDef }>({ kind: "capability", match: { tool: "share_artifact" } }))
+  .map((r) => r.body.def.function.description ?? "")[0] ?? "";
 check("share_artifact is advertised", shareDesc.length > 0);
 check("…and says the id URL is a reference, not a link", /401|Authorization header/i.test(shareDesc));
 check("…and forbids constructing such a URL by hand", /never construct/i.test(shareDesc));

@@ -12,13 +12,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** `paceMs` (demo only) staggers the fan-out so the feed animates; 0 = instant. */
 export function plannerLoop(client: RadiaClient, signal?: AbortSignal, log?: (m: string) => void, paceMs = 0): Promise<void> {
-  return agentLoop(client, {
+  return agentLoop<{ text: string }>(client, {
     name: "planner",
     patterns: [{ kind: "job" }],
     signal,
     log,
-    handle: async (job: RadiaRecord, c: RadiaClient) => {
-      const words = tools.split((job.body as { text: string }).text) as string[];
+    handle: async (job, c) => {
+      const words = tools.split(job.body.text) as string[];
       for (let i = 0; i < words.length; i++) {
         await c.put({
           kind: "task",

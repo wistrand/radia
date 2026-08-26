@@ -119,9 +119,9 @@ async function call(conv: string, tool: string, args: Record<string, unknown>) {
     parentIds: [conv],
   });
   for (let i = 0; i < 200; i++) {
-    const r = await admin.readOne({ kind: "tool_result", match: { callId: id } });
+    const r = await admin.readOne<{ output: Record<string, unknown>; ok?: boolean }>({ kind: "tool_result", match: { callId: id } });
     if (r) {
-      const body = r.body as { output: Record<string, unknown>; ok?: boolean };
+      const body = r.body;
       return { id, output: body.output, ok: body.ok !== false };
     }
     await new Promise((res) => setTimeout(res, 200));
@@ -144,7 +144,7 @@ const haveBwrap = await (async () => {
 // publish a broken one with a warning.
 const jsOnly = await startWorker("js only", "--allow-run=deno");
 const capsAfter = new Set(
-  (await admin.queryAll({ kind: "capability" })).map((r) => (r.body as { tool: string }).tool),
+  (await admin.queryAll<{ tool: string }>({ kind: "capability" })).map((r) => r.body.tool),
 );
 check("the JS runner is advertised", capsAfter.has("run_javascript"));
 check(
@@ -154,7 +154,7 @@ check(
 );
 // The sandbox registry answers the same question at a lower level: nothing declared it either, so an
 // operator asking what this space can run gets one answer, not a claim with a caveat.
-const jails = (await admin.queryAll({ kind: "sandbox" })).map((r) => (r.body as { name: string }).name);
+const jails = (await admin.queryAll<{ name: string }>({ kind: "sandbox" })).map((r) => r.body.name);
 check("…and no sandbox record claims a jail that failed its probe", !jails.includes("python"), jails.join(", ") || "none");
 
 // A description may only name a tool that EXISTS. With Python unserved, `run_javascript` pointing
@@ -303,8 +303,8 @@ if (!haveBwrap) {
   // pass under the other.
   await call(both.conv, "run_python", { code: "print(2 + 2)", expect: { stdout_contains: "4" } });
   await call(both.conv, "run_javascript", { code: "console.log(2 + 2)", expect: { stdout_contains: "4" } });
-  const checks = await admin.queryNewest({ kind: "check", match: { conversationId: both.conv } }, 20);
-  const jailsNamed = new Set(checks.map((r) => (r.body as { sandbox?: string }).sandbox));
+  const checks = await admin.queryNewest<{ sandbox?: string }>({ kind: "check", match: { conversationId: both.conv } }, 20);
+  const jailsNamed = new Set(checks.map((r) => r.body.sandbox));
   check(
     "…and a check names the jail the verdict was reached in",
     jailsNamed.has("python") && jailsNamed.has("deno"),

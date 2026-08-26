@@ -107,9 +107,9 @@ export async function previousTurnTier(
   tiers: string[],
 ): Promise<string | null> {
   if (!body.conversationId) return null;
-  const rows = await c.queryNewest({ kind: "llm_call", match: { conversationId: body.conversationId, tier: { $exists: true } } }, 30);
+  const rows = await c.queryNewest<{ tier?: string; turnAt?: number }>({ kind: "llm_call", match: { conversationId: body.conversationId, tier: { $exists: true } } }, 30);
   for (const r of rows) {
-    const b = r.body as { tier?: string; turnAt?: number };
+    const b = r.body;
     // STRICTLY EARLIER, not merely "not this turn". Skipping only the current turn also accepts a
     // LATER one, which no live call can produce but which made "the first turn inherits nothing"
     // return a tier — so the rule was looser than its name and nothing but the test said so.
@@ -155,7 +155,7 @@ async function currentTurn(
 ): Promise<{ text: string; toolCalls: number; index?: number; encrypted?: boolean }> {
   let limit = 8;
   for (;;) {
-    const rows = (await c.queryOrdered({
+    const rows = (await c.queryOrdered<{ index: number; role: string; content?: string | null }>({
         // `owner` CONJOINED, for the reason in package V (plan-audit-remediation.md): both fields
         // come from the call body, which is a claim, and this worker's `message` grant is
         // unscoped. Without it a session can name somebody else's conversation and have its text
@@ -163,7 +163,7 @@ async function currentTurn(
         kind: "message",
         match: { conversationId, owner, index: { $lte: upToIndex } },
         orderBy: [{ path: "index", dir: "desc" }],
-      }, limit)).map((r) => r.body as { index: number; role: string; content?: string | null });
+      }, limit)).map((r) => r.body);
     const at = rows.findIndex((m) => m.role === "user"); // rows are newest-first
     if (at >= 0) {
       // NEVER the ciphertext. This worker holds no key and must not (phase 0 exists so it does not
@@ -264,9 +264,9 @@ async function classifyLLM(
     },
   });
   for (let i = 0; i < 60; i++) { // ~6s budget, then the heuristic
-    const result = await c.readOne({ kind: "llm_result", match: { callId: id } });
+    const result = await c.readOne<{ message?: { content?: string } }>({ kind: "llm_result", match: { callId: id } });
     if (result) {
-      const content = ((result.body as { message?: { content?: string } }).message?.content) ?? "";
+      const content = result.body.message?.content ?? "";
       for (const w of content.toLowerCase().match(/[a-z]+/g) ?? []) if (live.has(w)) return w;
       return null; // answered but unparseable → heuristic
     }
@@ -294,8 +294,8 @@ async function capToTurn(
   chosen: string,
 ): Promise<string> {
   if (!body.conversationId || !body.round || body.turnAt === undefined) return chosen; // round 0 sets the bar
-  const rows = await c.queryOldest({ kind: "llm_call", match: { conversationId: body.conversationId, turnAt: body.turnAt } }, 50);
-  const opening = rows.map((r) => (r.body as { round?: number; tier?: string }))
+  const rows = await c.queryOldest<{ round?: number; tier?: string }>({ kind: "llm_call", match: { conversationId: body.conversationId, turnAt: body.turnAt } }, 50);
+  const opening = rows.map((r) => r.body)
     .filter((b) => b.tier && (b.round ?? 0) === 0)[0]?.tier;
   if (!opening) return chosen;
   const ceiling = Math.min(tiers.indexOf(opening) + 1, tiers.length - 1);
@@ -306,7 +306,7 @@ async function capToTurn(
 // Guarded so the pure helpers above can be imported and asserted. Spawning this file still runs
 // the loop: the fleet launches it as the entry module.
 if (import.meta.main) {
-await agentLoop(client, {
+await agentLoop<{ conversationId?: string; owner?: string; upToIndex?: number; turnAt?: number; round?: number }>(client, {
   name: "router",
   patterns: [{ kind: "llm_call", match: { tier: { $exists: false } } }],
   // EVERY untiered call passes through here, and classifying one is a model round trip this
@@ -315,7 +315,7 @@ await agentLoop(client, {
   // a slot waits on the fleet rather than on a vendor. Resolved by the launcher (LOCAL_CONCURRENCY).
   concurrency: Number(arg("--concurrency") ?? "16"),
   handle: async (rec, c) => {
-    const body = rec.body as { conversationId?: string; owner?: string; upToIndex?: number; turnAt?: number; round?: number };
+    const body = rec.body;
     // Report the claim before the classifier round-trip. It is the first sign of life the chat
     // gets, and with a classifier in the path there is now a visible gap to explain.
     //
