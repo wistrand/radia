@@ -52,10 +52,15 @@ info:
     of kinds granted with `scope.createdBy:"self"`). An invalid/expired/stopped bearer token is
     `401`.
 
-    Implemented through M0 (Phases 0-6) plus M1 watches + grants + the auth bootstrap chain / run
-    tokens + artifacts (blob storage, unencrypted in v1). Not implemented yet: OIDC,
-    scheduler admission, request/bid/award, keyset query cursor, the event-log sweep itself (the
-    410 cursor_expired check is live but never fires until a sweep creates a horizon).
+    Implemented through M0 plus M1: watches, grants, the auth bootstrap chain / run tokens,
+    artifacts (blob storage, optional encryption), OIDC sign-in (`POST /sessions/oidc`), the keyset
+    query cursor (`cursor` / `nextCursor`, which carries its own direction), and the opt-in
+    event-log sweep behind `eventRetentionSeconds` (which is what makes `410 cursor_expired`
+    reachable). Not implemented yet: scheduler admission, request/bid/award.
+
+    Every one of those three now-built features was listed here as unbuilt for three audit rounds
+    while this same file documented the path, the parameter and the horizon. Keep this paragraph
+    honest by checking it against `paths:` below, not against memory.
 
 servers:
   - url: /v0

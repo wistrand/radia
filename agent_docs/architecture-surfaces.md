@@ -194,7 +194,7 @@ would make them privileged in a way no other client can be.
 That property held by habit for a milestone before it was load-bearing. It became load-bearing when
 `workspace-git` needed somewhere legal to live: a workspace is a CONVENTION (`extensions/`), the
 runtime must not know about it, and a client may compose it freely. Stating the rule positionally
-makes the verb obviously fine where the same code in `src/cli.ts` would have looked like a tier
+makes the verb obviously fine where the same code in `src/surfaces/cli.ts` would have looked like a tier
 inversion.
 
 `test/layering.test.ts` enforces all of it: the runtime imports neither a surface nor an

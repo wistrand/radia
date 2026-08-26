@@ -52,7 +52,7 @@ The sharpest instance of the pair is not a single decision. It is **competence**
 of it is already built.
 
 - **`capability` records are unmeasured competence claims.** A worker advertises "I serve
-  this tool, here is how to use it" (`examples/chat/space/capability.ts`), published in
+  this tool, here is how to use it" (`extensions/ts/capability.ts`), published in
   advance, and nothing ever checks whether it is any good.
 - **A `flow` record would be the measured counterpart**: this recurring shape of work,
   involving this agent, terminates successfully *n* times out of *m*, with these exemplars.

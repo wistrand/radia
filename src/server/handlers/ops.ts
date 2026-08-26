@@ -572,7 +572,11 @@ export async function handleRemediate(space: Space, req: Request): Promise<Respo
   // The SAME selector the envelope query takes, which is the whole point of this endpoint: `kind`
   // here means what it means there. A string is accepted beside an array because a caller
   // remediating one kind writes the string.
-  const kindField = j.kind ?? j.kinds;
+  // `kind` ONLY. A `kinds` alias was accepted here and documented nowhere, which is precisely the
+  // "surface nobody agreed to freeze" audit package W7 names: no client in this repo ever sent it
+  // (the SDK selector is `kind?: string | string[]`), and documenting it would have frozen a
+  // redundant spelling forever. Found by the field-level openapi guard on its first working run.
+  const kindField = j.kind;
   let kinds: string[] | undefined;
   if (typeof kindField === "string") kinds = [kindField];
   else if (Array.isArray(kindField)) {
@@ -584,7 +588,7 @@ export async function handleRemediate(space: Space, req: Request): Promise<Respo
   // Every field here NARROWS, so dropping one widens a sweep that mutates lease state: a misspelled
   // `kind` drains every app's backlog rather than one (the reason `kind` exists), and a misspelled
   // `stale` or `limit` removes the bound the caller thought it set.
-  const badSelector = rejectUnknown(j, ["action", "state", "kind", "kinds", "expired", "stale", "limit"], "selector field");
+  const badSelector = rejectUnknown(j, ["action", "state", "kind", "expired", "stale", "limit"], "selector field");
   if (badSelector) return badSelector;
   // Typed strictly for the same reason: `expired: "true"` is a string, `=== true` is false, and the
   // sweep would then reclaim LIVE leases from a caller that asked only for lapsed ones.

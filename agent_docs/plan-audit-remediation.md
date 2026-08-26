@@ -220,9 +220,16 @@ routing-only and are now recorded as such.
 **Two of the reported findings did not survive the check, and are recorded because a wrong
 mechanism is the expensive kind of wrong:**
 
-- The report said the OpenAPI info block "still says OIDC, keyset cursors and the event-log sweep
-  are not implemented". It says no such thing; the phrase appears nowhere in the file. The other
-  half of that finding stands (see W7).
+- ~~The report said the OpenAPI info block "still says OIDC, keyset cursors and the event-log sweep
+  are not implemented". It says no such thing; the phrase appears nowhere in the file.~~ **THIS
+  REFUTATION WAS WRONG and is corrected here (2026-08-26).** The file said exactly that, at the end
+  of the `info.description` block: "Not implemented yet: OIDC, scheduler admission,
+  request/bid/award, keyset query cursor, the event-log sweep itself", while the same file
+  documented `/sessions/oidc`, `cursor`/`nextCursor` and the sweep horizon. The refutation searched
+  for the REPORT'S PHRASING rather than the claim, found no literal match, and closed a live
+  finding; it then survived two further rounds because a checked-and-refuted entry does not get
+  re-checked. A refutation is a claim like any other and needs the same evidence as the finding:
+  quote the file, do not report the absence of a quote. The other half stands (see W7).
 - The report attributed the newest-record split to "two instances whose wall clocks skew". It
   cannot be that: `created_at` comes from the DATABASE clock on every instance
   (`Space.putRaw` -> `storage.now()`), which is the invariant. The real split is that record IDs are
@@ -337,9 +344,25 @@ The recurrence of closed package P.
   cannot catch it: nothing stamped a marker to refuse. It is the one direction the whole
   fail-closed design is blind to.
 
-**Guard.** Extend the openapi test one level down, to request-body and query-parameter fields on
-stable paths; pin the broker's read_one shape in `extensions/conformance/`; and assert in the chat
-suite that every kind carrying a prose field appears in `ENCRYPTED_FIELDS`.
+**Guard.** BUILT 2026-08-26, the openapi half: `test/openapi.test.ts` now checks request fields in
+both directions, comparing each handler's own `rejectUnknown(j, [...])` list against the operation's
+`requestBody` properties (resolving `allOf` + `$ref`, since `/records/query` composes `Pattern` that
+way and a reader that skips it reports `kind` as undocumented). It found one live defect on its
+first working run: `POST /ops/remediate` accepted an undocumented `kinds` alias beside `kind`, which
+no client in this repo ever sent, so the alias was REMOVED rather than frozen into the contract.
+Package X is the argument for having built it: five of its eight defects were request-field-name
+drift, which this catches from the contract side.
+
+`test/agentdocs.test.ts` covers the second gap (nothing checked `agent_docs/`, the files CLAUDE.md
+routes every task through): links resolve, backticked source paths exist, and the contract's own
+"not implemented yet" paragraph is checked against the paths the same file documents. It found four
+stale pointers on its first run, all files that had moved: a bare src/cli.ts (now
+`src/surfaces/cli.ts`) and three chat-space paths for what are now `extensions/ts/capability.ts`
+and `extensions/ts/model.ts`. Writing this entry tripped the guard again, because naming a dead
+path in backticks is indistinguishable from a stale pointer: say the old location in plain text.
+
+STILL OPEN from this package: pin the broker's `read_one` shape in `extensions/conformance/`, and
+assert in the chat suite that every kind carrying a prose field appears in `ENCRYPTED_FIELDS`.
 
 ### Structural debt, not defects
 
@@ -561,7 +584,7 @@ gaps, and all five are closed:
   starts it.
 - **The chat's escalation ladder read `model` records raw**, so a gracefully stopped tier stayed a
   valid escalation target and escalating to it hung until the deadline. The projection is now a
-  shared `liveModels` (`examples/chat/space/model.ts`) that the router, the ladder and the fleet
+  shared `liveModels` (`extensions/ts/model.ts`) that the router, the ladder and the fleet
   smoke all call — three copies of it existed, and the smoke's own copy meant that suite could only
   ever prove its own loop right.
 

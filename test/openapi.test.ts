@@ -132,3 +132,157 @@ Deno.test("openapi: every `/v0` path the router names is documented", async () =
   });
   assertEquals(undocumented, [], "routes the implementation serves that the contract does not describe");
 });
+
+// ---------------------------------------------------------------------------
+// Direction 3: the FIELD level (audit package W7's promised guard, built 2026-08-26).
+//
+// Paths and methods were one level above where the drift lives. `explain` shipped on the frozen
+// data plane with zero occurrences in the spec, and package X then produced five defects that were
+// all the same shape from the other side: a request field picked BY NAME and silently dropped when
+// misspelled (`patern` committed an unscoped grant, `allow_taint` removed a caller's taint barrier,
+// `order_by` answered 200 unsorted rows). `rejectUnknown` closed that from the server. This closes
+// it from the CONTRACT: a field the handler accepts and the spec never mentions is surface nobody
+// agreed to freeze, and a field the spec promises and the handler refuses is a 400 waiting for a
+// client that believed the document.
+//
+// The handler's own `rejectUnknown(j, [...])` list IS the enumeration; there is no second copy to
+// keep in sync. That is the whole reason this is checkable at all.
+// ---------------------------------------------------------------------------
+
+/** Every `rejectUnknown(j, [...])` list in the server, by the handler function enclosing it. */
+function handlerFields(src: string): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  let fn = "";
+  for (const line of src.split("\n")) {
+    const f = line.match(/^export async function (handle\w+)/);
+    if (f) fn = f[1];
+    const r = line.match(/rejectUnknown\(\w+,\s*\[([^\]]*)\]/);
+    if (r && fn) {
+      const fields = [...r[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+      // A handler may guard more than one body shape; union them, since the spec documents the
+      // operation and not the branch.
+      out.set(fn, [...new Set([...(out.get(fn) ?? []), ...fields])]);
+    }
+  }
+  return out;
+}
+
+/** Property names of a named schema under `components/schemas`, read by indentation. */
+function componentFields(yaml: string, name: string): string[] {
+  const lines = yaml.split("\n");
+  const start = lines.findIndex((l) => new RegExp(`^ {4}${name}:\\s*$`).test(l));
+  if (start < 0) return [];
+  const out: string[] = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    if (lines[i].trim() === "") continue;
+    if (lines[i].search(/\S/) <= 4) break; // next component
+    if (/^ {6}properties:\s*$/.test(lines[i])) {
+      for (let j = i + 1; j < lines.length; j++) {
+        if (lines[j].trim() === "") continue;
+        const col = lines[j].search(/\S/);
+        if (col <= 6) break;
+        if (col === 8) {
+          const m = lines[j].match(/^\s*([A-Za-z_]\w*):/);
+          if (m) out.push(m[1]);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/** Property names under an operation's requestBody schema, read by indentation, INCLUDING those
+ *  reached through `allOf` + `$ref`. Resolving the ref is not optional polish: `/records/query`
+ *  composes `Pattern` that way, so a reader that skips it reports `kind` and `match` as
+ *  undocumented, which is a guard that cries wolf on its first run. Shallow otherwise, like the
+ *  path reader above; a spec this cannot read fails the non-empty assertion rather than passing. */
+function specRequestFields(yaml: string, path: string, method: string): string[] | null {
+  const body = yaml.split("\npaths:", 2)[1] ?? "";
+  const lines = body.split("\n");
+  let i = lines.findIndex((l) => new RegExp(`^ {2}${path.replace(/[/{}]/g, "\\$&")}:\\s*$`).test(l));
+  if (i < 0) return null;
+  // Walk to the method, stopping at the next path.
+  for (i++; i < lines.length && !/^ {2}\//.test(lines[i]); i++) {
+    if (new RegExp(`^ {4}${method}:\\s*$`).test(lines[i])) break;
+  }
+  if (i >= lines.length || !new RegExp(`^ {4}${method}:`).test(lines[i])) return null;
+  // Then to `requestBody:` and no further. Bounding the scan there is what keeps this a REQUEST
+  // check: the operation's `responses:` block carries its own `properties`, and reading those
+  // reported every response field as a request the handler would reject.
+  for (i++; i < lines.length && !/^ {2}\//.test(lines[i]) && !/^ {4}[a-z]+:\s*$/.test(lines[i]); i++) {
+    if (/^ {6}requestBody:\s*$/.test(lines[i])) break;
+  }
+  if (i >= lines.length || !/^ {6}requestBody:/.test(lines[i])) return null;
+  // Collect every inline `properties:` block and every `$ref`erenced component inside it, stopping
+  // at the next key at the operation's own level (`responses:`).
+  const props = new Set<string>();
+  let sawSchema = false;
+  for (i++; i < lines.length && !(lines[i].trim() !== "" && lines[i].search(/\S/) <= 6); i++) {
+    const ref = lines[i].match(/\$ref:\s*"#\/components\/schemas\/(\w+)"/);
+    if (ref) {
+      sawSchema = true;
+      for (const f of componentFields(yaml, ref[1])) props.add(f);
+    }
+    if (/^\s+properties:\s*$/.test(lines[i])) {
+      sawSchema = true;
+      const indent = lines[i].search(/\S/) + 2;
+      for (let j = i + 1; j < lines.length; j++) {
+        const cur = lines[j].search(/\S/);
+        if (lines[j].trim() === "") continue;
+        if (cur < indent) break;
+        if (cur === indent) {
+          const m = lines[j].match(/^\s*([A-Za-z_]\w*):/);
+          if (m) props.add(m[1]);
+        }
+      }
+    }
+  }
+  return sawSchema ? [...props] : null;
+}
+
+Deno.test("openapi: every request field a handler accepts is in the contract", async () => {
+  const yaml = await Deno.readTextFile(SPEC);
+  const handlers = new Map<string, string[]>();
+  for (const f of ["records.ts", "leases.ts", "ops.ts", "agents.ts", "artifacts.ts", "watches.ts"]) {
+    const src = await Deno.readTextFile(new URL(`../src/server/handlers/${f}`, import.meta.url));
+    for (const [k, v] of handlerFields(src)) handlers.set(k, v);
+  }
+  assert(handlers.size >= 4, `failed to extract rejectUnknown lists; found ${handlers.size}`);
+
+  // The one mapping this cannot derive: a handler name to the operation it serves. Kept here rather
+  // than guessed, and asserted non-empty, so adding a guarded handler without a row is visible.
+  const ROUTES: Record<string, { path: string; method: string }> = {
+    handleQuery: { path: "/records/query", method: "post" },
+    handleRegistry: { path: "/records/registry", method: "post" },
+    handleReadOne: { path: "/records/read-one", method: "post" },
+    handleTake: { path: "/takes", method: "post" },
+    handleRemediate: { path: "/ops/remediate", method: "post" },
+  };
+
+  const problems: string[] = [];
+  for (const [fn, accepted] of handlers) {
+    const route = ROUTES[fn];
+    if (!route) continue; // a guarded handler with no row: reported below, not here
+    const documented = specRequestFields(yaml, route.path, route.method);
+    if (documented === null) {
+      problems.push(`${route.method.toUpperCase()} ${route.path}: no requestBody properties in the spec, but ${fn} accepts ${accepted.length} fields`);
+      continue;
+    }
+    for (const field of accepted) {
+      if (!documented.includes(field)) {
+        problems.push(`${route.method.toUpperCase()} ${route.path}: handler accepts \`${field}\`, the contract does not mention it`);
+      }
+    }
+    for (const field of documented) {
+      if (!accepted.includes(field)) {
+        problems.push(`${route.method.toUpperCase()} ${route.path}: the contract promises \`${field}\`, ${fn} would answer 400 for it`);
+      }
+    }
+  }
+  assertEquals(problems, [], "the frozen contract and its handlers disagree about request fields");
+
+  // Every handler that bothers to guard its fields should be reachable from a row above, or the
+  // check quietly covers less than it looks.
+  const unmapped = [...handlers.keys()].filter((h) => !ROUTES[h]);
+  assertEquals(unmapped, [], "these handlers guard their request fields but no route row maps them to an operation");
+});

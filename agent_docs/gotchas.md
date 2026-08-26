@@ -1958,7 +1958,7 @@ only hang again.
   embed it.** A key built from free-form content can carry Unicode (a tool description with `…`, a
   body with an em-dash) and `fetch` throws `not a valid ByteString`. Content-keying a record is
   right; the key must be a HASH of the content. `kindDefKey`/grant keys are ASCII by construction;
-  the capability publish content-hashes the tool def (`examples/chat/space/capability.ts`).
+  the capability publish content-hashes the tool def (`extensions/ts/capability.ts`).
 - **A cast is a promise to the type checker, not a check.** Handlers built a `PutRequest` by casting
   wire JSON, so `parentIds: 42`, `deadlineAt: {}`, an `orderBy` string or a null body failed deep
   inside matching and answered 500 instead of 400. Found by fuzzing every field of every endpoint;
