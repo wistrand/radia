@@ -386,8 +386,12 @@ Recorded here because the audit named them and they have no other home; none is 
   delegation, OIDC), taking the file to 3,036. Both predicted comment defects were in the moved
   region and are fixed. `identity.ts` is the first extracted port that WRITES, which is what a
   credential needs; the discipline moved to what it may not hold, namely a credential cache.
-  STILL INSIDE: chain verification (`verifyIntegrity`, `sealEvents`) and the GC/compaction
-  orchestration, ~590 lines that `seal.ts` and `gc.ts` already hold the pure halves of.
+  Chain verification and the sweeps followed on 2026-08-26, into the two modules that already held
+  their pure halves: `seal.ts` (+223, `ChainHost` two members wide) and `gc.ts` (+264, the
+  amortization counters as a `SweepState` holder). **`src/core/space.ts` is now 2,616 lines**, from
+  4,044. What remains is the service proper (put/take/settle, watches, lineage and graph, kinds,
+  envelope query) plus the ops-plane verbs, and no further cluster in it has the shape these four
+  did: a coherent feature reachable through a narrow port.
 - **Core verbs do not authorize themselves.** Enforcement lives in the handlers, and the core's own
   comments record what that produced once. `Space.access` is the seam; any new surface calling
   `Space` directly has to remember to use it.

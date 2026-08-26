@@ -15,7 +15,8 @@
 // "verified" mean two different things.
 
 import { CHAIN_GENESIS, type ChainedEvent, eventHash } from "../../sdk/ts/wire.ts";
-import type { EventSeal, SpaceEvent } from "../storage/adapter.ts";
+import type { EventSeal, SpaceEvent, StorageAdapter } from "../storage/adapter.ts";
+import type { IntegrityReport } from "../../sdk/ts/wire.ts";
 import { readTextFile, restrictToOwner, UsageError, writeTextFile } from "../platform.ts";
 
 /** How many events one sealing pass covers. Bounded because sealing runs on demand, inside a
@@ -214,4 +215,231 @@ export function attestedAnchorIdx(e: SpaceEvent): number | null {
   const d = e.detail as { eventHorizon?: { anchorIdx?: unknown } } | undefined | null;
   const idx = d?.eventHorizon?.anchorIdx;
   return typeof idx === "number" && Number.isInteger(idx) && idx >= 0 ? idx : null;
+}
+
+/**
+ * What chain maintenance needs from a space: the event tables, and the key.
+ *
+ * TWO MEMBERS, which is the narrowest port in `src/core` and not an accident: sealing and verifying
+ * are a walk over the log plus arithmetic over hashes. Nothing here reads a record, a grant or a
+ * kind, so nothing here can be wrong about authorization. `sealKey` is optional by the same design
+ * the chain has: absent, the chain still detects corruption and naive edits, and `verifyIntegrity`
+ * reports WHICH guarantee is in force rather than implying the stronger one.
+ */
+export interface ChainHost {
+  readonly storage: Pick<StorageAdapter, "sealHead" | "sealableEvents" | "appendSeals" | "getSeals" | "appendGcEvent">;
+  /** Signs each link under a key held OUTSIDE the database, so a rewriter who can rebuild the
+   *  chain still cannot forge the seals over it. */
+  readonly sealKey?: SealKey;
+}
+
+/**
+ * Extend the event chain over everything that has become final since the last pass.
+ *
+ * ON DEMAND, never on a timer: an idle space should hold no background work, the same lesson
+ * `Notifier` and `sweepWatches` learned. Verification seals first, so the answer covers
+ * everything sealable at the moment it is asked rather than whatever a timer last got to.
+ *
+ * Idempotent and safe to run concurrently with another instance: seals are content-derived, so
+ * two sealers over one database compute identical rows, and the loser's insert is skipped rather
+ * than overwriting a link.
+ */
+export async function sealEvents(host: ChainHost, limit = SEAL_BATCH): Promise<{ sealed: number; head?: { idx: number; hash: string } }> {
+  let head = await host.storage.sealHead();
+  let sealed = 0;
+  for (;;) {
+    const after = head ? { cursor: head.cursor, seq: head.seq } : null;
+    const events = await host.storage.sealableEvents(after, Math.min(limit - sealed, SEAL_BATCH));
+    if (events.length === 0) break;
+    const links = await linkEvents(head, events, host.sealKey);
+    const written = await host.storage.appendSeals(links);
+    sealed += written;
+    // A short write means another sealer claimed those positions. Re-read the head and continue
+    // from wherever the chain actually reached, rather than assuming this process's view.
+    head = await host.storage.sealHead();
+    if (written < links.length || sealed >= limit) break;
+  }
+  return { sealed, ...(head ? { head: { idx: head.idx, hash: head.hash } } : {}) };
+}
+
+/**
+ * Verify the event chain, reporting the FIRST divergence.
+ *
+ * "The chain is invalid" is not an answer anyone can act on. The position, the event it covers,
+ * and which of the four ways it failed are, and they are what distinguishes a truncated restore
+ * from an edited row.
+ *
+ * `tail` verifies only the newest N links, from the hash of the one below them. A full walk is
+ * O(the whole history) and `radia doctor` embedded one, so a routine health check re-verified
+ * every link ever written on every run: measured at 1.7s over 20k links on a fresh space and 60s
+ * on a working one, and unbounded from there. A spot check answers what a health report is
+ * actually asking (has the recent log been altered) and says so in `spotCheckedFrom`; the full
+ * audit stays `radia integrity`, which is where an unbounded walk belongs.
+ */
+export async function verifyIntegrity(host: ChainHost, opts: { seal?: boolean; limit?: number; tail?: number } = {}): Promise<IntegrityReport> {
+  if (opts.seal !== false) await sealEvents(host);
+  const head = await host.storage.sealHead();
+  const signed = !!host.sealKey;
+  const report: IntegrityReport = {
+    ok: true,
+    checked: 0,
+    sealed: head ? head.idx + 1 : 0,
+    unsealed: (await host.storage.sealableEvents(head ? { cursor: head.cursor, seq: head.seq } : null, 1)).length,
+    signed,
+    ...(head ? { head: { idx: head.idx, hash: head.hash } } : {}),
+  };
+  type Reason = NonNullable<IntegrityReport["failure"]>["reason"];
+  const fail = (idx: number, eventId: string, reason: Reason, detail: string) => {
+    report.ok = false;
+    report.failure = { idx, eventId, reason, detail };
+    return report;
+  };
+
+  let prev = CHAIN_GENESIS;
+  let expectIdx = 0;
+  let afterIdx = -1;
+  let first = true;
+  // Start from the hash BELOW the tail rather than from genesis. Not the anchor path below: that
+  // one exists for event GC and demands an attestation, because a chain that begins late without
+  // one is indistinguishable from a truncated log. A spot check makes no claim about the links it
+  // skipped, so it must not judge them either.
+  if (opts.tail !== undefined && head && head.idx + 1 > opts.tail) {
+    const from = head.idx + 1 - opts.tail;
+    const [below] = await host.storage.getSeals(from - 1, 1);
+    if (below) {
+      afterIdx = below.idx;
+      prev = below.hash;
+      expectIdx = below.idx + 1;
+      first = false;
+      report.spotCheckedFrom = expectIdx;
+    }
+  }
+  // Event GC leaves a chain that begins past genesis (the anchor state: links below the anchor
+  // deleted, the anchor's own event swept once the sweep completes). Those facts are collected
+  // during the walk and judged AFTER it, because the horizon statement that makes the
+  // truncation honest is sealed above it in the retained suffix.
+  let truncated: NonNullable<IntegrityReport["truncated"]> | undefined;
+  let anchorEventId = "";
+  let attested = -1; // newest sealed horizon statement's anchorIdx; the walk ascends, last wins
+  for (;;) {
+    const seals = await host.storage.getSeals(afterIdx, Math.min(opts.limit ?? SEAL_BATCH, SEAL_BATCH));
+    if (seals.length === 0) break;
+    // ONE read per PAGE, not one per link. Each link's event was fetched with its own windowed
+    // read, which is cheap against a warm cache (0.085ms) and is not what an audit meets: on a
+    // freshly started space the same 20k-link walk took 135 SECONDS at ~6.7ms a link. Measured
+    // both ways, because the hot-cache number says the opposite and is the one easy to get.
+    // Seals are contiguous and ascending, so a page's events are one window; a gap (event GC
+    // swept a link) falls back to the single read, which is also the anchor's path.
+    const lead = seals[0];
+    const window = await host.storage.sealableEvents(
+      lead.seq > 0 ? { cursor: lead.cursor, seq: lead.seq - 1 } : null,
+      seals.length,
+    );
+    const byId = new Map(window.map((e) => [e.id, e]));
+    for (const seal of seals) {
+      const event = byId.get(seal.eventId) ?? await eventById(host, seal.eventId, seal.cursor, seal.seq);
+      if (first) {
+        first = false;
+        if (seal.idx > 0 || !event) {
+          // The anchor. Its prev_hash points at a deleted link, so the chain is accepted FROM
+          // its hash; what stands behind that hash is the signature (on a signed chain) plus
+          // the attestation judged below. A chain that merely STARTS late without either stays
+          // a tamper verdict.
+          truncated = { anchorIdx: seal.idx, swept: seal.idx + (event ? 0 : 1), attested: false };
+          anchorEventId = seal.eventId;
+          expectIdx = seal.idx;
+          if (seal.idx > 0) prev = seal.prevHash;
+        }
+      }
+      // A missing position is a DELETED link. Without this check a truncated chain verifies
+      // perfectly, which is the failure an audit most needs to catch.
+      if (seal.idx !== expectIdx) {
+        return fail(expectIdx, seal.eventId, "gap", `chain jumps from ${expectIdx - 1} to ${seal.idx}`);
+      }
+      if (seal.prevHash !== prev) {
+        return fail(seal.idx, seal.eventId, "broken_link", `prev_hash does not match the hash at ${seal.idx - 1}`);
+      }
+      if (!event) {
+        // Tolerated at the anchor alone, pending attestation; anywhere else it is tampering.
+        if (!(truncated && seal.idx === truncated.anchorIdx)) {
+          return fail(seal.idx, seal.eventId, "missing_event", "the sealed event is no longer in the log");
+        }
+      } else {
+        const hash = await eventHash(seal.prevHash, chainedEvent(seal.idx, event));
+        if (hash !== seal.hash) {
+          return fail(seal.idx, seal.eventId, "hash_mismatch", "the event does not hash to its seal; it was altered after sealing");
+        }
+        const a = attestedAnchorIdx(event);
+        if (a !== null) attested = a;
+        report.checked++;
+      }
+      if (host.sealKey) {
+        if (!seal.sig) return fail(seal.idx, seal.eventId, "bad_signature", "the link carries no signature on a signed chain");
+        const verdict = await host.sealKey.verify(seal.hash, seal.sig);
+        // A link signed under a RETIRED key that nobody supplied is un-checkable, not forged.
+        // Calling it a bad signature would report a rotation as tampering, which is the one
+        // verdict this report exists to be trusted on.
+        if (verdict === "unknown_key") {
+          return fail(
+            seal.idx,
+            seal.eventId,
+            "unknown_key",
+            "this link was signed under a seal key this space does not hold; supply it (RADIA_SEAL_KEY_RETIRED) to check links from before the rotation",
+          );
+        }
+        if (verdict === "bad") {
+          return fail(seal.idx, seal.eventId, "bad_signature", "the signature does not verify; the chain was rebuilt without the key");
+        }
+      }
+      prev = seal.hash;
+      expectIdx++;
+      afterIdx = seal.idx;
+    }
+  }
+  if (truncated) {
+    // Honest states have the chain beginning AT or BELOW the attested anchor: mid-sweep the
+    // oldest surviving pair sits below it, at completion exactly on it. Deeper is dishonest.
+    truncated.attested = attested >= truncated.anchorIdx;
+    report.truncated = truncated;
+    if (!truncated.attested) {
+      return fail(
+        truncated.anchorIdx,
+        anchorEventId,
+        "unattested_truncation",
+        attested < 0
+          ? `the chain begins at idx ${truncated.anchorIdx} with no sealed horizon statement; honest event GC seals its horizon before deleting`
+          : `the chain begins at idx ${truncated.anchorIdx} but the newest sealed horizon statement attests only idx ${attested}: the log was truncated deeper than GC declared`,
+      );
+    }
+  }
+  return report;
+}
+
+/**
+ * Write and seal the horizon statement that makes an event-log truncation attributable to GC
+ * rather than to tampering. The M2 event sweep MUST call this and see `attested: true` BEFORE
+ * it deletes anything: a crash after deletion but before the statement leaves an anchor with no
+ * attestation, which verify reports as tampering, and would be right to. `attested: false`
+ * means the statement is committed but the finality watermark has not let the chain seal
+ * through it yet; the sweep must not proceed until a later attempt seals it.
+ */
+export async function attestEventTruncation(
+  host: ChainHost,
+  anchor: { idx: number; cursor: string; seq: number },
+  runId = "gc:events",
+): Promise<{ attested: boolean }> {
+  const at = await host.storage.appendGcEvent(horizonStatement(anchor, runId));
+  await sealEvents(host);
+  const head = await host.storage.sealHead();
+  const attested = !!head &&
+    (BigInt(head.cursor) > BigInt(at.cursor) || (head.cursor === at.cursor && head.seq >= at.seq));
+  return { attested };
+}
+
+/** The sealed event, read back for verification. Positioned by its cursor rather than scanned:
+ *  a verify must not become a full log scan per link. */
+async function eventById(host: ChainHost, id: string, cursor: string, seq: number): Promise<SpaceEvent | undefined> {
+  const before = seq > 0 ? { cursor, seq: seq - 1 } : null;
+  const window = await host.storage.sealableEvents(before, 4);
+  return window.find((e) => e.id === id);
 }

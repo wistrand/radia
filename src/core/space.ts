@@ -69,7 +69,8 @@ import {
   type ResolvedToken,
 } from "./auth.ts";
 import { Coalescer } from "./coalesce.ts";
-import { type CompactionResult, compactRegistries, keyOf, RUNTIME_KEYS } from "./gc.ts";
+import { type CompactionResult, type GcHost, keyOf, newSweepState, RUNTIME_KEYS } from "./gc.ts";
+import * as sweeps from "./gc.ts";
 import { type BlobGcResult, type BlobStore, MemoryBlobStore, type RewrapResult } from "../storage/blobs.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
 import { RadiaError } from "./errors.ts";
@@ -104,15 +105,8 @@ import {
   type StaleSplit,
   thread,
 } from "./inspection.ts";
-import {
-  attestedAnchorIdx,
-  chainedEvent,
-  horizonStatement,
-  type IntegrityReport,
-  linkEvents,
-  SEAL_BATCH,
-  type SealKey,
-} from "./seal.ts";
+import { type ChainHost, type IntegrityReport, SEAL_BATCH, type SealKey } from "./seal.ts";
+import * as chain from "./seal.ts";
 import { CHAIN_GENESIS, eventHash, type GraphNode, RESERVED_KINDS } from "../../sdk/ts/wire.ts";
 export type { GraphNode };
 
@@ -242,10 +236,6 @@ export interface SpaceContext {
    *  available in the year 2400 is litter no sweep can reach. `0` refuses any delay. */
   maxPutDelaySeconds: number;
 }
-
-/** Rows one amortized sweep pass may delete: small enough that the write paying for it feels a few
- *  milliseconds, not a collection. A backlog bigger than this drains across later triggers. */
-const AMORTIZED_BATCH = 256;
 
 const DEFAULT_CONTEXT: SpaceContext = {
   principal: "local:dev", // auto-provisioned locally; real principals land in Phase 7
@@ -2254,261 +2244,49 @@ export class Space {
     return envs.map((e) => ({ record: found.get(e.recordId) ?? null, envelope: e }));
   }
 
-  /**
-   * The retention sweep: delete records whose writer-declared `retention_until` has passed.
-   *
-   * The second deliberate carve-out from immutability, after artifact erasure, and shaped by the
-   * same rule: destroy the content, keep the evidence (the event log keeps id, kind, digest and
-   * every transition; the sweep adds one recordless `gc` event per kind per batch). See
-   * agent_docs/plan-gc.md for eligibility and for what is deliberately NOT swept.
-   *
-   * The kind classes come from the REGISTRY, which is why this lives here and not in the adapter:
-   * only the registry knows which kinds are reference data (`claimable: false`, sweepable from any
-   * state because they sit `available` forever by design) and which are reserved. A kind this
-   * process has never loaded defaults to the strict class (consumed/dead_letter only), which is
-   * the conservative side.
-   *
-   * ON DEMAND, never on a timer, like sealing and for the same reason: an idle space should hold
-   * no background work. `radia doctor` reports the backlog; `POST /v0/ops/gc` runs the sweep.
-   */
-  async gc(opts: { limit?: number; dryRun?: boolean; compact?: boolean; principal?: string } = {}): Promise<GcReport> {
-    const limit = Math.min(Math.max(opts.limit ?? 1000, 1), 10_000);
-    const totals = { swept: 0, eligible: 0, idempotency: 0, byKind: {} as Record<string, number>, more: false, passes: 0 };
-    // Bounded batches rather than one unbounded delete: each pass is one transaction, so a crash
-    // loses at most a batch's progress and a concurrent reader never sees a half-swept batch. The
-    // pass cap bounds one CALL; `more` says a backlog remains and the caller decides.
-    const MAX_PASSES = 50;
-    // The idempotency cutoff rides the FIRST pass only: after it those rows are gone, and a dry
-    // run would count the same rows once per pass.
-    const idempotencyBefore = addSeconds(await this.storage.now(), -this.ctx.idempotencyRetentionSeconds);
-    for (;;) {
-      const r = await this.storage.sweepExpired({
-        ...this.sweepSelector(limit, opts.dryRun),
-        runId: opts.principal ?? this.ctx.runId,
-        ...(totals.passes === 0 ? { idempotencyBefore } : {}),
-      });
-      totals.eligible += r.eligible;
-      totals.swept += r.swept;
-      totals.idempotency += r.idempotency;
-      for (const [k, n] of Object.entries(r.byKind)) totals.byKind[k] = (totals.byKind[k] ?? 0) + n;
-      totals.passes++;
-      totals.more = r.more;
-      // A dry run never loops: its count is a capped sample, and looping would re-count the same
-      // rows forever, since nothing was deleted.
-      if (opts.dryRun || !r.more || totals.passes >= MAX_PASSES) break;
-    }
-    // An explicit LIVE gc restarts the amortized clock. Not a dry run: doctor calls this dry on
-    // every diagnostics, and a backlog report must not keep postponing the sweep it reports on.
-    if (!opts.dryRun) this.writesSinceSweep = 0;
-    // Event-log retention rides the verb too (phase 3, plan-gc.md) and ONLY the verb: sealing on
-    // the write path is exactly the background work the on-demand rule refuses.
-    const events = this.ctx.eventRetentionSeconds != null
-      ? await this.gcEvents({ dryRun: opts.dryRun, runId: opts.principal })
-      : undefined;
-    // Registry compaction rides the same verb (phase 2, plan-gc.md): superseded successors of
-    // latest-wins registries, plus interests whose run is over. `core/gc.ts` owns the keep-newest
-    // logic and its resurrection guard; this only wires the reads and the one destructive member.
-    let compaction: CompactionResult | undefined;
-    if (opts.compact !== false) {
-      compaction = await compactRegistries(
-        this.compactionHost(),
-        { dryRun: opts.dryRun, runId: opts.principal ?? this.ctx.runId },
-      );
-    }
-    // Reference-aware blob GC rides the verb LAST (phase 4, plan-gc.md): the record sweep above
-    // is what turns an expired artifact into an unreferenced digest, so its bytes reclaim in the
-    // same call. The live set is every digest any surviving artifact record carries, paged to
-    // exhaustion; the store deletes what is absent from it AND untouched past the grace window
-    // (the whole race answer — see `blobGcGraceSeconds` and `BlobStore.retainOnly`). LIVE sweeps
-    // only: `doctor` runs this dry on every diagnostics, and a dry blob pass would walk every
-    // artifact record and the whole blob directory to report a number the live sweep reports
-    // anyway.
-    let blobs: BlobGcResult | undefined;
-    if (!opts.dryRun) {
-      blobs = await this.blobs.retainOnly(await this.referencedDigests(), { graceMs: this.ctx.blobGcGraceSeconds * 1000 });
-    }
-    // Assembled into a typed value rather than spread into the return, so a sweep that grows a
-    // field `GcReport` does not declare is a compile error. Conditional spreads widen to `{}` and
-    // check nothing (see `handleIntegrity`).
-    const out: GcReport = { ...totals };
-    if (compaction) out.compaction = compaction;
-    if (events) out.events = events;
-    if (blobs) out.blobs = blobs;
-    return out;
-  }
+  // ---- the sweeps (gc.ts) --------------------------------------------------------------
+  //
+  // Retention, registry compaction and the event-log horizon, plus the two amortized triggers the
+  // write path pays for. Never a timer: an idle space runs nothing.
 
-  /**
-   * Event-log retention: truncate the log to `eventRetentionSeconds` ∩ the sealed head
-   * (plan-gc.md phase 3). The order is the contract, each step for a reason the plants pin:
-   * seal FIRST (a never-sealed space must not sweep nothing forever, and only sealed events are
-   * ever candidates); pick the anchor through the seals, never splitting events that share a
-   * cursor (an xid groups siblings, and a split would strand retained events below the horizon);
-   * attest and SEE `attested: true` before the first delete (an honest crash must not read as
-   * tampering); then delete pairs oldest-first so every observable state is a clean prefix
-   * truncation. Refusing to proceed (statement not sealed yet) reports `more: true` rather than
-   * weakening any step.
-   */
-  async gcEvents(
-    opts: { dryRun?: boolean; limit?: number; sealBudget?: number; runId?: string } = {},
-  ): Promise<EventGcResult> {
-    const retention = this.ctx.eventRetentionSeconds;
-    const out: EventGcResult = { enabled: retention != null, sealed: 0, unsealed: 0, swept: 0, eligible: 0, more: false };
-    if (retention == null) return out;
-    // A dry run reports the seal-first debt instead of paying it: doctor runs this on every
-    // diagnostics, and "what would sweep" must not quietly become "seal 5000 links".
-    out.sealed = (await this.sealEvents(opts.sealBudget ?? (opts.dryRun ? 0 : 10 * SEAL_BATCH))).sealed;
-    const head = await this.storage.sealHead();
-    out.unsealed = (await this.storage.sealableEvents(head ? { cursor: head.cursor, seq: head.seq } : null, 1)).length;
-    out.more = out.unsealed > 0; // a seal backlog is work this call did not finish
-    if (!head) return out;
+  /** The amortization counters. Instance state, so two instances over one database each keep their
+   *  own and the housekeeping merely runs a little oftener. */
+  readonly #sweep = newSweepState();
 
-    const cutoff = addSeconds(await this.storage.now(), -retention);
-    let anchor = await this.storage.latestSealBefore(cutoff);
-    const [oldest] = await this.storage.getSeals(-1, 1);
-    // Never split a cursor group: if the next seal shares the candidate's cursor, the window
-    // boundary falls inside one transaction's events; step down and sweep less instead.
-    while (anchor) {
-      const [next] = await this.storage.getSeals(anchor.idx, 1);
-      if (!next || next.cursor !== anchor.cursor) break;
-      if (anchor.idx - 1 < oldest.idx) {
-        anchor = null;
-        break;
-      }
-      [anchor] = await this.storage.getSeals(anchor.idx - 2, 1);
-    }
-    if (!anchor) return out;
-    out.anchorIdx = anchor.idx;
-
-    if (opts.dryRun) {
-      out.eligible = (await this.storage.sweepSealedEvents({ idx: anchor.idx, seq: anchor.seq }, 0, true)).events;
-      return out;
-    }
-    const { attested } = await this.attestEventTruncation(anchor, opts.runId ?? this.ctx.runId);
-    out.attested = attested;
-    if (!attested) {
-      // The statement is committed but the chain has not sealed through it (finality watermark
-      // behind, or the seal backlog outran the budget). Deleting now would manufacture the
-      // unattested state verify rightly calls tampering, so nothing is deleted.
-      out.more = true;
-      return out;
-    }
-    const r = await this.storage.sweepSealedEvents(
-      { idx: anchor.idx, seq: anchor.seq },
-      Math.min(Math.max(opts.limit ?? 10_000, 1), 100_000),
-    );
-    out.swept = r.events;
-    out.eligible = r.events;
-    if (!r.done) out.more = true;
-    return out;
-  }
-
-  /** The eligibility classes the sweep needs, computed from the registry (only it knows which
-   *  kinds are reference data and which are reserved). Shared by the verb and the amortized pass. */
-  private sweepSelector(limit: number, dryRun?: boolean) {
+  private get gcHost(): GcHost {
     return {
-      // `artifact` is reference data like any other claimable-false kind (it sits `available`
-      // forever), so once its writer declared retention it sweeps from any state. It left
-      // `neverKinds` when reference-aware blob GC arrived (plan-gc.md phase 4): before that,
-      // sweeping the record stranded its bytes with no path to them but `erasures`.
-      anyStateKinds: this.kinds.list()
-        .filter((d) => !isClaimable(d) && (!RESERVED_KINDS.includes(d.kind) || d.kind === ARTIFACT))
-        .map((d) => d.kind),
-      neverKinds: RESERVED_KINDS.filter((k) => k !== ARTIFACT),
-      limit,
-      dryRun,
+      storage: this.storage,
+      blobs: this.blobs,
+      ctx: this.ctx,
+      kinds: { list: () => this.kinds.list(), get: (k) => this.kinds.get(k) },
+      sweep: this.#sweep,
+      query: (pattern, limit, page) => this.query(pattern, limit, page),
+      runIsLive: (run) => this.runIsLive(run),
+      sealEvents: (limit) => this.sealEvents(limit),
+      attestEventTruncation: (anchor, runId) => this.attestEventTruncation(anchor, runId),
     };
   }
 
-  /** What compaction reads and the one destructive member it calls. Shared by the `gc` verb and
-   *  the amortized per-kind trigger, so the two cannot come to disagree about what a registry is. */
-  private compactionHost() {
-    return {
-      listKinds: () => this.kinds.list(),
-      pageDesc: (kind: string, limit: number, after?: string) => this.query({ kind }, limit, { dir: "desc" as const, after }),
-      sweepIds: (ids: string[], runId: string) => this.storage.sweepIds(ids, runId),
-      runIsLive: (run: string) => this.runIsLive(run),
-    };
+  gc(opts: { limit?: number; dryRun?: boolean; compact?: boolean; principal?: string } = {}): Promise<GcReport> {
+    return sweeps.gc(this.gcHost, opts);
   }
 
-  /** Commits since the last amortized sweep. Instance state, like the notifier: two instances over
-   *  one database each keep their own count, which only means the housekeeping runs a bit oftener. */
-  private writesSinceSweep = 0;
-  private amortizedSweepRunning = false;
-  /** Writes per KEYED kind since that kind was last compacted. Only keyed kinds are counted, so a
-   *  space streaming an unkeyed kind never triggers a walk. */
-  private readonly writesSinceCompact = new Map<string, number>();
-  private compactingKind = new Set<string>();
-
-  /**
-   * Compact ONE registry inline, every `compactEveryWritesPerKind` writes of that kind.
-   *
-   * The measurement is the whole argument (agent_docs/plan-registry-cost.md): a registry read is
-   * linear in history, and compaction makes it EXACTLY FLAT, so leaving it to a verb nobody runs
-   * means every reader pays for litter forever. Amortizing it puts the cost on the writer producing
-   * the litter, which is where the interest budget and the retention sweep already put theirs.
-   *
-   * PER KIND rather than on `gcEveryWrites`, and that distinction is the reason this is separate
-   * machinery: registry litter grows per write of a KEYED kind, so a global counter would walk
-   * every registry in the space because somebody streamed a million chunks. What runs here is a
-   * walk of the registry that just grew.
-   *
-   * Same shape as the retention sweep otherwise: no timer, awaited so it is deterministic and
-   * bounded, guarded against stacking, and a failure is swallowed because housekeeping must never
-   * fail the write that happened to trigger it.
-   */
-  private async maybeCompactKind(kind: string): Promise<void> {
-    if (this.ctx.compactEveryWritesPerKind <= 0) return;
-    // Only kinds a compaction pass would actually walk. `NEVER_COMPACT` and unkeyed kinds are
-    // asked about once per write and answered from the in-process registry, never the database.
-    const def = this.kinds.get(kind);
-    const keyed = kind === INTEREST || (def !== undefined && (def.contentKey?.length ?? 0) > 0);
-    if (!keyed) return;
-    const n = (this.writesSinceCompact.get(kind) ?? 0) + 1;
-    if (n < this.ctx.compactEveryWritesPerKind) {
-      this.writesSinceCompact.set(kind, n);
-      return;
-    }
-    this.writesSinceCompact.set(kind, 0);
-    if (this.compactingKind.has(kind)) return;
-    this.compactingKind.add(kind);
-    try {
-      await compactRegistries(this.compactionHost(), { runId: this.ctx.runId, only: kind });
-    } catch { /* the litter waits for the next trigger or the verb */ } finally {
-      this.compactingKind.delete(kind);
-    }
+  private maybeCompactKind(kind: string): Promise<void> {
+    return sweeps.maybeCompactKind(this.gcHost, kind);
   }
 
-  /**
-   * The amortized half of GC: every `gcEveryWrites` record commits, the WRITING call runs one small
-   * retention batch inline.
-   *
-   * The lazy-lease-expiry shape, deliberately: no timer (an idle space runs nothing and does not
-   * grow), and the cost lands on the principal generating the litter, which is the fair place for
-   * it. Awaited rather than fire-and-forget, so the Nth writer pays a bounded few milliseconds
-   * and tests are deterministic; the guard keeps a slow sweep from stacking. Measured (plan-gc.md
-   * carries the table): an empty trigger costs 0.36ms (sqlite) / 1.7ms (pglite), a full 256-row
-   * batch 5–9ms, which amortizes to under 1% of a put and lands at p99.9, not p99.
-   * Retention only — compaction walks whole registries and stays with the explicit verb, because
-   * registry litter grows per session, not per write.
-   *
-   * A failed pass is swallowed: housekeeping must never fail the write that happened to trigger it.
-   */
-  private async maybeAmortizedSweep(): Promise<void> {
-    if (this.ctx.gcEveryWrites <= 0) return;
-    if (++this.writesSinceSweep < this.ctx.gcEveryWrites) return;
-    this.writesSinceSweep = 0;
-    if (this.amortizedSweepRunning) return;
-    this.amortizedSweepRunning = true;
-    try {
-      await this.storage.sweepExpired({
-        ...this.sweepSelector(AMORTIZED_BATCH),
-        runId: this.ctx.runId,
-        idempotencyBefore: addSeconds(await this.storage.now(), -this.ctx.idempotencyRetentionSeconds),
-      });
-    } catch { /* the backlog waits for the next trigger or the verb */ } finally {
-      this.amortizedSweepRunning = false;
-    }
+  private maybeAmortizedSweep(): Promise<void> {
+    return sweeps.maybeAmortizedSweep(this.gcHost);
   }
+
+  gcEvents(opts: { dryRun?: boolean; limit?: number; sealBudget?: number; runId?: string } = {}): Promise<EventGcResult> {
+    return sweeps.gcEvents(this.gcHost, opts);
+  }
+
+  private referencedDigests(): Promise<Set<string>> {
+    return sweeps.referencedDigests(this.gcHost);
+  }
+
 
   /**
    * Remediate every record matching an envelope SELECTOR, not one id at a time.
@@ -2563,215 +2341,30 @@ export class Space {
     return { action, matched: rows.length, applied, more: rows.length >= limit, sample: rows.slice(0, 5).map((r) => r.envelope.recordId) };
   }
 
-  /**
-   * Extend the event chain over everything that has become final since the last pass.
-   *
-   * ON DEMAND, never on a timer: an idle space should hold no background work, the same lesson
-   * `Notifier` and `sweepWatches` learned. Verification seals first, so the answer covers
-   * everything sealable at the moment it is asked rather than whatever a timer last got to.
-   *
-   * Idempotent and safe to run concurrently with another instance: seals are content-derived, so
-   * two sealers over one database compute identical rows, and the loser's insert is skipped rather
-   * than overwriting a link.
-   */
-  async sealEvents(limit = SEAL_BATCH): Promise<{ sealed: number; head?: { idx: number; hash: string } }> {
-    let head = await this.storage.sealHead();
-    let sealed = 0;
-    for (;;) {
-      const after = head ? { cursor: head.cursor, seq: head.seq } : null;
-      const events = await this.storage.sealableEvents(after, Math.min(limit - sealed, SEAL_BATCH));
-      if (events.length === 0) break;
-      const links = await linkEvents(head, events, this.sealKey);
-      const written = await this.storage.appendSeals(links);
-      sealed += written;
-      // A short write means another sealer claimed those positions. Re-read the head and continue
-      // from wherever the chain actually reached, rather than assuming this process's view.
-      head = await this.storage.sealHead();
-      if (written < links.length || sealed >= limit) break;
-    }
-    return { sealed, ...(head ? { head: { idx: head.idx, hash: head.hash } } : {}) };
+  // ---- the event chain (seal.ts) ------------------------------------------------------
+  //
+  // Sealing and verification are a walk over the log plus arithmetic over hashes: no record, no
+  // grant, no kind, which is why `ChainHost` is two members wide.
+
+  private get chainHost(): ChainHost {
+    return { storage: this.storage, sealKey: this.sealKey };
   }
 
-  /**
-   * Verify the event chain, reporting the FIRST divergence.
-   *
-   * "The chain is invalid" is not an answer anyone can act on. The position, the event it covers,
-   * and which of the four ways it failed are, and they are what distinguishes a truncated restore
-   * from an edited row.
-   *
-   * `tail` verifies only the newest N links, from the hash of the one below them. A full walk is
-   * O(the whole history) and `radia doctor` embedded one, so a routine health check re-verified
-   * every link ever written on every run: measured at 1.7s over 20k links on a fresh space and 60s
-   * on a working one, and unbounded from there. A spot check answers what a health report is
-   * actually asking (has the recent log been altered) and says so in `spotCheckedFrom`; the full
-   * audit stays `radia integrity`, which is where an unbounded walk belongs.
-   */
-  async verifyIntegrity(opts: { seal?: boolean; limit?: number; tail?: number } = {}): Promise<IntegrityReport> {
-    if (opts.seal !== false) await this.sealEvents();
-    const head = await this.storage.sealHead();
-    const signed = !!this.sealKey;
-    const report: IntegrityReport = {
-      ok: true,
-      checked: 0,
-      sealed: head ? head.idx + 1 : 0,
-      unsealed: (await this.storage.sealableEvents(head ? { cursor: head.cursor, seq: head.seq } : null, 1)).length,
-      signed,
-      ...(head ? { head: { idx: head.idx, hash: head.hash } } : {}),
-    };
-    type Reason = NonNullable<IntegrityReport["failure"]>["reason"];
-    const fail = (idx: number, eventId: string, reason: Reason, detail: string) => {
-      report.ok = false;
-      report.failure = { idx, eventId, reason, detail };
-      return report;
-    };
-
-    let prev = CHAIN_GENESIS;
-    let expectIdx = 0;
-    let afterIdx = -1;
-    let first = true;
-    // Start from the hash BELOW the tail rather than from genesis. Not the anchor path below: that
-    // one exists for event GC and demands an attestation, because a chain that begins late without
-    // one is indistinguishable from a truncated log. A spot check makes no claim about the links it
-    // skipped, so it must not judge them either.
-    if (opts.tail !== undefined && head && head.idx + 1 > opts.tail) {
-      const from = head.idx + 1 - opts.tail;
-      const [below] = await this.storage.getSeals(from - 1, 1);
-      if (below) {
-        afterIdx = below.idx;
-        prev = below.hash;
-        expectIdx = below.idx + 1;
-        first = false;
-        report.spotCheckedFrom = expectIdx;
-      }
-    }
-    // Event GC leaves a chain that begins past genesis (the anchor state: links below the anchor
-    // deleted, the anchor's own event swept once the sweep completes). Those facts are collected
-    // during the walk and judged AFTER it, because the horizon statement that makes the
-    // truncation honest is sealed above it in the retained suffix.
-    let truncated: NonNullable<IntegrityReport["truncated"]> | undefined;
-    let anchorEventId = "";
-    let attested = -1; // newest sealed horizon statement's anchorIdx; the walk ascends, last wins
-    for (;;) {
-      const seals = await this.storage.getSeals(afterIdx, Math.min(opts.limit ?? SEAL_BATCH, SEAL_BATCH));
-      if (seals.length === 0) break;
-      // ONE read per PAGE, not one per link. Each link's event was fetched with its own windowed
-      // read, which is cheap against a warm cache (0.085ms) and is not what an audit meets: on a
-      // freshly started space the same 20k-link walk took 135 SECONDS at ~6.7ms a link. Measured
-      // both ways, because the hot-cache number says the opposite and is the one easy to get.
-      // Seals are contiguous and ascending, so a page's events are one window; a gap (event GC
-      // swept a link) falls back to the single read, which is also the anchor's path.
-      const lead = seals[0];
-      const window = await this.storage.sealableEvents(
-        lead.seq > 0 ? { cursor: lead.cursor, seq: lead.seq - 1 } : null,
-        seals.length,
-      );
-      const byId = new Map(window.map((e) => [e.id, e]));
-      for (const seal of seals) {
-        const event = byId.get(seal.eventId) ?? await this.eventById(seal.eventId, seal.cursor, seal.seq);
-        if (first) {
-          first = false;
-          if (seal.idx > 0 || !event) {
-            // The anchor. Its prev_hash points at a deleted link, so the chain is accepted FROM
-            // its hash; what stands behind that hash is the signature (on a signed chain) plus
-            // the attestation judged below. A chain that merely STARTS late without either stays
-            // a tamper verdict.
-            truncated = { anchorIdx: seal.idx, swept: seal.idx + (event ? 0 : 1), attested: false };
-            anchorEventId = seal.eventId;
-            expectIdx = seal.idx;
-            if (seal.idx > 0) prev = seal.prevHash;
-          }
-        }
-        // A missing position is a DELETED link. Without this check a truncated chain verifies
-        // perfectly, which is the failure an audit most needs to catch.
-        if (seal.idx !== expectIdx) {
-          return fail(expectIdx, seal.eventId, "gap", `chain jumps from ${expectIdx - 1} to ${seal.idx}`);
-        }
-        if (seal.prevHash !== prev) {
-          return fail(seal.idx, seal.eventId, "broken_link", `prev_hash does not match the hash at ${seal.idx - 1}`);
-        }
-        if (!event) {
-          // Tolerated at the anchor alone, pending attestation; anywhere else it is tampering.
-          if (!(truncated && seal.idx === truncated.anchorIdx)) {
-            return fail(seal.idx, seal.eventId, "missing_event", "the sealed event is no longer in the log");
-          }
-        } else {
-          const hash = await eventHash(seal.prevHash, chainedEvent(seal.idx, event));
-          if (hash !== seal.hash) {
-            return fail(seal.idx, seal.eventId, "hash_mismatch", "the event does not hash to its seal; it was altered after sealing");
-          }
-          const a = attestedAnchorIdx(event);
-          if (a !== null) attested = a;
-          report.checked++;
-        }
-        if (this.sealKey) {
-          if (!seal.sig) return fail(seal.idx, seal.eventId, "bad_signature", "the link carries no signature on a signed chain");
-          const verdict = await this.sealKey.verify(seal.hash, seal.sig);
-          // A link signed under a RETIRED key that nobody supplied is un-checkable, not forged.
-          // Calling it a bad signature would report a rotation as tampering, which is the one
-          // verdict this report exists to be trusted on.
-          if (verdict === "unknown_key") {
-            return fail(
-              seal.idx,
-              seal.eventId,
-              "unknown_key",
-              "this link was signed under a seal key this space does not hold; supply it (RADIA_SEAL_KEY_RETIRED) to check links from before the rotation",
-            );
-          }
-          if (verdict === "bad") {
-            return fail(seal.idx, seal.eventId, "bad_signature", "the signature does not verify; the chain was rebuilt without the key");
-          }
-        }
-        prev = seal.hash;
-        expectIdx++;
-        afterIdx = seal.idx;
-      }
-    }
-    if (truncated) {
-      // Honest states have the chain beginning AT or BELOW the attested anchor: mid-sweep the
-      // oldest surviving pair sits below it, at completion exactly on it. Deeper is dishonest.
-      truncated.attested = attested >= truncated.anchorIdx;
-      report.truncated = truncated;
-      if (!truncated.attested) {
-        return fail(
-          truncated.anchorIdx,
-          anchorEventId,
-          "unattested_truncation",
-          attested < 0
-            ? `the chain begins at idx ${truncated.anchorIdx} with no sealed horizon statement; honest event GC seals its horizon before deleting`
-            : `the chain begins at idx ${truncated.anchorIdx} but the newest sealed horizon statement attests only idx ${attested}: the log was truncated deeper than GC declared`,
-        );
-      }
-    }
-    return report;
+  sealEvents(limit = SEAL_BATCH): Promise<{ sealed: number; head?: { idx: number; hash: string } }> {
+    return chain.sealEvents(this.chainHost, limit);
   }
 
-  /**
-   * Write and seal the horizon statement that makes an event-log truncation attributable to GC
-   * rather than to tampering. The M2 event sweep MUST call this and see `attested: true` BEFORE
-   * it deletes anything: a crash after deletion but before the statement leaves an anchor with no
-   * attestation, which verify reports as tampering, and would be right to. `attested: false`
-   * means the statement is committed but the finality watermark has not let the chain seal
-   * through it yet; the sweep must not proceed until a later attempt seals it.
-   */
-  async attestEventTruncation(
+  verifyIntegrity(opts: { seal?: boolean; limit?: number; tail?: number } = {}): Promise<IntegrityReport> {
+    return chain.verifyIntegrity(this.chainHost, opts);
+  }
+
+  attestEventTruncation(
     anchor: { idx: number; cursor: string; seq: number },
-    runId = "gc:events",
+    runId?: string,
   ): Promise<{ attested: boolean }> {
-    const at = await this.storage.appendGcEvent(horizonStatement(anchor, runId));
-    await this.sealEvents();
-    const head = await this.storage.sealHead();
-    const attested = !!head &&
-      (BigInt(head.cursor) > BigInt(at.cursor) || (head.cursor === at.cursor && head.seq >= at.seq));
-    return { attested };
+    return chain.attestEventTruncation(this.chainHost, anchor, runId);
   }
 
-  /** The sealed event, read back for verification. Positioned by its cursor rather than scanned:
-   *  a verify must not become a full log scan per link. */
-  private async eventById(id: string, cursor: string, seq: number): Promise<SpaceEvent | undefined> {
-    const before = seq > 0 ? { cursor, seq: seq - 1 } : null;
-    const window = await this.storage.sealableEvents(before, 4);
-    return window.find((e) => e.id === id);
-  }
 
   /**
    * Every erasure and whether it STILL HOLDS.
@@ -2822,23 +2415,6 @@ export class Space {
     return { erasures: out, checked: view.records.length, complete: view.complete };
   }
 
-  /** Every digest a surviving `artifact` record carries, paged to EXHAUSTION: a bounded read would
-   *  present a prefix as the population, and both callers act on this set (one deletes what is
-   *  absent from it, the other re-seals what is in it). */
-  private async referencedDigests(): Promise<Set<string>> {
-    const live = new Set<string>();
-    let after: string | undefined;
-    for (;;) {
-      const rows = await this.query({ kind: ARTIFACT }, 500, { dir: "desc", after });
-      for (const rec of rows) {
-        const d = (rec.body as { digest?: unknown }).digest;
-        if (typeof d === "string") live.add(d);
-      }
-      if (rows.length < 500) break;
-      after = rows[rows.length - 1].id;
-    }
-    return live;
-  }
 
   /**
    * Re-seal every referenced payload under the CURRENT blob key, which is what finishes a KEK
