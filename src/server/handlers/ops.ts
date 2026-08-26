@@ -7,6 +7,7 @@
 
 import type { Space } from "../../core/space.ts";
 import type { RecordState, StatsScope } from "../../storage/adapter.ts";
+import type { IntegrityResponse } from "../../../sdk/ts/wire.ts";
 import { problem, rejectUnknown, statusFor } from "../problem.ts";
 import { RadiaError } from "../../core/errors.ts";
 
@@ -330,27 +331,29 @@ export async function handleDryRun(space: Space, req: Request): Promise<Response
  */
 export async function handleIntegrity(space: Space): Promise<Response> {
   const r = await space.verifyIntegrity();
-  return Response.json({
-    ...r,
-    ...(r.signed ? {} : {
-      note: "this chain is NOT signed, so it detects corruption and careless edits but not a " +
-        "deliberate rewrite: anyone who can write to the database can recompute every hash. " +
-        "Set RADIA_SEAL_KEY (or run with --seal-key) to anchor it under a key the database does not hold.",
-    }),
-    ...(r.unsealed > 0 ? {
-      unsealedNote: `${r.unsealed}+ events are committed but not yet sealed; sealing follows the ` +
-        "log's finality watermark, so the most recent activity is always outside the chain",
-    } : {}),
-    ...(r.truncated ? {
-      truncatedNote: `the chain begins at idx ${r.truncated.anchorIdx}: ${r.truncated.swept} ` +
-        `events were removed by event-log GC, ` +
-        (r.truncated.attested
-          ? (r.signed
-            ? "attested by the anchor's signature and a sealed horizon statement"
-            : "with a sealed horizon statement; on an UNSIGNED chain that is naive-edit evidence only")
-          : "and nothing attests the truncation"),
-    } : {}),
-  });
+  // The notes are ASSIGNED to a typed object rather than conditionally spread into the response.
+  // Spreads widen to `{}` and TypeScript then checks nothing, so the annotation that looked like a
+  // guard was decoration: a misspelled note, or one the wire shape does not declare, compiled.
+  const notes: Pick<IntegrityResponse, "note" | "unsealedNote" | "truncatedNote"> = {};
+  if (!r.signed) {
+    notes.note = "this chain is NOT signed, so it detects corruption and careless edits but not a " +
+      "deliberate rewrite: anyone who can write to the database can recompute every hash. " +
+      "Set RADIA_SEAL_KEY (or run with --seal-key) to anchor it under a key the database does not hold.";
+  }
+  if (r.unsealed > 0) {
+    notes.unsealedNote = `${r.unsealed}+ events are committed but not yet sealed; sealing follows the ` +
+      "log's finality watermark, so the most recent activity is always outside the chain";
+  }
+  if (r.truncated) {
+    notes.truncatedNote = `the chain begins at idx ${r.truncated.anchorIdx}: ${r.truncated.swept} ` +
+      `events were removed by event-log GC, ` +
+      (r.truncated.attested
+        ? (r.signed
+          ? "attested by the anchor's signature and a sealed horizon statement"
+          : "with a sealed horizon statement; on an UNSIGNED chain that is naive-edit evidence only")
+        : "and nothing attests the truncation");
+  }
+  return Response.json({ ...r, ...notes } satisfies IntegrityResponse);
 }
 
 /**

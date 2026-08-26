@@ -21,6 +21,8 @@ import type {
   RadiaRecord,
   RenewResult,
   SettleResult,
+  IntegrityReport,
+  IntegrityResponse,
   SpaceEvent,
   TakeResult,
 } from "./wire.ts";
@@ -47,7 +49,7 @@ export type { Population } from "./registry.ts";
 export { awaitResult } from "./await.ts";
 export type { AwaitOptions, AwaitOutcome } from "./await.ts";
 
-export type { AckResult, Cursor, KindDef, Lease, Page, PutRequest, RadiaRecord, SpaceEvent, Pattern };
+export type { AckResult, Cursor, IntegrityReport, IntegrityResponse, KindDef, Lease, Page, PutRequest, RadiaRecord, SpaceEvent, Pattern };
 
 export interface KindStateCount {
   kind: string;
@@ -347,20 +349,7 @@ export class RadiaClient {
 
   /** Recompute the event chain. `signed:false` means the chain detects corruption and careless
    *  edits but not a deliberate rewrite, since whoever can write rows can recompute the hashes. */
-  integrity(): Promise<{
-    ok: boolean;
-    checked: number;
-    sealed: number;
-    unsealed: number;
-    signed: boolean;
-    head?: { idx: number; hash: string };
-    /** Present when the chain begins past genesis (event-log GC's anchor state). `attested`
-     *  means a sealed horizon statement covers the truncation; unattested truncation fails. */
-    truncated?: { anchorIdx: number; swept: number; attested: boolean };
-    failure?: { idx: number; eventId: string; reason: string; detail: string };
-    note?: string;
-    truncatedNote?: string;
-  }> {
+  integrity(): Promise<IntegrityResponse> {
     return this.req("GET", "/v0/ops/integrity");
   }
 

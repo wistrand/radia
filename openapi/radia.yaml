@@ -1335,6 +1335,11 @@ paths:
                 type: object
                 properties:
                   ok: { type: boolean, description: "the only field to branch on" }
+                  spotCheckedFrom:
+                    type: integer
+                    description: >
+                      Present when only a SUFFIX was walked: the first idx checked. `ok` then means
+                      "nothing below this was altered" and says nothing about the links beneath it.
                   checked: { type: integer }
                   sealed: { type: integer, description: "chain length, so `checked: 0` cannot read as verified" }
                   unsealed: { type: integer, description: "committed but not yet final; not a fault" }

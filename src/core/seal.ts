@@ -186,38 +186,9 @@ export async function linkEvents(
   return out;
 }
 
-/** What a verification found. `ok` is the only field a caller should branch on. */
-export interface IntegrityReport {
-  /** Set when only a SUFFIX was walked (`verifyIntegrity({tail})`): the first idx checked. `ok`
-   *  then means "nothing below this was altered", and says nothing about the links beneath it. */
-  spotCheckedFrom?: number;
-  ok: boolean;
-  /** Links checked in this pass. */
-  checked: number;
-  /** Chain length, so "0 checked" cannot read as "verified". */
-  sealed: number;
-  /** Events committed but not yet sealed. Not a fault: sealing follows the watermark. */
-  unsealed: number;
-  head?: { idx: number; hash: string };
-  /** Present only when the chain is signed. `false` means a link's signature did not verify, which
-   *  is the case a bare chain cannot distinguish from an honest rebuild. */
-  signed: boolean;
-  /**
-   * Present when the chain begins past genesis: event GC's anchor state. `swept` counts events
-   * whose content is gone (`anchorIdx` links below the anchor, plus the anchor's own event once
-   * the sweep completes); the anchor's dense idx is what makes it exact. `attested` means the
-   * retained suffix carries a sealed horizon statement covering the anchor, so the truncation is
-   * the one the sweep declared; without it `ok` is false (`unattested_truncation`). On an
-   * unsigned chain an attestation is naive-edit evidence only, like the chain itself.
-   */
-  truncated?: { anchorIdx: number; swept: number; attested: boolean };
-  failure?: {
-    idx: number;
-    eventId: string;
-    reason: "hash_mismatch" | "broken_link" | "missing_event" | "bad_signature" | "unknown_key" | "gap" | "unattested_truncation";
-    detail: string;
-  };
-}
+// The report's SHAPE crosses `/v0`, so it is defined in the wire vocabulary and re-exported here:
+// a client restating it is how the SDK's copy came to be missing `spotCheckedFrom`.
+export type { IntegrityReport } from "../../sdk/ts/wire.ts";
 
 /**
  * The horizon statement and its reader, in one place so the sweep and the verifier cannot
