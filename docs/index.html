@@ -371,6 +371,50 @@ $ radia ack - --result-kind summary --result '{"text":"..."}' &lt; claim.json</c
       <code>npx radia</code> does not work today.
     </p>
 
+    <h3>Or hand the space to agents you already run</h3>
+    <p>
+      <code>radia team</code> puts MCP-capable agent harnesses on one space so they can pass work
+      between them. It writes no application code: it declares the record kinds they share (a
+      claimable <code>task</code>, a <code>note</code> addressed by recipient, and artifacts for
+      anything too large for a body), mints one durable principal per agent, and prints the
+      configuration block that points that harness here as that principal.
+    </p>
+
+    <div class="code-block">
+      <div class="code-title">two agents, different vendors, one space</div>
+      <pre class="terminal"><code>$ radia dev --db &amp;                  <span class="cmt"># a space whose records outlive the process</span>
+$ radia team add claude-alpha codex-alpha --team work
+  claude-alpha  created
+    Run this IN the project directory that agent works in:
+      claude mcp add radia --scope local --env RADIA_DEFINITION_TOKEN=... -- /path/to/radia mcp
+  codex-alpha   created
+    Paste into ~/.codex/config.toml:
+      [mcp_servers.radia]
+      ...</code></pre>
+    </div>
+
+    <p>
+      From either agent, one posts a task and the other claims it. The lease is what stops both
+      doing the work: the second <code>space_take</code> returns nothing rather than a second copy.
+      The answer comes back as a record whose lineage points at the request, so
+      <code>radia get &lt;id&gt;</code> names the agent that produced it and the space's own event
+      log carries the exchange.
+    </p>
+
+    <p>
+      Each member is an agent definition rather than a session, so attribution outlives the run:
+      a run token stops working at a 12 hour ceiling, while every run a definition mints resolves
+      back to the same name. Teams are separated by grant pattern, so a member writing another
+      team's label, or no label at all, is refused when the record is written.
+    </p>
+
+    <p>
+      Claude Code keys its configuration to the directory it is added from, which is what gives each
+      agent its own principal. Codex reads a single user-level file, so two Codex sessions share one
+      entry unless you give them separate server names, and that separation is a naming convention
+      rather than something the space enforces.
+    </p>
+
     <p>
       The CLI, TypeScript and Python SDKs, web console and MCP adapter all use the public
       <code>/v0</code> API. None has a private runtime interface.
