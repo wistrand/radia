@@ -331,8 +331,11 @@ export function moduleRelative(url: string, path: string): URL {
 // so the bytes are held once either way.
 // ---------------------------------------------------------------------------
 
-/** Write bytes to a path, creating parent directories. Overwrites. NOT atomic: a crash partway
- *  leaves a truncated file at `path`. Anything content-addressed wants `renameFile` instead. */
+/** Write bytes to a path. Overwrites. Does NOT create parent directories, whatever an earlier
+ *  version of this sentence said: `blobs.ts` calls `mkdirp` itself and the next caller believed
+ *  the comment instead, so the write failed with `No such file or directory` naming the FILE. Use
+ *  `ensureParent` (src/paths.ts). NOT atomic either: a crash partway leaves a truncated file at
+ *  `path`, so anything content-addressed wants `renameFile` instead. */
 export function writeBinaryFile(path: string, bytes: Uint8Array): Promise<void> {
   return backend.writeBinaryFile(path, bytes);
 }

@@ -1066,7 +1066,10 @@ export class RadiaClient {
   }
 
   /** A short-lived, single-artifact download capability. Use it for contexts that cannot send an
-   *  Authorization header (an `<img src>`). The returned `url` is relative to the space. */
+   *  Authorization header (an `<img src>`). The returned `url` is ABSOLUTE whenever the space runs
+   *  a separate artifact origin, which is the default: bytes are served from a second port so
+   *  generated content cannot reach the console's origin. Only a space with that origin disabled
+   *  hands back a path, so treat the field as "already usable" and prefix nothing without checking. */
   artifactCapability(recordId: string): Promise<{ capability: string; expiresAt: string; url: string }> {
     return this.req("POST", `/v0/artifacts/${encodeURIComponent(recordId)}/capability`);
   }

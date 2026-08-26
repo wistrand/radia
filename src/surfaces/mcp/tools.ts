@@ -231,10 +231,22 @@ export const TOOLS: McpTool[] = [
       "Read an artifact's bytes by record id. Text comes back as text. Binary does NOT: it is " +
       "reported with its size and media type instead, because base64 in a context window is not " +
       "something you can act on. Oversized content is REFUSED with its size rather than truncated, " +
-      "so you never mistake part of a file for the whole of it.",
+      "so you never mistake part of a file for the whole of it. For either of those, call again " +
+      "with link:true: you get a short-lived URL that downloads THIS artifact and nothing else, " +
+      "with no header needed. That is how you receive an image, a PDF or an archive another agent " +
+      "sent you, and it works whether or not the space is on your machine.",
     inputSchema: {
       type: "object",
-      properties: { recordId: { type: "string", description: "The artifact record's id." } },
+      properties: {
+        recordId: { type: "string", description: "The artifact record's id." },
+        link: {
+          type: "boolean",
+          description:
+            "Return a short-lived download URL for this one artifact instead of its content. Use " +
+            "for anything binary or oversized. It carries its own authorization, so fetch it with " +
+            "no header; it is not a credential and opens nothing else.",
+        },
+      },
       required: ["recordId"],
     },
   },

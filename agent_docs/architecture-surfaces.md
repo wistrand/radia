@@ -318,10 +318,28 @@ is only the fallback for a credentials file written before observers existed.
 
 Two properties carry the design:
 
-**Credentials stay outside the model context.** The adapter attaches the token itself. None
-appears in a tool schema, a tool result, or an error. `errorText` deliberately reduces a
-`RadiaClientError` to the server's RFC 9457 detail. A model driving this cannot read, log, or be
-injected into exfiltrating the credential it acts under.
+**Credentials stay outside the model context, and that claim is about THIS PROCESS.** The adapter
+attaches the token itself; none appears in a tool schema, a tool result, or an error, and
+`errorText` reduces a `RadiaClientError` to the server's RFC 9457 detail. What it does NOT mean is
+that a model cannot obtain the token: it sits in the harness's config file or its environment, and
+an agent with a file reader or a shell can open both. One did, the first time a tool refused it
+something it needed. So the guarantee is "nothing here hands the model a credential"; the thing
+that bounds a leaked one is its grants.
+
+**A refusal owes the caller a next step.** `space_get_artifact` used to refuse binary and oversized
+payloads with "use a client that can download it" while the model WAS the client, so the model went
+looking for the credential instead. `link: true` mints the runtime's own single-artifact download
+CAPABILITY and returns the URL: bytes stay out of the context window (what the refusal was
+protecting) and the model is not left to improvise.
+
+A URL rather than a local file, and the difference is not convenience. Writing bytes to disk
+assumes whatever reads them shares a filesystem with the adapter, which holds for a stdio harness
+on a laptop and fails for anything else, and it turns a pure client into an arbitrary-file writer.
+The capability already exists for this exact problem (a browser cannot put an Authorization header
+on an `<img src>`), names ONE artifact, and expires, which is what makes it safe in a context
+window where a credential is not. `artifactCapability` returns an ABSOLUTE url whenever the space
+runs a separate artifact origin, which is the default; prefixing it unconditionally produced
+`http://space:7881http://space:7882/...`.
 
 **Leases heartbeat internally.** `space_take` returns an opaque `claimId`; the fenced lease stays
 in the adapter and is renewed at lease/3. This exists because an LLM turn is not a process: nothing

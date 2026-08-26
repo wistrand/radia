@@ -6,8 +6,15 @@
 // 1. **Credentials stay outside the model context.** The adapter resolves a credential itself
 //    (src/credentials.ts) and attaches it to every request: the OBSERVER by default (ops reads
 //    only, architecture-ops-tiers.md), `RADIA_TOKEN` as the explicit override, the operator token only
-//    as a legacy fallback. No token appears in a tool schema, a tool result, or an error, so a
-//    model driving this cannot read, log, or leak the credential it is acting under.
+//    as a legacy fallback. No token appears in a tool schema, a tool result, or an error.
+//
+//    THE SCOPE OF THAT CLAIM IS THIS PROCESS, and it used to be written as though it were the
+//    model's whole world. It is not: the token sits in the harness's own config file or its
+//    environment, both of which an agent with a shell or a file reader can open, and one did the
+//    moment a tool refused it something (it wanted an image's bytes, was told to "use a client
+//    that can download it", and went looking for a credential). So the property is "nothing HERE
+//    hands the model a token", never "the model cannot obtain one". What bounds a leaked token is
+//    what it was granted, which is why a team member holds one team and nothing else.
 //
 // 2. **Leases heartbeat internally.** `space_take` hands the model an opaque `claimId`, never
 //    the fenced lease. The adapter holds the real lease and renews it at lease/3 in the
@@ -202,7 +209,7 @@ async function handle(
       const name = String(req.params?.name ?? "");
       const args = (req.params?.arguments ?? {}) as Record<string, unknown>;
       try {
-        const text = await call(name, args, client, claims, scope, kinds);
+        const text = await call(name, args, client, claims, scope, kinds, base);
         return reply(id, { content: [{ type: "text", text }] });
       } catch (e) {
         // Tool-level failures are results with isError, not JSON-RPC errors, so the model should
@@ -236,6 +243,7 @@ async function call(
   claims: Map<string, Claim>,
   scope: ScopeFiller,
   kinds: Map<string, boolean>,
+  base: string,
 ): Promise<string> {
   switch (name) {
     case "space_health":
@@ -395,6 +403,37 @@ async function call(
       const id = str(a, "recordId");
       const m = await client.artifactMeta(id);
       if (!m) return "no artifact with that record id (or no grant to read it)";
+      // A CAPABILITY URL is the answer for anything that cannot be inlined, and it exists because
+      // the refusals below used to be a DEAD END. They told a model to "use a client that can
+      // download it" while the model WAS the client, so an agent handed a 101 KB image did the
+      // only thing left: it read the definition token out of its harness's config file and started
+      // running curl. Refusing without leaving a supported path does not protect the boundary, it
+      // routes around it.
+      //
+      // A URL rather than a local file, and the difference is not convenience. Writing bytes to
+      // disk assumes the thing that will read them shares a filesystem with this process, which is
+      // true for a stdio harness on a laptop and false for anything else; it also turns a pure
+      // client into an arbitrary-file writer. The capability is the runtime's OWN primitive for
+      // this exact problem (a browser cannot put an Authorization header on an `<img src>`), it
+      // names ONE artifact, it expires, and unlike a credential it is safe to put in a context
+      // window: whoever reads it can fetch that artifact and nothing else, for a few minutes.
+      if (a.link === true) {
+        const cap = await client.artifactCapability(id);
+        // ABSOLUTE ALREADY when the space runs a separate artifact ORIGIN, which it does by
+        // default: capability URLs are served from a second port precisely so generated content
+        // cannot reach the console's origin. Prefixing unconditionally produced
+        // `http://space:7881http://space:7882/...`, so the base is added only for a space that
+        // handed back a relative path.
+        const url = /^https?:\/\//.test(cap.url) ? cap.url : `${base}${cap.url}`;
+        return pretty({
+          ...m,
+          url,
+          expiresAt: cap.expiresAt,
+          note: "a download URL for THIS artifact only, expiring at the time above. It carries its " +
+            "own authorization, so fetch it with no header and do not treat it as a credential: it " +
+            "opens one artifact and nothing else. Bytes never entered this context.",
+        });
+      }
       // REFUSED, never truncated. A truncated file presented as the file is the bounded-read bug
       // wearing a filesystem, and a model cannot tell the difference from inside a tool result.
       if (m.size > MAX_ARTIFACT_READ) {
@@ -402,7 +441,8 @@ async function call(
           ...m,
           read: false,
           note: `${m.size} bytes is past the ${MAX_ARTIFACT_READ}-byte limit for a tool result. ` +
-            "Not truncated: part of a file read as the whole one is worse than not reading it.",
+            "Not truncated: part of a file read as the whole one is worse than not reading it. " +
+            "Call again with link:true for a short-lived download URL for this one artifact.",
         });
       }
       // BINARY IS NOT INLINED. base64 in a context window is tokens a model cannot act on, and
@@ -411,8 +451,8 @@ async function call(
         return pretty({
           ...m,
           read: false,
-          note: "binary content is not inlined. Use the digest to compare it, or a client that can " +
-            "download it; a model cannot act on base64 in its context.",
+          note: "binary content is not inlined: a model cannot act on base64 in its context. " +
+            "Call again with link:true for a short-lived download URL for this one artifact.",
         });
       }
       const bytes = await client.getArtifact(id);

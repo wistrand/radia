@@ -480,3 +480,40 @@ Deno.test("[team] space_watch can wait for the NEXT record, not be handed the sa
     await s.close();
   }
 });
+
+
+Deno.test("[team] an artifact a model cannot inline is handed a URL, not a credential", async () => {
+  const sp = await newSpace();
+  try {
+    await declareTeamKinds(sp.admin);
+    const a = await addMember(sp.admin, "agent:sender", { teams: ["t"] });
+    const b = await addMember(sp.admin, "agent:receiver", { teams: ["t"] });
+    const A = new RadiaClient(sp.base, { definitionToken: a.definitionToken });
+    const B = new RadiaClient(sp.base, { definitionToken: b.definitionToken });
+
+    const bytes = new Uint8Array(200_000).fill(7);
+    const { id } = await A.putArtifact(bytes, { mediaType: "image/jpeg", meta: { [TEAM_FIELD]: "t" } });
+
+    // THE FAILURE THIS EXISTS FOR. A refusal with no supported next step is not a boundary, it is
+    // a detour sign: an agent handed a 101 KB image was told to "use a client that can download
+    // it" while it WAS the client, so it read the definition token out of its harness's config
+    // file and started running curl.
+    const cap = await B.artifactCapability(id);
+    assert(cap.url.length > 0);
+    assert(cap.expiresAt > new Date().toISOString(), "a capability that is already expired is no path at all");
+
+    // IT CARRIES ITS OWN AUTHORIZATION, so the bytes come back with NO Authorization header. That
+    // is what makes it safe to put in a context window where a credential would not be: it opens
+    // ONE artifact, and it expires.
+    const url = /^https?:\/\//.test(cap.url) ? cap.url : `${sp.base}${cap.url}`;
+    const res = await fetch(url);
+    assertEquals(res.status, 200);
+    assertEquals(new Uint8Array(await res.arrayBuffer()).length, bytes.length);
+
+    // And it is NOT a credential: it reaches that artifact and nothing else on the plane.
+    const other = await fetch(`${sp.base}/v0/ops/stats`, { headers: { "Authorization": `Bearer ${cap.capability}` } });
+    assert(other.status === 401 || other.status === 403, `a capability authenticated the ops plane: ${other.status}`);
+  } finally {
+    await sp.close();
+  }
+});
