@@ -41,19 +41,66 @@ Deno.test("agent_docs: every relative link resolves", async () => {
   assertEquals(bad, [], "dead links in the docs an agent is told to read first");
 });
 
+/**
+ * Does `.gitignore` cover this path? BUILD OUTPUTS ARE NOT SOURCE, and requiring them to exist is
+ * the difference between a guard that catches drift and one that fails in CI for a reason nothing
+ * to do with the change: `examples/chat/web/app.js` and `docs/playground/radia-jail.js` are real
+ * files locally and absent from every fresh checkout, so this test went red on its first CI run
+ * while passing on the machine that wrote it.
+ *
+ * Deliberately a SMALL matcher, covering the three forms this repo's ignore file uses: a rooted
+ * path, a directory prefix, and a `*` glob. It is not gitignore semantics; anything it cannot read
+ * simply is not skipped, which fails toward reporting rather than toward silence.
+ */
+function ignored(patterns: string[], path: string): boolean {
+  for (const raw of patterns) {
+    const rooted = raw.startsWith("/");
+    const pat = rooted ? raw.slice(1) : raw;
+    if (pat.endsWith("/")) {
+      const dir = pat.slice(0, -1);
+      if (path === dir || path.startsWith(`${dir}/`) || (!rooted && path.includes(`/${dir}/`))) return true;
+      continue;
+    }
+    if (pat.includes("*")) {
+      const re = new RegExp(`^${pat.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")}$`);
+      if (re.test(path) || (!rooted && path.split("/").some((seg) => re.test(seg)))) return true;
+      continue;
+    }
+    if (path === pat || (!rooted && (path.endsWith(`/${pat}`) || path.split("/").includes(pat)))) return true;
+  }
+  return false;
+}
+
 Deno.test("agent_docs: every source path a doc names exists", async () => {
   // Backticked paths only, and only ones that look like a file in this repo: prose here is full of
   // `symbol` and `kind_def`, so the pattern requires a directory prefix and an extension. A path
   // that stops matching because a file moved is exactly the drift this catches.
+  const gitignore = (await Deno.readTextFile(join(ROOT, ".gitignore")))
+    .split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
   const bad: string[] = [];
   const pathish = /`((?:src|sdk|extensions|examples|test|docs|scripts|bench|openapi|docker)\/[\w./-]+\.\w+)`/g;
   for (const file of await markdownFiles()) {
     const text = await Deno.readTextFile(file);
     for (const m of text.matchAll(pathish)) {
+      if (ignored(gitignore, m[1])) continue; // a build output; naming one is legitimate
       if (!await exists(join(ROOT, m[1]))) bad.push(`${file.slice(ROOT.length)} names ${m[1]}`);
     }
   }
   assertEquals(bad, [], "these docs point at source files that do not exist");
+});
+
+Deno.test("agent_docs: the ignore-aware skip covers build outputs and nothing else", () => {
+  // Proved directly, because the skip is the part that can silently widen until the guard checks
+  // nothing. The two on the left are what turned CI red; the rest must still be checked.
+  const patterns = ["/examples/chat/web/app.js", "/docs/playground/vendor/", "/radia", "*.db", "__pycache__/"];
+  assert(ignored(patterns, "examples/chat/web/app.js"), "a rooted build output is not skipped");
+  assert(ignored(patterns, "docs/playground/vendor/pglite.js"), "a file under an ignored directory is not skipped");
+  assert(ignored(patterns, "space.db") && ignored(patterns, "a/b/space.db"), "an unrooted glob should match at any depth");
+  assert(ignored(patterns, "sdk/py/__pycache__/x.pyc"), "an unrooted directory should match at any depth");
+
+  assert(!ignored(patterns, "src/core/space.ts"), "ordinary source must still be checked");
+  assert(!ignored(patterns, "examples/chat/web/app.ts"), "the SOURCE beside a build output must still be checked");
+  assert(!ignored(patterns, "docs/playground/index.html"), "a tracked file in a partly-ignored directory must still be checked");
 });
 
 Deno.test("agent_docs: the frozen contract's own status paragraph is checked against its paths", async () => {

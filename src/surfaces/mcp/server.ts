@@ -35,6 +35,7 @@ import type { Lease, RadiaRecord } from "../../storage/adapter.ts";
 import type { Pattern } from "../../core/matching.ts";
 import { TOOLS } from "./tools.ts";
 import { ScopeFiller } from "./scope.ts";
+import { mediaTypeForPath } from "../media.ts";
 import { newer } from "../../../sdk/ts/registry.ts";
 import { ARTIFACT } from "../../../sdk/ts/wire.ts";
 import { flag } from "../../flags.ts";
@@ -790,27 +791,6 @@ async function isClaimable(client: RadiaClient, cache: Map<string, boolean>, kin
     for (const def of await client.listKinds()) cache.set(def.kind, def.claimable !== false);
   } catch { /* no kind_def grant: say what the old wording said */ }
   return cache.get(kind) ?? true;
-}
-
-/** Media type from a file extension, for an upload given as a path. The inverse of the table
- *  `space_get_artifact` uses on the way out; unknown stays undefined so the caller's own
- *  `mediaType` or the octet-stream default wins rather than a guess. */
-function mediaTypeForPath(path: string): string | undefined {
-  const ext = path.toLowerCase().split(".").pop() ?? "";
-  return ({
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    png: "image/png",
-    gif: "image/gif",
-    webp: "image/webp",
-    svg: "image/svg+xml",
-    pdf: "application/pdf",
-    zip: "application/zip",
-    json: "application/json",
-    txt: "text/plain",
-    md: "text/markdown",
-    csv: "text/csv",
-  } as Record<string, string>)[ext];
 }
 
 /** Same cap the chat's file reads use, and for the same reason: a tool result goes into a context

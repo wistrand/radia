@@ -66,6 +66,7 @@ export interface PlatformBackend {
   readBinaryStream(path: string): Promise<ReadableStream<Uint8Array> | undefined>;
   stdin(): ReadableStream<Uint8Array>;
   writeStdout(text: string): void;
+  writeStdoutBytes(bytes: Uint8Array): void;
   writeStderr(text: string): void;
   onShutdown(handler: () => void): () => void;
   serve(opts: ServeOptions, handler: (req: Request) => Response | Promise<Response>): { finished: Promise<void> };
@@ -190,6 +191,12 @@ const denoBackend: PlatformBackend = {
   stdin: () => Deno.stdin.readable,
   writeStdout: (text) => {
     Deno.stdout.writeSync(encoder.encode(text));
+  },
+  writeStdoutBytes: (bytes) => {
+    // `writeSync` may write short. Bytes are the one thing here that can be megabytes, so the loop
+    // is not defensive padding: a truncated artifact written to a pipe is a corrupt file.
+    let off = 0;
+    while (off < bytes.length) off += Deno.stdout.writeSync(bytes.subarray(off));
   },
   writeStderr: (text) => {
     Deno.stderr.writeSync(encoder.encode(text));
@@ -394,6 +401,13 @@ export function stdin(): ReadableStream<Uint8Array> {
  *  writes would corrupt the frame stream. */
 export function writeStdout(text: string): void {
   backend.writeStdout(text);
+}
+
+/** RAW bytes to stdout, for a payload that is not text. Separate from `writeStdout` because the
+ *  encoder there would mangle anything binary, and because `radia artifact get X > file` is the
+ *  one place the CLI's output is not meant to be read. */
+export function writeStdoutBytes(bytes: Uint8Array): void {
+  backend.writeStdoutBytes(bytes);
 }
 
 export function writeStderr(text: string): void {

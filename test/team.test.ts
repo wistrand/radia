@@ -19,6 +19,7 @@ import { addMember, DEFAULT_TEAM, declareTeamKinds, definitionState, NOTE, TASK,
 import { configLocation, mcpInvocation, renderMcpConfig, renderMcpInstall } from "../src/surfaces/mcp/config.ts";
 import { newer, newestByKey } from "../sdk/ts/registry.ts";
 import { kindDefKey } from "../sdk/ts/wire.ts";
+import { extensionFor, mediaTypeForPath } from "../src/surfaces/media.ts";
 
 async function newSpace() {
   const adapter = new SqliteAdapter(":memory:");
@@ -684,4 +685,43 @@ Deno.test("[artifacts] an upload capability is as bounded as a download one", as
   } finally {
     await sp.close();
   }
+});
+
+Deno.test("[cli] the media-type table is ONE table, and round-trips", () => {
+  // Two surfaces move artifact bytes and both need this mapping: the MCP adapter on the way in (a
+  // path upload typed `application/octet-stream` is refused as un-inlineable by the receiver) and
+  // the CLI on the way out (a downloaded file with no extension is one nothing opens). Two copies
+  // of a mapping is the "one fact stated twice" shape, so it lives in one module.
+  assertEquals(mediaTypeForPath("/tmp/seal.JPG"), "image/jpeg");
+  assertEquals(mediaTypeForPath("a/b/notes.md"), "text/markdown");
+  assertEquals(mediaTypeForPath("archive.tar.gz"), undefined, "unknown answers undefined, never a guess");
+  assertEquals(mediaTypeForPath("noextension"), undefined);
+
+  // The way back strips parameters, because a stored mediaType routinely carries a charset.
+  assertEquals(extensionFor("text/plain; charset=utf-8"), "txt");
+  assertEquals(extensionFor("image/jpeg"), "jpg", "the first spelling listed wins, so jpeg -> jpg");
+  assertEquals(extensionFor("application/x-tar"), undefined);
+  assertEquals(extensionFor(undefined), undefined);
+
+  // Every type the forward table names is reachable backwards, or a file arrives with no
+  // extension for a type we claim to know.
+  for (const type of ["image/png", "application/pdf", "text/csv", "application/json"]) {
+    assert(extensionFor(type), `${type} has no extension on the way back`);
+  }
+});
+
+Deno.test("[cli] artifact put/get is a verb, closing the one-directional gap", async () => {
+  const src = await Deno.readTextFile(new URL("../src/surfaces/cli.ts", import.meta.url));
+  // "If the CLI can do it, so can any client" held in one direction only for payloads: artifacts
+  // were reachable from an SDK and from MCP, and from a shell only by hand-rolling curl with a
+  // token on the command line, which an agent tried and its harness's classifier refused.
+  assert(/case "artifact": \{/.test(src), "no artifact verb");
+  assert(src.includes("putArtifact"), "artifact put does not upload");
+  assert(src.includes("getArtifact"), "artifact get does not download");
+
+  // STDOUT IS OPT-IN. A terminal is not a file, and a megabyte of JPEG written to one is a wedged
+  // session, so the default writes the name the sender chose.
+  assert(src.includes('dest === "-"'), "there is no explicit stdout form");
+  assert(src.includes("writeStdoutBytes"), "bytes to stdout would go through the text encoder");
+  assert(src.includes("ensureParent"), "a --out path into a missing directory would fail on the write");
 });

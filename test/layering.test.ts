@@ -10,6 +10,7 @@
 // time, the comment describing the rule was the only thing breaking it.
 
 import { assertEquals } from "@std/assert";
+import { dirname, join, normalize } from "@std/path";
 
 const SRC = new URL("../src/", import.meta.url);
 
@@ -155,7 +156,15 @@ Deno.test("[layering] a surface is a /v0 client, so it takes no runtime VALUE fr
     // should; a structural test nobody has seen fail is a structural test nobody has tested.
     for (const [, clause, spec] of text.matchAll(/import\s+([\s\S]*?)from\s+"([^"]+)"/g)) {
       if (!spec.startsWith("../")) continue;
-      const resolved = spec.replace(/^(\.\.\/)+/, "");
+      // RESOLVED against the importing file, not by stripping `../` and hoping. Stripping loses
+      // the depth, so `src/surfaces/mcp/server.ts -> ../media.ts` (a SIBLING surface file, one
+      // level up and still inside this layer) read identically to `-> ../core/space.ts`, and the
+      // guard reported a legitimate import as a layering violation.
+      const resolved = normalize(join(dirname(file), spec));
+      // Another SURFACE is not the runtime: this layer is a directory precisely so its parts can
+      // share, and `media.ts` is a table both the CLI and the MCP adapter need on opposite sides
+      // of the same transfer.
+      if (resolved.startsWith("src/surfaces/")) continue;
       if (infrastructure.test(resolved) || resolved.startsWith("sdk/")) continue;
       // An EXTENSION is allowed, and is the reason this layer is a directory: a convention built on
       // `/v0` is exactly what a client may compose, and `workspace-git` is that. The rule being

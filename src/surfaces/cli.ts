@@ -24,6 +24,7 @@ import { brokeredInvoker } from "../../extensions/ts/broker.ts";
 import { auditCompartment } from "../../extensions/ts/compartment.ts";
 import { addMember, DEFAULT_TEAM, declareTeamKinds, definitionState, TEAM_FIELD, teamRoster } from "../../extensions/ts/team.ts";
 import { configLocation, type Harness, mcpInvocation, renderMcpConfig, renderMcpInstall } from "./mcp/config.ts";
+import { extensionFor, mediaTypeForPath } from "./media.ts";
 import {
   CREDENTIAL_STALE_DAYS,
   credentialsPath,
@@ -36,8 +37,9 @@ import {
   storedObserver,
 } from "../credentials.ts";
 import { flag, flags, has, positional } from "../flags.ts";
+import { ensureParent } from "../paths.ts";
 import { API_VERSION, VERSION } from "../version.ts";
-import { env, httpRequest, onShutdown, serve, stdin, UsageError } from "../platform.ts";
+import { env, httpRequest, onShutdown, readBinaryFile, serve, stdin, UsageError, writeBinaryFile, writeStdoutBytes } from "../platform.ts";
 import type { Lease } from "../storage/adapter.ts";
 
 const HELP = `radia <command> [options]
@@ -80,6 +82,13 @@ Inspect
                                       --observe adds UNSCOPED ops reads, which defeat isolation
   team remove <name>…                 revoke the definition, then stop its live runs. The records
                                       it wrote stay, and still attribute to it
+  artifact put <file|-> [--media-type <t>] [--filename <n>] [--meta <json>] [--parent <id>]…
+                                      store bytes beside the space; prints the record id and digest.
+                                      The media type and filename come from the path unless given;
+                                      a lone - reads stdin, which has neither
+  artifact get <id> [--out <path|->]  the bytes back. Written to the name the sender chose unless
+                                      --out says otherwise; --out - writes stdout, which is opt-in
+                                      because a terminal is not a file
   shred <artifact-id> [--reason <t>] [--shared]  destroy an artifact's bytes, keep the record
   revoke <principal> [--reason <t>]   stop a definition MINTING, permanently. Not a kill switch:
                                       runs already minted keep working until they expire
@@ -752,6 +761,68 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
                 `  their behalf:  radia runs --for ${r.agent} --stop`
               : `  No live runs remain.`,
           ].join("\n"));
+    }
+
+    // Bytes in and out of a terminal. The last half of "if the CLI can do it, an external client
+    // can too" that held in one direction only: artifacts were reachable from an SDK and from the
+    // MCP adapter, and from a shell only by hand-rolling curl with a token in the command line,
+    // which is what an agent tried, and what its harness's own classifier refused.
+    case "artifact": {
+      const [sub, arg] = positional(argv, 2);
+      const USAGE = "artifact put <file|-> [--media-type <t>] [--filename <n>] [--meta <json>] [--parent <id>]… | artifact get <record-id> [--out <path|->]";
+      if (sub === "put") {
+        if (!arg) return usage(USAGE);
+        // `-` reads stdin, so a pipeline can store what it just produced without a temp file.
+        const bytes = arg === "-" ? await readAllBytes(stdin()) : await readBinaryFile(arg);
+        if (!bytes) throw new UsageError(`cannot read '${arg}'`);
+        if (bytes.byteLength === 0) throw new UsageError(`'${arg}' is empty; an artifact with no bytes is a record`);
+        const metaFlag = flag(argv, "--meta");
+        let meta: Record<string, string | number | boolean | null> | undefined;
+        if (metaFlag) {
+          const parsed = JSON.parse(metaFlag);
+          if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+            throw new UsageError("--meta wants a JSON object of field → scalar");
+          }
+          meta = parsed as Record<string, string | number | boolean | null>;
+        }
+        // From the EXTENSION when not stated, because the media type is what decides whether the
+        // receiving side can render it at all; stdin has no name, so it stays the default.
+        const mediaType = flag(argv, "--media-type") ??
+          (arg === "-" ? undefined : mediaTypeForPath(arg)) ?? "application/octet-stream";
+        const filename = flag(argv, "--filename") ?? (arg === "-" ? undefined : arg.replace(/\\/g, "/").split("/").pop());
+        const parents = flags(argv, "--parent");
+        const stored = await client.putArtifact(bytes, {
+          mediaType,
+          ...(filename ? { filename } : {}),
+          ...(meta ? { meta } : {}),
+          ...(parents.length ? { parentIds: parents } : {}),
+        });
+        return out(ctx, stored, () => `${stored.id}  ${stored.size} bytes  ${mediaType}\n  sha256 ${stored.digest}`);
+      }
+      if (sub === "get") {
+        if (!arg) return usage(USAGE);
+        const meta = await client.artifactMeta(arg);
+        if (!meta) throw new UsageError(`no artifact ${arg} (or no grant to read it)`);
+        const bytes = await client.getArtifact(arg);
+        if (!bytes) throw new UsageError(`the payload of ${arg} is gone (shredded); the record survives`);
+        const dest = flag(argv, "--out");
+        // STDOUT only when asked for, never by default: a terminal is not a file, and a megabyte
+        // of JPEG written to one is a wedged session. Absent `--out`, the file is named by the
+        // record, which is what the sender meant it to be called.
+        if (dest === "-") {
+          writeStdoutBytes(bytes);
+          return 0;
+        }
+        const ext = extensionFor(meta.mediaType);
+        // The name the SENDER chose, from the record rather than from the HEAD: `artifactMeta` is
+        // digest/mediaType/size, and `filename` is an ordinary body field.
+        const named = await client.getRecord<{ filename?: string }>(arg).then((r) => r?.body.filename, () => undefined);
+        const path = dest ?? named ?? `${arg}${ext ? `.${ext}` : ""}`;
+        ensureParent(path);
+        await writeBinaryFile(path, bytes);
+        return out(ctx, { ...meta, path }, () => `${path}  ${bytes.byteLength} bytes  ${meta.mediaType}`);
+      }
+      return usage(USAGE);
     }
 
     case "shred": {
