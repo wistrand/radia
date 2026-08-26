@@ -551,6 +551,7 @@ const KIND_DEF_FIELDS = [
   "claimable",
   "contentKey",
   "defaultRetentionSeconds",
+  "usage",
   "retired",
 ];
 /** …and an entry inside `indexedPaths`. */
@@ -596,9 +597,25 @@ export function assertKnownKindDefFields(body: unknown): void {
 }
 
 /** Validate a declaration. Throws RadiaError on any problem (a registration error). */
+/** A usage line is prose on a hot path (`loadKinds` reads every declaration at startup), so it is
+ *  bounded. Past this it is a document and belongs in the app's own docs. */
+export const MAX_KIND_USAGE = 600;
+
 export function validateKindDef(def: KindDef): void {
   if (typeof def.kind !== "string" || def.kind.length === 0) {
     throw new RadiaError("invalid_kind", "kind must be a non-empty string");
+  }
+  if (def.usage !== undefined) {
+    if (typeof def.usage !== "string") {
+      throw new RadiaError("invalid_kind", "usage must be a string");
+    }
+    if (def.usage.length > MAX_KIND_USAGE) {
+      throw new RadiaError(
+        "invalid_kind",
+        `usage is ${def.usage.length} characters, past the ${MAX_KIND_USAGE} limit. It is a usage ` +
+          `line read on every kind load, not a document`,
+      );
+    }
   }
   const seen = new Set<string>();
   for (const ip of def.indexedPaths ?? []) {

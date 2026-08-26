@@ -18,6 +18,7 @@ import { RadiaClient } from "../sdk/ts/client.ts";
 import { addMember, DEFAULT_TEAM, declareTeamKinds, definitionState, NOTE, TASK, TEAM_FIELD, teamRoster } from "../extensions/ts/team.ts";
 import { configLocation, mcpInvocation, renderMcpConfig, renderMcpInstall } from "../src/surfaces/mcp/config.ts";
 import { newer, newestByKey } from "../sdk/ts/registry.ts";
+import { kindDefKey } from "../sdk/ts/wire.ts";
 
 async function newSpace() {
   const adapter = new SqliteAdapter(":memory:");
@@ -513,6 +514,59 @@ Deno.test("[team] an artifact a model cannot inline is handed a URL, not a crede
     // And it is NOT a credential: it reaches that artifact and nothing else on the plane.
     const other = await fetch(`${sp.base}/v0/ops/stats`, { headers: { "Authorization": `Bearer ${cap.capability}` } });
     assert(other.status === 401 || other.status === 403, `a capability authenticated the ops plane: ${other.status}`);
+  } finally {
+    await sp.close();
+  }
+});
+
+Deno.test("[team] a kind carries its own usage, and the line can be changed", async () => {
+  const sp = await newSpace();
+  try {
+    const paths = [{ path: "to", type: "keyword" as const }];
+
+    // A key minted BEFORE `usage` existed must stay byte-identical, or every declaration in every
+    // space re-writes on the next startup.
+    assertEquals(kindDefKey({ kind: "note", indexedPaths: paths, claimable: false }), "kind_def:note:to:keyword::ref");
+
+    // USAGE PARTICIPATES IN THE KEY, against the instinct that prose carries no contract. Leaving
+    // it out was tried and is unusable: adding a line to an existing kind then re-puts the SAME
+    // key with a different body, which is `idempotency_conflict`, so the field could never be set
+    // on a kind that already existed anywhere.
+    await sp.admin.registerKind({ kind: "note", indexedPaths: paths, claimable: false });
+    await sp.admin.registerKind({ kind: "note", indexedPaths: paths, claimable: false, usage: "first" });
+    const read = async () => (await sp.admin.listKinds()).find((k) => k.kind === "note")?.usage;
+    assertEquals(await read(), "first", "usage could not be added to an existing declaration");
+    await sp.admin.registerKind({ kind: "note", indexedPaths: paths, claimable: false, usage: "second" });
+    assertEquals(await read(), "second", "a re-worded usage did not win");
+
+    // ...and an identical re-put still absorbs, so history grows only on a real change.
+    const before = (await sp.admin.queryAll({ kind: "kind_def" })).length;
+    await sp.admin.registerKind({ kind: "note", indexedPaths: paths, claimable: false, usage: "second" });
+    assertEquals((await sp.admin.queryAll({ kind: "kind_def" })).length, before, "an identical re-put appended");
+
+    // BOUNDED: a usage line is read on every kind load, so it is a sentence and not a document.
+    const tooLong = await sp.admin.registerKind({ kind: "note", indexedPaths: paths, usage: "x".repeat(601) })
+      .then(() => null, (e) => (e as Error).message);
+    assert(tooLong?.includes("601"), `expected the length in the refusal, got: ${tooLong}`);
+  } finally {
+    await sp.close();
+  }
+});
+
+Deno.test("[team] the shared kinds teach the conventions two agents otherwise invent", async () => {
+  const sp = await newSpace();
+  try {
+    await declareTeamKinds(sp.admin);
+    const byKind = new Map((await sp.admin.listKinds()).map((k) => [k.kind, k.usage ?? ""]));
+
+    // The failures these lines exist to prevent, each seen on a real space: one agent wrote
+    // `{to, text}` and another `{to, message}`; and a broadcast went to `to: "all"` while every
+    // documented mailbox watched an exact principal, so it was missed in silence.
+    assert(byKind.get("note")!.includes("all"), "the broadcast recipient is not documented");
+    assert(byKind.get("note")!.includes("$in"), "the mailbox pattern that SEES a broadcast is not documented");
+    assert(byKind.get("note")!.includes("message"), "the prose field is not pinned");
+    assert(byKind.get("task")!.includes("$any"), "tag matching does not distribute; that has to be said");
+    assert(byKind.get("task")!.includes("space_ack"), "how a task is answered is not documented");
   } finally {
     await sp.close();
   }

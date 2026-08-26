@@ -298,6 +298,21 @@ export interface KindDef {
    *  key path is never compacted. Purely descriptive for matching; see agent_docs/plan-gc.md. */
   contentKey?: string[];
   /**
+   * How to USE this kind, for whoever discovers it. Prose, never matched on, never interpreted.
+   *
+   * The gap it closes: an agent discovers WHICH kinds exist (`space_kinds`) and learns nothing
+   * about what to put in one, because a tool description is generic and a `kind_def` carried only
+   * shape. Two agents on one space therefore invented incompatible conventions unprompted, one
+   * writing `{to, text}` and the other `{to, message}`, and a broadcast convention (`to: "all"`)
+   * that no reader's pattern accounted for. This is where a convention says itself, in the call
+   * every agent already makes first.
+   *
+   * CAPPED, because a `kind_def` is on a hot path: `loadKinds` reads every one at startup and
+   * `refreshKind` re-reads on a stale projection, so prose here is paid for on every load. It is a
+   * usage line, not a document.
+   */
+  usage?: string;
+  /**
    * Retention for records of this kind whose writer stamped none: MATERIALIZED into
    * `retention_until` at commit, from the DB clock, never evaluated at sweep time — so every
    * record stays self-describing and a later redeclaration changes only FUTURE records' fate,
@@ -342,6 +357,19 @@ export const RESERVED_KINDS = [KIND_DEF, GRANT, SIGNAL, AGENT_DEFINITION, AGENT_
  * and every client must produce the same string, or a client redeclaring an unchanged kind appends
  * a duplicate record on every startup and the registry grows without bound.
  */
+/** FNV-1a, 32-bit, as 8 hex characters. NOT a security hash: it shortens a usage line inside a
+ *  content key, where the failure of a collision is one re-wording that does not write. Chosen
+ *  because it is four lines in any language, and `kindDefKey` is NORMATIVE: a second implementation
+ *  has to compute the same string, so nothing here may depend on a crypto library. */
+export function fnv1a(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
+}
+
 export function kindDefKey(def: KindDef): string {
   const ip = [...(def.indexedPaths ?? [])].map((p) => `${p.path}:${p.type}`).sort().join(",");
   const sp = [...(def.sortablePaths ?? [])].sort().join(",");
@@ -351,7 +379,15 @@ export function kindDefKey(def: KindDef): string {
   // old declarations do not re-write.
   const ck = def.contentKey?.length ? `:ck=${[...def.contentKey].sort().join(",")}` : "";
   const rt = def.defaultRetentionSeconds ? `:rt=${def.defaultRetentionSeconds}` : "";
-  return `kind_def:${def.kind}:${ip}:${sp}:${def.claimable === false ? "ref" : "work"}${ck}${rt}`;
+  // `usage` PARTICIPATES, for exactly the reason the comment above gives and against the instinct
+  // that prose carries no contract so should not key. Leaving it out was tried and is unusable:
+  // adding or re-wording a usage line on an existing kind then re-puts the SAME key with a
+  // different body, which is `idempotency_conflict`, so the field could never be set on any kind
+  // that already existed. Its LENGTH rather than its text (`MAX_KIND_USAGE` bounds it, but a
+  // 600-character idempotency key is a key nothing wants to store or read), plus a cheap
+  // order-independent digest so two different lines of equal length still differ.
+  const u = def.usage ? `:u=${def.usage.length}.${fnv1a(def.usage)}` : "";
+  return `kind_def:${def.kind}:${ip}:${sp}:${def.claimable === false ? "ref" : "work"}${ck}${rt}${u}`;
 }
 
 /**

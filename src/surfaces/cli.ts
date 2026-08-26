@@ -657,6 +657,9 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         });
       }
 
+      // The printed mailbox names a REAL member, so it can be pasted rather than being a template
+      // with a placeholder somebody has to substitute correctly.
+      const first = added[0]?.agent ?? "agent:you";
       return out(ctx, { kinds, members: added }, () =>
         lines([
           health.persistent === false
@@ -697,14 +700,21 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           `Give each SESSION its own member (\`radia team add claude-a claude-b\`): one credential shared by two`,
           `windows is one principal, so nothing tells their work apart and stopping one stops both.`,
           ``,
-          `EVERY WRITE MUST CARRY ${TEAM_FIELD}:"${lanes[0]}". A body without it is refused, so there is no`,
-          `unlabelled lane to fall into. Reads need no label: the grant already bounds them.`,
+          lanes.length === 1
+            ? `The ${TEAM_FIELD} label is filled in by the adapter from the grant, so nothing has to remember it.`
+            : `A member of several teams must NAME one on every write (${lanes.map((t) => `${TEAM_FIELD}:"${t}"`).join(" / ")}):\n` +
+              `there is no default, and guessing would file the work in the wrong team.`,
           ``,
-          `  space_put   {kind:"task", body:{${TEAM_FIELD}:"${lanes[0]}", title:"…", tags:["review"]}}`,
-          `  space_take  {kind:"task", match:{tags:{"$any":"review"}}}            claim it under a lease`,
-          `  space_ack   {claimId:"…", resultKind:"note", resultBody:{${TEAM_FIELD}:"${lanes[0]}", …}}`,
-          `  space_put   {kind:"note", body:{${TEAM_FIELD}:"${lanes[0]}", to:"agent:codex", text:"…"}}`,
-          `  space_watch {kind:"note", match:{to:"agent:claude"}}                 a mailbox`,
+          `  space_put   {kind:"task", body:{title:"…", tags:["review"]}}      offer work to whoever claims it`,
+          `  space_take  {kind:"task", match:{tags:{"$any":"review"}}}         claim it under a lease`,
+          `  space_ack   {claimId:"…", resultKind:"note", resultBody:{…}}      finish, and answer with a note`,
+          `  space_put   {kind:"note", body:{to:"${first}", message:"…"}}      say something to one member`,
+          `  space_put   {kind:"note", body:{to:"all", message:"…"}}           say it to the whole team`,
+          `  space_watch {kind:"note", match:{to:{"$in":["${first}","all"]}}, newOnly:true}   a mailbox`,
+          ``,
+          `A MAILBOX MUST INCLUDE "all", or a broadcast is silently missed: a keyword match is exact, so`,
+          `watching {to:"${first}"} alone reads as nobody having written to you. "all" cannot collide with`,
+          `a member, since a principal is always prefixed \`agent:\` or \`human:\`.`,
           `A scalar never distributes over an array here, deliberately: matching one tag is \`$any\`.`,
         ]));
     }
@@ -1077,6 +1087,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       // DECLARED, which is not the same set as PRESENT: a put of an undeclared kind succeeds by
       // design (it must not race a fleet's declaration), so `stats` can list a kind this does not.
       // Both were right and neither said which question it answered.
+      const documented = defs.filter((d) => d.usage);
       return out(ctx, defs, () =>
         (defs.length
           ? table(["KIND", "INDEXED", "SORTABLE", "CLAIMABLE"], defs.map((d) => [
@@ -1085,7 +1096,13 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
             (d.sortablePaths ?? []).join(",") || "-",
             String(d.claimable ?? true),
           ]))
-          : "(no kinds declared)") + "\nDECLARED kinds. `radia stats` lists what is PRESENT; a record of an undeclared kind is allowed and indexes nothing"
+          : "(no kinds declared)") +
+        // The usage lines go BELOW the table rather than into a column: they are sentences, and a
+        // column pads every row to the longest one (the lesson `radia team` learned the hard way).
+        (documented.length
+          ? "\n\n" + documented.map((d) => `${d.kind}\n${indent(wrap(d.usage!, 92), "  ")}`).join("\n\n")
+          : "") +
+        "\nDECLARED kinds. `radia stats` lists what is PRESENT; a record of an undeclared kind is allowed and indexes nothing"
       );
     }
 
@@ -2123,6 +2140,21 @@ function recordTable(recs: { id: string; kind: string; body: unknown }[]): strin
  *  spacing, and filtering by truthiness silently ate every one of them. */
 function lines(parts: (string | null)[]): string {
   return parts.filter((l): l is string => l !== null).join("\n");
+}
+
+/** Wrap prose to a width. Used for a kind's `usage` line, which is a sentence rather than a cell:
+ *  putting it in a table column pads every other row to its length. */
+function wrap(s: string, width: number): string {
+  const out: string[] = [];
+  let line = "";
+  for (const word of s.split(/\s+/)) {
+    if (line && line.length + 1 + word.length > width) {
+      out.push(line);
+      line = word;
+    } else line = line ? `${line} ${word}` : word;
+  }
+  if (line) out.push(line);
+  return out.join("\n");
 }
 
 function indent(s: string, pad: string): string {

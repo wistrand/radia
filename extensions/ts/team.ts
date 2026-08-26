@@ -55,6 +55,10 @@ export const TEAM_KINDS: KindDef[] = [
       { path: "assignee", type: "keyword" },
       { path: "tags", type: "array" },
     ],
+    usage: "Work for whoever can do it. body: {title, detail?, tags?: string[], assignee?}. " +
+      "Claim with space_take, then settle with space_ack (resultKind 'note') so the answer links " +
+      "back to the request. There is no status field: the claim state IS the status. Match one tag " +
+      "with {tags: {$any: 'review'}}; a scalar does not distribute over an array here.",
   },
   {
     kind: NOTE,
@@ -64,6 +68,11 @@ export const TEAM_KINDS: KindDef[] = [
       { path: "to", type: "keyword" },
     ],
     claimable: false,
+    usage: "What agents say to each other, and what a finished task acks as its result. " +
+      "body: {to, message, topic?}. `to` is a member principal ('agent:name') or the literal 'all' " +
+      "for the whole team. READ YOUR MAILBOX AS {to: {$in: ['<your principal>', 'all']}}: a keyword " +
+      "match is exact, so watching your own name alone silently misses every broadcast. Use " +
+      "`message` for the prose; nothing indexes it, but readers look for that name.",
   },
   {
     kind: ARTIFACT,
