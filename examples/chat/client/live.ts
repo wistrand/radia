@@ -104,12 +104,12 @@ export function liveView(o: LiveOptions): Promise<void> {
     // (rather than rendering into it) leaves the records for the next tick, in order.
     if (o.busy()) return;
     const from = Math.max(watermark, o.accountedFor());
-    const rows: RadiaRecord[] = await o.client.queryOrdered({ kind: "message", match: { conversationId: o.conversationId, index: { $gt: from } }, orderBy: [{ path: "index" }] }, 50);
+    const rows: RadiaRecord<LiveMessage>[] = await o.client.queryOrdered<LiveMessage>({ kind: "message", match: { conversationId: o.conversationId, index: { $gt: from } }, orderBy: [{ path: "index" }] }, 50);
     const fresh: LiveMessage[] = [];
     for (const rec of rows) {
       if (seen.has(rec.id)) continue;
       seen.add(rec.id);
-      const body = rec.body as LiveMessage;
+      const body = rec.body;
       if (typeof body.index === "number") watermark = Math.max(watermark, body.index);
       fresh.push(body);
     }

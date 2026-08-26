@@ -49,8 +49,8 @@ export async function recentEvents(
   worldId: string,
   roomId: string,
   limit = 30,
-): Promise<RadiaRecord[]> {
-  const rows = await client.queryNewest({ kind: "event", match: { worldId, roomId } }, limit);
+): Promise<RadiaRecord<EventBody>[]> {
+  const rows = await client.queryNewest<EventBody>({ kind: "event", match: { worldId, roomId } }, limit);
   return rows.reverse();
 }
 
@@ -61,9 +61,9 @@ export async function tailEvents(
   roomId: string,
   afterId: string,
   limit = 50,
-): Promise<RadiaRecord[]> {
+): Promise<RadiaRecord<EventBody>[]> {
   // ASCENDING from the caller's last-seen id: a feed is read forward, and `after` is exclusive in
   // the direction of the read, so this is "what happened since". `afterId` comes from the caller
   // rather than a cursor because it is a WATERMARK the caller persists, not a page position.
-  return (await client.queryPage({ kind: "event", match: { worldId, roomId } }, limit, { dir: "asc", after: afterId })).records;
+  return (await client.queryPage<EventBody>({ kind: "event", match: { worldId, roomId } }, limit, { dir: "asc", after: afterId })).records;
 }

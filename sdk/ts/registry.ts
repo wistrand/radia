@@ -299,10 +299,10 @@ const REGISTRY_MAX_PAGES = 40;
  * was to pass `(_b, r) => r.id`, a key that means "no key". Projection is `activeByKey` /
  * `newestByKey`, named at the call site, over the `Population` this returns.
  */
-export async function readExhaustively(
-  read: (page: RegistryPage) => Promise<RadiaRecord[]>,
-): Promise<{ records: Population; complete: boolean; scanned: number }> {
-  const all: RadiaRecord[] = [];
+export async function readExhaustively<T = unknown>(
+  read: (page: RegistryPage) => Promise<RadiaRecord<T>[]>,
+): Promise<{ records: Population<T>; complete: boolean; scanned: number }> {
+  const all: RadiaRecord<T>[] = [];
   let after: string | undefined;
   let complete = false;
   for (let page = 0; page < REGISTRY_MAX_PAGES; page++) {

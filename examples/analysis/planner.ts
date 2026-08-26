@@ -58,6 +58,14 @@ export async function liveCode(c: RadiaClient): Promise<Map<string, string>> {
 
 /** One entry of the pipeline's SHAPE: which stage, where in the order. A latest-wins registry
  *  (retire to remove), so adding a stage is a `stage_def` put and never a code change. */
+/** What the planner reads off a `stage_result`. One shape, rather than an inline cast per read. */
+export interface StageResult {
+  ok?: string;
+  outputDigest?: string;
+  outputArtifact?: string;
+  error?: string;
+}
+
 export interface StageDef {
   stage: string;
   index: number;
@@ -97,7 +105,7 @@ interface PassReads {
   /** The pipeline's shape, in order: what to walk. */
   defs: StageDef[];
   code: Map<string, string>;
-  results: Map<string, RadiaRecord>;
+  results: Map<string, RadiaRecord<StageResult>>;
   requests: Map<string, RadiaRecord>;
   /** outputDigest -> artifact record id, for results whose body names no artifact. A stage run in
    *  the jail computes its output's DIGEST and cannot know the id the capture assigned; the digest
@@ -122,19 +130,19 @@ async function readPass(c: RadiaClient, names: string[]): Promise<PassReads> {
   // and a `contentKey` names paths rather than a fallback, so the two spellings would collapse into
   // one entry and the older half would be dropped. And declaring one puts `stage_result` and
   // `stage_request` in reach of compaction, which deletes the run history an operator inspects.
-  const bulk = async (kind: string) => {
+  const bulk = async <T = unknown>(kind: string) => {
     const view = await readExhaustively((page) =>
       c.queryPage({ kind, match: { dataset: { $in: names } } }, page.limit, page).then((r) => r.records)
     );
     if (!view.complete) throw new Error(`could not read every ${kind} for this pass; refusing to plan on a prefix`);
     // `newestByKey`, not `activeByKey`: retirements included, because nothing here retires.
-    return newestByKey(view.records, (b) => workKey(b as { dataset?: string }));
+    return newestByKey<T>(view.records, (b) => workKey(b as { dataset?: string }));
   };
-  const results = await bulk("stage_result");
+  const results = await bulk<StageResult>("stage_result");
   // Resolve every ok result's output digest to its artifact id in ONE read, skipping results that
   // carry the id already (records from before the host, whose worker stored the artifact itself).
   const unresolved = [...results.values()]
-    .map((r) => r.body as { ok?: string; outputDigest?: string; outputArtifact?: string })
+    .map((r) => r.body)
     .filter((b) => b.ok === "yes" && b.outputDigest && !b.outputArtifact)
     .map((b) => b.outputDigest!);
   const artifacts = new Map<string, string>();
@@ -178,7 +186,7 @@ export async function planDataset(
     // must answer correctly a month later, and content-key idempotency expires.
     const done = reads.results.get(workKey(match));
     if (done) {
-      const b = done.body as { ok?: string; outputDigest?: string; outputArtifact?: string; error?: string };
+      const b = done.body;
       if (b.ok !== "yes") {
         steps.push({ ...match, state: "failed", resultId: done.id, error: b.error });
         break; // a failed stage has no output, so nothing after it can be planned
@@ -231,9 +239,9 @@ export async function planDataset(
 export async function datasets(c: RadiaClient, limit = 50): Promise<
   { id: string; name: string; digest: string; artifactId: string; owner: string; createdAt: string }[]
 > {
-  const rows = await c.queryNewest({ kind: "dataset" }, limit);
+  const rows = await c.queryNewest<{ name: string; digest: string; artifactId: string; owner: string }>({ kind: "dataset" }, limit);
   return rows.map((r) => {
-    const b = r.body as { name: string; digest: string; artifactId: string; owner: string };
+    const b = r.body;
     return { id: r.id, ...b, createdAt: r.runtimeMeta.createdAt };
   });
 }

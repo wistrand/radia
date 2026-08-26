@@ -412,8 +412,8 @@ await publishPersonKey(session, owner, myKey).catch(() => {});
 // session claims about itself. Banner decoration only; every record still carries the principal.
 let displayName = "";
 try {
-  for (const r of await (admin ?? session).queryNewest({ kind: "oidc_identity" }, 200)) {
-    const b = r.body as { principal?: string; profile?: string; name?: string; username?: string; retired?: boolean };
+  for (const r of await (admin ?? session).queryNewest<{ principal?: string; profile?: string; name?: string; username?: string; retired?: boolean }>({ kind: "oidc_identity" }, 200)) {
+    const b = r.body;
     if (b.principal !== owner) continue;
     if (!b.retired) {
       if (typeof b.profile === "string") {

@@ -121,12 +121,12 @@ export class Waiter {
     if (!force && now < this.nextPoll) return;
     this.nextPoll = now + PROGRESS_POLL_MS;
     try {
-      const rows = await this.client.queryOldest({ kind: "progress", match: typeof match === "string" ? { callId: match } : match }, 20);
+      const rows = await this.client.queryOldest<ProgressBody>({ kind: "progress", match: typeof match === "string" ? { callId: match } : match }, 20);
       for (const r of rows.sort((a, b) => (a.id < b.id ? -1 : 1))) {
         if (this.seen.has(r.id)) continue;
         this.seen.add(r.id);
         this.beats++;
-        this.last = r.body as ProgressBody; // ULID order = emission order, so the last one wins
+        this.last = r.body; // ULID order = emission order, so the last one wins
         this.onProgress?.(this.last);
       }
       // A read that WORKED clears the flag, or one transient hiccup marks the waiter blind for the

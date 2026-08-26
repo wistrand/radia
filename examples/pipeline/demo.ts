@@ -86,12 +86,12 @@ try {
 
   let summary = null;
   for (let i = 0; i < 60 && !summary; i++) {
-    summary = await client.readOne({ kind: "summary", match: { jobId: job.id } });
+    summary = await client.readOne<{ text: string }>({ kind: "summary", match: { jobId: job.id } });
     if (!summary) await sleep(200);
   }
 
   console.log("");
-  console.log(summary ? `RESULT: "${(summary.body as { text: string }).text}"` : "RESULT: (timed out)");
+  console.log(summary ? `RESULT: "${summary.body.text}"` : "RESULT: (timed out)");
 
   const events = await client.getEvents("0", 200);
   console.log(`\nEVENT LOG (${events.length} events), also visible in the Feed tab:`);

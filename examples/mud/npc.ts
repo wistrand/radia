@@ -127,7 +127,7 @@ export function npcLoop(
   if (!behaviour) throw new Error(`no behaviour for npc '${npc}'`);
   const ambient = AMBIENT[npc] ?? (() => null);
   const ambientSeconds = opts.ambientSeconds ?? AMBIENT_SECONDS;
-  return agentLoop(client, {
+  return agentLoop<NpcCue>(client, {
     name: `npc:${npc}`,
     // Its own name as well as the world. Every NPC would otherwise race for every cue, and
     // at-least-once means the loser does not merely lose: it would answer in the wrong voice, the
@@ -135,8 +135,8 @@ export function npcLoop(
     patterns: [{ kind: "npc_turn", match: { worldId, npc } }],
     signal: opts.signal,
     log: opts.log,
-    handle: async (record: RadiaRecord, c: RadiaClient) => {
-      const cue = record.body as NpcCue;
+    handle: async (record, c) => {
+      const cue = record.body;
       const isAmbient = cue.trigger === "ambient";
       const tick = cue.tick ?? 0;
       const line = isAmbient ? ambient(tick, name) : behaviour(cue, name);

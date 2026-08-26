@@ -216,9 +216,9 @@ export function conversationKeys(
     // NEWEST, and that is not a detail. Enrolling another machine writes a SUCCESSOR key record, so
     // an unordered read — which returns the oldest — would keep handing back the original wrap set
     // and the newly enrolled machine would never appear. Latest wins, like every registry here.
-    const rec = (await c.queryNewest({ kind: CONVERSATION_KEY_KIND, match: { conversationId } }, 1))[0];
+    const rec = (await c.queryNewest<{ owner?: string; keys?: string }>({ kind: CONVERSATION_KEY_KIND, match: { conversationId } }, 1))[0];
     if (!rec) return undefined;
-    const body = rec.body as { owner?: string; keys?: string };
+    const body = rec.body;
     if (owner !== undefined && body.owner !== owner) {
       throw new Error(`conversation ${conversationId} does not belong to ${owner}; refusing to open its key`);
     }
@@ -306,14 +306,14 @@ export async function recoverPersonKeys(
       match: { owner: principal, ...(opts.conversationId ? { conversationId: opts.conversationId } : {}) },
     }, page.limit, page).then((r) => r.records)
   );
-  const current = activeByKey<{ conversationId?: string }>(view.records, (b) => b.conversationId);
+  const current = activeByKey<{ conversationId?: string; keys?: string }>(view.records, (b) => b.conversationId);
   if (!view.complete) throw new Error(`could not enumerate ${principal}'s conversations; refusing a partial recovery`);
 
   const holder: KeyHolder = { kind: "fleet", privateKey: fleet.privateKey, keyId: fleet.keyId };
   const extend: { conversationId: string; keyIds: string[] }[] = [];
   const erased: string[] = [];
   for (const rec of current.values()) {
-    const body = rec.body as { conversationId?: string; keys?: string };
+    const body = rec.body;
     if (!body.conversationId || !body.keys) continue;
     let encryption;
     try {
@@ -356,14 +356,14 @@ export async function eraseConversation(
 ): Promise<{ shredded: string[] }> {
   // EVERY version, not the newest: each names an artifact that must go.
   const records = await readExhaustively((page) =>
-    admin.queryPage({ kind: CONVERSATION_KEY_KIND, match: { conversationId } }, page.limit, page).then((r) => r.records)
+    admin.queryPage<{ keys?: string }>({ kind: CONVERSATION_KEY_KIND, match: { conversationId } }, page.limit, page).then((r) => r.records)
   );
   if (!records.complete) {
     throw new Error(`could not enumerate every key record for ${conversationId}; refusing a partial erasure`);
   }
   const shredded: string[] = [];
   for (const rec of records.records) {
-    const id = (rec.body as { keys?: string }).keys;
+    const id = rec.body.keys;
     if (!id || shredded.includes(id)) continue;
     // Already-shredded is success, not a failure: erasing twice must converge rather than throw.
     await admin.shredArtifact(id, { reason: `erase conversation ${conversationId}` }).catch((e) => {

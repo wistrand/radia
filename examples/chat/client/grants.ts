@@ -76,8 +76,8 @@ async function selfExposure(
   try {
     // Paged: this decides which principals count as "mine", so a truncated list undercounts the
     // session's own records and reports the exposure as wider than it is.
-    const runs = await admin.queryAll({ kind: "agent_run", match: { agent: subject } });
-    const principals = new Set([subject, ...runs.map((r) => (r.body as { run?: string }).run).filter(Boolean) as string[]]);
+    const runs = await admin.queryAll<{ run?: string }>({ kind: "agent_run", match: { agent: subject } });
+    const principals = new Set([subject, ...runs.map((r) => r.body.run).filter(Boolean) as string[]]);
     const sample = await admin.queryNewest({ kind }, 100);
     return { mine: sample.filter((r) => principals.has(r.runtimeMeta.createdBy)).length, total: sample.length };
   } catch {
@@ -123,7 +123,7 @@ export async function reviewGrantRequests(
   } catch { /* fall through: warn about nothing rather than block the review */ }
 
   for (const [, rec] of pending) {
-    const b = rec.body as RequestBody;
+    const b = rec.body;
     const unknown = known.length > 0 && !known.includes(b.kind);
     write(`\n${dim("─".repeat(Math.min(60, columns())))}\n`);
     write(`The assistant is asking for permission it does not have:\n`);

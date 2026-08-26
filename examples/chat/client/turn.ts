@@ -287,19 +287,19 @@ export interface OpenTurn {
  * answer with no tool calls, which is a final answer and the end of the turn.
  */
 export async function findOpenTurn(client: RadiaClient, conversationId: string): Promise<OpenTurn | null> {
-  const rows = await client.queryNewest({ kind: "llm_call", match: { conversationId, tier: { $exists: false } } }, 1);
+  const rows = await client.queryNewest<{ turnAt?: number }>({ kind: "llm_call", match: { conversationId, tier: { $exists: false } } }, 1);
   const call = rows[0];
   if (!call) return null;
-  const turnAt = (call.body as { turnAt?: number }).turnAt;
+  const turnAt = call.body.turnAt;
   if (typeof turnAt !== "number") return null;
   // Nobody is coming for a turn whose deadline passed: the worker resumes one only while it is in
   // the future, so this is the same test it applies, against the same field.
   if (call.deadlineAt && Date.parse(call.deadlineAt) <= Date.now()) return null;
   if (await client.readOne({ kind: "turn_complete", match: { conversationId, turnAt } })) return null;
   if (await client.readOne({ kind: "cancel", match: { conversationId, turnAt } })) return null;
-  const answer = await client.readOne({ kind: "message", match: { callId: call.id } });
+  const answer = await client.readOne<{ tool_calls?: unknown[] }>({ kind: "message", match: { callId: call.id } });
   if (!answer) return { callId: call.id, turnAt }; // still generating
-  const calls = (answer.body as { tool_calls?: unknown[] }).tool_calls;
+  const calls = answer.body.tool_calls;
   // Answered WITH tool calls means the turn is still moving (a tool is running, a round is coming);
   // answered without means that was the final answer.
   return Array.isArray(calls) && calls.length > 0 ? { callId: call.id, turnAt } : null;
@@ -449,9 +449,9 @@ async function streamResult(client: RadiaClient, callId: string, key?: Conversat
     // Incremental read: ask for what is past the watermark instead of re-scanning the stream every
     // tick. `index` is an indexed integer, so this is a range scan; the batch size caps a burst,
     // not the answer.
-    const chunks = await client.queryOrdered({ kind: "llm_chunk", match: { callId, index: { $gt: lastIndex } }, orderBy: [{ path: "index" }] }, 500);
+    const chunks = await client.queryOrdered<{ index: number; delta: string; reset?: boolean }>({ kind: "llm_chunk", match: { callId, index: { $gt: lastIndex } }, orderBy: [{ path: "index" }] }, 500);
     for (const chunk of chunks) {
-      const raw = chunk.body as { index: number; delta: string; reset?: boolean };
+      const raw = chunk.body;
       // A delta goes straight to the terminal, so it is the one prose read with no later checkpoint.
       // Opened first, then asserted: `openBody` strips the marker it could read, so what reaches the
       // assert is either plaintext or something no key here opens.
@@ -781,7 +781,7 @@ export class ToolSet {
         (b) => b.name,
       );
       for (const [name, rec] of procs) {
-        const body = rec.body as ProcedureBody;
+        const body = rec.body;
         // A procedure never shadows a BUILT-IN, whether a worker advertises it or this process
         // serves it: the built-in is the one with something behind it, and a saved name that
         // collided would silently change what a call does.

@@ -33,12 +33,12 @@ let running = true;
 
 /** Where this player is, from `presence` and never from anything this process remembers. */
 async function locate(): Promise<string | null> {
-  const rows = await client.queryNewest({ kind: "presence", match: { worldId, actor: me } }, 1);
-  return rows.length ? (rows[0].body as { roomId: string }).roomId : null;
+  const rows = await client.queryNewest<{ roomId: string }>({ kind: "presence", match: { worldId, actor: me } }, 1);
+  return rows.length ? rows[0].body.roomId : null;
 }
 
-function show(record: RadiaRecord): void {
-  const body = record.body as EventBody;
+function show(record: RadiaRecord<EventBody>): void {
+  const body = record.body;
   // `audience` is a display convention, so this filter is the only thing honouring it. The space
   // would happily serve the whole world's feed; see roles.ts on why fog of war is not a grant.
   if (body.audience !== "room" && body.audience !== me) return;

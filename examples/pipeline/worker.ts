@@ -13,13 +13,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** `paceMs` (demo only) simulates the work taking time so the feed animates; 0 = instant. */
 export function workerLoop(client: RadiaClient, op: string, signal?: AbortSignal, log?: (m: string) => void, paceMs = 0): Promise<void> {
   if (!tools[op]) throw new Error(`unknown tool op: ${op}`);
-  return agentLoop(client, {
+  return agentLoop<{ input: unknown; jobId?: string; index?: number; total?: number }>(client, {
     name: `worker:${op}`,
     patterns: [{ kind: "task", match: { op } }],
     signal,
     log,
-    handle: async (rec: RadiaRecord) => {
-      const b = rec.body as { input: unknown; jobId?: string; index?: number; total?: number };
+    handle: async (rec) => {
+      const b = rec.body;
       if (paceMs) await sleep(paceMs);
       const output = tools[op](b.input);
       // Result is a fact linked to its task (ack sets parent_ids = [task]).

@@ -64,10 +64,10 @@ export class Thread {
    * this plus that append, so the two cannot drift.
    */
   static async attach(client: RadiaClient, id: string, key?: ConversationKey): Promise<Thread> {
-    const last = await client.queryOrdered({ kind: "message", match: { conversationId: id }, orderBy: [{ path: "index", dir: "desc" }] }, 1);
+    const last = await client.queryOrdered<{ index?: number }>({ kind: "message", match: { conversationId: id }, orderBy: [{ path: "index", dir: "desc" }] }, 1);
     if (last.length === 0) throw new Error(`no conversation ${id} on this space (or no grant to read it)`);
     const thread = new Thread(client, id, key);
-    thread.nextIndex = Number((last[0].body as { index?: number }).index ?? 0) + 1;
+    thread.nextIndex = Number(last[0].body.index ?? 0) + 1;
     thread.startedAt = thread.nextIndex;
     return thread;
   }
@@ -195,8 +195,8 @@ export class Thread {
   /** Re-read the end of the transcript. The cursor is the only state this class holds, so this is
    *  the whole of catching up with what other clients wrote. */
   private async resync(): Promise<void> {
-    const last = await this.client.queryOrdered({ kind: "message", match: { conversationId: this.id }, orderBy: [{ path: "index", dir: "desc" }] }, 1);
-    const highest = Number((last[0]?.body as { index?: number })?.index ?? -1);
+    const last = await this.client.queryOrdered<{ index?: number }>({ kind: "message", match: { conversationId: this.id }, orderBy: [{ path: "index", dir: "desc" }] }, 1);
+    const highest = Number(last[0]?.body.index ?? -1);
     this.nextIndex = Math.max(this.nextIndex, highest + 1);
   }
 }

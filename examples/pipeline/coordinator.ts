@@ -9,7 +9,7 @@ import { registerDemoKinds } from "./kinds.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function pollFor(fn: () => Promise<RadiaRecord | null>, timeoutMs = 10000): Promise<RadiaRecord | null> {
+async function pollFor<T = unknown>(fn: () => Promise<RadiaRecord<T> | null>, timeoutMs = 10000): Promise<RadiaRecord<T> | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const r = await fn();
@@ -27,12 +27,12 @@ export async function seedAndAwait(client: RadiaClient, text: string): Promise<v
   await client.put({ kind: "task", body: { op: "reverse", input: "radia" } });
   console.log(`[coordinator] posted job ${job.id.slice(-6)} ("${text}") + a standalone reverse task`);
 
-  const summary = await pollFor(() => client.readOne({ kind: "summary", match: { jobId: job.id } }));
-  if (summary) console.log(`[coordinator] job summary: "${(summary.body as { text: string }).text}"`);
+  const summary = await pollFor(() => client.readOne<{ text: string }>({ kind: "summary", match: { jobId: job.id } }));
+  if (summary) console.log(`[coordinator] job summary: "${summary.body.text}"`);
   else console.log(`[coordinator] no summary yet (are the planner/workers/aggregator running?)`);
 
-  const reversed = await pollFor(() => client.readOne({ kind: "result", match: { op: "reverse" } }));
-  if (reversed) console.log(`[coordinator] standalone reverse -> "${(reversed.body as { output: string }).output}"`);
+  const reversed = await pollFor(() => client.readOne<{ output: string }>({ kind: "result", match: { op: "reverse" } }));
+  if (reversed) console.log(`[coordinator] standalone reverse -> "${reversed.body.output}"`);
 }
 
 if (import.meta.main) {

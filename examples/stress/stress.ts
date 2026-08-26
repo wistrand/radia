@@ -191,14 +191,14 @@ async function runWave(n: number): Promise<Stats> {
   async function plan(): Promise<void> {
     let idle = 0;
     while (!ac.signal.aborted && idle < 20) {
-      const claimed = await planner.take({ pattern: { kind: "stress_job", match: { wave } } }, { leaseSeconds: 30 });
+      const claimed = await planner.take<{ items: string[]; poison: boolean[]; op: string }>({ pattern: { kind: "stress_job", match: { wave } } }, { leaseSeconds: 30 });
       if (!claimed) {
         if (!producing) idle++;
         await sleep(60);
         continue;
       }
       idle = 0;
-      const b = claimed.record.body as { items: string[]; poison: boolean[]; op: string };
+      const b = claimed.record.body;
       for (let i = 0; i < b.items.length; i++) {
         await planner.put({
           kind: "stress_task",
@@ -217,14 +217,14 @@ async function runWave(n: number): Promise<Stats> {
   async function work(op: string, client: RadiaClient): Promise<void> {
     let idle = 0;
     while (!ac.signal.aborted && idle < 25) {
-      const claimed = await client.take({ pattern: { kind: "stress_task", match: { wave, op } } }, { leaseSeconds: 20 });
+      const claimed = await client.take<{ input: string; poison?: boolean }>({ pattern: { kind: "stress_task", match: { wave, op } } }, { leaseSeconds: 20 });
       if (!claimed) {
         if (!producing) idle++;
         await sleep(70);
         continue;
       }
       idle = 0;
-      const b = claimed.record.body as { input: string; poison?: boolean };
+      const b = claimed.record.body;
       if (b.poison) {
         const n = (attempts.get(claimed.record.id) ?? 0) + 1;
         attempts.set(claimed.record.id, n);
