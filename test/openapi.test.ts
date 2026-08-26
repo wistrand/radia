@@ -254,6 +254,7 @@ Deno.test("openapi: every request field a handler accepts is in the contract", a
   const ROUTES: Record<string, { path: string; method: string }> = {
     handleQuery: { path: "/records/query", method: "post" },
     handleRegistry: { path: "/records/registry", method: "post" },
+    handleMintUploadCapability: { path: "/artifacts/capability", method: "post" },
     handleReadOne: { path: "/records/read-one", method: "post" },
     handleTake: { path: "/takes", method: "post" },
     handleRemediate: { path: "/ops/remediate", method: "post" },

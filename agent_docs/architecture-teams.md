@@ -149,11 +149,13 @@ the SQL pre-filter, which is a sound OVER-approximation by contract. The kinds a
 **It is not chatty-cheap.** Every tool call is an HTTP round trip and a model turn. This suits
 handing over units of work, not a conversation: for that, exchange fewer and larger records.
 
-**Bytes do not travel in records.** Anything bigger than a body is an artifact
-(`space_put_artifact`) and the record names it. A receiving agent gets the bytes through
-`space_get_artifact {link: true}`, which returns a short-lived capability URL for that one
-artifact; agents get no shared file access and none is assumed. A local file was tried first and is
-wrong: it assumes the reader shares a filesystem with the adapter.
+**Bytes do not travel in records, through the model, or over a shared filesystem.** Anything bigger
+than a body is an artifact, and both directions are a short-lived capability URL:
+`space_put_artifact {link: true}` to send, `space_get_artifact {link: true}` to receive. Neither
+puts bytes in a context window and neither assumes the agents share a machine, which is what makes
+this work for an agent that is not local. (`space_put_artifact {path}` also exists and is simpler
+when you DO share a filesystem with the adapter.) Both gaps were found the same way: a tool that
+could not do the job sent the agent looking for its own credential.
 
 **`foreign` taint accumulates and will saturate.** Any record derived from another principal's
 record is labelled `foreign` (`computeTaint`), so in a collaboration space nearly everything carries

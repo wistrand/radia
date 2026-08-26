@@ -38,7 +38,7 @@ import { ScopeFiller } from "./scope.ts";
 import { newer } from "../../../sdk/ts/registry.ts";
 import { ARTIFACT } from "../../../sdk/ts/wire.ts";
 import { flag } from "../../flags.ts";
-import { stdin, writeStderr, writeStdout } from "../../platform.ts";
+import { readBinaryFile, stdin, writeStderr, writeStdout } from "../../platform.ts";
 import { VERSION } from "../../version.ts";
 
 // The third place this string used to be written by hand. An MCP client shows it in its own
@@ -440,9 +440,56 @@ async function call(
       // is a record, and `space_put` already writes those.
       const text = typeof a.text === "string" ? a.text : undefined;
       const b64 = typeof a.base64 === "string" ? a.base64 : undefined;
-      if (text === undefined && b64 === undefined) throw new Error("space_put_artifact needs `text` or `base64`");
-      if (text !== undefined && b64 !== undefined) throw new Error("pass `text` or `base64`, not both");
-      const bytes = text !== undefined ? new TextEncoder().encode(text) : decodeBase64(b64!);
+      // A PATH is the third input and the one anything binary actually needs. `base64` is a dead
+      // end past a few KB: an 85 KB image is 113 KB of base64, which is a context window spent to
+      // move bytes the model never reads, and an agent that judged it too big went looking for the
+      // credential to curl the upload endpoint instead. That is the same failure `link: true`
+      // fixed on the READ side, arriving from the other direction.
+      //
+      // Reading a path the model names grants nothing in a harness that already gives it a
+      // filesystem, which is every harness this serves; in one that does not, it would be the
+      // escalation to weigh before enabling. The bytes go straight to the space and never enter a
+      // tool result.
+      const path = typeof a.path === "string" ? a.path : undefined;
+      // AN UPLOAD LINK is the third answer and the one that assumes nothing. `path` reads a file
+      // this process can see, which is true for a stdio harness on one machine and false for a
+      // remote agent, a browser, or a container; `base64` is a dead end past a few KB (an 85 KB
+      // image is 113 KB of context spent to move bytes the model never reads). `link: true` mints
+      // a single-use upload capability and hands back a URL to PUT to, exactly mirroring what
+      // `space_get_artifact {link: true}` does on the way in. Everything but the bytes is fixed
+      // when the link is minted, so the holder cannot change the team label, the parents or the
+      // author.
+      if (a.link === true) {
+        const meta: Record<string, string | number | boolean | null> = {};
+        for (const [k, v] of Object.entries((a.meta ?? {}) as Record<string, unknown>)) {
+          if (v !== null && typeof v === "object") throw new Error(`meta.${k} must be a scalar`);
+          meta[k] = v as string | number | boolean | null;
+        }
+        const cap = await scope.fill(ARTIFACT, (extra) =>
+          client.uploadCapability({
+            ...(typeof a.mediaType === "string" ? { mediaType: a.mediaType } : {}),
+            ...(typeof a.filename === "string" ? { filename: a.filename } : {}),
+            meta: { ...extra, ...meta },
+            ...(Array.isArray(a.parentIds) ? { parentIds: a.parentIds.map(String) } : {}),
+          }));
+        return pretty({
+          ...cap,
+          note: "PUT the bytes to that url with no header and no credential: the link IS the " +
+            "authorization, for one upload of one artifact, and it is consumed on use. Everything " +
+            "except the bytes was decided when it was minted. Bytes never entered this context.",
+        });
+      }
+      const given = [text, b64, path].filter((v) => v !== undefined).length;
+      if (given === 0) throw new Error("space_put_artifact needs `link`, `path`, `text` or `base64`");
+      if (given > 1) throw new Error("pass exactly one of `path`, `text` or `base64`");
+      let bytes: Uint8Array;
+      if (path !== undefined) {
+        const read = await readBinaryFile(path);
+        if (!read) throw new Error(`cannot read '${path}': no such file, or it is not readable by this process`);
+        bytes = read;
+      } else {
+        bytes = text !== undefined ? new TextEncoder().encode(text) : decodeBase64(b64!);
+      }
       const meta: Record<string, string | number | boolean | null> = {};
       for (const [k, v] of Object.entries((a.meta ?? {}) as Record<string, unknown>)) {
         // Scalars only: `meta` travels in a HEADER, so an object here would be silently dropped or
@@ -455,8 +502,22 @@ async function call(
       // can coordinate but cannot store bytes, which is the half of a compartment that leaks.
       const r = await scope.fill(ARTIFACT, (extra) =>
         client.putArtifact(bytes, {
-          mediaType: typeof a.mediaType === "string" ? a.mediaType : (text !== undefined ? "text/plain" : "application/octet-stream"),
-          ...(typeof a.filename === "string" ? { filename: a.filename } : {}),
+          mediaType: typeof a.mediaType === "string"
+            ? a.mediaType
+            : text !== undefined
+            ? "text/plain"
+            // From the EXTENSION for a path, because a harness picks its reader from the media type
+            // and `application/octet-stream` on a JPEG makes the receiving side refuse to inline it.
+            : path !== undefined
+            ? (mediaTypeForPath(path) ?? "application/octet-stream")
+            : "application/octet-stream",
+          // The filename defaults to the one on disk: a receiver naming the file it was sent is
+          // strictly more use than `undefined`, and the sender rarely thinks to pass it.
+          ...(typeof a.filename === "string"
+            ? { filename: a.filename }
+            : path !== undefined
+            ? { filename: path.replace(/\\/g, "/").split("/").pop()! }
+            : {}),
           ...(Array.isArray(a.parentIds) ? { parentIds: a.parentIds.map(String) } : {}),
           ...(Object.keys(meta).length + Object.keys(extra).length > 0 ? { meta: { ...extra, ...meta } } : {}),
           ...(typeof a.idempotencyKey === "string" ? { idempotencyKey: a.idempotencyKey } : {}),
@@ -729,6 +790,27 @@ async function isClaimable(client: RadiaClient, cache: Map<string, boolean>, kin
     for (const def of await client.listKinds()) cache.set(def.kind, def.claimable !== false);
   } catch { /* no kind_def grant: say what the old wording said */ }
   return cache.get(kind) ?? true;
+}
+
+/** Media type from a file extension, for an upload given as a path. The inverse of the table
+ *  `space_get_artifact` uses on the way out; unknown stays undefined so the caller's own
+ *  `mediaType` or the octet-stream default wins rather than a guess. */
+function mediaTypeForPath(path: string): string | undefined {
+  const ext = path.toLowerCase().split(".").pop() ?? "";
+  return ({
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    gif: "image/gif",
+    webp: "image/webp",
+    svg: "image/svg+xml",
+    pdf: "application/pdf",
+    zip: "application/zip",
+    json: "application/json",
+    txt: "text/plain",
+    md: "text/markdown",
+    csv: "text/csv",
+  } as Record<string, string>)[ext];
 }
 
 /** Same cap the chat's file reads use, and for the same reason: a tool result goes into a context

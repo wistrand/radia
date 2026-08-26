@@ -207,11 +207,31 @@ export const TOOLS: McpTool[] = [
       "Store bytes beside the space and get back a record that NAMES them. Use this for anything " +
       "bigger than a record body: a file, a diff, a transcript, output another agent should read. " +
       "Bytes never travel inside a record body, so this is how agents hand each other content. " +
+      "Four ways to supply the bytes, and only one of them puts them in this conversation. " +
+      "`link:true` returns a single-use URL to PUT them to with no credential, which assumes " +
+      "nothing about where you are running: use it from a browser, a container, or another " +
+      "machine. `path` reads a file this server can see, which is simpler when you share a " +
+      "filesystem with it. `text` is for content you are writing here. `base64` exists for small " +
+      "binary you already hold and is a poor way to move a file, since a 100 KB image costs 133 KB " +
+      "of context to say. With `link` or `path` the media type and filename are taken from what " +
+      "you give unless you override them. " +
       "The record is ordinary: give it parentIds for lineage and meta so a pattern can find it. " +
       "Identical bytes are one stored payload, so re-sending the same content costs nothing.",
     inputSchema: {
       type: "object",
       properties: {
+        link: {
+          type: "boolean",
+          description:
+            "Return a single-use upload URL instead of taking the bytes here. PUT them to it with " +
+            "no credential. Everything except the bytes is fixed when the link is minted.",
+        },
+        path: {
+          type: "string",
+          description:
+            "Absolute path to a file this server can read. Simpler than `link` when you share a " +
+            "filesystem with it; useless when you do not.",
+        },
         text: { type: "string", description: "The content, as text. Use this unless the bytes are binary." },
         base64: { type: "string", description: "The content, base64-encoded. For binary only; prefer `text`." },
         mediaType: { type: "string", description: "e.g. text/markdown, application/json. Default text/plain." },

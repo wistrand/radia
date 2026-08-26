@@ -88,6 +88,7 @@ import {
   readArtifact,
   shredArtifact,
   shredOf,
+  type UploadGrant,
 } from "./artifacts.ts";
 import {
   type Diagnostics,
@@ -2300,6 +2301,14 @@ export class Space {
 
   mintDownloadCapability(recordId: string): { capability: string; expiresAt: string } {
     return this.caps.mintDownloadCapability(recordId);
+  }
+
+  mintUploadCapability(upload: UploadGrant): { capability: string; expiresAt: string } {
+    return this.caps.mintUploadCapability(upload);
+  }
+
+  takeUploadCapability(capability: string): UploadGrant | null {
+    return this.caps.takeUploadCapability(capability);
   }
 
   resolveDownloadCapability(capability: string): string | null {

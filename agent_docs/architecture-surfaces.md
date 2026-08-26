@@ -326,11 +326,28 @@ an agent with a file reader or a shell can open both. One did, the first time a 
 something it needed. So the guarantee is "nothing here hands the model a credential"; the thing
 that bounds a leaked one is its grants.
 
-**A refusal owes the caller a next step.** `space_get_artifact` used to refuse binary and oversized
-payloads with "use a client that can download it" while the model WAS the client, so the model went
-looking for the credential instead. `link: true` mints the runtime's own single-artifact download
-CAPABILITY and returns the URL: bytes stay out of the context window (what the refusal was
-protecting) and the model is not left to improvise.
+**A refusal owes the caller a next step, and BOTH directions needed one.** `space_get_artifact`
+used to refuse binary and oversized payloads with "use a client that can download it" while the
+model WAS the client, so the model went looking for the credential instead. `link: true` mints the
+runtime's own single-artifact download CAPABILITY and returns the URL: bytes stay out of the context
+window (what the refusal was protecting) and the model is not left to improvise.
+
+`space_put_artifact` had the mirror gap and produced the mirror failure. It took `text` or `base64`
+only, so an 85 KB image was 113 KB of base64; an agent judged that too big to shuttle, tried to curl
+`POST /v0/artifacts`, hit `auth_required`, and went into its harness config for the definition
+token. It now takes `link: true` and mints an UPLOAD CAPABILITY, which is the symmetric answer and
+the one that assumes nothing: `path` was built first and reads a file THIS PROCESS can see, which
+is true for a stdio harness on one machine and false for a remote agent, a browser or a container.
+Both remain; the link is the one to reach for.
+
+`POST /v0/artifacts/capability` + `PUT /v0/a/{capability}` are the runtime half, and what makes a
+WRITE capability as bounded as a read one is that the holder supplies ONLY bytes. Author, media
+type, filename, parents and app fields are all fixed at mint, by a caller whose `put` grant and
+pattern scope were checked there, so a leaked upload URL cannot change a team label, forge lineage,
+or write as somebody else. It is SINGLE USE, unlike a download: a download opens something that
+already exists and may be fetched until it expires, while an upload that replayed would be an
+unbounded write channel. `digest` and `size` are not knowable at mint, so a pattern naming either
+is refused rather than deferred, which is the same answer the direct upload gives.
 
 A URL rather than a local file, and the difference is not convenience. Writing bytes to disk
 assumes whatever reads them shares a filesystem with the adapter, which holds for a stdio harness

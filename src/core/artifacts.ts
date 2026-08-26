@@ -192,8 +192,24 @@ export async function shredOf(h: ArtifactHost, digest: string): Promise<Record<s
 }
 
 /**
- * Live download capabilities: short-lived, unguessable grants to read ONE artifact, or a SET of
- * them addressed by path.
+ * Everything an upload capability decides on the minter's behalf. The holder adds bytes and
+ * nothing else, which is what keeps a write capability as bounded as a read one.
+ */
+export interface UploadGrant {
+  /** The principal the record is authored by: the one that minted, never the one that uploads. */
+  principal: string;
+  mediaType: string;
+  filename?: string;
+  /** App fields merged into the artifact's record body, already checked against the minter's
+   *  pattern scope. */
+  appFields?: Record<string, unknown>;
+  parentIds?: string[];
+  taint?: string[];
+}
+
+/**
+ * Live capabilities: short-lived, unguessable grants to read ONE artifact, a SET of them addressed
+ * by path, or to WRITE one whose shape is already fixed.
  *
  * IN MEMORY on purpose, and the limitation is accepted rather than unnoticed: they are
  * process-local, lost on restart, and invisible to a second instance. Persisting them would put
@@ -205,8 +221,12 @@ export async function shredOf(h: ArtifactHost, digest: string): Promise<Record<s
  * that nothing else touched, which is what made this the cheapest thing to lift out of it.
  */
 export class CapabilityStore {
-  /** `index` is present when the capability opens a SET of artifacts by path rather than one record. */
-  private readonly live = new Map<string, { recordId?: string; index?: Map<string, string>; expiresAt: number }>();
+  /** One of three shapes: `recordId` opens ONE artifact, `index` opens a SET addressed by path, and
+   *  `upload` CREATES one whose every field except the bytes is already decided. */
+  private readonly live = new Map<
+    string,
+    { recordId?: string; index?: Map<string, string>; upload?: UploadGrant; expiresAt: number }
+  >();
 
   constructor(private readonly ttlSeconds: number) {}
 
@@ -259,6 +279,41 @@ export class CapabilityStore {
     const capability = btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
     const at = Date.now() + this.ttlSeconds * 1000;
     return { capability, expiresAt: new Date(at).toISOString(), at };
+  }
+
+  /**
+   * Mint a capability to CREATE one artifact, with everything but the bytes already fixed.
+   *
+   * The mirror of the download form, and it exists for the mirror reason: a caller that cannot send
+   * an Authorization header could receive bytes and not send them. Handing it a path on disk was
+   * tried first and is wrong for the same reason a local file is wrong on the read side, only more
+   * so: it assumes the sender shares a filesystem with this process, which a remote agent, a
+   * browser and a container all fail.
+   *
+   * WHAT MAKES IT AS BOUNDED AS THE DOWNLOAD FORM is that the holder supplies ONLY bytes. The
+   * author, media type, filename, parents and app fields are all decided here, by a caller whose
+   * `put` grant and pattern scope were checked here, so a leaked upload URL cannot change the team
+   * label, forge lineage, or write as someone else. It stores the bytes of the artifact that was
+   * already described, once, or it does nothing.
+   *
+   * SINGLE USE, unlike a download capability. A download may be fetched repeatedly until it expires
+   * because it opens something that already exists; an upload that could be replayed is an
+   * unbounded write channel for as long as it lives.
+   */
+  mintUploadCapability(upload: UploadGrant): { capability: string; expiresAt: string } {
+    const { capability, expiresAt, at } = this.mint();
+    this.live.set(capability, { upload, expiresAt: at });
+    this.sweep();
+    return { capability, expiresAt };
+  }
+
+  /** Take the upload this capability authorizes, CONSUMING it. Null for unknown, expired or
+   *  already-used, and the caller cannot tell those apart: a probe learns nothing. */
+  takeUploadCapability(capability: string): UploadGrant | null {
+    const cap = this.live.get(capability);
+    if (!cap?.upload) return null;
+    this.live.delete(capability); // consumed whether or not the store below succeeds
+    return cap.expiresAt <= Date.now() ? null : cap.upload;
   }
 
   /** Mint a short-lived capability to download ONE artifact. The caller must already be authorized

@@ -6,6 +6,9 @@
 //                                          the one handed to a person. The capability names exactly
 //                                          one record, so the id in the path was redundant.
 //   POST /v0/artifacts/{id}/capability     mint a short-lived download capability for one artifact
+//   POST /v0/artifacts/capability          mint a short-lived UPLOAD capability: the record is
+//                                          described here and the holder adds only bytes
+//   PUT  /v0/a/{capability}                store those bytes, once (201 {id,digest,size})
 //
 // Authorization is the ordinary record authorization: `put`/`read_one` grants on the reserved
 // `artifact` kind. The capability exists for exactly one reason (a browser cannot attach an
@@ -17,7 +20,7 @@ import type { Space } from "../../core/space.ts";
 import type { TreeEntry } from "../../../sdk/ts/wire.ts";
 import { ARTIFACT, type ArtifactDef, clientTaint, validateArtifactDef } from "../../core/kinds.ts";
 import { RadiaError } from "../../core/errors.ts";
-import { problem, statusFor } from "../problem.ts";
+import { problem, rejectUnknown, statusFor } from "../problem.ts";
 import { TREE_PREFIX } from "../http.ts";
 
 /** Media types safe to hand a browser for inline display. Raster images, audio and video only:
@@ -390,6 +393,100 @@ export async function handleMintCapability(space: Space, recordId: string, princ
     );
   } catch (e) {
     if (e instanceof RadiaError) return problem(statusFor(e.code, 403), e.code, e.message);
+    throw e;
+  }
+}
+
+
+/**
+ * POST /v0/artifacts/capability — mint an upload capability.
+ *
+ * The mirror of the download mint, for a sender that cannot attach an Authorization header: a
+ * remote agent, a browser, anything not sharing this machine. Authorization happens HERE, over the
+ * body the record will have, exactly as `handleUploadArtifact` checks it before reading any bytes;
+ * the URL that comes back carries no credential and needs no grant read per request.
+ *
+ * `digest` and `size` are still not knowable at mint (that is why the upload path checks the scope
+ * before the payload too), so a pattern naming either cannot be satisfied here and says so by
+ * refusing, which is the same answer the direct upload gives.
+ */
+export async function handleMintUploadCapability(space: Space, req: Request, principal: string): Promise<Response> {
+  const j = await req.json().catch(() => null) as Record<string, unknown> | null;
+  if (!j || typeof j !== "object" || Array.isArray(j)) return problem(400, "invalid_body", "expected a JSON object");
+  const unknown = rejectUnknown(j, ["mediaType", "filename", "meta", "parentIds", "taint"]);
+  if (unknown) return unknown;
+  const mediaType = typeof j.mediaType === "string" && j.mediaType ? j.mediaType : "application/octet-stream";
+  const filename = typeof j.filename === "string" ? j.filename : undefined;
+  const appFields = (j.meta && typeof j.meta === "object" && !Array.isArray(j.meta))
+    ? j.meta as Record<string, unknown>
+    : undefined;
+  const parentIds = Array.isArray(j.parentIds)
+    ? (j.parentIds as unknown[]).filter((x): x is string => typeof x === "string")
+    : undefined;
+  try {
+    // The SAME check the direct upload makes, in the same order, over everything knowable before
+    // the payload. A capability that skipped it would be a way to write around a pattern scope.
+    const constraint = await space.authorize(principal, "put", ARTIFACT);
+    const scopeBody = { ...appFields, mediaType, ...(filename ? { filename } : {}) };
+    if (constraint && !space.bodyMatchesGrant(ARTIFACT, scopeBody, constraint)) {
+      return problem(403, "forbidden", "this artifact is outside the pattern scope of your put grant");
+    }
+    // A client RAISE, carried through to the write exactly as the direct upload carries it.
+    const taint = clientTaint(typeof j.taint === "string" ? j.taint : null, { reserved: true });
+    const out = space.mintUploadCapability({
+      principal,
+      mediaType,
+      ...(taint?.length ? { taint } : {}),
+      ...(filename ? { filename } : {}),
+      ...(appFields ? { appFields } : {}),
+      ...(parentIds?.length ? { parentIds } : {}),
+    });
+    return Response.json({
+      capability: out.capability,
+      expiresAt: out.expiresAt,
+      url: `${space.artifactOrigin}/v0/a/${out.capability}`,
+    }, { status: 201 });
+  } catch (e) {
+    if (e instanceof RadiaError) return problem(statusFor(e.code, 403), e.code, e.message);
+    throw e;
+  }
+}
+
+/**
+ * PUT /v0/a/{capability} — store the bytes of an artifact somebody already described.
+ *
+ * No Authorization header, by design: the capability IS the authorization, and it authorizes one
+ * write of one artifact whose every other field was fixed at mint. It is CONSUMED on use, so a
+ * replayed URL stores nothing rather than appending a second record.
+ */
+export async function handleCapabilityUpload(space: Space, req: Request, capability: string): Promise<Response> {
+  const grant = space.takeUploadCapability(capability);
+  // Unknown, expired and already-used are ONE answer. Distinguishing them tells a prober which
+  // capabilities existed.
+  if (!grant) return problem(404, "not_found", "no such upload capability (it may have expired, or already been used)");
+  const bytes = await readCapped(req, space.maxArtifactBytes);
+  if (bytes === "too_large") {
+    return problem(413, "artifact_too_large", `artifact exceeds the ${space.maxArtifactBytes}-byte limit`);
+  }
+  if (bytes.byteLength === 0) return problem(400, "invalid_body", "artifact body is empty");
+  try {
+    const out = await space.putArtifact(
+      bytes,
+      {
+        mediaType: grant.mediaType,
+        filename: grant.filename,
+        appFields: grant.appFields,
+        parentIds: grant.parentIds,
+        taint: grant.taint,
+      },
+      undefined,
+      // AUTHORED BY THE MINTER, never by whoever presents the capability: the record says who
+      // decided it should exist, which is the only principal the space ever authorized.
+      grant.principal,
+    );
+    return new Response(JSON.stringify(out), { status: 201, headers: { "content-type": "application/json" } });
+  } catch (e) {
+    if (e instanceof RadiaError) return problem(statusFor(e.code, 422), e.code, e.message);
     throw e;
   }
 }

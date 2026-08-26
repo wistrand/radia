@@ -1088,6 +1088,26 @@ export class RadiaClient {
   }
 
   /**
+   * A short-lived, single-use capability to UPLOAD one artifact, for a sender that cannot attach an
+   * Authorization header: a remote agent, a browser, anything not sharing a filesystem with the
+   * space. Everything but the bytes is decided HERE and checked against this caller's grant, so the
+   * holder of the returned URL can store those bytes as this artifact and do nothing else.
+   *
+   * PUT the bytes to `url` with no credential. It is consumed on use.
+   */
+  uploadCapability(
+    spec: {
+      mediaType?: string;
+      filename?: string;
+      meta?: Record<string, string | number | boolean | null>;
+      parentIds?: string[];
+      taint?: string;
+    } = {},
+  ): Promise<{ capability: string; expiresAt: string; url: string }> {
+    return this.req("POST", "/v0/artifacts/capability", spec);
+  }
+
+  /**
    * Watch a pattern: an async stream of wakeups (`{seq, recordId, kind}`) for matching
    * records that become available. Reconnects with a cursor on drop; on 410 cursor_expired
    * it restarts from the beginning (a real client would catch-up-query first). Ends when

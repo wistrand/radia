@@ -25,7 +25,7 @@ import {
   handleRevokeDefinition,
   handleStopRun,
 } from "./handlers/agents.ts";
-import { handleGetArtifact, handleMintCapability, handleMintPathCapability, handlePutArtifact, handleShredArtifact } from "./handlers/artifacts.ts";
+import { handleCapabilityUpload, handleGetArtifact, handleMintUploadCapability, handleMintCapability, handleMintPathCapability, handlePutArtifact, handleShredArtifact } from "./handlers/artifacts.ts";
 import { handleRemediate, handleRewrap, handleAdmin, handleGc, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleErasures, handleEnvelopeQuery, handleEvents, handleDigest, handleDryRun, handleFlows, handleIntegrity, handleGetRecord, handleGraph, handleLineage, handleThread, handlePermissions, handleStats } from "./handlers/ops.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
 import { problem, statusFor } from "./problem.ts";
@@ -155,6 +155,15 @@ export function makeArtifactHandler(space: Space) {
       if (!id) return capabilityRefused(space);
       return await handleGetArtifact(space, id, null, true);
     }
+    // PUT on the same short form STORES bytes for an upload capability. No credential, by design:
+    // the capability is the authorization and it authorizes exactly one write of one artifact whose
+    // every other field was fixed at mint. Checked before token resolution for the same reason the
+    // GET is: there is deliberately no token to resolve.
+    if (req.method === "PUT" && url.pathname.startsWith(SHORT_ARTIFACT_PREFIX)) {
+      const cap = decodeURIComponent(url.pathname.slice(SHORT_ARTIFACT_PREFIX.length));
+      return await handleCapabilityUpload(space, req, cap);
+    }
+
     // A TREE, addressed by path: `/v0/w/<capability>/<path>`. A browser resolves `./style.css`
     // against the URL PATH, so one opaque token per artifact cannot serve a multi-file page however
     // many capabilities you mint. The runtime knows nothing about workspaces here — a capability
@@ -347,6 +356,15 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
       if (!id) return capabilityRefused(space);
       return await handleGetArtifact(space, id, null);
     }
+    // PUT on the same short form STORES bytes for an upload capability. No credential, by design:
+    // the capability is the authorization and it authorizes exactly one write of one artifact whose
+    // every other field was fixed at mint. Checked before token resolution for the same reason the
+    // GET is: there is deliberately no token to resolve.
+    if (req.method === "PUT" && url.pathname.startsWith(SHORT_ARTIFACT_PREFIX)) {
+      const cap = decodeURIComponent(url.pathname.slice(SHORT_ARTIFACT_PREFIX.length));
+      return await handleCapabilityUpload(space, req, cap);
+    }
+
     const capability = url.searchParams.get("capability");
     if (req.method === "GET" && capability && url.pathname.startsWith("/v0/artifacts/")) {
       const id = decodeURIComponent(url.pathname.slice("/v0/artifacts/".length));
@@ -531,6 +549,10 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
         });
       case "POST /v0/artifacts":
         return await handlePutArtifact(space, req, principal);
+      case "POST /v0/artifacts/capability":
+        // The UPLOAD mint. Above the `/v0/artifacts/{id}/…` prefix family below, or `capability`
+        // reads as a record id.
+        return await handleMintUploadCapability(space, req, principal);
       case "POST /v0/records":
         return await handlePut(space, req, principal);
       case "POST /v0/records/read-one":

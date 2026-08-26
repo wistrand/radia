@@ -616,3 +616,72 @@ Deno.test("[mcp] a claim outlives the process that made it, but only for a named
   // hands a teammate work that is already half done.
   assert(/if \(!session\) await client\.release/.test(src), "a named session's claims are still released on exit");
 });
+
+Deno.test("[mcp] an artifact moves in and out by reference, never through the context", async () => {
+  const src = await Deno.readTextFile(new URL("../src/surfaces/mcp/server.ts", import.meta.url));
+  const tools = await Deno.readTextFile(new URL("../src/surfaces/mcp/tools.ts", import.meta.url));
+
+  // BOTH DIRECTIONS, and each was a dead end that sent an agent after the credential in its own
+  // harness config. Reading: a refusal that said "use a client that can download it" while the
+  // model WAS the client. Writing: `text` or `base64` only, so an 85 KB file became 113 KB of
+  // base64, which an agent correctly judged too big and then tried to curl the upload endpoint.
+  assert(src.includes("a.link === true"), "no way to receive an artifact by reference");
+  assert(/const path = typeof a\.path === "string"/.test(src), "no way to send an artifact by reference");
+
+  // Exactly one input, named. Silently preferring one over another moves different bytes than the
+  // caller asked for.
+  assert(src.includes("pass exactly one of `path`, `text` or `base64`"), "several inputs are not refused");
+
+  // The media type comes from the EXTENSION for a path, because the receiving side picks its
+  // reader from it and `application/octet-stream` on a JPEG is refused as un-inlineable.
+  assert(src.includes("mediaTypeForPath"), "a path upload does not derive its media type");
+  assert(tools.includes("path"), "the path input is not advertised to the model");
+});
+
+Deno.test("[artifacts] an upload capability is as bounded as a download one", async () => {
+  const sp = await newSpace();
+  try {
+    await declareTeamKinds(sp.admin);
+    const m = await addMember(sp.admin, "agent:alpha", { teams: ["alpha"] });
+    const c = new RadiaClient(sp.base, { definitionToken: m.definitionToken });
+
+    // EVERYTHING BUT THE BYTES IS FIXED AT MINT, and authorized there: the same check the direct
+    // upload makes, over everything knowable before a payload exists. That is what keeps a WRITE
+    // capability as bounded as a read one, and it is checked from the failing side first.
+    const refused = await c.uploadCapability({ mediaType: "image/png", meta: { [TEAM_FIELD]: "beta" } })
+      .then(() => null, (e) => (e as Error).message);
+    assert(refused?.includes("pattern scope"), `another team's artifact should be refused at mint: ${refused}`);
+    const unlabelled = await c.uploadCapability({ mediaType: "image/png" }).then(() => null, (e) => (e as Error).message);
+    assert(unlabelled?.includes("pattern scope"), "an unlabelled artifact should be refused at mint too");
+
+    const cap = await c.uploadCapability({ mediaType: "image/png", filename: "x.png", meta: { [TEAM_FIELD]: "alpha" } });
+    assert(cap.url.length > 0 && cap.expiresAt > new Date().toISOString());
+    // ABSOLUTE when the space runs a separate artifact origin (the default), a path when it does
+    // not, which is this harness. Same rule the download capability has.
+    const url = /^https?:\/\//.test(cap.url) ? cap.url : `${sp.base}${cap.url}`;
+
+    // THE HOLDER ADDS ONLY BYTES, with NO credential. That is the whole point: a sender that
+    // cannot attach an Authorization header (a remote agent, a browser, a container) could receive
+    // bytes through a download capability and had no way to send them.
+    const bytes = new Uint8Array(4096).fill(9);
+    const res = await fetch(url, { method: "PUT", body: bytes });
+    assertEquals(res.status, 201);
+    const { id } = await res.json() as { id: string };
+
+    // The record is authored by the MINTER, never by whoever presented the capability, and carries
+    // exactly what was described.
+    const rec = await sp.admin.getRecord<{ team: string; mediaType: string; filename: string }>(id);
+    assertEquals(rec!.body.team, "alpha");
+    assertEquals(rec!.body.mediaType, "image/png");
+    assertEquals(rec!.body.filename, "x.png");
+    const runs = await sp.admin.queryAll<{ run?: string; agent?: string }>({ kind: "agent_run" });
+    const author = [...runs].find((r) => r.body.run === rec!.runtimeMeta.createdBy)?.body.agent;
+    assertEquals(author, "agent:alpha", "the record must name who decided it should exist");
+
+    // SINGLE USE, unlike a download. A download opens something that already exists and may be
+    // fetched until it expires; an upload that replayed would be an unbounded write channel.
+    assertEquals((await fetch(url, { method: "PUT", body: bytes })).status, 404);
+  } finally {
+    await sp.close();
+  }
+});

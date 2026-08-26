@@ -617,6 +617,85 @@ paths:
         "204": { description: "favicon.ico, which no tree contains" }
         "403": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+  /artifacts/capability:
+    post:
+      operationId: mintUploadCapability
+      summary: Mint a short-lived capability to upload ONE artifact
+      description: >
+        The mirror of the download capability, for a sender that cannot attach an Authorization
+        header: a remote agent, a browser, anything not sharing a filesystem with the space. The
+        record is described HERE and the holder adds only bytes, so a leaked upload URL cannot
+        change the media type, the app fields, the parents or the author. Authorization happens at
+        mint, over everything knowable before the payload, exactly as `POST /artifacts` checks it;
+        `digest` and `size` are not knowable then, so a pattern naming either cannot be satisfied
+        and is refused rather than deferred. SINGLE USE: a download may be fetched until it
+        expires, an upload that could be replayed would be an unbounded write channel.
+      x-stability: stable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mediaType: { type: string, default: application/octet-stream }
+                filename: { type: string, description: "Advisory, for a download. Never used as a path." }
+                meta:
+                  type: object
+                  description: Scalar app fields merged into the artifact record's body.
+                parentIds:
+                  type: array
+                  items: { type: string }
+                taint:
+                  type: string
+                  description: "Comma-separated labels to RAISE on the record (file, net, foreign)."
+      responses:
+        "201":
+          description: The capability and the URL to PUT bytes to.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  capability: { type: string }
+                  url: { type: string }
+                  expiresAt: { type: string, format: date-time }
+        "403": { description: Outside the pattern scope of your artifact put grant. }
+
+  /a/{capability}:
+    put:
+      operationId: uploadByCapability
+      summary: Store the bytes of an artifact already described by its upload capability
+      description: >
+        No Authorization header, by design: the capability IS the authorization and it authorizes
+        one write of one artifact. Consumed on use, so a replay stores nothing. Unknown, expired
+        and already-used are one answer (404), because distinguishing them tells a prober which
+        capabilities existed.
+      x-stability: stable
+      parameters:
+        - name: capability
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "201":
+          description: The artifact record.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  digest: { type: string }
+                  size: { type: integer }
+        "404": { description: No such upload capability. }
+        "413": { description: Past the space's artifact size limit. }
+
   /artifacts/{id}/capability:
     post:
       operationId: artifactCapability

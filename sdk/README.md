@@ -21,7 +21,7 @@ compute identically. The runtime imports these definitions; the SDK imports noth
 | Reactor loop (fact-side: watch, re-read, decide) | `reactorLoop` | not yet: hand-roll the sweep, or poll |
 | Paging      | `queryNewest` / `queryOldest` / `queryOrdered` / `queryPage` → `{records, nextCursor, scope}` | `query_newest` / `query_oldest` / `query_page` → `(records, next_cursor, scope)` |
 | Watches     | `client.watch()` async generator | `client.watch()` generator |
-| Artifacts   | `putArtifact` / `getArtifact` / `artifactMeta` (HEAD: digest and size, no bytes) / `artifactCapability` | `put_artifact` / `get_artifact` / `artifact_capability` |
+| Artifacts   | `putArtifact` / `getArtifact` / `artifactMeta` (HEAD: digest and size, no bytes) / `artifactCapability` (download) / `uploadCapability` (upload, single-use: the record is described at mint and the holder PUTs only bytes) | `put_artifact` / `get_artifact` / `artifact_capability` |
 | Remediation | `admin(action, id)` / `remediate(action, selector)` | `admin(action, id)` / `remediate(action, state=…, expired=…, kind=…)` |
 | Ops queries | `queryEnvelopes` / `getEnvelope` (ONE record's claim state and, when leased, its fenced lease) / `diagnostics` / `erasures` / `getStats` / `getEvents` / `getEventsPage` | `query_envelopes` / `diagnostics` / `erasures` / `get_stats` / `get_events` / `get_events_page`; no per-record envelope |
 | Bootstrap   | `grant` / `createAgentDefinition` / `createRun` / `stopRun` | `grant` / `create_agent_definition` / `create_run` / `stop_run` |
