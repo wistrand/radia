@@ -535,11 +535,11 @@ Deno.test("[broker] a DRY RUN rehearses the real thing and writes nothing", asyn
     const host = await hostFor(entry, { stamp: { compartment: "trial" }, labels: ["file"] });
 
     // The tree the host would run, materialised the same way.
-    const ws = await operator.queryNewest({ kind: "workspace" }, 1);
+    const ws = await operator.queryNewest<any>({ kind: "workspace" }, 1);
     const root = await Deno.makeTempDir({ prefix: "dry-" });
     try {
       // deno-lint-ignore no-explicit-any
-      await materialize(operator, ws[0].body as any, root);
+      await materialize(operator, ws[0].body, root);
       const record = { id: "01TESTRECORD", kind: EXEC_REQUEST, body: { job: "rehearsal" } } as unknown as RadiaRecord;
 
       const dry = await dryRunEntrypoint({
@@ -629,11 +629,11 @@ Deno.test("[broker] a dry run refuses reads rather than borrowing a credential",
         return { kind: "exec_result", body: { err } };
       };
     `);
-    const ws = await operator.queryNewest({ kind: "workspace" }, 1);
+    const ws = await operator.queryNewest<any>({ kind: "workspace" }, 1);
     const root = await Deno.makeTempDir({ prefix: "dry-read-" });
     try {
       // deno-lint-ignore no-explicit-any
-      await materialize(operator, ws[0].body as any, root);
+      await materialize(operator, ws[0].body, root);
       const dry = await dryRunEntrypoint({
         root,
         entrypoint: "main.ts",

@@ -143,8 +143,8 @@ check("…chained by content digest",
 // A stage run in the jail knows its output's DIGEST, not the artifact id the capture assigned, so
 // readers resolve content-addressed: the same move the planner makes when chaining.
 const reportOf = async () => {
-  const r = (await admin.queryNewest({ kind: "stage_result", match: { stage: "report", ok: "yes" } }, 1))[0];
-  const b = r?.body as { outputDigest?: string } | undefined;
+  const r = (await admin.queryNewest<{ outputDigest?: string }>({ kind: "stage_result", match: { stage: "report", ok: "yes" } }, 1))[0];
+  const b = r?.body;
   if (!b?.outputDigest) return null;
   const [art] = await admin.queryNewest({ kind: "artifact", match: { digest: b.outputDigest } }, 1);
   return art ? JSON.parse(new TextDecoder().decode(await admin.getArtifact(art.id))) : null;
@@ -156,8 +156,8 @@ check("…and the bad row was dropped by clean", first?.rows === 3, `rows=${firs
 // The host stamped the output artifact with the REQUEST's owner (binding.outputMeta), which is
 // what keeps the person's {owner}-scoped artifact grant reaching bytes an agent authored.
 {
-  const r = (await admin.queryNewest({ kind: "stage_result", match: { stage: "report", ok: "yes" } }, 1))[0];
-  const digest = (r?.body as { outputDigest?: string })?.outputDigest ?? "";
+  const r = (await admin.queryNewest<{ outputDigest?: string }>({ kind: "stage_result", match: { stage: "report", ok: "yes" } }, 1))[0];
+  const digest = r?.body.outputDigest ?? "";
   const [mine] = await admin.queryOldest({ kind: "artifact", match: { digest, owner: alice } }, 1);
   check("the report artifact carries the person as owner, not the agent", mine !== undefined);
 }
@@ -182,8 +182,8 @@ check("…and the bad row was dropped by clean", first?.rows === 3, `rows=${firs
   const noise = steps1b.filter((s) => s.dataset === "noise");
   check("an all-garbage upload still runs every stage to done", noise.length === STAGES.length && noise.every((s) => s.state === "done"),
     noise.map((s) => `${s.stage}:${s.state}`).join(" "));
-  const [r] = await admin.queryNewest({ kind: "stage_result", match: { stage: "report", dataset: "noise", ok: "yes" } }, 1);
-  const digest = (r?.body as { outputDigest?: string })?.outputDigest ?? "";
+  const [r] = await admin.queryNewest<{ outputDigest?: string }>({ kind: "stage_result", match: { stage: "report", dataset: "noise", ok: "yes" } }, 1);
+  const digest = r?.body.outputDigest ?? "";
   const [art] = await admin.queryNewest({ kind: "artifact", match: { digest } }, 1);
   const report = art ? JSON.parse(new TextDecoder().decode(await admin.getArtifact(art.id))) : null;
   check("…and its report says so instead of headlining a column with no values",

@@ -100,11 +100,12 @@ async function contextAt(upTo: number) {
       }, limit)).map((r) => r.body as ThreadRow),
     { window: 40, cap: 400 },
   );
-  const newestSystem = (await client.queryOrdered({
+  const newestSystem = (await client.queryOrdered<ThreadRow>({
     kind: "message",
     match: { conversationId: conv, role: "system", index: { $lte: upTo } },
     orderBy: [{ path: "index", dir: "desc" }],
-  }, 1)).map((r) => r.body as ThreadRow)[0];
+  }, 1))
+    .map((r) => r.body)[0];
   return { ...assembleContext(newestSystem, tail), tail };
 }
 
@@ -157,12 +158,12 @@ const narrow = await selectWindow(
 check("a window smaller than one turn expands to include it", narrow.some((m) => m.role === "user"), `${narrow.length} rows`);
 
 // Odd payloads survive the round trip through records.
-const odd = await client.queryOldest({ kind: "message", match: { conversationId: conv, role: "user" } }, 200);
-const contents = odd.map((r) => String((r.body as ThreadRow).content ?? ""));
+const odd = await client.queryOldest<ThreadRow>({ kind: "message", match: { conversationId: conv, role: "user" } }, 200);
+const contents = odd.map((r) => String(r.body.content ?? ""));
 check("unicode survives storage", contents.some((c) => c.includes("🐨") && c.includes("中文")));
 check("an empty message is kept, not dropped", contents.some((c) => c === ""));
-const big = await client.queryOldest({ kind: "message", match: { conversationId: conv, role: "assistant" } }, 200);
-check("a 20k message round-trips intact", big.some((r) => String((r.body as ThreadRow).content ?? "").length === 20_000));
+const big = await client.queryOldest<ThreadRow>({ kind: "message", match: { conversationId: conv, role: "assistant" } }, 200);
+check("a 20k message round-trips intact", big.some((r) => String(r.body.content ?? "").length === 20_000));
 
 // U+0000 is valid JSON and has no representation in Postgres `jsonb`, so it must be refused at the
 // boundary rather than exploding inside the driver. It must also be refused identically on every

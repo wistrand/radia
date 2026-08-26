@@ -55,8 +55,8 @@ export async function liveModels(client: RadiaClient): Promise<ModelAd[]> {
  *  so an ascending read would return the advertisement it withdrew. */
 async function current(client: RadiaClient, tier: string): Promise<{ id: string; ad: ModelAd } | undefined> {
   try {
-    const rows = await client.queryNewest({ kind: "model", match: { tier } }, 1);
-    return rows[0] ? { id: rows[0].id, ad: rows[0].body as ModelAd } : undefined;
+    const rows = await client.queryNewest<ModelAd>({ kind: "model", match: { tier } }, 1);
+    return rows[0] ? { id: rows[0].id, ad: rows[0].body } : undefined;
   } catch {
     return undefined; // no grant to read models: fall through and publish
   }
