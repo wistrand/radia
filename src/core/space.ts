@@ -539,8 +539,8 @@ export interface ReadAccess {
   allowTaint?: string[];
 }
 
-import type { EffectivePermissions, MintedRun, RunRenewal } from "../../sdk/ts/wire.ts";
-export type { EffectivePermissions, MintedRun, RunRenewal };
+import type { EffectivePermissions, MintedRun, RunRenewal, TreeEntry } from "../../sdk/ts/wire.ts";
+export type { EffectivePermissions, MintedRun, RunRenewal, TreeEntry };
 
 /** One shred, and whether it still means anything. */
 import type { ErasureReport, ErasureStatus, ShredResult } from "../../sdk/ts/wire.ts";
@@ -2692,7 +2692,7 @@ export class Space {
     return shredOf(this.artifactHost, digest);
   }
 
-  mintPathCapability(entries: { path: string; artifactId: string }[]): { capability: string; expiresAt: string } {
+  mintPathCapability(entries: TreeEntry[]): { capability: string; expiresAt: string } {
     return this.caps.mintPathCapability(entries);
   }
 

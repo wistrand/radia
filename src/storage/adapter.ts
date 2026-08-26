@@ -186,9 +186,18 @@ export interface SweptIds {
   byKind: Record<string, number>;
 }
 
-/** Where an appended event landed: the opaque cursor a reader resumes from, and its dense seq. */
+/** Where an appended event landed: the opaque cursor a reader resumes from, and its dense seq.
+ *  Also what `sealableEvents` resumes FROM, so the two cannot disagree about the pair. */
 export interface EventPosition {
   cursor: string;
+  seq: number;
+}
+
+/** The anchor an event sweep works down from: the newest sealed event outside the retention
+ *  window. Both fields are load-bearing (`idx` is dense, `seq` is the cursor group), which is why
+ *  the pair is named rather than written out at each implementation. */
+export interface SweepAnchor {
+  idx: number;
   seq: number;
 }
 
@@ -521,7 +530,7 @@ export interface StorageAdapter {
    * older in-flight transaction, since a chain cannot accept a late arrival: `getEvents`' watermark
    * is what makes the order final rather than merely current. (M1)
    */
-  sealableEvents(after: { cursor: string; seq: number } | null, limit: number): Promise<SpaceEvent[]>;
+  sealableEvents(after: EventPosition | null, limit: number): Promise<SpaceEvent[]>;
 
   /** The last sealed link, or null on a space that has never been sealed. (M1) */
   sealHead(): Promise<EventSeal | null>;
@@ -578,7 +587,7 @@ export interface StorageAdapter {
    * progress. `dryRun` counts the events that would go. The caller MUST have sealed a horizon
    * statement covering the anchor first; `Space.gcEvents` owns that order. (M2)
    */
-  sweepSealedEvents(anchor: { idx: number; seq: number }, limit: number, dryRun?: boolean): Promise<EventSweepResult>;
+  sweepSealedEvents(anchor: SweepAnchor, limit: number, dryRun?: boolean): Promise<EventSweepResult>;
 
   // Kind declarations are NOT a storage concern: they are kind_def records, written via put()
   // and read via query() like any record (see core/space.ts loadKinds). No kinds table.

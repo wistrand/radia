@@ -35,6 +35,7 @@ import {
   type TakeSelector,
   type EventPosition,
   type EventSweepResult,
+  type SweepAnchor,
   type SweepResult,
   type SweptIds,
   type SweepSelector,
@@ -872,7 +873,7 @@ export class SqliteAdapter implements StorageAdapter {
   // One writer and one connection, so seq order IS commit order: no watermark, and the cursor is
   // the seq. The tuple comparison degenerates to `seq > s`, which is why the same core sealer runs
   // unchanged on both dialects.
-  sealableEvents(after: { cursor: string; seq: number } | null, limit: number): Promise<SpaceEvent[]> {
+  sealableEvents(after: EventPosition | null, limit: number): Promise<SpaceEvent[]> {
     const rows = this.db.prepare(
       `select seq, id, ts, run_id, operation, record_id, kind, state, detail, body_sha256
          from events where seq > ? order by seq asc limit ?`,
@@ -934,7 +935,7 @@ export class SqliteAdapter implements StorageAdapter {
     return Promise.resolve(row ? rowToSeal(row) : null);
   }
 
-  sweepSealedEvents(anchor: { idx: number; seq: number }, limit: number, dryRun?: boolean): Promise<EventSweepResult> {
+  sweepSealedEvents(anchor: SweepAnchor, limit: number, dryRun?: boolean): Promise<EventSweepResult> {
     if (dryRun) {
       const row = this.db.prepare(
         "select count(*) c from event_seal s join events e on e.seq = s.seq where s.idx <= ?",

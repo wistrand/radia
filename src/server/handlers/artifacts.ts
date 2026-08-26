@@ -14,6 +14,7 @@
 // download capability" of design-data-model §2.4; the record id in the URL stays stable forever.
 
 import type { Space } from "../../core/space.ts";
+import type { TreeEntry } from "../../../sdk/ts/wire.ts";
 import { ARTIFACT, type ArtifactDef, clientTaint, validateArtifactDef } from "../../core/kinds.ts";
 import { RadiaError } from "../../core/errors.ts";
 import { problem, statusFor } from "../problem.ts";
@@ -324,7 +325,7 @@ export async function handleMintPathCapability(space: Space, req: Request, princ
     return problem(400, "invalid_body", "expected {entries: [{path, artifactId}, …]} with at least one entry");
   }
   if (raw.length > 5_000) return problem(400, "invalid_body", `too many entries (${raw.length}); a capability indexes at most 5000`);
-  const entries: { path: string; artifactId: string }[] = [];
+  const entries: TreeEntry[] = [];
   for (const e of raw) {
     const path = typeof e.path === "string" ? e.path : "";
     const artifactId = typeof e.artifactId === "string" ? e.artifactId : "";

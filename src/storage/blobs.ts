@@ -48,6 +48,21 @@ export interface BlobRef {
 
 /** What one `retainOnly` pass did. `scanned` counts stored payloads examined; `bytes` is the
  *  stored size reclaimed (ciphertext size on an encrypted store). */
+/**
+ * What a `retainOnly` sweep needs beyond the keep-set.
+ *
+ * `graceMs` is the whole safety story: a blob younger than it is left alone, because a put that has
+ * written bytes but not yet committed its record is indistinguishable from litter. Named because
+ * the `BlobStore` port has FOUR implementations and each wrote this out, so one could have
+ * defaulted the grace window away without the port noticing.
+ */
+export interface RetainOptions {
+  graceMs: number;
+  dryRun?: boolean;
+  /** Injected clock, for tests that need the grace window to have passed. */
+  nowMs?: number;
+}
+
 import type { BlobGcResult } from "../../sdk/ts/wire.ts";
 export type { BlobGcResult };
 
@@ -98,7 +113,7 @@ export interface BlobStore {
    * SECOND process over the same blob directory, which no in-process latch could. Ages are
    * host-clock (mtimes are host-clock data); `nowMs` exists for tests, never to pass a DB time.
    */
-  retainOnly(liveDigests: ReadonlySet<string>, opts: { graceMs: number; dryRun?: boolean; nowMs?: number }): Promise<BlobGcResult>;
+  retainOnly(liveDigests: ReadonlySet<string>, opts: RetainOptions): Promise<BlobGcResult>;
   /**
    * Re-seal every referenced payload under the CURRENT key, so a retired one can be destroyed.
    *
@@ -162,7 +177,7 @@ export class MemoryBlobStore implements BlobStore {
     return { digest, size: bytes.byteLength };
   }
 
-  retainOnly(liveDigests: ReadonlySet<string>, opts: { graceMs: number; dryRun?: boolean; nowMs?: number }): Promise<BlobGcResult> {
+  retainOnly(liveDigests: ReadonlySet<string>, opts: RetainOptions): Promise<BlobGcResult> {
     const now = opts.nowMs ?? Date.now();
     const out: BlobGcResult = { scanned: 0, deleted: 0, bytes: 0 };
     for (const [digest, entry] of this.blobs) {
@@ -458,7 +473,7 @@ export class FileBlobStore implements BlobStore {
     return out;
   }
 
-  async retainOnly(liveDigests: ReadonlySet<string>, opts: { graceMs: number; dryRun?: boolean; nowMs?: number }): Promise<BlobGcResult> {
+  async retainOnly(liveDigests: ReadonlySet<string>, opts: RetainOptions): Promise<BlobGcResult> {
     const now = opts.nowMs ?? Date.now();
     // The keep set as STORAGE NAMES. A live digest may occupy either home (the plaintext-digest
     // name from before encryption was enabled, the HMAC name after), so an encrypted store keeps
@@ -597,7 +612,7 @@ export class MigratingBlobStore implements BlobStore {
     return out;
   }
 
-  async retainOnly(liveDigests: ReadonlySet<string>, opts: { graceMs: number; dryRun?: boolean; nowMs?: number }): Promise<BlobGcResult> {
+  async retainOnly(liveDigests: ReadonlySet<string>, opts: RetainOptions): Promise<BlobGcResult> {
     const out: BlobGcResult = { scanned: 0, deleted: 0, bytes: 0 };
     for (const layer of this.layers) {
       const r = await layer.retainOnly(liveDigests, opts);

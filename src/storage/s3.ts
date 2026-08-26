@@ -45,7 +45,7 @@
 import { httpRequest } from "../platform.ts";
 import { sha256Hex } from "../core/ids.ts";
 import { b64, type BlobCipher, type SealedKey } from "./crypto.ts";
-import type { BlobGcResult, BlobRef, BlobStore, RewrapResult } from "./blobs.ts";
+import type { BlobGcResult, BlobRef, BlobStore, RewrapResult, RetainOptions } from "./blobs.ts";
 import { emptyRewrap, isDigest } from "./blobs.ts";
 
 /** sha256 of the empty payload: the `x-amz-content-sha256` of every request that sends no body. */
@@ -233,7 +233,7 @@ export class S3BlobStore implements BlobStore {
     return out;
   }
 
-  async retainOnly(liveDigests: ReadonlySet<string>, opts: { graceMs: number; dryRun?: boolean; nowMs?: number }): Promise<BlobGcResult> {
+  async retainOnly(liveDigests: ReadonlySet<string>, opts: RetainOptions): Promise<BlobGcResult> {
     const now = opts.nowMs ?? Date.now();
     // The keep set as STORAGE NAMES. The reverse mapping deliberately does not exist: an encrypted
     // store's names are HMAC(KEK, digest) so that a listing cannot answer "do you hold this file".

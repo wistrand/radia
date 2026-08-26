@@ -31,6 +31,7 @@ import {
   type TakeSelector,
   type EventPosition,
   type EventSweepResult,
+  type SweepAnchor,
   type SweepResult,
   type SweptIds,
   type SweepSelector,
@@ -1137,7 +1138,7 @@ export class PgSqlAdapter implements StorageAdapter {
     );
   }
 
-  async sealableEvents(after: { cursor: string; seq: number } | null, limit: number): Promise<SpaceEvent[]> {
+  async sealableEvents(after: EventPosition | null, limit: number): Promise<SpaceEvent[]> {
     // The tuple comparison, not `xid > cursor`: one transaction appends several events under one
     // xid, and stepping to the next xid would skip its siblings. The watermark is the same one
     // `getEvents` uses, and it is what makes this order FINAL rather than merely current.
@@ -1232,7 +1233,7 @@ export class PgSqlAdapter implements StorageAdapter {
     return res.rows.length ? rowToSeal(res.rows[0]) : null;
   }
 
-  async sweepSealedEvents(anchor: { idx: number; seq: number }, limit: number, dryRun?: boolean): Promise<EventSweepResult> {
+  async sweepSealedEvents(anchor: SweepAnchor, limit: number, dryRun?: boolean): Promise<EventSweepResult> {
     if (dryRun) {
       const res = await this.sql.query<{ c: string }>(
         "select count(*) c from event_seal s join events e on e.seq = s.seq where s.idx <= $1",

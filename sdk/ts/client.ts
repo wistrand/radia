@@ -41,6 +41,7 @@ import type {
   RunRenewal,
   ShredResult,
   SpaceDigest,
+  TreeEntry,
   SpaceEvent,
   TakeResult,
 } from "./wire.ts";
@@ -70,7 +71,7 @@ export type { AwaitOptions, AwaitOutcome } from "./await.ts";
 export type {
   AckResult, BlobGcResult, CompactionResult, Cursor, Diagnostics, DigestResponse, EffectivePermissions, Envelope, ErasureReport, ErasureStatus, EventGcResult, FlowReport, FlowShape,
   FlowsResponse, GcReport, IntegrityReport, IntegrityResponse, KindDef, Lease, MintedRun, OpsScope, Page, Pattern,
-  PutRequest, RadiaRecord, RunRenewal, ShredResult, SpaceDigest, SpaceEvent,
+  PutRequest, RadiaRecord, RunRenewal, ShredResult, SpaceDigest, SpaceEvent, TreeEntry,
 };
 
 export interface KindStateCount {
@@ -1044,7 +1045,7 @@ export class RadiaClient {
   /** Mint one capability over a SET of artifacts addressed by path, for serving a tree. Every
    *  entry is authorized against this caller's read grant at mint, so the served URL needs none. */
   pathCapability(
-    entries: { path: string; artifactId: string }[],
+    entries: TreeEntry[],
   ): Promise<{ capability: string; expiresAt: string; entries: number; url: string }> {
     return this.req("POST", "/v0/capabilities", { entries }) as Promise<
       { capability: string; expiresAt: string; entries: number; url: string }

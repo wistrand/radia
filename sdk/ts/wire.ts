@@ -395,6 +395,17 @@ export interface Envelope {
 }
 
 /**
+ * One file in a served tree: the path a reader requests, and the artifact whose bytes answer it.
+ *
+ * The pair is the unit a path capability is minted over, so a caller cannot hand out a path
+ * without naming what it resolves to.
+ */
+export interface TreeEntry {
+  path: string;
+  artifactId: string;
+}
+
+/**
  * A freshly minted run: the SHORT half of a credential, and the only half that acts.
  *
  * `runToken` is returned once and never again. `expiresAt` is when it stops working, not when the

@@ -19,7 +19,7 @@ import { ARTIFACT, type ArtifactDef, SHRED, validateArtifactDef, validateArtifac
 import type { Pattern } from "./matching.ts";
 import type { PutRequest } from "./record.ts";
 import { RadiaError } from "./errors.ts";
-import type { ShredResult } from "../../sdk/ts/wire.ts";
+import type { ShredResult, TreeEntry } from "../../sdk/ts/wire.ts";
 import { readExhaustively } from "./registry.ts";
 
 /** Everything the artifact verbs need from a space, and nothing else. */
@@ -237,7 +237,7 @@ export class CapabilityStore {
    * Authorization happens at MINT, over every entry, exactly as the single-artifact form does — so
    * the served path carries no credential and needs no grant read per request.
    */
-  mintPathCapability(entries: { path: string; artifactId: string }[]): { capability: string; expiresAt: string } {
+  mintPathCapability(entries: TreeEntry[]): { capability: string; expiresAt: string } {
     const { capability, expiresAt, at } = this.mint();
     this.live.set(capability, { index: new Map(entries.map((e) => [e.path, e.artifactId])), expiresAt: at });
     this.sweep();
