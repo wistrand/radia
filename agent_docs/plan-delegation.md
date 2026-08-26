@@ -4,7 +4,7 @@ The build plan for [plan-scaling.md](plan-scaling.md) item 3a, which holds the d
 rejected alternatives. Read that first; this file is the sequence, the seams and the guards.
 
 **Status: BUILT (2026-08-12), all phases.** `Space.mintDelegatedRun` +
-`POST /v0/agent-runs/delegated` (`src/core/space.ts`, `src/server/handlers/agents.ts`), the
+`POST /v0/agent-runs/delegated` (`src/core/identity.ts`, `src/server/handlers/agents.ts`), the
 `access` seam every authorization read goes through, `delegable:<agent>` grants, `radia runs
 --acting-for`, and the chat cutover. Guards: `test/delegation.test.ts`, each proved red by
 a plant. What each phase decided is kept below; where the build changed the plan, the entry says

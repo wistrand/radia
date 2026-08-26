@@ -377,18 +377,28 @@ grep for the guard before saying it does not exist.
 
 Recorded here because the audit named them and they have no other home; none is a bug.
 
-- **`src/core/space.ts` is 4,044 lines** and holds credential lifecycle, authorization and chain
+- **`src/core/space.ts` was 4,044 lines** and held credential lifecycle, authorization and chain
   verification that its own extraction pattern (flows, inspection, artifacts, GC each went out
   through a narrow port) says belong outside. The measurable symptom is orphaned and doubled doc
   comments where a comment now describes the declaration above the one it precedes; two were
-  sampled and both confirmed. Extract while the pattern is still warm.
+  sampled and both confirmed. **PARTLY DONE**: authorization left in `authorization.ts` (515
+  lines), and the credential chain on 2026-08-26 in `identity.ts` (1,073 lines: definitions, runs,
+  delegation, OIDC), taking the file to 3,036. Both predicted comment defects were in the moved
+  region and are fixed. `identity.ts` is the first extracted port that WRITES, which is what a
+  credential needs; the discipline moved to what it may not hold, namely a credential cache.
+  STILL INSIDE: chain verification (`verifyIntegrity`, `sealEvents`) and the GC/compaction
+  orchestration, ~590 lines that `seal.ts` and `gc.ts` already hold the pure halves of.
 - **Core verbs do not authorize themselves.** Enforcement lives in the handlers, and the core's own
   comments record what that produced once. `Space.access` is the seam; any new surface calling
   `Space` directly has to remember to use it.
-- **`agent_docs/` is guarded by nothing**, and a prose-only commit runs no tests by design. The
+- **`agent_docs/` was guarded by nothing**, and a prose-only commit runs no tests by design. The
   project's own thesis is that an invariant naming a guard that is not running is worthless, and
-  this is its largest unguarded artifact. It points at symbols by design, so a symbol-existence
-  checker over the doc set is mechanically possible and would extend the doctrine to itself.
+  this was its largest unguarded artifact. **DONE**: `test/agentdocs.test.ts` checks the three
+  things a machine can (links resolve, named source paths exist modulo `.gitignore`, and the frozen
+  contract's own "Not implemented yet" paragraph against the paths it documents), plus CLAUDE.md's
+  status marker for a doc against that doc's own `**Status:**` header, which is where three
+  PLANNED-for-shipped-work claims were found on 2026-08-26. What stays unguarded is prose status
+  outside those two places, which is review's job.
 
 ### What each fix was
 

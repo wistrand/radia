@@ -179,7 +179,7 @@ at startup):
 | `Notifier` (`src/core/notifier.ts`)    | event log   | **closed 2026-08-03**: a waiting stream polls the log every `CHANGE_POLL_MS`, so a watch on B wakes for a mutation on A | done (poll, not `LISTEN/NOTIFY`: deno-postgres 0.19 has no async notification API) |
 
 **Credentials are deliberately not in this table.** There is no token cache to go stale:
-`Space.resolveCredential` (`src/core/space.ts`) reads the `agent_definition` / `agent_run` records
+`resolveCredential` (`src/core/identity.ts`) reads the `agent_definition` / `agent_run` records
 on **every** request, keyed on the indexed `tokenHash`, so a stopped run, an expired token and a
 token minted on another instance are all *discovered* rather than remembered. Because a stop
 successor carries the same hash, the newest record for that hash is the current state of the

@@ -381,7 +381,7 @@ get rediscovered as new.
 | `declassify` clears NAMED labels and the successor carries the remainder           | `Space.declassify`, and the `cleared`/`remaining` it records on the event |
 | Pattern-scoped grants enforced on writes, including ack-emitted results           | `bodyMatchesGrant`, `src/core/space.ts`         |
 | Grant pattern ANDed into client match server-side                                | `combineMatch`, `src/core/matching.ts`          |
-| `delegation_context` server-derived, not a `PutRequest` field                      | `Space.deriveDelegation`, `src/core/space.ts`   |
+| `delegation_context` server-derived, not a `PutRequest` field                      | `deriveDelegation`, `src/core/authorization.ts` |
 | `$regex`/`$where`/`$expr` forbidden at compile                                     | `FORBIDDEN`, `src/core/matching.ts`             |
 | Taint is outside the body, therefore not pattern-matchable                        | `RuntimeMeta`, both adapter schemas, `matchesRecord` |
 | `pattern` is wire-visible on the take selector and in grant bodies                | `openapi/radia.yaml`: the `TakeRequest` selector and the `GrantDef` schema |

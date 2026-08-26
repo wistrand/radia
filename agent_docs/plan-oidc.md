@@ -1,7 +1,7 @@
 # OIDC sign-in: mint runs from an IdP's id_token
 
 Status: BUILT 2026-08-11 (server + console + CLI). Sources:
-`src/core/oidc.ts` (the verifier), `Space.mintOidcRun` in `src/core/space.ts`,
+`src/core/oidc.ts` (the verifier), `mintOidcRun` in `src/core/identity.ts`,
 `handleOidcSession` in `src/server/handlers/agents.ts`, the sign-in flow in `src/ui/index.html`
 (`oidcStart`/`oidcFinish` and the return leg in `start()`), `httpGetJson` in `src/platform.ts`
 (the runtime's one outbound-HTTP function). Guards: `test/oidc.test.ts` (10 suites, the
