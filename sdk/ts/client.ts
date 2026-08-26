@@ -640,8 +640,6 @@ export class RadiaClient {
    * so the second page cannot silently run the other way; sending it alongside `dir` or `after` is
    * a 400 rather than a guess.
    */
-  /** Present when a grant narrowed the read: what it was narrowed BY. An answer that does not say
-   *  it is a slice gets reported as the whole kind. */
   async queryPage<T = unknown>(
     pattern: Pattern,
     limit = 100,
@@ -745,22 +743,7 @@ export class RadiaClient {
     return r.stats;
   }
 
-  /** All declared kinds: the latest kind_def record per kind name (a redeclaration is a
-   *  successor record). Discovery through the space: a plain query, no kinds endpoint. */
   /**
-   * Every record matching `pattern`, newest-first, paged to EXHAUSTION.
-   *
-   * Registry-shaped reads (capabilities, models, kinds, procedures, grants) must never be a
-   * single bounded page. The server clamps `limit` (500), so asking for more returns a silent
-   * prefix, and because a registry is read newest-first the records that fall off are exactly the
-   * ones that matter: a retirement, a redeclaration, the tool published a minute ago. Both failure
-   * directions are silent: an entry that should be gone stays live, one that should be live goes
-   * missing.
-   *
-   * Throws rather than returning a plausible prefix when even the page budget is exhausted: a
-   * caller projecting a registry cannot tell a truncated answer from a complete one.
-   */
-/**
    * THE CURRENT SET of a keyed registry kind: newest per key, retirements dropped, projected by the
    * server from the key the KIND DECLARES.
    *
@@ -794,6 +777,19 @@ export class RadiaClient {
     return { ...out, entries: new Set(out.entries as RadiaRecord<T>[]) };
   }
 
+  /**
+   * Every record matching `pattern`, newest-first, paged to EXHAUSTION.
+   *
+   * Registry-shaped reads (capabilities, models, kinds, procedures, grants) must never be a
+   * single bounded page. The server clamps `limit` (500), so asking for more returns a silent
+   * prefix, and because a registry is read newest-first the records that fall off are exactly the
+   * ones that matter: a retirement, a redeclaration, the tool published a minute ago. Both failure
+   * directions are silent: an entry that should be gone stays live, one that should be live goes
+   * missing.
+   *
+   * Throws rather than returning a plausible prefix when even the page budget is exhausted: a
+   * caller projecting a registry cannot tell a truncated answer from a complete one.
+   */
   async queryAll<T = unknown>(pattern: Pattern, maxPages = 40): Promise<Population<T>> {
     const out: RadiaRecord[] = [];
     // Walks by CURSOR rather than pairing `after` with a `dir` it has to remember. That pairing is
@@ -826,11 +822,13 @@ export class RadiaClient {
     );
   }
 
+  /** All declared kinds: the latest kind_def record per kind name (a redeclaration is a
+   *  successor record). Discovery through the space: a plain query, no kinds endpoint. */
   async listKinds(): Promise<KindDef[]> {
     // Paged to exhaustion: a superseded declaration would otherwise win (see `queryAll`).
     const records = await this.queryAll({ kind: KIND_DEF });
     const latest = activeByKey<KindDef>(records, (def) => (typeof def?.kind === "string" ? def.kind : undefined));
-    return [...latest.values()].map((r) => r.body as KindDef);
+    return [...latest.values()].map((r) => r.body);
   }
 
   /** Ops-plane envelope query: records filtered by runtime state (leased/available/…), optional

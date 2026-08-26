@@ -300,13 +300,6 @@ export const RUNTIMES: Record<string, Runtime> = {
 };
 
 /**
- * An invoker that materialises the tree, runs the entrypoint jailed, and serves its proposals
- * under the agent's own identity.
- *
- * Replaces `sandboxInvoker` from phase 4: same isolation, plus a way for the code to participate
- * without a credential.
- */
-/**
  * Which jail runs this binding, resolved from `sandbox` RECORDS.
  *
  * A binding states the PROPERTIES it needs (`{language: "python", network: false}`), not an
@@ -347,6 +340,13 @@ function assertHostCanRun(spec: SandboxSpec | null): void {
   );
 }
 
+/**
+ * An invoker that materialises the tree, runs the entrypoint jailed, and serves its proposals
+ * under the agent's own identity.
+ *
+ * Replaces `sandboxInvoker` from phase 4: same isolation, plus a way for the code to participate
+ * without a credential.
+ */
 export function brokeredInvoker(reader: RadiaClient, opts: BrokerOptions = {}): Invoker {
   const cache = opts.cache ?? treeCache(reader);
   return async (ctx: InvokeContext) => {

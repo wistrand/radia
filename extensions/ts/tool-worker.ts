@@ -136,13 +136,6 @@ export interface ServeOptions {
 }
 
 /**
- * Advertise the tools, then claim and serve them until aborted.
- *
- * Returns the names actually advertised, which is what a launcher needs in order to withdraw them
- * later: a worker cannot reliably retire its own advertisements, because a signal handler races its
- * own death (./capability.ts).
- */
-/**
  * Delegated clients for one worker, keyed on the claimed record's AUTHOR RUN.
  *
  * PER `serveTools` CALL, never module-level, and that is a correctness rule rather than tidiness:
@@ -181,6 +174,13 @@ function delegatedClients(c: RadiaClient) {
   };
 }
 
+/**
+ * Advertise the tools, then claim and serve them until aborted.
+ *
+ * Returns the names actually advertised, which is what a launcher needs in order to withdraw them
+ * later: a worker cannot reliably retire its own advertisements, because a signal handler races its
+ * own death (./capability.ts).
+ */
 export async function serveTools(client: RadiaClient, opts: ServeOptions): Promise<string[]> {
   const provider = opts.provider;
   const callerClient = delegatedClients(client);

@@ -409,14 +409,6 @@ export function orderRecords(
 }
 
 /**
- * Order and cap a matched set for `query`, honouring a keyset page direction.
- *
- * `dir` reverses the NATURAL (id) order only. With an explicit `order_by` the caller has already
- * said how to sort and each key carries its own direction, so a page direction there would be a
- * second, conflicting answer to the same question. `Space.query` rejects the combination, and
- * this ignores it if one reaches here anyway.
- */
-/**
  * The whole page clause for one keyset walk: the direction, the cursor comparison, and the ORDER BY,
  * decided together in one place.
  *

@@ -43,6 +43,12 @@ import { retireProviderCapabilities } from "../../../extensions/ts/capability.ts
 
 const local = `http://127.0.0.1:${port}`;
 
+/** Drop a worker's own leading `[label] ` from a forwarded line. The SDK loop labels its failures
+ *  so a STANDALONE worker's stderr is attributable; under this launcher every line gets the
+ *  launcher's label anyway, and `[inference:ultra] [inference:ultra] take error` is one fact
+ *  printed twice. Only a short leading bracket group is touched. */
+const unlabel = (line: string) => line.replace(/^\[[^\]\n]{1,48}\] /, "");
+
 /**
  * Start a worker, and OWN its stderr rather than letting it inherit ours.
  *
@@ -51,12 +57,6 @@ const local = `http://127.0.0.1:${port}`;
  * labelled and goes through `notice`, so it waits for the line to be idle. A worker that dies at
  * boot still gets its message out; it simply arrives at the next prompt.
  */
-/** Drop a worker's own leading `[label] ` from a forwarded line. The SDK loop labels its failures
- *  so a STANDALONE worker's stderr is attributable; under this launcher every line gets the
- *  launcher's label anyway, and `[inference:ultra] [inference:ultra] take error` is one fact
- *  printed twice. Only a short leading bracket group is touched. */
-const unlabel = (line: string) => line.replace(/^\[[^\]\n]{1,48}\] /, "");
-
 function spawn(name: string, args: string[], env?: Record<string, string>): Deno.ChildProcess {
   const proc = new Deno.Command("deno", {
     args: ["run", ...args],
@@ -81,14 +81,6 @@ function spawn(name: string, args: string[], env?: Record<string, string>): Deno
   return proc;
 }
 
-/**
- * Start every worker; returns the processes so the caller can kill them on exit.
- *
- * NO SESSION CREDENTIAL travels here any more. The tools worker used to be handed the person's own
- * token so its `space_*` verbs ran as them, which is what kept a fleet to one user: those verbs now
- * run in the REPL process (client/session-tools.ts), and a worker that needs a caller's reach mints
- * a delegated run for it. Nothing this launcher starts is bound to one person.
- */
 /** Where materialised workspace trees live for the life of this chat. One directory, created here
  *  so the exec worker's write grant can name it exactly. */
 export const workspaceRoot = Deno.makeTempDirSync({ prefix: "radia-ws-" });
@@ -103,6 +95,14 @@ export const FLEET_PROVIDERS = [
   "agent:chat-inference",
 ];
 
+/**
+ * Start every worker; returns the processes so the caller can kill them on exit.
+ *
+ * NO SESSION CREDENTIAL travels here any more. The tools worker used to be handed the person's own
+ * token so its `space_*` verbs ran as them, which is what kept a fleet to one user: those verbs now
+ * run in the REPL process (client/session-tools.ts), and a worker that needs a caller's reach mints
+ * a delegated run for it. Nothing this launcher starts is bound to one person.
+ */
 export function launchFleet(tokens: Bootstrapped, fleetKey?: FleetKeyPair): Deno.ChildProcess[] {
   const { inferenceToken, routerToken, toolsToken, imagesToken, execToken, turnToken } = tokens;
   const procs: Deno.ChildProcess[] = [];

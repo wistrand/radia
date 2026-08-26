@@ -83,12 +83,6 @@ export async function readStageDefs(c: RadiaClient): Promise<StageDef[]> {
 }
 
 /**
- * Bring one dataset up to date, and report what each stage is doing.
- *
- * `apply: false` plans without writing, which is what the web app renders: an operator sees what
- * WOULD run before anything does.
- */
-/**
  * What one pass reads, once, for every dataset it is about to plan.
  *
  * The planner used to ask per dataset per stage, so a pass cost O(datasets x stages) queries and it

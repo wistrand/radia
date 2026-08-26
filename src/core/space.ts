@@ -1727,21 +1727,6 @@ export class Space {
     return { run, agent, runToken: token, expiresAt, actingFor };
   }
 
-  /**
-   * Grants an agent may exercise ONLY through a delegated run, held under the principal
-   * `delegable:<agent>`.
-   *
-   * This is what removes the ambient authority, and it is a principal rather than a flag on the
-   * grant for one reason: nothing can authenticate as it. `grantSubject` answers `agent:`/`human:`/
-   * `run:`, `createAgentDefinition` requires the first two, OIDC requires `human:`. So the worker's
-   * own token cannot reach these grants by any path, including one written before this existed,
-   * while `radia permissions delegable:agent:x` inspects them with the verb that already exists.
-   *
-   * A `delegable: true` FIELD was the alternative and is worse three ways: it would have to enter
-   * `grantKey` (or a delegable and an ordinary grant on the same triple collapse into one entry,
-   * latest-wins, silently), it changes nothing for a build that predates it, so such a grant reads
-   * as an ordinary one and WIDENS, and every existing read path would need the branch.
-   */
   /** The `delegable` block of `effectivePermissions`, or nothing when the agent holds none. */
   private async delegableSection(agent: string): Promise<{ delegable?: { kind: string; operations: GrantOp[] }[] }> {
     if (agent.startsWith(DELEGABLE_PREFIX)) return {}; // asking about the holder itself: it IS the list
@@ -1764,6 +1749,21 @@ export class Space {
     };
   }
 
+  /**
+   * Grants an agent may exercise ONLY through a delegated run, held under the principal
+   * `delegable:<agent>`.
+   *
+   * This is what removes the ambient authority, and it is a principal rather than a flag on the
+   * grant for one reason: nothing can authenticate as it. `grantSubject` answers `agent:`/`human:`/
+   * `run:`, `createAgentDefinition` requires the first two, OIDC requires `human:`. So the worker's
+   * own token cannot reach these grants by any path, including one written before this existed,
+   * while `radia permissions delegable:agent:x` inspects them with the verb that already exists.
+   *
+   * A `delegable: true` FIELD was the alternative and is worse three ways: it would have to enter
+   * `grantKey` (or a delegable and an ordinary grant on the same triple collapse into one entry,
+   * latest-wins, silently), it changes nothing for a build that predates it, so such a grant reads
+   * as an ordinary one and WIDENS, and every existing read path would need the branch.
+   */
   private async delegableGrants(agent: string): Promise<GrantDef[]> {
     const view = await this.registry(GRANT, grantKey, { principal: delegablePrincipal(agent) });
     if (!view.complete) {
@@ -1777,13 +1777,6 @@ export class Space {
     return [...view.entries.values()].map((r) => r.body as GrantDef);
   }
 
-  /**
-   * Who a record is ultimately acting for: its author, or — when its author is itself a delegated
-   * run — the caller that run was bounded by.
-   *
-   * One read and no walk: `actingFor` holds a RESOLVED principal, never another run, so a chain of
-   * workers relaying a session collapses to the person at its head in a single hop.
-   */
   /**
    * May `principal` mint a delegated run from this record? Two proofs, and the weaker one is
    * sufficient because a phase-1 intersection can only NARROW the worker.
@@ -1821,6 +1814,13 @@ export class Space {
     return false;
   }
 
+  /**
+   * Who a record is ultimately acting for: its author, or — when its author is itself a delegated
+   * run — the caller that run was bounded by.
+   *
+   * One read and no walk: `actingFor` holds a RESOLVED principal, never another run, so a chain of
+   * workers relaying a session collapses to the person at its head in a single hop.
+   */
   private async callerOf(record: RadiaRecord): Promise<string | undefined> {
     const author = record.runtimeMeta.createdBy;
     if (!author) return undefined;
@@ -2334,17 +2334,6 @@ export class Space {
   }
 
   /**
-   * Cap how many DISTINCT interests one principal may register.
-   *
-   * The interest registry is read per candidate in the dry-run matcher and per kind in the
-   * orphan/starving split, so an unbounded one turns two inspection reads into a scan of somebody
-   * else's mistake. Content-keyed, so a worker republishing the same pattern on every restart costs
-   * nothing; what this bounds is a worker generating a NEW pattern each time, which is the shape
-   * that grows without limit.
-   *
-   * Counted per kind, since that is the granularity the registry is read at.
-   */
-  /**
    * Cap the grant HISTORY one (principal, kind) may accumulate.
    *
    * `Space.access` re-reads that history on every authorized request and nothing can ever sweep it
@@ -2491,6 +2480,17 @@ export class Space {
     );
   }
 
+  /**
+   * Cap how many DISTINCT interests one principal may register.
+   *
+   * The interest registry is read per candidate in the dry-run matcher and per kind in the
+   * orphan/starving split, so an unbounded one turns two inspection reads into a scan of somebody
+   * else's mistake. Content-keyed, so a worker republishing the same pattern on every restart costs
+   * nothing; what this bounds is a worker generating a NEW pattern each time, which is the shape
+   * that grows without limit.
+   *
+   * Counted per kind, since that is the granularity the registry is read at.
+   */
   private async checkInterestBudget(req: PutRequest, principal?: string): Promise<void> {
     const b = (req.body ?? {}) as { kind?: unknown; match?: unknown; retired?: unknown };
     if (typeof b.kind !== "string" || b.retired === true) return; // withdrawal always allowed
@@ -2800,17 +2800,6 @@ export class Space {
   }
 
   /**
-   * What a principal may see of the ops plane, or `null` for unrestricted (operator).
-   *
-   * Ops access stays KIND-SCOPED: a non-operator reaches the plane for exactly the kinds where it
-   * holds a `query` grant carrying `scope.createdBy: "self"`, and only for its own records of those
-   * kinds. There is no ops pseudo-kind, because that would be a wildcard wearing a different hat.
-   *
-   * "Its own records" resolves through the AGENT, not the presented run: `created_by` stores
-   * `run:<ulid>`, run tokens are re-minted, and comparing to the current run would silently hide
-   * the same agent's earlier work. Throws `forbidden` when nothing is scoped to it.
-   */
-  /**
    * The ops-plane powers a principal holds (architecture-ops-tiers.md): the union of its active
    * `ops_grant` records' operations. Privileged principals hold every power; everyone else holds
    * exactly what an operator assigned, resolved per request and never cached (the same rule as
@@ -2838,6 +2827,17 @@ export class Space {
     return powers;
   }
 
+  /**
+   * What a principal may see of the ops plane, or `null` for unrestricted (operator).
+   *
+   * Ops access stays KIND-SCOPED: a non-operator reaches the plane for exactly the kinds where it
+   * holds a `query` grant carrying `scope.createdBy: "self"`, and only for its own records of those
+   * kinds. There is no ops pseudo-kind, because that would be a wildcard wearing a different hat.
+   *
+   * "Its own records" resolves through the AGENT, not the presented run: `created_by` stores
+   * `run:<ulid>`, run tokens are re-minted, and comparing to the current run would silently hide
+   * the same agent's earlier work. Throws `forbidden` when nothing is scoped to it.
+   */
   async opsScope(principal: string): Promise<StatsScope | null> {
     const access = await this.access(principal);
     if (access.privileged) return null;
@@ -4000,14 +4000,11 @@ export class Space {
   }
 
   /**
-   * Recompute the chain and report the FIRST divergence.
+   * Verify the event chain, reporting the FIRST divergence.
    *
    * "The chain is invalid" is not an answer anyone can act on. The position, the event it covers,
    * and which of the four ways it failed are, and they are what distinguishes a truncated restore
    * from an edited row.
-   */
-  /**
-   * Verify the event chain.
    *
    * `tail` verifies only the newest N links, from the hash of the one below them. A full walk is
    * O(the whole history) and `radia doctor` embedded one, so a routine health check re-verified

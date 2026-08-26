@@ -146,16 +146,6 @@ export const SAVE_SCHEMAS: ToolDef[] = [
   },
 ];
 
-/**
- * `save_workspace`: store a multi-file tree the assistant wrote, so a code runner can run against it.
- *
- * The counterpart to `save_content` for something that is not one file. A program with an import,
- * a fixture and a test is three files and one relationship, and squeezing it into a single `code`
- * string loses the relationship, the paths, and any chance of changing one file at a time.
- *
- * Written as the WORKER, like `save_content`, but stamped with the SESSION's owner so the tree
- * belongs to whoever asked for it and a scoped grant can bind it.
- */
 /** `cat -n` numbering: right-aligned in six columns, tab, then the line. The format every tool that
  *  prints line numbers uses, so a model reads it without being told what it is. */
 function numbered(text: string): string {
@@ -437,6 +427,16 @@ export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
   };
 }
 
+/**
+ * `save_workspace`: store a multi-file tree the assistant wrote, so a code runner can run against it.
+ *
+ * The counterpart to `save_content` for something that is not one file. A program with an import,
+ * a fixture and a test is three files and one relationship, and squeezing it into a single `code`
+ * string loses the relationship, the paths, and any chance of changing one file at a time.
+ *
+ * Written as the WORKER, like `save_content`, but stamped with the SESSION's owner so the tree
+ * belongs to whoever asked for it and a scoped grant can bind it.
+ */
 export const WORKSPACE_SCHEMAS: ToolDef[] = [
   {
     type: "function",

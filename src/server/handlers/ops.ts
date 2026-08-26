@@ -109,6 +109,9 @@ export async function handleEnvelope(space: Space, recordId: string, scope?: Sta
   return Response.json(env);
 }
 
+/** How many raw pages one scoped request will scan looking for events the caller may see. */
+const EVENT_SCAN_PAGES = 20;
+
 /**
  * The event log. A scoped caller sees only events IT CAUSED, on the kinds it is scoped to.
  *
@@ -119,9 +122,6 @@ export async function handleEnvelope(space: Space, recordId: string, scope?: Sta
  * the end of the log; the cursor still advances correctly, which is what an event log's paging
  * relies on.
  */
-/** How many raw pages one scoped request will scan looking for events the caller may see. */
-const EVENT_SCAN_PAGES = 20;
-
 export async function handleEvents(space: Space, url: URL, scope?: StatsScope | null): Promise<Response> {
   const after = url.searchParams.get("after") ?? "0"; // opaque cursor, passed through
   const limit = Math.min(Number(url.searchParams.get("limit") ?? "200") || 200, 500);

@@ -57,10 +57,6 @@ async function widerGrants(admin: RadiaClient, subject: string, kind: string, op
 const keyOf = (b: RequestBody) => `${b.kind}:${[...(b.operations ?? [])].sort().join(",")}:${b.scope ?? "own"}`;
 
 /**
- * Show any pending requests from this conversation and act on the answer. Called between turns, so
- * it owns the terminal and can read a line without racing the REPL's own prompt.
- */
-/**
  * How much of a kind a SELF-SCOPED read would actually expose, sampled.
  *
  * `created_by` is runtime metadata, not a body field, so it cannot be matched by a pattern. The
@@ -85,6 +81,10 @@ async function selfExposure(
   }
 }
 
+/**
+ * Show any pending requests from this conversation and act on the answer. Called between turns, so
+ * it owns the terminal and can read a line without racing the REPL's own prompt.
+ */
 export async function reviewGrantRequests(
   session: RadiaClient,
   admin: RadiaClient,
