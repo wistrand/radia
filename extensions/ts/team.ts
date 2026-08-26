@@ -154,11 +154,56 @@ export interface RosterEntry {
   opsPowers: string[];
 }
 
-/** Declare the team's kinds. Idempotent: a `kind_def` is content-keyed, so re-running writes
- *  nothing. Returns the kind names, so a caller can report what a space now understands. */
+/**
+ * Declare the team's kinds. Idempotent: a `kind_def` is content-keyed, so re-running writes nothing.
+ * Returns the kind names, so a caller can report what a space now understands.
+ *
+ * A REDECLARATION REPLACES, so a SHARED kind must be extended rather than restated. `artifact` is
+ * reserved and three things extend it: the chat adds `conversationId`/`owner`/`workspace`, the
+ * analysis pipeline adds `owner`, and this adds `team`. The runtime guards only ITS OWN paths
+ * (`assertReservedCompatible` keeps `digest`/`mediaType`/`claimable`), so it cannot tell one app's
+ * addition from another's, and declaring the list flat dropped whichever app got there first:
+ * measured, `radia team add` on a space running the chat left `artifact` indexed on
+ * `[digest, mediaType, team]`, after which every chat query and every new chat grant naming
+ * `conversationId` was refused as an undeclared path. That is somebody else's authorization
+ * scoping, broken by a verb that never mentions them.
+ *
+ * So the paths are UNIONED with whatever is already declared. A path this build does not know is
+ * kept rather than dropped, which is the direction that cannot break an app that is not running
+ * right now.
+ */
 export async function declareTeamKinds(admin: RadiaClient): Promise<string[]> {
-  for (const def of TEAM_KINDS) await admin.registerKind(def);
+  const live = await liveKinds(admin);
+  for (const def of TEAM_KINDS) await admin.registerKind(mergeKind(live.get(def.kind), def));
   return TEAM_KINDS.map((d) => d.kind);
+}
+
+/** The newest declaration per kind name, which is what the registry projects and what a merge has
+ *  to extend. Retirements included: reviving a retired kind is a redeclaration like any other. */
+async function liveKinds(admin: RadiaClient): Promise<Map<string, KindDef>> {
+  const rows = await admin.queryAll<KindDef>({ kind: KIND_DEF });
+  const out = new Map<string, KindDef>();
+  for (const [name, rec] of newestByKey<KindDef>(rows, (b) => b.kind)) out.set(name, rec.body);
+  return out;
+}
+
+/**
+ * `declared` extended with every indexed path the space already carries for that kind.
+ *
+ * ADDITIVE ON PATHS ONLY. Everything else (`claimable`, `contentKey`, `usage`) is this build's
+ * opinion and is stated, because those are single-valued: merging them would mean picking a winner
+ * with no basis. Paths are a set, so a union is the one merge that is always safe.
+ */
+export function mergeKind(existing: KindDef | undefined, declared: KindDef): KindDef {
+  if (!existing?.indexedPaths?.length) return declared;
+  const paths = [...declared.indexedPaths];
+  const seen = new Set(paths.map((p) => p.path));
+  for (const p of existing.indexedPaths) {
+    // The TYPE this build declares wins on a genuine conflict: it is the one compiled against here,
+    // and a path declared twice with two types is a conflict no merge can resolve silently.
+    if (!seen.has(p.path)) paths.push(p);
+  }
+  return { ...declared, indexedPaths: paths };
 }
 
 /**
@@ -339,10 +384,33 @@ export interface MemberRemoval {
   /** False when the definition was already revoked: the door was shut before this ran. */
   revoked: boolean;
   grantsRetired: number;
-  observe: ObserveChange;
+  /** Every ops power withdrawn, sorted. EVERY one, not just `observe`: removal means removal, and
+   *  a `remediate` left standing comes back with the principal on the next `team add`. */
+  opsPowersRetired: string[];
   /** Run ids actually stopped, split by the two classes a principal acts through. */
   stoppedOwn: string[];
   stoppedDelegated: string[];
+}
+
+/**
+ * Withdraw EVERY ops power a principal holds, and report what went.
+ *
+ * Separate from `reconcileObserve`, which deliberately refuses to touch a grant carrying `observe`
+ * alongside another power: on a ROTATION, silently dropping somebody's `remediate` would be a
+ * narrowing nobody asked for. On REMOVAL there is no such tension, because taking everything back
+ * is what the verb means.
+ */
+async function retireOpsGrants(admin: RadiaClient, agent: string): Promise<string[]> {
+  const rows = await admin.queryAll<OpsGrantBody>({ kind: "ops_grant", match: { principal: agent } });
+  const gone = new Set<string>();
+  for (const rec of activeByKey<OpsGrantBody>(rows, opsGrantKey).values()) {
+    await admin.put(
+      { kind: "ops_grant", body: { ...rec.body, retired: true } },
+      `${opsGrantKey(rec.body)}:remove:after:${rec.id}`,
+    );
+    for (const op of rec.body.operations ?? []) gone.add(op);
+  }
+  return [...gone].sort();
 }
 
 /**
@@ -369,16 +437,23 @@ export async function removeMember(admin: RadiaClient, agent: string): Promise<M
   // Live grants, retired as successors ANCHORED on the record each supersedes, the same rule
   // `supersedeGrantsFor` keeps: a constant key retires an identity once ever, so a later re-grant
   // of the same content would outlive the next removal.
-  const grantRows = await admin.queryAll<GrantBody>({ kind: "grant", match: { principal: agent } });
+  //
+  // BOTH PRINCIPALS. Authority an agent may exercise only through a delegated run is held under
+  // `delegable:<agent>`, a separate principal, so a query for `agent` alone does not see it. It is
+  // unreachable while the definition stays revoked, and that is not the failure: a later
+  // `team add` of the same name RESTORES it, silently, having been granted by nobody.
   let grantsRetired = 0;
-  for (const rec of activeByKey<GrantBody>(grantRows, grantKey).values()) {
-    await admin.put(
-      { kind: "grant", body: { ...rec.body, retired: true } },
-      `${grantKey(rec.body)}:remove:after:${rec.id}`,
-    );
-    grantsRetired++;
+  for (const principal of [agent, `delegable:${agent}`]) {
+    const rows = await admin.queryAll<GrantBody>({ kind: "grant", match: { principal } });
+    for (const rec of activeByKey<GrantBody>(rows, grantKey).values()) {
+      await admin.put(
+        { kind: "grant", body: { ...rec.body, retired: true } },
+        `${grantKey(rec.body)}:remove:after:${rec.id}`,
+      );
+      grantsRetired++;
+    }
   }
-  const observe = await reconcileObserve(admin, agent, false);
+  const opsPowersRetired = await retireOpsGrants(admin, agent);
 
   // The DATABASE clock, never this process's: `expiresAt` is stamped by the space, and a local
   // clock running fast reads a live run as expired and skips stopping it. That run then RENEWS
@@ -397,7 +472,7 @@ export async function removeMember(admin: RadiaClient, agent: string): Promise<M
       if ((await admin.stopRun(b.run)).applied) out.push(b.run);
     }
   }
-  return { agent, revoked, grantsRetired, observe, stoppedOwn, stoppedDelegated };
+  return { agent, revoked, grantsRetired, opsPowersRetired, stoppedOwn, stoppedDelegated };
 }
 
 /** The half of a `grant` body this file rewrites. */

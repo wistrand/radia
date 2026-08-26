@@ -240,12 +240,24 @@ names and nothing server-side will add it, because a body is the client's claim.
 `radia compartment` is NOT this audit and reads as though it is: it answers a kind-compartment
 question, so it calls every member a crosser for reading `task` and writing `artifact`.
 
+**Declaring the kinds EXTENDS `artifact`, never restates it** (`mergeKind`). A redeclaration
+replaces, and three apps extend that reserved kind: the chat adds `conversationId`/`owner`/
+`workspace`, the analysis pipeline adds `owner`, this adds `team`. The runtime guards only its own
+paths, so it cannot tell one app's addition from another's. Declared flat, `radia team add` on a
+space running the chat left `artifact` on `[digest, mediaType, team]`, after which every chat query
+and every new chat grant naming `conversationId` was refused as an undeclared path: another app's
+authorization scoping, broken by a verb that never mentions it. The declaration now unions with
+what is already there, keeping paths this build does not know.
+
 **Removal is a cascade, and the definition is the smallest part of it** (`removeMember`). Revoke
 first so nothing new mints, then retire the grants, then the ops powers, then stop the runs.
 Grants are retired rather than left: a revoked definition cannot authenticate, but `mintDelegatedRun`
 resolves its caller from a RECORD's author and intersects with that principal's LIVE grants without
 consulting whether the definition still mints, so a worker holding one of their leftover records
-could still act on their behalf. Both RUN CLASSES are stopped: `agent_run{agent: X}` is their own
+could still act on their behalf. Two principals are swept, not one: authority usable only through a
+delegated run lives under `delegable:<agent>`. And EVERY ops power goes, not just the `observe` this
+verb grants. Both were unreachable while the definition stayed revoked, which is not the failure:
+re-adding the name RESTORED them, granted by nobody. Both RUN CLASSES are stopped: `agent_run{agent: X}` is their own
 sessions and `agent_run{actingFor: X}` is a run a worker holds for them, and the count for each is
 printed even at zero, since a silent zero reads as "there were none to check".
 

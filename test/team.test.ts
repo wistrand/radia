@@ -15,8 +15,9 @@ import { makeHandler } from "../src/server/http.ts";
 import { Space } from "../src/core/space.ts";
 import { SqliteAdapter } from "../src/storage/sqlite.ts";
 import { RadiaClient } from "../sdk/ts/client.ts";
-import { addMember, DEFAULT_TEAM, declareTeamKinds, definitionState, NOTE, removeMember, TASK, TEAM_FIELD, teamRoster } from "../extensions/ts/team.ts";
+import { addMember, DEFAULT_TEAM, declareTeamKinds, definitionState, mergeKind, NOTE, removeMember, TASK, TEAM_FIELD, teamRoster } from "../extensions/ts/team.ts";
 import { configLocation, mcpInvocation, renderMcpConfig, renderMcpInstall } from "../src/surfaces/mcp/config.ts";
+import { ScopeFiller } from "../src/surfaces/mcp/scope.ts";
 import { newer, newestByKey } from "../sdk/ts/registry.ts";
 import { kindDefKey } from "../sdk/ts/wire.ts";
 import { extensionFor, mediaTypeForPath } from "../src/surfaces/media.ts";
@@ -829,7 +830,7 @@ Deno.test("[team] removal closes every door membership opened, not just the defi
     const r = await removeMember(s.admin, "agent:gone");
     assert(r.revoked, "the definition must be revoked");
     assert(r.grantsRetired > 0, "grants were left standing");
-    assertEquals(r.observe, "retired");
+    assertEquals(r.opsPowersRetired, ["observe"]);
 
     // ENFORCEMENT, not the return value: `mintDelegatedRun` intersects with the caller's LIVE
     // grants and never consults whether their definition still mints, so a grant left standing is
@@ -910,6 +911,116 @@ Deno.test("[team] offboarding reads the DATABASE clock, so a fast local clock ca
     assertEquals(r.stoppedOwn, [own.run], "a live run was skipped because this process's clock ran fast");
   } finally {
     globalThis.Date = RealDate;
+    await s.close();
+  }
+});
+
+Deno.test("[team] declaring the team's kinds does not clobber another app's artifact paths", async () => {
+  const s = await newSpace();
+  try {
+    // The chat's own declaration. `artifact` is RESERVED and three apps extend it; the runtime
+    // guards only its own paths, so it cannot tell one app's addition from another's.
+    await s.admin.registerKind({
+      kind: "artifact",
+      indexedPaths: [
+        { path: "digest", type: "keyword" },
+        { path: "mediaType", type: "keyword" },
+        { path: "conversationId", type: "keyword" },
+        { path: "owner", type: "keyword" },
+      ],
+      claimable: false,
+    });
+    await s.admin.put({
+      kind: "grant",
+      body: { principal: "human:alice", kind: "artifact", operations: ["query"], pattern: { conversationId: "c1" } },
+    });
+
+    // `radia team add` runs on the same space. Flat, this left artifact on [digest, mediaType,
+    // team] and every chat query and new chat grant naming `conversationId` was refused.
+    await declareTeamKinds(s.admin);
+
+    const paths = new Set(
+      (await s.admin.queryNewest<{ indexedPaths: { path: string }[] }>({ kind: "kind_def", match: { kind: "artifact" } }, 1))[0]
+        .body.indexedPaths.map((p) => p.path),
+    );
+    for (const p of ["digest", "mediaType", "conversationId", "owner", TEAM_FIELD]) {
+      assert(paths.has(p), `'${p}' was dropped from artifact; declared: ${[...paths].join(",")}`);
+    }
+
+    // ENFORCEMENT, not the declaration: the other app's scoping still compiles and still binds.
+    await s.admin.queryNewest({ kind: "artifact", match: { conversationId: "c1" } }, 1);
+    await s.admin.put({
+      kind: "grant",
+      body: { principal: "human:bob", kind: "artifact", operations: ["query"], pattern: { conversationId: "c2" } },
+    });
+  } finally {
+    await s.close();
+  }
+});
+
+Deno.test("[team] mergeKind is additive on paths and states everything else", () => {
+  // Paths are a SET, so a union is the one merge that is always safe. `claimable` and `usage` are
+  // single-valued and are this build's opinion: merging them means picking a winner with no basis.
+  const merged = mergeKind(
+    { kind: "artifact", indexedPaths: [{ path: "digest", type: "keyword" }, { path: "owner", type: "keyword" }], claimable: false },
+    { kind: "artifact", indexedPaths: [{ path: "digest", type: "keyword" }, { path: TEAM_FIELD, type: "keyword" }], claimable: false },
+  );
+  assertEquals(merged.indexedPaths.map((p) => p.path), ["digest", TEAM_FIELD, "owner"], "a foreign path was dropped");
+  assertEquals(merged.indexedPaths.filter((p) => p.path === "digest").length, 1, "a shared path was duplicated");
+  // Nothing declared yet is the common case and must not synthesise anything.
+  assertEquals(mergeKind(undefined, { kind: "task", indexedPaths: [{ path: "a", type: "keyword" }] }).indexedPaths.length, 1);
+});
+
+Deno.test("[team] removal takes back DELEGABLE grants and EVERY ops power, not only what it granted", async () => {
+  const s = await newSpace();
+  try {
+    await declareTeamKinds(s.admin);
+    await addMember(s.admin, "agent:gone", { teams: ["alpha"] });
+    // Authority usable only through a delegated run, held under a separate principal, and a power
+    // this verb never granted. Both are unreachable while the definition is revoked; the failure is
+    // that a later `team add` of the same name RESTORES them, granted by nobody.
+    await s.admin.put({ kind: "grant", body: { principal: "delegable:agent:gone", kind: TASK, operations: ["query"] } });
+    await s.admin.put({ kind: "ops_grant", body: { principal: "agent:gone", operations: ["remediate"] } });
+
+    const r = await removeMember(s.admin, "agent:gone");
+    assertEquals(r.opsPowersRetired, ["remediate"], "a power this verb did not grant was left standing");
+    assertEquals(
+      (await s.admin.permissions("delegable:agent:gone")).kinds,
+      [],
+      "delegable authority survived removal and would come back with the name",
+    );
+    assertEquals((await s.admin.permissions("agent:gone")).opsPowers ?? [], []);
+
+    // The resurrection this guards: re-adding the name must not restore anything.
+    await addMember(s.admin, "agent:gone", { teams: ["alpha"] });
+    assertEquals((await s.admin.permissions("agent:gone")).opsPowers ?? [], [], "re-adding the name restored a power");
+    assertEquals((await s.admin.permissions("delegable:agent:gone")).kinds, [], "re-adding restored delegable authority");
+  } finally {
+    await s.close();
+  }
+});
+
+Deno.test("[team] the scope filler learns from the runtime's REAL refusal, not a hand-written one", async () => {
+  const s = await newSpace();
+  try {
+    await declareTeamKinds(s.admin);
+    const m = await addMember(s.admin, "agent:m", { teams: ["alpha"] });
+    const member = new RadiaClient(s.base, { definitionToken: m.definitionToken });
+
+    // `ScopeFiller` recognises a scope refusal by MATCHING THE RUNTIME'S WORDING
+    // (/outside the pattern scope/). Every case in the unit test above rejects with a string this
+    // file wrote, so a reword in `src/server/handlers/records.ts` would leave them green while the
+    // fill silently turned off in production: the model would get a raw refusal it cannot act on.
+    // This one takes the refusal from the server.
+    const filler = new ScopeFiller(member);
+    const wrote = await filler.fill(TASK, (extra) => member.put({ kind: TASK, body: { title: "unlabelled", ...extra } }));
+    assert(wrote.id, "the fill did not recover a write the runtime refused for scope");
+
+    // And the label it learned is the one enforcement requires, read back off the record.
+    const [rec] = await member.queryNewest<{ team?: string }>({ kind: TASK, match: { [TEAM_FIELD]: "alpha" } }, 1);
+    assertEquals(rec.body.team, "alpha");
+    assertEquals(filler.known(TASK), { [TEAM_FIELD]: "alpha" });
+  } finally {
     await s.close();
   }
 });
