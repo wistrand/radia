@@ -110,11 +110,12 @@ function writeEntry(key: string, cred: StoredCredential): { path: string; ok: bo
 /** How long an auto-provisioned entry survives without being rewritten. */
 export const CREDENTIAL_STALE_DAYS = 14;
 
-export type CredentialKind = "operator" | "observer" | "login" | "content-key";
+export type CredentialKind = "operator" | "observer" | "login" | "content-key" | "session";
 
 /** Which identity an entry holds, from its key suffix. */
 export function credentialKind(key: string): CredentialKind {
   if (key.endsWith(OBSERVER)) return "observer";
+  if (key.includes(SESSION)) return "session";
   if (key.endsWith(LOGIN)) return "login";
   if (key.includes(CONTENT_KEY)) return "content-key";
   return "operator";
@@ -132,7 +133,7 @@ export function credentialKind(key: string): CredentialKind {
  */
 function stale(key: string, cred: StoredCredential, nowMs: number): boolean {
   const kind = credentialKind(key);
-  if (kind !== "operator" && kind !== "observer") return false;
+  if (kind !== "operator" && kind !== "observer" && kind !== "session") return false;
   const at = Date.parse(cred?.mintedAt ?? "");
   return Number.isFinite(at) && nowMs - at > CREDENTIAL_STALE_DAYS * 86_400_000;
 }
@@ -211,7 +212,10 @@ export function resolveToken(base: string): string | undefined {
  * answer different questions, and a run token supplied by hand still expires in 15 minutes.
  */
 export function resolveDefinitionToken(base: string): string | undefined {
-  return env("RADIA_DEFINITION_TOKEN") ?? read(credentialsPath())[baseKey(base)]?.definitionToken;
+  // `||`, not `??`: an EMPTY variable is an absent one. Wrapper scripts and harness configs set
+  // every variable they know about, empty ones included, and `??` keeps `""` and hands it over as
+  // a credential, so the stored one below is never consulted and every request 401s.
+  return env("RADIA_DEFINITION_TOKEN") || read(credentialsPath())[baseKey(base)]?.definitionToken;
 }
 
 // ---- a person's login, kept apart from the operator's credential ----
@@ -236,6 +240,33 @@ export function saveLogin(
   cred: StoredCredential & { principal: string },
 ): { path: string; ok: boolean; error?: string } {
   return writeEntry(baseKey(base) + LOGIN, cred);
+}
+
+// ---- a named SESSION's run, so restarting a session keeps its principal ----
+//
+// A run IS the principal that lands in `created_by`, so "the same agent session across restarts"
+// means the same RUN across restarts. Nothing in a harness identifies a session portably, so the
+// name is supplied (`radia mcp --session <name>`) rather than derived, and this is where it is
+// remembered. Keyed per (space, name), so two sessions of one agent are two entries.
+//
+// PRUNABLE, like the operator and observer entries: a run can always be minted again from the
+// definition token, and a run cannot outlive its 12h ceiling anyway, so an entry old enough to be
+// swept names a run that stopped working long before.
+
+const SESSION = "#session:";
+
+/** The run a named session last held on this space, if it is still remembered. */
+export function storedSession(base: string, name: string): StoredCredential | undefined {
+  return read(credentialsPath())[baseKey(base) + SESSION + name];
+}
+
+/** Remember a named session's run, so the next start of that session is the same principal. */
+export function saveSession(
+  base: string,
+  name: string,
+  cred: StoredCredential,
+): { path: string; ok: boolean; error?: string } {
+  return writeEntry(baseKey(base) + SESSION + name, cred);
 }
 
 // ---- the observer credential, the safe default for the MCP adapter ----

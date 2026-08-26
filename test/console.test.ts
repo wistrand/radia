@@ -14,8 +14,12 @@ import { assert, assertEquals } from "@std/assert";
 
 /** Pull one top-level `function name(...) { … }` out of source text by brace balance. */
 function extractFunction(source: string, name: string): string {
-  const start = source.indexOf(`function ${name}(`);
+  let start = source.indexOf(`function ${name}(`);
   assert(start >= 0, `console no longer defines function ${name}(); update this test with it`);
+  // Keep an `async` prefix. Without it the extraction silently returns a PLAIN function whose body
+  // still awaits, and `new Function` rejects it with "await is only valid in async functions",
+  // which reads as a bug in the page rather than in this lifter.
+  if (source.slice(Math.max(0, start - 6), start) === "async ") start -= 6;
   // Skip the PARAMETER LIST before looking for the body's opening brace. A default value that is
   // an object literal (`headers = {}`) otherwise reads as the body, and the extraction silently
   // returns `{}`: a test asserting on the contents of that would pass or fail for reasons having
@@ -202,8 +206,8 @@ function authHarness(script: { status: number; json?: unknown }[], opts: { def?:
     let exchanging = null;
     ${extractFunction(html, "forgetDefinition")}
     ${extractFunction(html, "exchangeDefinition")}
-    async ${extractFunction(html, "api")}
-    async ${extractFunction(html, "adopt")}
+    ${extractFunction(html, "api")}
+    ${extractFunction(html, "adopt")}
     return {
       api, adopt, exchangeDefinition, calls,
       state: () => ({ AUTH_TOKEN, DEF_TOKEN, signInShown, tokenUsed, session: sessionStorage.dump(), local: localStorage.dump() }),
@@ -650,8 +654,8 @@ function oidcHarness(script: { status: number; json?: unknown }[], opts: { pendi
     let OIDC_INFO = { issuer: "http://idp.test", clientId: "console" };
     ${extractFunction(html, "randHex")}
     ${extractFunction(html, "b64urlBytes")}
-    async ${extractFunction(html, "oidcStart")}
-    async ${extractFunction(html, "oidcFinish")}
+    ${extractFunction(html, "oidcStart")}
+    ${extractFunction(html, "oidcFinish")}
     return {
       oidcStart, oidcFinish, calls,
       state: () => ({ AUTH_TOKEN, signInShown, noted, reloaded, redirect: location.href, session: sessionStorage.dump() }),
@@ -753,7 +757,7 @@ Deno.test("console: the SSO button appears exactly when health advertises an iss
       const document = { querySelector: () => ({ style: {} }) };
       const sessionStorage = { removeItem: () => {} };
       let AUTH_TOKEN = null, OPEN_OPERATOR = false, OIDC_INFO = null, healthTimer = null;
-      async ${extractFunction(html, "showSignIn")}
+      ${extractFunction(html, "showSignIn")}
       return { showSignIn, els, info: () => OIDC_INFO };
     `;
     // deno-lint-ignore no-explicit-any
@@ -787,7 +791,7 @@ Deno.test("console: the Graph root picker serves an OBSERVER through the event l
       ${extractFunction(html, "esc")}
       const errText = (r) => "err";
       const window = {};
-      async ${extractFunction(html, "loadGraphRoots")}
+      ${extractFunction(html, "loadGraphRoots")}
       return { loadGraphRoots, els, calls };
     `;
     // deno-lint-ignore no-explicit-any
@@ -837,4 +841,59 @@ Deno.test("console: an encrypted body is shown as «encrypted», never as its ci
   assert(/isEncrypted\(rec\)\s*\?\s*`<span class="muted">«encrypted»<\/span>`/.test(src),
     "the list preview masks a marked body");
   assert(html.includes("«encrypted» — this body's prose is ciphertext"), "the detail view says why");
+});
+
+Deno.test("console: a record's author resolves to the durable agent, narrowly and fail-soft", async () => {
+  const calls: { path: string; body: Record<string, unknown> }[] = [];
+  const make = (reply: (body: Record<string, unknown>) => unknown) =>
+    new Function(
+      "reply",
+      "calls",
+      `const AGENT_OF = new Map();
+       const api = async (method, path, body) => { calls.push({ path, body }); return reply(body); };
+       ${extractFunction(html, "agentOf")}
+       ${extractFunction(html, "shortRun")}
+       return { agentOf, shortRun, AGENT_OF };`,
+    )(reply, calls) as {
+      agentOf: (run: string) => Promise<string | null>;
+      shortRun: (run: string) => string;
+      AGENT_OF: Map<string, string | null>;
+    };
+
+  const ok = make(() => ({ ok: true, data: { records: [{ body: { agent: "agent:claude", run: "run:R" } }] } }));
+  assertEquals(await ok.agentOf("run:R"), "agent:claude");
+
+  // NARROW, not a page projected into a registry: matched down to the one run and taking the
+  // newest 1. A limit with no direction reads the OLDEST rows, which for a run whose newest
+  // record is a STOP would answer with the mint and call a dead session live.
+  assertEquals(calls.length, 1);
+  assertEquals(calls[0].body, { kind: "agent_run", match: { run: "run:R" }, limit: 1, dir: "desc" });
+
+  // Memoized, or the Feed and the Space map re-ask per event forever. A run's agent cannot change.
+  await ok.agentOf("run:R");
+  assertEquals(calls.length, 1, "a resolved run must not be fetched twice");
+  assertEquals(ok.shortRun("run:R"), "agent:claude");
+
+  // Not a run at all (`local:dev`, an operator): no request, no guess.
+  calls.length = 0;
+  assertEquals(await ok.agentOf("local:dev"), null);
+  assertEquals(calls.length, 0);
+
+  // FAIL SOFT. An ordinary session holds no `agent_run: query` grant, so this 403s for everyone
+  // but an operator; a decoration that threw or blanked would take the field it decorates with it.
+  const denied = make(() => ({ ok: false, status: 403, data: { detail: "no 'query' grant for kind 'agent_run'" } }));
+  assertEquals(await denied.agentOf("run:R"), null);
+  assertEquals(denied.shortRun("run:R"), "run:R", "an unresolved run still renders as itself");
+  await denied.agentOf("run:R");
+  assertEquals(calls.filter((c) => c.body.kind === "agent_run").length, 1, "the miss is cached too, or every render re-asks");
+});
+
+Deno.test("console: the Space map resolves a batch's runs before it maps them", () => {
+  const poll = html.slice(html.indexOf("async function pollSpace"));
+  const resolve = poll.indexOf("agentsFor(");
+  const map = poll.indexOf("spaceNodeFor(e)");
+  assert(resolve >= 0, "pollSpace no longer resolves runs to agents");
+  assert(resolve < map, "runs must be resolved BEFORE the nodes are built; shortRun reads the memo synchronously");
+  // The lookup is per RUN, not per event: a 500-event batch from one worker is one request.
+  assert(/new Set\(/.test(extractFunction(html, "agentsFor")), "agentsFor must dedupe to distinct runs");
 });

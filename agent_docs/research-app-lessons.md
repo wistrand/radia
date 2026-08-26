@@ -94,6 +94,19 @@ whole pipeline — stages, states, digests, ids — from coordination queries; t
 `space_*` tools. What neither can do is REUSE THE CONSOLE. The actionable gap is therefore a console
 that assumes an operator, not an authorization model that is missing a tier.
 
+**REVERSED 2026-08-26 by a third app, and the reversal is the lesson.** The reasoning above rests on
+an assumption both apps happened to satisfy and a THIRD did not: that an app can serve its own
+inspection. `extensions/ts/team.ts` puts an MCP harness on a space, and a harness consumes the
+GENERIC tools rather than serving its own — five of which (`space_get`, `space_lineage`,
+`space_children`, `space_graph`, `space_thread`) are ops-plane. There is also no coordination-plane
+get-by-id (`readOne` matches bodies), so an agent that reads an id out of a query result has no
+other way to fetch it. The tier is now BUILT as the PATTERN tier
+([architecture-ops-tiers.md](architecture-ops-tiers.md)), and it turned out to need no new concept:
+it is the grant pattern that already bounds coordination reads, applied to per-record ops reads
+through ONE seam (`Space.readFilter`). The general form of the mistake: "the apps work around it"
+is evidence about the apps that exist, not about the mechanism, and an app whose UI is somebody
+else's cannot work around anything.
+
 **No CORS means every browser application proxies, and that is a TRADE rather than a gap.** The
 space sends no `Access-Control-*` headers, so a page on another origin cannot call `/v0`. Proposed
 as action 3 and rejected on reading `src/server/http.ts`, where the same fact is what makes the
@@ -168,7 +181,7 @@ DESIGN-FIRST means the open question below has to be answered before code.
 | 3 | ~~Opt-in CORS (`--allow-origin <origin>`)~~ **REJECTED 2026-08-16** | the absence of CORS is load-bearing, not an oversight: it is what makes the isolated artifact origin safe. See below | — | — |
 | 4 | ~~Plan from bulk reads, in memory~~ **BUILT 2026-08-16** | O(1) queries per wake instead of O(datasets x stages); `ui.html` is the worked example | SMALL | `examples/analysis/planner.ts` |
 | 5 | Pin stage code with promotion instead of self-report | turns the memo's foundation from a claim into an enforced fact, and would be the first worked composition of promotion with something other than an exec runner. **BUILT in full 2026-08-17** (stages as workspace agents, pins on both sides, shape as a `stage_def` registry): [architecture-analysis-workspace-agents.md](architecture-analysis-workspace-agents.md) | MEDIUM | `examples/analysis/`, `extensions/ts/promotion.ts` |
-| 6 | A scoped ops READ tier | **ANALYSED 2026-08-16, recommendation: do not build.** Both apps already inspect their own work through the coordination plane; what they cannot reuse is the console. See below | — | a console that degrades for a scoped principal, if anything |
+| 6 | A scoped ops READ tier | **BUILT 2026-08-26 as the PATTERN tier**, reversing the 2026-08-16 "do not build". A third app (`extensions/ts/team.ts`) consumes the GENERIC MCP tools rather than serving its own, so five ops-plane reads had no working tier and `observe` was being handed out to cover it. No new concept: the grant pattern that already bounds coordination reads, applied through `Space.readFilter` | `Space.readFilter`, `Space.opsScope`, `test/team.test.ts` | aggregates still do not cover pattern-scoped kinds (an exact count needs the oracle, not the SQL pre-filter) |
 
 **Actions 1 and 2 are built** (`sdk/ts/client.ts`, `sdk/ts/registry.ts`, `sdk/py/radia.py`;
 guards in `test/registry.test.ts` and `test/http.test.ts`, both proved red). Two

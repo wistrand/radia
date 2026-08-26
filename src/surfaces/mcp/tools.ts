@@ -173,4 +173,72 @@ export const TOOLS: McpTool[] = [
       "should not have, or cannot act on right now.",
     inputSchema: { type: "object", properties: { claimId: CLAIM_ID }, required: ["claimId"] },
   },
+  {
+    name: "space_watch",
+    description:
+      "Wait for a record matching a pattern, and return the first one. Use it to pick up work " +
+      "another agent left, without polling in a loop yourself. It RECONCILES FIRST: if a matching " +
+      "record already exists you get it immediately, so this answers 'is there anything for me?' " +
+      "as well as 'tell me when there is'. It does NOT claim anything — call space_take to claim, " +
+      "which is also what stops two agents doing the same work. Returns {found:false} on timeout, " +
+      "which is an ordinary outcome and not an error: nobody wrote one in time.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: KIND,
+        match: MATCH,
+        timeoutSeconds: { type: "number", description: "How long to wait. Default 30, capped at 120." },
+      },
+      required: ["kind"],
+    },
+  },
+  {
+    name: "space_put_artifact",
+    description:
+      "Store bytes beside the space and get back a record that NAMES them. Use this for anything " +
+      "bigger than a record body: a file, a diff, a transcript, output another agent should read. " +
+      "Bytes never travel inside a record body, so this is how agents hand each other content. " +
+      "The record is ordinary: give it parentIds for lineage and meta so a pattern can find it. " +
+      "Identical bytes are one stored payload, so re-sending the same content costs nothing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "The content, as text. Use this unless the bytes are binary." },
+        base64: { type: "string", description: "The content, base64-encoded. For binary only; prefer `text`." },
+        mediaType: { type: "string", description: "e.g. text/markdown, application/json. Default text/plain." },
+        filename: { type: "string", description: "Advisory, for a download. Never used as a path." },
+        parentIds: { type: "array", items: { type: "string" }, description: "Record ids this was derived from." },
+        meta: {
+          type: "object",
+          description: "Scalar fields merged into the artifact's record body, so a query can find it (e.g. {task: 'abc'}).",
+        },
+        idempotencyKey: { type: "string", description: "Retry-safe key: the same key returns the first result." },
+      },
+    },
+  },
+  {
+    name: "space_get_artifact",
+    description:
+      "Read an artifact's bytes by record id. Text comes back as text. Binary does NOT: it is " +
+      "reported with its size and media type instead, because base64 in a context window is not " +
+      "something you can act on. Oversized content is REFUSED with its size rather than truncated, " +
+      "so you never mistake part of a file for the whole of it.",
+    inputSchema: {
+      type: "object",
+      properties: { recordId: { type: "string", description: "The artifact record's id." } },
+      required: ["recordId"],
+    },
+  },
+  {
+    name: "space_artifact_meta",
+    description:
+      "An artifact's digest, media type and size WITHOUT reading it. Use it to decide whether to " +
+      "read something, and to compare content: the digest is the sha256 of the bytes, so two " +
+      "artifacts with the same digest are the same content.",
+    inputSchema: {
+      type: "object",
+      properties: { recordId: { type: "string", description: "The artifact record's id." } },
+      required: ["recordId"],
+    },
+  },
 ];

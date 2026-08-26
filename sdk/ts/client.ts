@@ -972,6 +972,10 @@ export class RadiaClient {
       meta?: Record<string, string | number | boolean | null>;
     } = {},
   ): Promise<{ id: string; digest: string; size: number }> {
+    // A client holding only the durable half has nothing to send yet: these build the header
+    // from a raw fetch, so `authorized`'s retry never sees a token to retry WITH. Same fix as
+    // `watch()`, which is the other raw-fetch path.
+    await this.ensureCredential();
     const headers: Record<string, string> = { "content-type": opts.mediaType ?? "application/octet-stream" };
     if (opts.filename) headers["x-radia-filename"] = opts.filename;
     if (opts.meta) {
@@ -1008,6 +1012,10 @@ export class RadiaClient {
    * broken.
    */
   async artifactMeta(recordId: string): Promise<{ digest: string; mediaType: string; size: number } | null> {
+    // A client holding only the durable half has nothing to send yet: these build the header
+    // from a raw fetch, so `authorized`'s retry never sees a token to retry WITH. Same fix as
+    // `watch()`, which is the other raw-fetch path.
+    await this.ensureCredential();
     return await this.authorized(async () => {
     const headers: Record<string, string> = {};
     if (this.auth.token) headers["Authorization"] = `Bearer ${this.auth.token}`;
@@ -1027,6 +1035,10 @@ export class RadiaClient {
 
   /** An artifact's bytes by record id. */
   async getArtifact(recordId: string): Promise<Uint8Array> {
+    // A client holding only the durable half has nothing to send yet: these build the header
+    // from a raw fetch, so `authorized`'s retry never sees a token to retry WITH. Same fix as
+    // `watch()`, which is the other raw-fetch path.
+    await this.ensureCredential();
     return await this.authorized(async () => {
       const headers: Record<string, string> = {};
       if (this.auth.token) headers["Authorization"] = `Bearer ${this.auth.token}`;

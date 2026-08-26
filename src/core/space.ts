@@ -1283,6 +1283,53 @@ export class Space {
    * sufficient, because the mint would then yield authority the worker cannot exercise alone. That
    * is why `intersectGrants` is fed the worker's OWN grants here.
    */
+  /**
+   * A readability predicate for ONE request: "would a `query` or `read_one` reach this record?"
+   *
+   * This is what makes the ops plane's per-record reads agree with the coordination plane BY
+   * CONSTRUCTION rather than by a second implementation of the same rules. The ops plane had only
+   * two tiers, `observe` (unscoped, every body in the space) and `createdBy: "self"`, and neither
+   * fits a TEAM: a pattern-scoped grant already says which records a principal may read, and a
+   * teammate's record fails the self test purely because somebody else authored it. Three apps hit
+   * that in turn (agent_docs/research-app-lessons.md).
+   *
+   * THE DECISION IS TAKEN ONCE PER KIND, not once per record. The grant registry is deliberately
+   * never memoized across decisions (a cached grant is how a revocation keeps working), and it is
+   * an O(history) read: measured at 93ms per call against 5,000 grant records
+   * (agent_docs/plan-registry-cost.md), so a per-record check would make a 200-node graph
+   * unusable. Held for the life of ONE request and never beyond, which is the same window the
+   * coordination `query` path already resolves a grant for.
+   */
+  async readFilter(principal: string): Promise<(record: RadiaRecord) => Promise<boolean>> {
+    const acc = await this.access(principal);
+    if (acc.privileged) return () => Promise.resolve(true);
+    // `undefined` = not yet asked, `null` = asked and there is no read grant for that kind.
+    const perKind = new Map<string, { constraint: Record<string, unknown>[] | null; createdBy?: string[] }[] | null>();
+    return async (record: RadiaRecord) => {
+      let allowed = perKind.get(record.kind);
+      if (allowed === undefined) {
+        const found: { constraint: Record<string, unknown>[] | null; createdBy?: string[] }[] = [];
+        // EITHER read op, because they are separate grants and a principal commonly holds one.
+        for (const op of ["query", "read_one"] as const) {
+          try {
+            const { constraint, createdBy } = await this.readAccess(principal, op, record.kind);
+            found.push({ constraint, createdBy });
+          } catch (e) {
+            if (!(e instanceof RadiaError && e.code === "forbidden")) throw e;
+          }
+        }
+        allowed = found.length > 0 ? found : null;
+        perKind.set(record.kind, allowed);
+      }
+      if (!allowed) return false;
+      for (const { constraint, createdBy } of allowed) {
+        if (!this.authorAllows(createdBy, record)) continue;
+        if (!constraint || this.bodyMatchesGrant(record.kind, record.body, constraint)) return true;
+      }
+      return false;
+    };
+  }
+
   private async mayActOn(principal: string, record: RadiaRecord, opts: { requireLease?: boolean } = {}): Promise<boolean> {
     const env = await this.storage.getEnvelope(record.id);
     // The STATE, not `leasedUntil > now`, and the difference is deliberate: expiry is lazy here, so
@@ -2339,9 +2386,15 @@ export class Space {
     const subject = this.grantSubject(principal);
     const grants = (access.defs as (GrantDef & { scope?: { createdBy?: string } })[])
       .filter((g) => Array.isArray(g.operations) && g.operations.includes("query"));
-    // Reachability is still opt-in: SOME kind must carry a self-scoped read grant, or the plane
-    // stays shut. An ordinary query grant does not open it.
-    if (!grants.some((g) => g.scope?.createdBy === "self")) {
+    // Reachability is opt-in, and there are now TWO ways in: a self-scoped read grant, or a
+    // PATTERN-scoped one. The second exists because the first cannot express a team — a colleague's
+    // record fails `createdBy: "self"` purely because somebody else wrote it — so an app containing
+    // data by grant pattern had to choose between `observe` (every body in the space) and an ops
+    // plane that refused it. An ordinary UNSCOPED query grant still does not open the plane: that
+    // would hand a participant unscoped reads of everything it is granted, which is what `observe`
+    // is for and what an ops power is meant to gate.
+    const patternScopedGrants = grants.filter((g) => g.pattern && Object.keys(g.pattern).length > 0);
+    if (!grants.some((g) => g.scope?.createdBy === "self") && patternScopedGrants.length === 0) {
       throw new RadiaError("forbidden", `principal '${principal}' may not access the ops plane`);
     }
     // Which of those kinds are actually NARROWED is asked of `authorScope` (the same function the
@@ -2365,10 +2418,19 @@ export class Space {
     }
     // An agent with no runs on record would scope to the empty set and see nothing; include the
     // principal itself so a direct (non-run) principal still matches its own records.
+    // Kinds reachable ONLY by pattern are deliberately absent from `kinds`, which is what the
+    // AGGREGATES filter on. Counting them would need the grant pattern applied in SQL, and the
+    // pushdown contract makes that unsound for a count: the pre-filter is a sound OVER-approximation
+    // that the oracle narrows afterwards, so a `COUNT(*)` over it reports more rows than the caller
+    // may see. Leaving them out means the aggregates answer zero for those kinds rather than
+    // leaking another team's totals; `patternScoped` is what lets the response SAY so, instead of an
+    // empty answer reading as an empty space.
+    const patternScoped = [...new Set(patternScopedGrants.map((g) => g.kind))].filter((k) => !kinds.includes(k));
     return {
       createdBy: await this.runPrincipalsOf(subject, principal),
       kinds: kinds.sort(),
       ...(alsoReadable.length > 0 ? { alsoReadable: alsoReadable.sort() } : {}),
+      ...(patternScoped.length > 0 ? { patternScoped: patternScoped.sort() } : {}),
     };
   }
 
@@ -2695,7 +2757,14 @@ export class Space {
    */
   async getGraph(
     recordId: string,
-    opts: { maxNodes?: number; excludeKinds?: Set<string>; createdBy?: string[]; direction?: "both" | "down" } = {},
+    opts: {
+      maxNodes?: number;
+      excludeKinds?: Set<string>;
+      createdBy?: string[];
+      direction?: "both" | "down";
+      /** See `getLineage`: replaces the author wall for a pattern-scoped caller. */
+      allow?: (record: RadiaRecord) => Promise<boolean>;
+    } = {},
   ): Promise<{ nodes: GraphNode[]; edges: { from: string; to: string }[]; truncated: boolean }> {
     const maxNodes = opts.maxNodes ?? 150;
     const down = opts.direction === "down";
@@ -2740,7 +2809,7 @@ export class Space {
         if (!rec || exclude.has(rec.kind)) continue;
         // A foreign node is a wall, not a skip. Traversing through it would still expose the shape
         // of what hangs off it, and the node's own id and label are enough to feed a lineage probe.
-        if (!this.authorAllows(opts.createdBy, rec)) continue;
+        if (opts.allow ? !(await opts.allow(rec)) : !this.authorAllows(opts.createdBy, rec)) continue;
         nodes.set(rec.id, rec);
         accepted.push(rec);
       }
@@ -2818,6 +2887,11 @@ export class Space {
     recordId: string,
     maxNodes = 200,
     createdBy?: string[],
+    /** The per-request read predicate (`readFilter`), for a caller whose reads are bounded by a
+     *  grant PATTERN rather than by authorship. It REPLACES the author test rather than joining
+     *  it: a teammate's record is exactly what such a caller may read, and the pattern is what
+     *  says so. Same wall semantics either way. */
+    allow?: (record: RadiaRecord) => Promise<boolean>,
   ): Promise<{ record: RadiaRecord; depth: number }[]> {
     const out: { record: RadiaRecord; depth: number }[] = [];
     const seen = new Set<string>();
@@ -2838,7 +2912,7 @@ export class Space {
         // skipping past it: `put` never checks that a parent is readable, so a scoped principal can
         // name any id as a parent of its own record, and an unfiltered walk then hands back that
         // record's whole upstream, bodies included.
-        if (!this.authorAllows(createdBy, rec)) continue;
+        if (allow ? !(await allow(rec)) : !this.authorAllows(createdBy, rec)) continue;
         out.push({ record: rec, depth });
         next.push(...rec.runtimeMeta.parentIds);
       }

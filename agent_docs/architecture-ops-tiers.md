@@ -1,6 +1,6 @@
 # Ops-plane tiers: powers as grant records (architecture)
 
-> Status: BUILT (2026-08-06), all five phases: the `ops_grant` kind, the five powers, the
+> Status: BUILT (2026-08-06), all five phases, plus the PATTERN read tier (2026-08-26): the `ops_grant` kind, the five powers, the
 > three-way gate, reporting through `effectivePermissions`, the supervisor demotion, and the
 > observer credential the MCP adapter defaults to. Source: `OPS_GRANT` + `validateOpsGrantDef`
 > (`src/core/kinds.ts`), `Space.opsPowers` (`src/core/space.ts`), `requiredOpsPower` and the gate
@@ -12,13 +12,51 @@
 > [gotchas.md](gotchas.md#grants-scopes-and-narrowed-answers) before touching enforcement.
 
 
-**The one gap two applications hit independently.** Neither the chat nor the analysis pipeline can
-give a person a scoped ops READ. `observe` opens every read unscoped, and the self-scope tier needs
-`createdBy: "self"` on every applicable grant, which fails whenever a WORKER authors the records a
-person wants to look at (tool output; stage results). What both want is "the ops plane, filtered to
-what my coordination grants already cover". Before widening the tier, answer the leak it inherits: a
-lineage walk that stops at a record you may not see still tells you it exists. See
-[research-app-lessons.md](research-app-lessons.md).
+## The PATTERN tier (BUILT 2026-08-26): three read tiers, not two
+
+Three applications hit the same gap in turn. `observe` opens every read UNSCOPED; the self tier
+needs `createdBy: "self"` on every applicable grant, which fails whenever somebody ELSE authors the
+records you want to look at (the chat: tool output; the analysis pipeline: stage results; teams: a
+colleague's task). All three wanted the same thing, and it already existed one plane over: **the
+ops plane filtered by the grant pattern that already bounds coordination reads.**
+
+| Tier | Bound by | Opens |
+|---------|--------------------------------|-------------------------------------------------|
+| `observe` | nothing (every body in the space) | the whole read plane, aggregates included |
+| self | `scope: {createdBy: "self"}` | own records, on granted kinds |
+| pattern | the grant's own `pattern` | per-record reads of anything that pattern matches |
+
+**One seam, never a second implementation.** `Space.readFilter(principal)` asks `readAccess` the
+same question a `query` asks, so the two planes cannot drift: every grant bug in this codebase has
+been a promise that did not match enforcement, and a parallel rule for ops reads would be the next
+one. Reachability follows: an unscoped `query` grant still does NOT open the plane (that is what
+`observe` is for), but a pattern-scoped one now does.
+
+**Resolved once per KIND, not per record.** The grant registry is deliberately never memoized
+across decisions (a cached grant is how a revocation keeps working) and the read is O(history),
+measured at 93ms against 5,000 grant records ([plan-registry-cost.md](plan-registry-cost.md)). A
+per-record check would make a 200-node graph unusable. The filter is held for ONE request, the same
+window `query` already resolves a grant for.
+
+**The leak this section used to name is answered.** "A lineage walk that stops at a record you may
+not see still tells you it exists": the predicate goes INTO the walk, where an unreadable node is a
+WALL rather than a skip (`getLineage`, `getGraph` take `allow`), and a graph drops every edge whose
+endpoint was not returned. Post-filtering the output would have left an edge pointing at a node the
+answer omits, which is the same probe from one step further out.
+
+**The AGGREGATES deliberately do not cover pattern-scoped kinds.** `stats`, `ops/records` and
+`events` push to SQL, and the pushdown contract makes the pre-filter a sound OVER-approximation the
+oracle narrows afterwards (`src/storage/pushdown.ts`), so a `COUNT(*)` over it reports more rows
+than the caller may see. Those kinds are therefore left out of `StatsScope.kinds` and NAMED in
+`OpsScope.patternScoped`, because a silent zero reads as "the space is empty" — the failure
+`describeScope` exists to prevent. Making them exact needs oracle-evaluated counts under a scan
+budget; `events` needs more still, since a log row carries no body. Both are open.
+
+Source: `Space.readFilter` and `Space.opsScope` (`src/core/space.ts`), `visible`/`describeScope`
+(`src/server/handlers/ops.ts`), `StatsScope.patternScoped` (`src/storage/adapter.ts`). Guards:
+`test/team.test.ts` ("a teammate's record is readable on the ops plane", "the aggregates say what
+they do NOT cover"). The founding consumer is [extensions/ts/team.ts](../extensions/ts/team.ts);
+the history is in [research-app-lessons.md](research-app-lessons.md).
 
 ## The problem it solves
 

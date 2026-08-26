@@ -92,15 +92,23 @@ if set, else `$XDG_STATE_HOME/radia/credentials.json`, `%APPDATA%\radia\…`, or
 Resolution order for any client: `RADIA_TOKEN` → the stored credential for that base URL → none,
 which is a `401` unless the space was started with `--auth open`.
 
-**Three identities share the file, under separate keys.** The operator credential sits at the base
+**Four identities share the file, under separate keys.** The operator credential sits at the base
 URL; a person's `radia login` sits at `<base>#login` (`storedLogin`/`saveLogin`); the OBSERVER sits
 at `<base>#observer` (`storedObserver`/`saveObserver`): an `agent:local-observer` definition token,
 mint-only and revocable, whose `ops_grant` holds `observe`, plus two metadata `query` grants on
 the definition — `agent_run` (a run principal carries no agent name; the OTLP exporter resolves
 services through these records) and `kind_def`
-([architecture-ops-tiers.md](architecture-ops-tiers.md) phase 5). One key for all of them
-means a login would replace the operator entry, and the CLI's remediation verbs, the chat's
-bootstrap and the MCP adapter would all start acting as whoever signed in last.
+([architecture-ops-tiers.md](architecture-ops-tiers.md) phase 5); and a NAMED MCP session sits at
+`<base>#session:<name>` (`storedSession`/`saveSession`), holding the run that session resumes on.
+One key for all of them means a login would replace the operator entry, and the CLI's remediation
+verbs, the chat's bootstrap and the MCP adapter would all start acting as whoever signed in last.
+
+**An EMPTY variable is an ABSENT one**, and `??` gets that wrong. Harness configs and wrapper
+scripts export every name they know about, empty ones included; keeping `""` reads as "the caller
+chose an override" for one branch and "nothing was set" for the next, so an exported
+`RADIA_TOKEN=` silently discarded the `RADIA_DEFINITION_TOKEN` beside it and the adapter came up as
+the observer, which cannot coordinate. `resolveDefinitionToken` and the adapter both use `||`;
+`test/exchange.test.ts` holds the guard.
 
 **Who reads which:** `radia mcp` DEFAULTS to the observer (`RADIA_TOKEN` overrides; the operator
 token is only the fallback for a file written before observers existed), so the model behind a
@@ -171,6 +179,10 @@ assuming:
 The minted token lives in a variable, not in an `onclick` attribute, so no credential is written
 into the DOM as executable markup (`test/console.test.ts`).
 
+`execPath()` is on the seam for ONE caller and says so: `radia team` writes a config file that some
+OTHER program will run, and a bare `radia` in it depends on the reader's PATH. It is never used to
+re-exec.
+
 ## Where a surface lives, and why it is a directory
 
 `src/surfaces/` holds the CLI and the MCP adapter. They ship inside the `radia` binary and are not
@@ -191,8 +203,8 @@ extension, a surface takes no runtime value, an extension never imports `src/`, 
 
 ## The CLI: `src/surfaces/cli.ts`
 
-Five verb groups (inspect, coordinate, remediate, the two identity verbs `login` / `permissions`,
-and workspaces), plus `--json` on every one and `--url` to point elsewhere. `radia help` prints the
+Five verb groups (inspect, coordinate, remediate, the identity verbs `login` / `permissions` /
+`team`, and workspaces), plus `--json` on every one and `--url` to point elsewhere. `radia help` prints the
 authoritative list with flags; it is not restated here, because a hand-copied verb list is the
 drift this doc exists to avoid.
 
@@ -209,6 +221,18 @@ imposing a direction: a pattern carrying `order_by` goes to `queryOrdered`, anyt
 oldest-first, which the tool description now states (descriptions are the docs here). It accepts
 both spellings of that key, because the key is the model's and the adapter rebuilds the pattern, so
 the wire's own near-miss refusal never sees it.
+
+`team` is the one verb that sets a space up for somebody else's process to join
+([extensions/ts/team.ts](../extensions/ts/team.ts)): it declares the shared kinds, mints one
+DURABLE principal per name, and prints the harness config for that agent. Two of its behaviours are
+refusals rather than conveniences. It REFUSES a second definition for an existing agent and names
+`--rotate`, because a second one is not a rotation and looks like one — both tokens keep minting
+while `radia revoke` reaches only the newest (`Space.definitionRecord` takes the newest record's
+status). And `radia team` LISTS THE TEAM rather than every definition on the space: a real space
+carries an app's workers, its logins and its probes, and listing all of them buried the four rows
+the verb is about under twenty that it is not (`--all` is the escape). It reports the three ways
+isolation ends, worst first: members whose grants carry no team pattern and therefore read every
+team, crossers, and members holding `observe`.
 
 The claim lifecycle is composable rather than stateful: `take --json` prints the record together
 with its lease, and `ack`/`nack`/`release` accept that object back, either as an argument or as
@@ -282,7 +306,9 @@ means "bad credential".
 ## The MCP adapter: `src/surfaces/mcp/`
 
 `radia mcp` serves the space to an MCP-capable harness over stdio: newline-delimited JSON-RPC 2.0,
-15 tools. `server.ts` is the transport and dispatch; `tools.ts` is the tool definitions.
+19 tools. `server.ts` is the transport and dispatch; `tools.ts` is the tool definitions;
+`config.ts` renders the harness config that points an agent here; `scope.ts` fills in body fields
+the caller's own grants require.
 
 **It runs as the OBSERVER by default** ([architecture-ops-tiers.md](architecture-ops-tiers.md) phase 5): the
 stored `#observer` credential, holding the `observe` ops power and no coordination grants, so the
@@ -308,11 +334,38 @@ Tool descriptions in `tools.ts` are the documentation. A model learns *how* to u
 its description, never from a system prompt that teaches the space. Kinds are discovered via
 `space_kinds`, so a kind declared after startup is immediately usable.
 
-Known gap: neither the CLI nor the MCP adapter has artifact verbs. Bytes are reachable only over
-HTTP (`POST /v0/artifacts`, `GET /v0/artifacts/{id}`) or through an SDK, so "if the CLI can do it,
-an external client can too" holds in one direction only for payloads. A `radia artifact
-put/get` pair would close it; base64 in an MCP tool result would not (it would put the payload
-back inside a record, which is the thing artifacts exist to avoid).
+**A NAMED SESSION keeps its principal across restarts.** `--session <name>` (or `RADIA_SESSION`)
+stores the run under a `#session:` credential entry and resumes it, with the durable half behind it
+so the session still recovers once that run passes its 12h ceiling. The name is SUPPLIED, not
+derived: no harness exposes a session identity portably, and guessing one from a pid or a cwd gives
+a different principal every restart, which is the thing it exists to prevent. For attribution that
+outlives a day the unit is the AGENT rather than the run, which is what
+[extensions/ts/team.ts](../extensions/ts/team.ts) gives each session.
+
+**The generated harness config names THE BINARY THAT WROTE IT**, absolute (`config.ts`). A block
+saying `"command": "radia"` works only if the harness's PATH has it, which is the one thing a
+generated config cannot check, and the failure is a server the harness reports as failed with no
+reason a person can act on. A PATH SCAN was tried and REJECTED for the mirror reason: it can name a
+different build than the one writing the block, and a stale install speaks an older wire contract
+while still starting cleanly. Running from source has no binary to name, so it reports `fromSource`
+and the CLI sends the reader to `deno task compile` rather than emitting a config pinned to a
+checkout's path.
+
+**A write is filled in from the caller's own grant, LEARNED FROM A REFUSAL** (`scope.ts`). A
+pattern-scoped grant bounds writes as well as reads, so a body must carry the field the pattern
+names, and the runtime will not supply it (a body is the client's claim). Reading your own grants
+up front and stamping every write is wrong: `EffectivePermissions.kinds[].patterns` unions the
+patterns of ALL grants on a kind whatever operation they permit, so a scoped READ grant beside an
+unscoped write grant would add a label the record need not carry, narrowing who may read it. Only a
+refusal proves the field is REQUIRED, so a write goes out as the model wrote it and only a rejected
+one is retried filled in; the scope is then remembered per kind for the process. Ambiguity is
+ASKED about, never guessed: a member of two teams gets both names back.
+
+Known gap: the CLI still has no artifact verbs (the MCP adapter gained `space_put_artifact` /
+`space_get_artifact` / `space_artifact_meta`). Bytes are reachable from a terminal only over HTTP
+(`POST /v0/artifacts`, `GET /v0/artifacts/{id}`) or through an SDK, so "if the CLI can do it, an
+external client can too" holds in one direction only for payloads. A `radia artifact put/get` pair
+would close it.
 
 The CLI has the full set: `radia reclaim|dead-letter|requeue` take either a record id or `--all`
 with an envelope selector (`--stale`, `--limit`, `--drain`), so draining a backlog is one call per

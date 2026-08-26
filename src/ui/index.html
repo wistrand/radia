@@ -1109,11 +1109,18 @@ async function showDetail(id, target = "rec-detail") {
   const m = rec.runtimeMeta || {};
   const dc = m.delegationContext;
   const tl = taintLabels(m);
+  const author = await agentOf(m.createdBy);
   const authHtml =
     `<b>Authority &amp; taint</b><div class="mono" style="margin:6px 0 10px">`
     + `<div>taint: ${tl.length ? tl.map((l) => `<span class="tag tag-taint">${esc(l)}</span>`).join(" ") + ` <span class="muted">barrier labels; clearing needs declassify</span>` : `<span class="muted">none</span>`}</div>`
     + `<div>delegation: ${dc ? `<span class="tag tag-deleg">${esc(dc.chain.join(" → "))}</span> <span class="muted">from lease ${esc((dc.origin || "").slice(-8))}</span>` : `<span class="muted">none (root / operator authority)</span>`}</div>`
-    + `<div>created_by: <span class="muted">${esc(m.createdBy || "")}</span></div></div>`;
+    // The run is kept beside the agent rather than replaced by it: the agent is who to hold
+    // responsible, the run is which session, and stopping one needs the second.
+    + `<div>created_by: ${
+      author
+        ? `<span class="tag">${esc(author)}</span> <span class="muted">via ${esc(m.createdBy)}</span>`
+        : `<span class="muted">${esc(m.createdBy || "")}</span>`
+    }</div></div>`;
   // An artifact record describes bytes held outside it. Preview them inline, and note HOW: the
   // console cannot put an Authorization header on an <img>, so it mints a short-lived, single-
   // artifact download capability and puts that in the URL. That constraint is why capabilities
@@ -1862,11 +1869,36 @@ function loadBlitzoom() {
   return spaceScript;
 }
 
-/** Runs are `run:<agent>:<ulid>`; the tail is noise for clustering, the agent is the signal. */
+// ---- who wrote it: run -> agent ----
+//
+// `created_by` and every event's `runId` name a RUN, and a run dies at the 12h ceiling, so a run
+// id is an identifier that stops meaning anything within a day. The DEFINITION behind it is the
+// durable identity, and it is what a person reading a record is actually asking about.
+//
+// NARROW, never a projection over a page: one run has one current `agent_run` record, so this
+// matches down to the run and takes the newest 1. Memoized for the page's life because a run's
+// agent cannot change, and the miss is cached too, or an unreadable run is re-fetched per render.
+const AGENT_OF = new Map();
+async function agentOf(runId) {
+  if (!runId || !String(runId).startsWith("run:")) return null;
+  if (AGENT_OF.has(runId)) return AGENT_OF.get(runId);
+  // FAILS SOFT. An ordinary session may not read `agent_run`, and a decoration that 403s must
+  // not blank the field it decorates: every caller falls back to the run id.
+  const r = await api("POST", "/v0/records/query", { kind: "agent_run", match: { run: runId }, limit: 1, dir: "desc" });
+  const agent = r.ok && r.data.records[0] && r.data.records[0].body.agent || null;
+  AGENT_OF.set(runId, agent);
+  return agent;
+}
+
+/** Resolve a batch's distinct runs in one pass, so N events cost one lookup per RUN, not per event. */
+async function agentsFor(runIds) {
+  await Promise.all([...new Set(runIds)].filter(Boolean).map((r) => agentOf(r)));
+}
+
+/** What to call a run once `agentsFor` has run over it: the durable principal, else the run. */
 function shortRun(runId) {
   if (!runId) return "unknown";
-  const p = String(runId).split(":");
-  return p.length > 2 ? p.slice(0, 2).join(":") : String(runId);
+  return AGENT_OF.get(runId) || String(runId);
 }
 
 /**
@@ -1903,6 +1935,11 @@ async function pollSpace() {
     if (seed) spaceCursor = String(r.data.nextAfter ?? "0");
     if (!evs.length) return;
     if (!seed) spaceCursor = String(evs[evs.length - 1].cursor ?? evs[evs.length - 1].seq);
+
+    // Resolve this batch's DISTINCT runs before mapping, so the nodes cluster by the durable
+    // principal instead of by a ULID that means nothing tomorrow. One lookup per run, memoized
+    // across polls, and the map is synchronous below because this already awaited.
+    await agentsFor(evs.map((e) => e.runId));
 
     const adds = new Map(), updates = new Map(), edges = [], results = [];
     for (const e of evs) {

@@ -369,6 +369,10 @@ export interface OpsScope {
   /** Kinds it may READ in full even though the numbers above cover only its own records: a
    *  specific, checkable statement that a query there returns more. */
   alsoReadableInFull?: string[];
+  /** Kinds this caller reaches by grant PATTERN rather than by authorship (a team). Per-record ops
+   *  reads work there; `kinds` above is what the COUNTS cover, and these are deliberately not in
+   *  it, because an exact count would need the oracle rather than the SQL pre-filter. */
+  patternScoped?: string[];
   note: string;
 }
 

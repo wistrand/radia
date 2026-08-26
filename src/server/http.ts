@@ -469,12 +469,12 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
       const id = decodeURIComponent(parts[0] ?? "");
       const tail = parts[1];
       if (id) {
-        if (req.method === "GET" && !tail) return await handleGetRecord(space, id, opsScope);
-        if (req.method === "GET" && tail === "envelope") return await handleEnvelope(space, id, opsScope);
-        if (req.method === "GET" && tail === "lineage") return await handleLineage(space, id, opsScope);
-        if (req.method === "GET" && tail === "children") return await handleChildren(space, id, opsScope, url);
-        if (req.method === "GET" && tail === "graph") return await handleGraph(space, id, url, opsScope);
-        if (req.method === "GET" && tail === "thread") return await handleThread(space, id, opsScope);
+        if (req.method === "GET" && !tail) return await handleGetRecord(space, id, opsScope, principal);
+        if (req.method === "GET" && tail === "envelope") return await handleEnvelope(space, id, opsScope, principal);
+        if (req.method === "GET" && tail === "lineage") return await handleLineage(space, id, opsScope, principal);
+        if (req.method === "GET" && tail === "children") return await handleChildren(space, id, opsScope, url, principal);
+        if (req.method === "GET" && tail === "graph") return await handleGraph(space, id, url, opsScope, principal);
+        if (req.method === "GET" && tail === "thread") return await handleThread(space, id, opsScope, principal);
         if (req.method === "POST" && (tail === "reclaim" || tail === "dead-letter" || tail === "requeue")) {
           return await handleAdmin(space, id, tail);
         }

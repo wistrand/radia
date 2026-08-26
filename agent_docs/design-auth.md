@@ -606,6 +606,13 @@ is guessing. Two entries, each justified by an observed failure:
 | `createdBy: "self"` | records whose author resolves to my agent | "what did I create in this space" → 403 |
 | `leaseOwner: "self"` | records my RUN currently holds | a worker reporting its own stuck work (build order step 3/5) |
 
+A `scope` selector is not the only way a read narrows, and for the OPS plane it is no longer the
+main one: a grant's own `pattern` now bounds per-record ops reads too (the PATTERN tier,
+[architecture-ops-tiers.md](architecture-ops-tiers.md)). That matters here because it is what
+answers "records my TEAM may see", which no `scope` selector can express — `createdBy: "self"`
+fails for a colleague's record purely because somebody else wrote it, and a selector meaning "my
+team" would have to name a body field, which is what a pattern already does.
+
 `leaseOwner` is **designed, not built, and REFUSED** at grant-write time until it is. It validated
 and narrowed nothing for a while, which is worse than refusing: `authorScope` restricts only when
 every applicable grant is `createdBy`-scoped, so a grant carrying `leaseOwner` alone read as

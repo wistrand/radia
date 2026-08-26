@@ -22,6 +22,8 @@ import { declareExecRequest, pinnedDigests, promote } from "../../extensions/ts/
 import { BINDING, type Binding, declareBinding, type Outcome, readBindings, sandboxInvoker, WorkspaceHost } from "../../extensions/ts/host.ts";
 import { brokeredInvoker } from "../../extensions/ts/broker.ts";
 import { auditCompartment } from "../../extensions/ts/compartment.ts";
+import { addMember, DEFAULT_TEAM, declareTeamKinds, definitionState, TEAM_FIELD, teamRoster } from "../../extensions/ts/team.ts";
+import { configLocation, type Harness, mcpInvocation, renderMcpConfig, renderMcpInstall } from "./mcp/config.ts";
 import {
   CREDENTIAL_STALE_DAYS,
   credentialsPath,
@@ -64,6 +66,20 @@ Inspect
                                       the CLI signs in again by itself. --compact prints the
                                       session token alone; --compact-definition prints the
                                       durable one, for a tool that cannot re-authenticate
+  team                                every principal that holds a definition, and what it can do
+  team add <name>… [--team <t>]… [--harness claude|codex|json] [--grant <kind>:<op,op>]…
+                   [--observe] [--rotate] [--name <mcp-server>]
+                                      put an agent harness on this space: declare the shared
+                                      kinds, mint one DURABLE principal per name, print the MCP
+                                      config that points that harness here as it. One member per
+                                      SESSION, so their work is told apart. Teams are ISOLATED by
+                                      default: grants are pattern-scoped to --team (default
+                                      "default"), so a write without that label is refused and a
+                                      read never sees another team. Repeat --team for a member
+                                      that crosses. --rotate replaces a token (shown once);
+                                      --observe adds UNSCOPED ops reads, which defeat isolation
+  team remove <name>…                 revoke the definition, then stop its live runs. The records
+                                      it wrote stay, and still attribute to it
   shred <artifact-id> [--reason <t>] [--shared]  destroy an artifact's bytes, keep the record
   revoke <principal> [--reason <t>]   stop a definition MINTING, permanently. Not a kill switch:
                                       runs already minted keep working until they expire
@@ -479,6 +495,218 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
               `  Revoke it with \`radia revoke ${who}\`; nothing else takes it away.`
             : `  could not store the durable credential (${stored.error}); this session ends when the token above does.`,
         ].join("\n"));
+    }
+
+    // A TEAM of agent harnesses on one space (extensions/ts/team.ts). One verb does the whole
+    // setup: declare the shared kinds, mint a DURABLE principal per member, and print the MCP
+    // block that points that harness at this space as that member.
+    //
+    // ONE MEMBER PER SESSION, not one per harness, and the output says so: two Claude windows
+    // sharing a credential are one principal, so their work cannot be told apart and stopping one
+    // stops both.
+    case "team": {
+      const [sub] = positional(argv, 1);
+      const USAGE = "team [list [--all] | add <name>… [--team <t>]… [--harness claude|codex|json] [--grant <kind>:<op,op>]… [--observe] [--rotate] | remove <name>…]";
+      if (sub !== undefined && sub !== "add" && sub !== "remove" && sub !== "list") return usage(USAGE);
+      // A bare name is a convenience, not a second namespace: `claude` means `agent:claude`, and
+      // anything already carrying a prefix is passed through so a `human:` member still works.
+      const names = positional(argv, 64).slice(1).map((n) => (n.includes(":") ? n : `agent:${n}`));
+
+      if (!sub || sub === "list") {
+        const roster = await teamRoster(client);
+        // THE TEAM, not every definition on the space. A real space carries an app's workers, its
+        // logins and its probes; listing all of them buried the four rows this verb is about under
+        // twenty that it is not. `--all` is the escape.
+        const all = has(argv, "--all");
+        const shown = all ? roster : roster.filter((m) => m.member);
+        const hidden = roster.length - shown.length;
+        const live = roster.filter((m) => m.active);
+        const unscoped = live.filter((m) => m.member && m.unscoped);
+        const crossers = live.filter((m) => m.teams.length > 1);
+        const seers = live.filter((m) => m.member && m.opsPowers.includes("observe"));
+        const others = live.filter((m) => !m.member && m.opsPowers.includes("observe"));
+        return out(ctx, roster, () =>
+          lines([
+            shown.length
+              // KINDS, not the full grant list: a member's operations are uniform, and one
+              // unrelated principal with thirty grants padded every row in the table to its width.
+              ? table(["PRINCIPAL", "STATE", "TEAMS", "KINDS", "OPS"], shown.map((m) => [
+                m.agent,
+                m.active ? "active" : "revoked",
+                // `ANY` rather than a dash: an unscoped member reads every team, and a dash reads
+                // as "none", which is the opposite of what it means.
+                m.unscoped ? "ANY" : m.teams.join(",") || "-",
+                truncate(m.kinds.map((k) => k.kind).join(","), 44) || "nothing",
+                m.opsPowers.join(",") || "-",
+              ]))
+              : all
+              ? "(no agent definitions on this space; `radia team add <name>` makes one)"
+              : "(no team members; `radia team add <name> --team <t>` makes one)",
+            hidden > 0
+              ? `${shown.length} member${shown.length === 1 ? "" : "s"}. ${hidden} other definition${
+                hidden === 1 ? "" : "s"
+              } on this space (--all lists them). \`radia permissions <principal>\` for one in full`
+              : `\`radia permissions <principal>\` for one in full`,
+            // The three ways a team stops being isolated, worst first, each with its fix.
+            unscoped.length
+              ? `\nUNSCOPED MEMBERS read EVERY team. Their grants carry no ${TEAM_FIELD} pattern, so adding teams\n` +
+                `around them changes nothing until they are rotated:\n` +
+                unscoped.map((m) => `  ${m.agent}`).join("\n") +
+                `\n  Fix: radia team add ${unscoped[0].agent.replace(/^agent:/, "")} --team <team> --rotate`
+              : null,
+            crossers.length
+              ? `\nCROSSERS (reach more than one team, which is how work moves between them):\n` +
+                crossers.map((m) => `  ${m.agent}  ${m.teams.join(" + ")}`).join("\n")
+              : null,
+            seers.length
+              ? `\nTHESE MEMBERS READ EVERY TEAM. \`observe\` is unscoped, so it ignores the grants above:\n` +
+                seers.map((m) => `  ${m.agent}${m.teams.length ? `  (team ${m.teams.join(",")})` : ""}`).join("\n") +
+                `\n  Take it back with: radia team add ${seers[0].agent.replace(/^agent:/, "")} --rotate  (no --observe)`
+              : null,
+            others.length
+              ? `\n\`observe\` is also held by ${others.map((m) => m.agent).join(", ")}, ${
+                others.length === 1 ? "which is not a team member" : "none of them team members"
+              }\n` +
+                `  (\`agent:local-observer\` is this CLI's own read credential, minted by \`radia dev\`).`
+              : null,
+          ]));
+      }
+
+      if (names.length === 0) return usage(USAGE);
+
+      if (sub === "remove") {
+        // The offboarding cascade, in the order that actually closes the door: revoke first so
+        // nothing new can be minted, THEN stop what is already running. The other order leaves a
+        // window in which the definition mints a replacement for the run just stopped.
+        const removed: { agent: string; revoked: boolean; stopped: number }[] = [];
+        for (const agent of names) {
+          const r = await client.revokeDefinition(agent);
+          const runs = await client.queryAll<{ run?: string; status?: string; expiresAt?: string }>(
+            { kind: "agent_run", match: { agent } },
+          );
+          const now = new Date().toISOString();
+          const live = [...newestByKey<{ run?: string; status?: string; expiresAt?: string }>(runs, (b) => b.run).values()]
+            .map((rec) => rec.body)
+            .filter((b) => b.status !== "stopped" && (b.expiresAt ?? "") > now);
+          let stopped = 0;
+          for (const b of live) if (b.run && (await client.stopRun(b.run)).applied) stopped++;
+          removed.push({ agent, revoked: r.applied && !r.alreadyRevoked, stopped });
+        }
+        return out(ctx, removed, () =>
+          removed.map((r) =>
+            `${r.agent}: ${r.revoked ? "definition revoked" : "definition already revoked"}, ${r.stopped} live run(s) stopped`
+          ).join("\n") +
+          "\nIts records stay, and still attribute to it. That is the point of a durable principal");
+      }
+
+      // ---- add ----
+      const harnessFlag = flag(argv, "--harness");
+      if (harnessFlag && !["claude", "codex", "json"].includes(harnessFlag)) return usage(USAGE);
+      // Repeatable: a member on two teams holds both grant sets, which UNION, and is a CROSSER.
+      // That is how work moves between teams, and `radia compartment` is the verb that finds them.
+      const teams = flags(argv, "--team").map(String);
+      const lanes = teams.length ? teams : [DEFAULT_TEAM];
+      // OPT-IN, and it was the default until teams existed. `observe` reads every body in the
+      // space unscoped, so a member holding it sees every OTHER team's work whatever its grants
+      // say: measured, a member correctly answering `[]` on the coordination plane read a foreign
+      // record by id off the ops plane. There is no tier in between (the scoped one is
+      // `createdBy: "self"`, and a teammate's record is not yours).
+      const observe = has(argv, "--observe");
+      const rotate = has(argv, "--rotate");
+      const extra = flags(argv, "--grant").map((g) => {
+        const [kind, ops] = String(g).split(":");
+        if (!kind || !ops) throw new UsageError(`--grant wants <kind>:<op,op>, got '${g}'`);
+        return { kind, operations: ops.split(",").map((o) => o.trim()).filter(Boolean) };
+      });
+      const health = await client.health();
+      const kinds = await declareTeamKinds(client);
+      const serverName = flag(argv, "--name") ?? "radia";
+
+      // TRUE when this ran from source, so there is no binary for the block to name. Read from the
+      // invocation rather than re-derived, or the warning and the block could disagree.
+      let fromSource = false;
+      const added: { agent: string; rotated: boolean; harness: Harness; install?: string; config: string; can: string[] }[] = [];
+      for (const agent of names) {
+        const state = await definitionState(client, agent);
+        if (state === "active" && !rotate) {
+          throw new UsageError(
+            `${agent} already holds a definition, and its token cannot be read back (it is shown once).\n` +
+              `  To replace it:  radia team add ${agent.replace(/^agent:/, "")} --rotate\n` +
+              `  A second definition would NOT replace the first: both would keep minting, while ` +
+              `\`radia revoke\` reaches only the newest.`,
+          );
+        }
+        // Rotating is revoke-then-create for that same reason. Revoked first, so the old token
+        // stops minting even if the create below fails.
+        if (state === "active") await client.revokeDefinition(agent, { reason: "rotated by radia team add --rotate" });
+        const member = await addMember(client, agent, { teams: lanes, observe: observe && state !== "active", extra });
+        const short = agent.replace(/^agent:/, "");
+        // The harness follows the NAME when the name is one, which is what makes the common case
+        // (`radia team add claude codex`) print the right block for each without a flag.
+        const harness = (harnessFlag ?? (short.startsWith("claude") ? "claude" : short.startsWith("codex") ? "codex" : "json")) as Harness;
+        const target = { url: client.base, definitionToken: member.definitionToken, name: serverName };
+        fromSource = mcpInvocation(client.base).fromSource === true;
+        const perms = await client.permissions(agent);
+        added.push({
+          agent,
+          rotated: state === "active",
+          harness,
+          install: renderMcpInstall(harness, target),
+          config: renderMcpConfig(harness, target),
+          can: perms.kinds.map((k) => `${k.kind}:${k.operations.join(",")}`),
+        });
+      }
+
+      return out(ctx, { kinds, members: added }, () =>
+        lines([
+          health.persistent === false
+            ? `WARNING: this space is IN-MEMORY. These credentials, and every task and note, die with it.\n` +
+              `  Restart it as \`radia dev --db\` before configuring anything against it.\n`
+            : null,
+          `${kinds.join(" + ")} declared on ${client.base}`,
+          `team ${lanes.join(" + ")}: ${lanes.length === 1 ? "these members see" : "these members see"} only records labelled ${
+            lanes.map((t) => `${TEAM_FIELD}:"${t}"`).join(" or ")
+          }.`,
+          observe
+            ? `\nWARNING: --observe gives these members UNSCOPED ops reads, so they see EVERY team's records\n` +
+              `  whatever the grants say. It buys space_get / space_lineage / space_children / space_stats /\n` +
+              `  space_events, which have no team-scoped tier. Leave it off for isolation.`
+            : null,
+          // A config pointing at the SOURCE pins whatever project pastes it to this checkout's
+          // path and needs Deno wherever the harness runs. Say so where the block is printed,
+          // with the one command that fixes it, rather than letting it be discovered by a move.
+          fromSource
+            ? `\nNOTE: this ran from SOURCE, so the blocks below say \`deno run <this checkout>/src/main.ts\`.\n` +
+              `  A project configured with that is pinned to this checkout's path, needs deno wherever the\n` +
+              `  harness runs, and re-checks the module graph on every start. Build the binary and run this\n` +
+              `  command again AS it, so the config names the binary that wrote it:\n` +
+              `    deno task compile && ./radia team add ${names.map((n) => n.replace(/^agent:/, "")).join(" ")} --rotate`
+            : null,
+          ...added.map((m) =>
+            lines([
+              ``,
+              `${m.agent}  ${m.rotated ? "rotated (the previous token no longer mints)" : "created"}`,
+              `  can: ${m.can.join("  ")}`,
+              observe ? `  plus the ops-plane READS space_get / space_lineage / space_children / space_stats / space_events need` : null,
+              m.install ? `\n  Run this IN the project directory that agent works in:\n    ${m.install}` : null,
+              `\n  ${m.install ? "or paste" : "Paste"} into ${configLocation(m.harness)}:\n${indent(m.config, "  ")}`,
+            ])
+          ),
+          ``,
+          `The token appears ONCE. Lost one: \`radia team add <name> --rotate\`. Done with one: \`radia team remove <name>\`.`,
+          `Give each SESSION its own member (\`radia team add claude-a claude-b\`): one credential shared by two`,
+          `windows is one principal, so nothing tells their work apart and stopping one stops both.`,
+          ``,
+          `EVERY WRITE MUST CARRY ${TEAM_FIELD}:"${lanes[0]}". A body without it is refused, so there is no`,
+          `unlabelled lane to fall into. Reads need no label: the grant already bounds them.`,
+          ``,
+          `  space_put   {kind:"task", body:{${TEAM_FIELD}:"${lanes[0]}", title:"…", tags:["review"]}}`,
+          `  space_take  {kind:"task", match:{tags:{"$any":"review"}}}            claim it under a lease`,
+          `  space_ack   {claimId:"…", resultKind:"note", resultBody:{${TEAM_FIELD}:"${lanes[0]}", …}}`,
+          `  space_put   {kind:"note", body:{${TEAM_FIELD}:"${lanes[0]}", to:"agent:codex", text:"…"}}`,
+          `  space_watch {kind:"note", match:{to:"agent:claude"}}                 a mailbox`,
+          `A scalar never distributes over an array here, deliberately: matching one tag is \`$any\`.`,
+        ]));
     }
 
     // The off switch the bootstrap chain was missing. A run token expires and can be stopped; a
@@ -1060,7 +1288,23 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         console.error(`error: no record ${id}`);
         return 1;
       }
-      return out(ctx, rec, () => JSON.stringify(rec, null, 2));
+      // WHO WROTE IT, named. `created_by` is a run, and a run id says nothing a person can use:
+      // the durable identity behind it is the agent, which outlives the run by design. One NARROW
+      // read (newest `agent_run` for this run), so it costs the same on a space of any size.
+      //
+      // Best effort, and CAUGHT: `agent_run` is a reserved kind an ordinary caller may not read,
+      // and a decoration that 403s must not take the record with it.
+      const author = rec.runtimeMeta.createdBy.startsWith("run:")
+        ? await client.readNewest<{ agent?: string; actingFor?: string }>({
+          kind: "agent_run",
+          match: { run: rec.runtimeMeta.createdBy },
+        }).then((r) => r?.body).catch(() => undefined)
+        : undefined;
+      return out(ctx, author?.agent ? { ...rec, author } : rec, () =>
+        JSON.stringify(rec, null, 2) +
+        (author?.agent
+          ? `\n\nwritten by ${author.agent}${author.actingFor ? ` acting for ${author.actingFor}` : ""}`
+          : ""));
     }
 
     case "lineage": {
@@ -1873,6 +2117,16 @@ function usage(line: string): number {
 function recordTable(recs: { id: string; kind: string; body: unknown }[]): string {
   if (!recs.length) return "(no records)";
   return table(["ID", "KIND", "BODY"], recs.map((r) => [r.id, r.kind, truncate(JSON.stringify(r.body), 48)]));
+}
+
+/** Join report lines, dropping only `null`. NEVER `.filter(Boolean)`: a blank line is deliberate
+ *  spacing, and filtering by truthiness silently ate every one of them. */
+function lines(parts: (string | null)[]): string {
+  return parts.filter((l): l is string => l !== null).join("\n");
+}
+
+function indent(s: string, pad: string): string {
+  return s.split("\n").map((l) => pad + l).join("\n");
 }
 
 function truncate(s: string, n: number): string {

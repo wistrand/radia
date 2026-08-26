@@ -22,9 +22,15 @@ import { RadiaError } from "../../core/errors.ts";
 function describeScope(scope?: StatsScope | null): OpsScope | undefined {
   if (!scope) return undefined;
   const more = scope.alsoReadable ?? [];
+  const byPat = scope.patternScoped ?? [];
   return {
     self: true,
     kinds: scope.kinds ?? [],
+    // Kinds reached by grant PATTERN. Their per-record reads work (get, lineage, children, graph);
+    // these COUNTS do not cover them, because an exact count needs the oracle rather than the
+    // pushdown pre-filter. Reported so that a zero here is read as "not counted" rather than as
+    // "none exist", which is the same failure `note` below exists to prevent.
+    ...(byPat.length > 0 ? { patternScoped: byPat } : {}),
     // Kinds this caller can READ in full even though these counts cover only its own records. Not
     // a caveat about completeness in general. It is a specific, checkable statement that `query` on
     // these kinds returns more than the number above, so the number is never mistaken for a total.
@@ -33,6 +39,10 @@ function describeScope(scope?: StatsScope | null): OpsScope | undefined {
       "visible to you, NOT that the space is empty" +
       (more.length > 0
         ? `. Your grants let you READ every record of ${more.join(", ")}, so a query there returns more than these counts`
+        : "") +
+      (byPat.length > 0
+        ? `. ${byPat.join(", ")} ${byPat.length === 1 ? "is" : "are"} scoped to you by grant PATTERN rather than by author: ` +
+          `per-record reads there work, and these counts do not cover them, so use query for totals`
         : ""),
   };
 }
@@ -56,13 +66,30 @@ export async function handleStats(space: Space, scope?: StatsScope | null): Prom
  * so both answer 404. A 403 here would confirm the id exists, which is exactly the probe a
  * per-record endpoint invites.
  */
-async function visible(space: Space, recordId: string, scope?: StatsScope | null): Promise<boolean> {
+async function visible(space: Space, recordId: string, scope: StatsScope | null | undefined, principal: string): Promise<boolean> {
   if (!scope) return true;
   const rec = await space.getRecord(recordId);
   if (!rec) return false;
-  const okKind = !scope.kinds || scope.kinds.includes(rec.kind);
-  const okAuthor = !scope.createdBy || scope.createdBy.includes(rec.runtimeMeta.createdBy);
-  return okKind && okAuthor;
+  return await (await space.readFilter(principal))(rec);
+}
+
+/**
+ * The per-request readability predicate, or `null` for a caller nothing narrows.
+ *
+ * Built HERE rather than beside `opsScope` in the router, because it costs a grant-registry read
+ * and most ops routes never need it: that read is O(history) and is the one measured at 93ms
+ * against 5,000 grant records (agent_docs/plan-registry-cost.md).
+ */
+async function allower(space: Space, scope: StatsScope | null | undefined, principal: string) {
+  return scope ? await space.readFilter(principal) : null;
+}
+
+/** Does this caller reach any kind by grant PATTERN? If so an author filter must not be applied to
+ *  a graph or lineage walk: a teammate's record is exactly what it is meant to reach, and it fails
+ *  an author test for no reason but that somebody else wrote it. The nodes are filtered afterwards
+ *  by `allower`, which applies the author rule per KIND where that is what the grant says. */
+function byPattern(scope?: StatsScope | null): boolean {
+  return (scope?.patternScoped?.length ?? 0) > 0;
 }
 
 /**
@@ -103,8 +130,8 @@ export async function handleEnvelopeQuery(space: Space, url: URL, scope?: StatsS
   return Response.json({ records: rows, scope: describeScope(scope) });
 }
 
-export async function handleEnvelope(space: Space, recordId: string, scope?: StatsScope | null): Promise<Response> {
-  if (!await visible(space, recordId, scope)) return problem(404, "not_found", `no record ${recordId}`);
+export async function handleEnvelope(space: Space, recordId: string, scope: StatsScope | null | undefined, principal: string): Promise<Response> {
+  if (!await visible(space, recordId, scope, principal)) return problem(404, "not_found", `no record ${recordId}`);
   const env = await space.getEnvelope(recordId);
   if (!env) return problem(404, "not_found", `no record ${recordId}`);
   return Response.json(env);
@@ -203,12 +230,21 @@ export async function handleEvents(space: Space, url: URL, scope?: StatsScope | 
   });
 }
 
-export async function handleLineage(space: Space, recordId: string, scope?: StatsScope | null): Promise<Response> {
-  if (!await visible(space, recordId, scope)) return problem(404, "not_found", `no record ${recordId}`);
+export async function handleLineage(space: Space, recordId: string, scope: StatsScope | null | undefined, principal: string): Promise<Response> {
+  if (!await visible(space, recordId, scope, principal)) return problem(404, "not_found", `no record ${recordId}`);
   // Scoped like every other read. Reaching a visible record does not make its ancestors visible:
   // `put` does not check that a parent is readable, so naming a foreign id as a parent of your own
   // record would otherwise return that record's entire upstream, bodies included.
-  const lineage = await space.getLineage(recordId, undefined, scope?.createdBy);
+  //
+  // A PATTERN-scoped caller cannot use the author filter for that job (a teammate's record is what
+  // it is meant to reach), so the walk runs unfiltered and every node is tested afterwards by the
+  // same predicate a `query` would apply.
+  const lineage = await space.getLineage(
+    recordId,
+    undefined,
+    byPattern(scope) ? undefined : scope?.createdBy,
+    byPattern(scope) ? await allower(space, scope, principal) ?? undefined : undefined,
+  );
   if (!lineage.length) return problem(404, "not_found", `no record ${recordId}`);
   return Response.json({ lineage, scope: describeScope(scope) });
 }
@@ -217,17 +253,20 @@ export async function handleLineage(space: Space, recordId: string, scope?: Stat
 export async function handleChildren(
   space: Space,
   recordId: string,
-  scope?: StatsScope | null,
-  url?: URL,
+  scope: StatsScope | null | undefined,
+  url: URL | undefined,
+  principal: string,
 ): Promise<Response> {
-  if (!await visible(space, recordId, scope)) return problem(404, "not_found", `no record ${recordId}`);
+  if (!await visible(space, recordId, scope, principal)) return problem(404, "not_found", `no record ${recordId}`);
   const limitParam = Number(url?.searchParams.get("limit") ?? "100");
   const limit = Math.min(Number.isFinite(limitParam) && limitParam > 0 ? limitParam : 100, 500);
   const after = url?.searchParams.get("after") ?? undefined;
   const children = await space.getChildren(recordId, limit, after ? { after } : undefined);
   // The children are filtered too: reaching a visible record does not make everything hanging off
-  // it visible. Another agent's result on your task is still theirs.
-  const shown = scope ? children.filter((c) => visibleRec(c, scope)) : children;
+  // it visible. Another agent's result on your task is still theirs, unless a grant pattern says
+  // it is the team's, which is the question `allow` asks.
+  const allow = await allower(space, scope, principal);
+  const shown = allow ? await filterAsync(children, allow) : children;
   return Response.json({
     children: shown,
     // The cursor is the last child of the RAW page: a scoped caller whose page was filtered empty
@@ -237,25 +276,37 @@ export async function handleChildren(
   });
 }
 
-function visibleRec(rec: { kind: string; runtimeMeta: { createdBy: string } }, scope: StatsScope): boolean {
-  return (!scope.kinds || scope.kinds.includes(rec.kind)) &&
-    (!scope.createdBy || scope.createdBy.includes(rec.runtimeMeta.createdBy));
+/** `Array.filter` with an async predicate. Sequential on purpose: the predicate resolves its grant
+ *  ONCE per kind and reuses it, so running these concurrently would race that first resolution into
+ *  one registry read per record, which is the cost `readFilter` exists to avoid. */
+async function filterAsync<T>(items: T[], keep: (item: T) => Promise<boolean>): Promise<T[]> {
+  const out: T[] = [];
+  for (const item of items) if (await keep(item)) out.push(item);
+  return out;
 }
 
-export async function handleGetRecord(space: Space, recordId: string, scope?: StatsScope | null): Promise<Response> {
-  if (!await visible(space, recordId, scope)) return problem(404, "not_found", `no record ${recordId}`);
+export async function handleGetRecord(space: Space, recordId: string, scope: StatsScope | null | undefined, principal: string): Promise<Response> {
+  if (!await visible(space, recordId, scope, principal)) return problem(404, "not_found", `no record ${recordId}`);
   const rec = await space.getRecord(recordId);
   if (!rec) return problem(404, "not_found", `no record ${recordId}`);
   return Response.json(rec);
 }
 
-export async function handleGraph(space: Space, recordId: string, url: URL, scope?: StatsScope | null): Promise<Response> {
-  if (!await visible(space, recordId, scope)) return problem(404, "not_found", `no record ${recordId}`);
+export async function handleGraph(space: Space, recordId: string, url: URL, scope: StatsScope | null | undefined, principal: string): Promise<Response> {
+  if (!await visible(space, recordId, scope, principal)) return problem(404, "not_found", `no record ${recordId}`);
   const excludeParam = url.searchParams.get("exclude");
   const excludeKinds = new Set((excludeParam ?? "").split(",").map((s) => s.trim()).filter(Boolean));
   // Anything but the explicit "down" is the both-ways default, so an unknown value narrows nothing.
   const direction = url.searchParams.get("direction") === "down" ? "down" as const : "both" as const;
-  const graph = await space.getGraph(recordId, { excludeKinds, direction, createdBy: scope?.createdBy });
+  // The predicate goes INTO the walk rather than filtering its output: the walk treats an
+  // unreadable node as a WALL, so traversing through one and dropping it afterwards would still
+  // expose the shape of what hangs off it, and leave edges pointing at nodes the answer omits.
+  const graph = await space.getGraph(recordId, {
+    excludeKinds,
+    direction,
+    createdBy: byPattern(scope) ? undefined : scope?.createdBy,
+    ...(byPattern(scope) ? { allow: await allower(space, scope, principal) ?? undefined } : {}),
+  });
   if (!graph.nodes.length) return problem(404, "not_found", `no record ${recordId}`);
   return Response.json({ ...graph, scope: describeScope(scope) });
 }
@@ -431,10 +482,11 @@ export async function handleDigest(space: Space, principal: string, scope?: Stat
 export async function handleThread(
   space: Space,
   recordId: string,
-  scope?: StatsScope | null,
+  scope: StatsScope | null | undefined,
+  principal: string,
 ): Promise<Response> {
-  if (!await visible(space, recordId, scope)) return problem(404, "not_found", `no record ${recordId}`);
-  const out = await space.thread(recordId, { createdBy: scope?.createdBy });
+  if (!await visible(space, recordId, scope, principal)) return problem(404, "not_found", `no record ${recordId}`);
+  const out = await space.thread(recordId, { createdBy: byPattern(scope) ? undefined : scope?.createdBy });
   if (out.records.length === 0) return problem(404, "not_found", `no record ${recordId}`);
   return Response.json({
     ...out,

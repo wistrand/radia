@@ -268,6 +268,14 @@ Deno.test("[exchange] a person's login does not overwrite the operator credentia
     saveLogin(base, { principal: "human:bob", token: "bob-run", definitionToken: "bob-def", mintedAt: new Date(0).toISOString() });
     assertEquals(storedLogin(base)?.principal, "human:bob");
     assertEquals(resolveToken(base), "operator-token");
+
+    // AN EMPTY VARIABLE IS AN ABSENT ONE. Harness configs and wrapper scripts export every name
+    // they know about, empty ones included, and `??` would hand `""` over as a credential: the
+    // stored one is never consulted and every request 401s with nothing naming the cause.
+    saveCredential(base, { token: "operator-token", definitionToken: "stored-def", mintedAt: new Date(0).toISOString() });
+    Deno.env.set("RADIA_DEFINITION_TOKEN", "");
+    assertEquals(resolveDefinitionToken(base), "stored-def", "an empty override must not shadow the stored durable half");
+    Deno.env.delete("RADIA_DEFINITION_TOKEN");
   } finally {
     if (previous === undefined) Deno.env.delete("RADIA_CREDENTIALS");
     else Deno.env.set("RADIA_CREDENTIALS", previous);

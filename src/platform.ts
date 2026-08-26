@@ -47,6 +47,7 @@ export interface PlatformBackend {
   args(): string[];
   exit(code: number): never;
   pid(): number;
+  execPath(): string;
   env(name: string): string | undefined;
   osName(): string;
   readTextFile(path: string | URL): string | undefined;
@@ -79,6 +80,7 @@ const denoBackend: PlatformBackend = {
   args: () => Deno.args,
   exit: (code) => Deno.exit(code),
   pid: () => Deno.pid,
+  execPath: () => Deno.execPath(),
   env: (name) => {
     try {
       return Deno.env.get(name);
@@ -247,6 +249,13 @@ export function exit(code: number): never {
  *  to address one: nothing in `src/` signals another process. */
 export function pid(): number {
   return backend.pid();
+}
+
+/** This process's own executable, ABSOLUTE. Used only to write a config file some OTHER program
+ *  will run (`radia team`'s MCP block): a bare `radia` there depends on the reader's PATH, which
+ *  is the one thing a generated config cannot check. Never used to re-exec. */
+export function execPath(): string {
+  return backend.execPath();
 }
 
 /** An environment variable, or undefined (including when the permission is not granted), so a

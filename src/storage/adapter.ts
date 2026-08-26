@@ -170,6 +170,11 @@ export interface StatsScope {
   /** Descriptive only: kinds whose READS are not narrowed, so a query on them returns more than
    *  these counts. Never used as a filter; see the note above. */
   alsoReadable?: string[];
+  /** Descriptive only: kinds this caller reads by GRANT PATTERN rather than by authorship. Their
+   *  per-record ops reads work; the aggregates here do not cover them, because a count over the
+   *  pushdown pre-filter would over-report (the oracle, not SQL, is what decides a match). Never
+   *  used as a filter: naming a kind here must never widen what is counted. */
+  patternScoped?: string[];
 }
 
 /**

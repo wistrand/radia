@@ -38,6 +38,8 @@ export const VALUELESS = new Set([
   "--stop",
   "--oldest",
   "--prune",
+  "--rotate",
+  "--observe",
 ]);
 
 /** The value of `--name`, or undefined. First occurrence wins, not last, which keeps

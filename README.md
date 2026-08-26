@@ -228,6 +228,44 @@ which tree an agent may touch at all. See
 { "mcpServers": { "radia": { "command": "radia", "args": ["mcp"] } } }
 ```
 
+For several harnesses sharing one space, `radia team` writes that block for you and gives each one
+an identity of its own:
+
+```bash
+deno task compile                # ./radia, the binary the generated config will name
+radia dev --db &                 # a space whose records outlive the process
+radia team add claude codex      # one durable principal each, plus the config to paste
+```
+
+Run the printed `claude mcp add … --scope local …` line **in each agent's own project directory**:
+the local scope keys the config to that directory, which is what gives each agent its own
+principal. The block names the absolute path of the binary that wrote it, so it works from any
+project; running `team add` from source instead says so, and points at `deno task compile`.
+
+Each member is an `agent_definition`, not a session: a run token dies at the 12h ceiling, so
+attribution resting on one lasts a day, while every run a definition mints resolves back to the
+same `agent:` name for as long as the space exists. Give each SESSION its own member
+(`radia team add claude-a claude-b`), because one credential in two windows is one principal:
+nothing tells their work apart, and stopping one stops both. `radia team` lists who holds what,
+`radia team remove` revokes and stops the live runs, and `radia get <id>` names the agent behind a
+record's run.
+
+The members share `task` (claimable, so a lease is what stops two agents doing the same work twice)
+and `note` (a mailbox by `to`, a thread by `topic`).
+
+**Teams are isolated by default.** `--team alpha` scopes every grant with `pattern: {team: "alpha"}`,
+so a write carrying another team's label, or no label at all, is refused at the write, and a read
+returns that team's records without hinting there were others. Repeat `--team` for a member that
+crosses. `radia team` lists who reaches which team.
+
+Nothing has to remember the label: the MCP adapter fills it in from the grant, after the space
+refuses a write for scope rather than by stamping every write up front. A member of several teams
+is asked which one, because guessing would file the work in the wrong team.
+
+The cost is the ops plane: `space_get`, `space_lineage`, `space_children`, `space_stats` and
+`space_events` need the `observe` power, which is unscoped and so reads every team. `--observe`
+grants it and says what it costs. See [extensions/ts/team.ts](extensions/ts/team.ts).
+
 The adapter holds the credential and the fenced lease itself: `space_take` hands the model an
 opaque `claimId`, and the lease is renewed at lease/3 in the background, so a model that spends
 minutes thinking keeps its claim without ever seeing (or being able to leak) a token or a lease.

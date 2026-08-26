@@ -192,7 +192,7 @@ registries to newest-per-key, and offboarding a player or an NPC as `radia runs 
 | No `$ne`, `$nin`, `$not`, `$prefix`, `$regex`     | `src/core/matching.ts`. "Everyone in the room except me" is not expressible; filter client-side or model positively. |
 | `readOne(pattern)` matches BODIES, not ids        | `sdk/ts/client.ts`. Every entity carries its identity in its own body. |
 | Record bodies have no erasure path                | Player prose is user content. Declare `defaultRetentionSeconds` on `command`/`event` or the world is permanent. |
-| Ops plane is all-or-nothing                       | Console deep links work for an operator, or a space started with `--observe`. |
+| Ops plane has no per-move tier                     | Three tiers now (`observe` / self / grant PATTERN, architecture-ops-tiers.md). A player's grants are world-scoped, so the pattern tier covers per-record reads; a per-ROOM scope is still not expressible, for the same reason fog of war is not. |
 | Browser connection budget                         | Six per origin, shared across tabs. One stream maximum.                |
 | Registry growth                                   | `contentKey` on `presence`/`fact`/`room` is what bounds a per-move log. |
 

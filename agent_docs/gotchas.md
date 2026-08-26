@@ -1080,6 +1080,21 @@ on a space with 500 live ones and a stuck one. Fixed 2026-08-21 by pushing both 
   answered `token_expired` to every `space_*` call for the rest of the session. Credential repair
   cannot span processes: delete the handoff rather than fixing it.
 
+**An empty environment variable is an ABSENT one; `??` keeps it.** Harness configs and wrapper
+scripts export every name they know about, empty ones included. `env("RADIA_TOKEN") ??
+env("RADIA_DEFINITION_TOKEN")` yields `""` for an exported `RADIA_TOKEN=`, which then reads as "an
+override was chosen" for one branch and "nothing was set" for the next: the definition token beside
+it was discarded and `radia mcp` came up as the observer, which cannot coordinate. Use `||`.
+`src/credentials.ts` `resolveDefinitionToken`, `src/surfaces/mcp/server.ts`; guard in
+`test/exchange.test.ts`.
+
+**A second `agent_definition` for one agent is not a rotation, and looks exactly like one.** Both
+tokens keep minting, while `revokeDefinition` reaches only the NEWEST record
+(`Space.definitionRecord` reads the newest 5 desc and takes the first with a `tokenHash`). So
+`radia team add` refuses an existing agent and names `--rotate`, which revokes before it creates.
+`extensions/ts/team.ts` `definitionState`; the hazard is asserted, not just commented, in
+`test/team.test.ts` (the shadowed token must still mint, or the refusal could be dropped).
+
 ### Grants, scopes and narrowed answers
 
 **An identical live re-put of an uncompactable registry is ABSORBED, not written.** `grant`,
@@ -1425,6 +1440,32 @@ fleet appends one record per entry forever. Measured: 40 re-puts sailed past a c
   each check ANDs another constraint on, so the scope only ever shrinks and a re-widened grant never
   takes effect. `Watch.request` keeps the client's pattern for this reason. The bug is invisible
   while grants only get revoked, and appears the first time one is restored.
+
+**Never pattern-scope a grant on a kind whose bodies lack the field.** `radia team` scopes a
+member's grants with `pattern: {team: …}`, and adding `kind_def: query` to that same set made
+`space_kinds` fail exactly as its absence did: a `kind_def` body carries no `team`, so the pattern
+matches nothing and refuses every declaration. The team pattern belongs on kinds that carry data,
+never on the ones that DESCRIBE them; discovery grants are a separate, deliberately unscoped set
+(`DISCOVERY_GRANTS`). Found on a real harness, whose opening call is `space_kinds`.
+
+**A body must carry the field its grant pattern names, and nothing server-side will add it.** A
+pattern-scoped grant bounds writes as well as reads (`bodyMatchesGrant`), and a body is the
+client's claim, so the runtime supplies nothing: a write missing the field is refused exactly like
+one carrying another value. That is what makes the scoping total (there is no unlabelled lane), and
+it is why the MCP adapter fills the field in CLIENT-side. Fill it from a REFUSAL, never up front:
+`EffectivePermissions.kinds[].patterns` unions the patterns of every grant on a kind whatever
+operation it permits, so pre-stamping adds a label to a record written under an UNSCOPED put grant
+and narrows who may read it afterwards. `src/surfaces/mcp/scope.ts`.
+
+**`radia compartment` does not audit team isolation, and reads as though it does.** It answers a
+KIND-compartment question ("who holds both sides"), so with `--inside task,note` it reports every
+team member as an unexpected crosser for reading `task` and writing `artifact`. The team audit is
+`radia team`, which reports unscoped members, crossers and `observe` holders.
+
+**An unscoped grant is INVISIBLE in `patterns`, so a mixed set cannot be detected from it.** A
+principal holding a scoped `query` beside an unscoped `put` on one kind shows only the scoped
+pattern, and `radia team` therefore reports it as scoped. The clear case (no pattern at all) is
+caught and reported as `TEAMS: ANY`. Same limit applies to reading `radia permissions`.
 
 ### Artifacts, blobs and erasure
 
@@ -1958,6 +1999,28 @@ only hang again.
   `Unexpected token 'I'` that hides the real fault. `makeHandler` wraps the dispatch in a
   catch-all (`src/server/http.ts`): a `RadiaError` maps by `statusFor`, anything else is a logged
   500 problem, so clients always get parseable JSON.
+
+**A generated harness config must name a real file, and the RIGHT one.** `"command": "radia"`
+works only if the harness's PATH has it, which is the one thing a generated config cannot check;
+the failure is a server the harness reports as failed with no actionable reason. Naming a `radia`
+FOUND ON PATH is the mirror mistake and was tried: it can be a different build than the one writing
+the block, and a stale install speaks an older wire contract while still starting cleanly. The rule
+is the binary that WROTE the config, absolute (`src/surfaces/mcp/config.ts`). Running from source
+has none, so it says so rather than emitting a `deno run <checkout>/src/main.ts` line that pins
+another project to a path that can move.
+
+**`--scope local` is spelled out in the printed `claude mcp add` line, not left to the default.**
+The `user` scope writes one config for every project, so two agents meant to be two principals
+become one: their work is indistinguishable by author and stopping one stops both. Codex has no
+per-directory config at all (`~/.codex/config.toml` is user-level), so per-session principals there
+rest on separate server names or on environment inheritance, neither of which is enforcement.
+
+**A run id is not an identity, and the console rendered it as one.** `created_by` names a RUN,
+which dies at the 12h ceiling, so a record's author becomes unresolvable within a day. The console
+now resolves it (`agentOf`, a NARROW read of the newest `agent_run` for that one run, memoized per
+page and FAIL-SOFT, since an ordinary session holds no `agent_run: query` grant and a decoration
+must not blank the field it decorates). `radia get` prints the same line. For attribution that
+lasts, the unit is the AGENT: a run is the session.
 
 ### Agent- and model-facing design
 

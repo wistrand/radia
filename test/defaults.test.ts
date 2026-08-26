@@ -33,7 +33,9 @@ Deno.test("dev: an observer credential is provisioned, and the MCP adapter defau
   assert(/operations: \["observe"\]/.test(creds), "…or the observer no longer gets exactly the observe power");
   const mcp = await Deno.readTextFile(new URL("../src/surfaces/mcp/server.ts", import.meta.url));
   assert(/storedObserver\(base\)/.test(mcp), "the MCP adapter no longer reads the observer credential");
-  assert(/definitionToken: observer/.test(mcp), "…or no longer prefers it as its default auth");
+  // The observer must WIN over a per-agent credential, or an adapter with `RADIA_DEFINITION_TOKEN`
+  // set for one agent would silently act as it for every space on the machine.
+  assert(/definitionToken = observer \?\? resolveDefinitionToken/.test(mcp), "…or no longer prefers it as its default auth");
   const cli = await Deno.readTextFile(new URL("../src/surfaces/cli.ts", import.meta.url));
   assert(/OBSERVER_VERBS/.test(cli), "the CLI's read-only verbs no longer ride the observer");
 });

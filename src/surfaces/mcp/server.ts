@@ -21,12 +21,14 @@
 // Transport: newline-delimited JSON-RPC 2.0 on stdin/stdout. stdout carries protocol frames
 // ONLY. Every log line goes to stderr, or the harness sees a corrupt stream.
 
-import { RadiaClient, RadiaClientError } from "../../../sdk/ts/client.ts";
-import { defaultBase, resolveToken, storedObserver } from "../../credentials.ts";
+import { awaitResult, RadiaClient, RadiaClientError } from "../../../sdk/ts/client.ts";
+import { defaultBase, resolveDefinitionToken, resolveToken, saveSession, storedObserver, storedSession } from "../../credentials.ts";
 import { env } from "../../platform.ts";
 import type { Lease, RadiaRecord } from "../../storage/adapter.ts";
 import type { Pattern } from "../../core/matching.ts";
 import { TOOLS } from "./tools.ts";
+import { ScopeFiller } from "./scope.ts";
+import { ARTIFACT } from "../../../sdk/ts/wire.ts";
 import { flag } from "../../flags.ts";
 import { stdin, writeStderr, writeStdout } from "../../platform.ts";
 import { VERSION } from "../../version.ts";
@@ -56,27 +58,85 @@ export async function runMcp(argv: string[]): Promise<void> {
   // coordinate ungranted, or destroy anything. `RADIA_TOKEN` stays the explicit override for a
   // caller that WANTS a differently-scoped session (a login, a worker run, or the operator);
   // the operator token is only the fallback for a space provisioned before observers existed.
-  const explicit = env("RADIA_TOKEN");
+  //
+  // AN EMPTY VARIABLE IS AN ABSENT ONE. Harness configs and wrapper scripts routinely set every
+  // variable they know about, empty ones included; `??` keeps `""`, which then reads as "the
+  // caller chose an override" for one branch and as "nothing was set" for the next, so an
+  // exported `RADIA_TOKEN=` silently discarded the `RADIA_DEFINITION_TOKEN` beside it and the
+  // adapter came up as the observer, which cannot coordinate.
+  const set = (name: string) => env(name) || undefined;
+  const explicit = set("RADIA_TOKEN") ?? set("RADIA_DEFINITION_TOKEN");
   const observer = explicit ? undefined : storedObserver(base)?.definitionToken;
-  const token = observer ? undefined : resolveToken(base);
-  // `reuseRun`: one adapter process holding one definition token is exactly the case reuse is for,
-  // and the observer credential it defaults to is the one a model exchanges all day.
-  const client = new RadiaClient(base, observer ? { definitionToken: observer, reuseRun: true } : token ? { token } : {});
+  // THE DURABLE HALF, for an adapter given an identity of its own. Without it a per-agent session
+  // is a run token that stops working in 15 minutes and cannot mint another, which is exactly the
+  // failure `ClientAuth.definitionToken` exists to end — and it was reachable only by the observer,
+  // so the one credential that could not coordinate was the only one that survived the day.
+  const definitionToken = observer ?? resolveDefinitionToken(base);
+  const token = definitionToken ? undefined : resolveToken(base);
+  // A NAMED SESSION keeps its principal across restarts. A run IS the principal in `created_by`,
+  // so "the same session" means the same RUN, and the name is SUPPLIED rather than derived: no
+  // harness exposes a session identity portably, and guessing one from a pid or a cwd would give a
+  // different principal every restart, which is the thing this exists to prevent.
+  //
+  // The stored run is handed over as the bearer half WITH the durable half behind it, so the
+  // session resumes on the same run and still recovers on its own once that run passes its 12h
+  // ceiling. Without a name, each start is its own run (below).
+  const session = flag(argv, "--session") ?? env("RADIA_SESSION");
+  const resumed = session && definitionToken ? storedSession(base, session)?.token : undefined;
+
+  // `reuseRun` FOR THE OBSERVER ONLY. It exists so a short-lived reader does not append an
+  // `agent_run` per invocation (plan-startup-ergonomics.md item 4), and the observer is that.
+  //
+  // A PER-AGENT adapter must NOT reuse: two sessions of the same agent are two processes holding
+  // one definition token, and sharing a run would make their records indistinguishable by author
+  // and `radia runs --stop` end both. Its own run per session is what makes a session the unit you
+  // can attribute work to and stop. CLAUDE.md states the rule on `ClientAuth.reuseRun`.
+  const client = new RadiaClient(
+    base,
+    definitionToken
+      ? { definitionToken, ...(resumed ? { token: resumed } : {}), ...(observer ? { reuseRun: true } : {}) }
+      : token
+      ? { token }
+      : {},
+  );
+
+  // Resolve the credential NOW and remember whichever run we ended on, which is not necessarily
+  // `resumed`: a run past its ceiling is replaced by the exchange, and storing the value we were
+  // built with would hand the next start a token that is already dead (`bearerToken` exists for
+  // exactly this). Best effort: a session that cannot be remembered still works, it just starts
+  // fresh next time, and saying so beats failing to start.
+  if (session && definitionToken) {
+    try {
+      await client.ensureCredential();
+      const now = client.bearerToken;
+      if (now) saveSession(base, session, { token: now, definitionToken, mintedAt: new Date().toISOString() });
+    } catch { /* the space is unreachable; the tool calls below will say so */ }
+  }
   const claims = new Map<string, Claim>();
+  // Fills in the body fields the caller's own grants require, learned from a refusal (scope.ts).
+  const scope = new ScopeFiller(client);
 
   log(`radia mcp: space=${base} auth=${
     observer
       ? "observer (ops reads; coordination needs grants — see radia permissions agent:local-observer)"
+      : definitionToken
+      ? "definition token (renews itself; this adapter acts as its own agent)"
       : token
-      ? "bearer token"
+      ? "bearer token (expires; set RADIA_DEFINITION_TOKEN for a session that renews)"
       : "none (open local space)"
+  }${
+    session
+      ? ` session=${session} (${resumed ? "resumed its run" : "new run; restarts reuse it"})`
+      : definitionToken && !observer
+      ? " session=none (each start is a new run; pass --session <name> to keep one across restarts)"
+      : ""
   }`);
   if (!observer && !token) {
     log("radia mcp: no credential found. Start `radia dev` (auto-provisions one) or set RADIA_TOKEN.");
   }
 
   for await (const msg of frames(stdin())) {
-    const res = await handle(msg, client, claims, base);
+    const res = await handle(msg, client, claims, base, scope);
     if (res) write(res);
   }
   // Stdin closed: the harness is gone. Release anything still held rather than making the space
@@ -101,6 +161,7 @@ async function handle(
   client: RadiaClient,
   claims: Map<string, Claim>,
   base: string,
+  scope: ScopeFiller,
 ): Promise<unknown | null> {
   const { id, method } = req;
   // A notification (no id) never gets a reply, per JSON-RPC.
@@ -136,7 +197,7 @@ async function handle(
       const name = String(req.params?.name ?? "");
       const args = (req.params?.arguments ?? {}) as Record<string, unknown>;
       try {
-        const text = await call(name, args, client, claims);
+        const text = await call(name, args, client, claims, scope);
         return reply(id, { content: [{ type: "text", text }] });
       } catch (e) {
         // Tool-level failures are results with isError, not JSON-RPC errors, so the model should
@@ -168,6 +229,7 @@ async function call(
   a: Record<string, unknown>,
   client: RadiaClient,
   claims: Map<string, Claim>,
+  scope: ScopeFiller,
 ): Promise<string> {
   switch (name) {
     case "space_health":
@@ -183,11 +245,16 @@ async function call(
       return pretty(await client.diagnostics());
 
     case "space_put": {
-      const r = await client.put({
-        kind: str(a, "kind"),
-        body: obj(a, "body"),
-        parentIds: Array.isArray(a.parentIds) ? a.parentIds as string[] : undefined,
-      }, a.idempotencyKey ? String(a.idempotencyKey) : undefined);
+      const kind = str(a, "kind");
+      // The body may need fields the caller's own GRANT requires (a team label, say). Filled in
+      // only after the runtime refuses the write for scope, so a put that was already correct is
+      // sent exactly as the model wrote it. See scope.ts.
+      const r = await scope.fill(kind, (extra) =>
+        client.put({
+          kind,
+          body: { ...extra, ...obj(a, "body") },
+          parentIds: Array.isArray(a.parentIds) ? a.parentIds as string[] : undefined,
+        }, a.idempotencyKey ? String(a.idempotencyKey) : undefined));
       return pretty(r);
     }
 
@@ -216,6 +283,102 @@ async function call(
       // The page, not the bare array: it carries the event-GC truncation annotation
       // (logBeginsAfter/sweptBefore) and nextAfter, which the model needs to page honestly.
       return pretty(await client.getEventsPage(a.after ? String(a.after) : "0", num(a, "limit") ?? 50));
+
+    case "space_watch": {
+      // BOUNDED, because MCP is request/response: a tool call has to return. So this is "wait up
+      // to N seconds", never a subscription, and a timeout is an ordinary outcome the model is
+      // told about rather than an error it has to interpret.
+      //
+      // RECONCILE FIRST is what makes it useful rather than surprising: `awaitResult` reads before
+      // it waits, so work that is already sitting there comes back immediately. An agent asking
+      // "anything for me?" and an agent asking "tell me when" call the same tool.
+      //
+      // POLLED, not a stream, and deliberately: `sdk/ts/await.ts` states the reason (a watch per
+      // outstanding call is a stream per call), and one adapter may have several waits open.
+      const seconds = Math.min(Math.max(num(a, "timeoutSeconds") ?? 30, 1), 120);
+      const out = await awaitResult(client, pat(a), { timeoutMs: seconds * 1000, pollMs: 500 });
+      if (out.status !== "ok") {
+        return pretty({
+          found: false,
+          waitedSeconds: seconds,
+          note: "nothing matched in time. This is not an error: no agent has written one yet. " +
+            "Wait again, widen the match, or do something else.",
+        });
+      }
+      return pretty({
+        found: true,
+        record: out.record,
+        note: "NOT claimed. Another agent can still take this. Call space_take with the same " +
+          "pattern to claim it, which is what stops two agents doing the same work.",
+      });
+    }
+
+    case "space_put_artifact": {
+      // TEXT is the primary input, because text is what a model can produce. `base64` exists for
+      // the binary a tool might hand it, and one of the two is required: an artifact with no bytes
+      // is a record, and `space_put` already writes those.
+      const text = typeof a.text === "string" ? a.text : undefined;
+      const b64 = typeof a.base64 === "string" ? a.base64 : undefined;
+      if (text === undefined && b64 === undefined) throw new Error("space_put_artifact needs `text` or `base64`");
+      if (text !== undefined && b64 !== undefined) throw new Error("pass `text` or `base64`, not both");
+      const bytes = text !== undefined ? new TextEncoder().encode(text) : decodeBase64(b64!);
+      const meta: Record<string, string | number | boolean | null> = {};
+      for (const [k, v] of Object.entries((a.meta ?? {}) as Record<string, unknown>)) {
+        // Scalars only: `meta` travels in a HEADER, so an object here would be silently dropped or
+        // break the request. Refused by name rather than coerced.
+        if (v !== null && typeof v === "object") throw new Error(`meta.${k} must be a scalar; it travels in a header`);
+        meta[k] = v as string | number | boolean | null;
+      }
+      // `meta` merges into the artifact's RECORD BODY, which is what a pattern-scoped artifact
+      // grant matches, so it needs the same fill as any other write. Without it a scoped member
+      // can coordinate but cannot store bytes, which is the half of a compartment that leaks.
+      const r = await scope.fill(ARTIFACT, (extra) =>
+        client.putArtifact(bytes, {
+          mediaType: typeof a.mediaType === "string" ? a.mediaType : (text !== undefined ? "text/plain" : "application/octet-stream"),
+          ...(typeof a.filename === "string" ? { filename: a.filename } : {}),
+          ...(Array.isArray(a.parentIds) ? { parentIds: a.parentIds.map(String) } : {}),
+          ...(Object.keys(meta).length + Object.keys(extra).length > 0 ? { meta: { ...extra, ...meta } } : {}),
+          ...(typeof a.idempotencyKey === "string" ? { idempotencyKey: a.idempotencyKey } : {}),
+        }));
+      return pretty({
+        ...r,
+        note: "Another agent reads this with space_get_artifact, or finds it with space_query on " +
+          "kind 'artifact' if you set meta.",
+      });
+    }
+
+    case "space_artifact_meta": {
+      const m = await client.artifactMeta(str(a, "recordId"));
+      return m ? pretty(m) : "no artifact with that record id (or no grant to read it)";
+    }
+
+    case "space_get_artifact": {
+      const id = str(a, "recordId");
+      const m = await client.artifactMeta(id);
+      if (!m) return "no artifact with that record id (or no grant to read it)";
+      // REFUSED, never truncated. A truncated file presented as the file is the bounded-read bug
+      // wearing a filesystem, and a model cannot tell the difference from inside a tool result.
+      if (m.size > MAX_ARTIFACT_READ) {
+        return pretty({
+          ...m,
+          read: false,
+          note: `${m.size} bytes is past the ${MAX_ARTIFACT_READ}-byte limit for a tool result. ` +
+            "Not truncated: part of a file read as the whole one is worse than not reading it.",
+        });
+      }
+      // BINARY IS NOT INLINED. base64 in a context window is tokens a model cannot act on, and
+      // saying so with the size is more useful than spending the window proving it.
+      if (!isTextMedia(m.mediaType)) {
+        return pretty({
+          ...m,
+          read: false,
+          note: "binary content is not inlined. Use the digest to compare it, or a client that can " +
+            "download it; a model cannot act on base64 in its context.",
+        });
+      }
+      const bytes = await client.getArtifact(id);
+      return pretty({ ...m, read: true, text: new TextDecoder().decode(bytes) });
+    }
 
     case "space_take": {
       const leaseSeconds = num(a, "leaseSeconds") ?? 60;
@@ -255,9 +418,13 @@ async function call(
     case "space_ack": {
       const c = takeClaim(claims, a);
       const kind = a.resultKind ? String(a.resultKind) : undefined;
-      const result = kind ? { kind, body: (a.resultBody ?? {}) as Record<string, unknown> } : undefined;
+      // The RESULT body is a write like any other and needs the same fill: acking a scoped task
+      // with an unlabelled note is refused, and that refusal would land after the work was done.
       // Per-attempt idempotency key: a retried ack after a dropped response is not double work.
-      const r = await client.ack(c.lease, result, `ack:${c.record.id}:${c.lease.epoch}`);
+      const r = kind
+        ? await scope.fill(kind, (extra) =>
+          client.ack(c.lease, { kind, body: { ...extra, ...(a.resultBody ?? {}) as Record<string, unknown> } }, `ack:${c.record.id}:${c.lease.epoch}`))
+        : await client.ack(c.lease, undefined, `ack:${c.record.id}:${c.lease.epoch}`);
       return pretty(r);
     }
 
@@ -339,6 +506,31 @@ function pat(a: Record<string, unknown>): Pattern {
     // here, because this rebuilds the pattern and the model's key never crosses the socket.
     orderBy: (a.orderBy ?? a.order_by ?? undefined) as Pattern["orderBy"],
   };
+}
+
+/** Same cap the chat's file reads use, and for the same reason: a tool result goes into a context
+ *  window. Past it the read is REFUSED with the size, never truncated. */
+const MAX_ARTIFACT_READ = 64 * 1024;
+
+/** Can this media type go into a model's context as text? Deliberately a small allowlist: an
+ *  unknown type is treated as binary, so the failure is "you were told the size" rather than a
+ *  window full of mojibake. */
+function isTextMedia(mediaType: string): boolean {
+  const t = mediaType.split(";")[0].trim().toLowerCase();
+  return t.startsWith("text/") ||
+    t === "application/json" || t === "application/xml" || t === "application/yaml" ||
+    t.endsWith("+json") || t.endsWith("+xml") || t.endsWith("+yaml");
+}
+
+function decodeBase64(b64: string): Uint8Array {
+  try {
+    const bin = atob(b64.trim());
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  } catch {
+    throw new Error("`base64` is not valid base64");
+  }
 }
 
 function pretty(v: unknown): string {
