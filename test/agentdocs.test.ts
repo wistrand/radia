@@ -123,3 +123,42 @@ Deno.test("agent_docs: the frozen contract's own status paragraph is checked aga
     .map((e) => `info says '${e.claim}' is not implemented, but ${e.how}`);
   assertEquals(contradictions, [], "the contract's status paragraph contradicts the contract");
 });
+
+/**
+ * The status class a piece of prose asserts, or undefined when it asserts none. BUILT wins over
+ * PLANNED deliberately: every partial marker in these docs is a build ("PHASES 0-5 AND 7 BUILT",
+ * "ITEMS 1-3 BUILT"), and reading one as planned would flag work that shipped.
+ */
+function statusClass(text: string): "built" | "planned" | undefined {
+  if (/\b(BUILT|DONE)\b/i.test(text)) return "built";
+  if (/\bPLANNED\b/i.test(text)) return "planned";
+  return undefined;
+}
+
+Deno.test("agent_docs: CLAUDE.md's status marker agrees with the doc's own", async () => {
+  // The third instance of one shape, after the OpenAPI info block and a refutation that searched
+  // for a phrase. A doc's status lives in two places, and shipping edits the doc, the code, and a
+  // summary line in a fourth file that names no owner, so the summary is what goes stale: found
+  // saying PLANNED for encryption (built 2026-08-16), the substrate rename (done 2026-08-18) and
+  // registry-cost, whose OWN entry said "ITEMS 1-3 BUILT" a sentence later.
+  const claude = await Deno.readTextFile(join(ROOT, "CLAUDE.md"));
+  const bad: string[] = [];
+  for (const file of await markdownFiles()) {
+    const name = file.slice(DOCS.length + 1);
+    if (!file.startsWith(DOCS)) continue;
+    const doc = await Deno.readTextFile(file);
+    // The doc's own header, which sits at the top where an editor of that doc cannot miss it.
+    const header = doc.match(/^\*\*Status:\s*([^*]*)\*\*/m)?.[1];
+    if (!header) continue;
+    // CLAUDE.md's lead: the entry is one long line, so a whole-entry search would hit any BUILT
+    // deep in its prose. Only the segment before the first break is the claim being made.
+    const entry = claude.match(new RegExp(`\\]\\(agent_docs/${name.replace(/\./g, "\\.")}\\):\\s*([^\\n]*)`))?.[1];
+    if (!entry) continue;
+    const lead = entry.split(/[,.(:]/)[0];
+    const want = statusClass(header), got = statusClass(lead);
+    if (want && got && want !== got) {
+      bad.push(`CLAUDE.md calls ${name} '${lead.trim()}' but the doc says '${header.trim()}'`);
+    }
+  }
+  assertEquals(bad, [], "the routing file disagrees with the doc it routes to");
+});

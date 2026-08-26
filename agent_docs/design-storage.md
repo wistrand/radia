@@ -25,7 +25,9 @@ lets a space move between backends without rewriting records, and both join the 
 (the S3 columns gated on `RADIA_S3_URL`). That is what a horizontal deployment needs, since a local
 blob directory is shared with nobody. **Not implemented:**
 `single-node`/`production` deployment modes, the multi-instance cache-coherence work (see
-Scaling), envelope encryption/KMS (M2). `npm`/`pip` binary wrapping is BUILT but unpublished
+Scaling), an external KMS (M2). Envelope encryption itself is BUILT and is not waiting on one:
+`src/storage/crypto.ts` seals each blob under a per-blob DEK wrapped by a space KEK, with a keyring
+so rotation is a config change (`radia rewrap` finishes it). `npm`/`pip` binary wrapping is BUILT but unpublished
 (`deno task release`; see [architecture-surfaces.md](architecture-surfaces.md)).
 
 ## Contents

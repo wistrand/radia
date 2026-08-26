@@ -408,11 +408,14 @@ refusal proves the field is REQUIRED, so a write goes out as the model wrote it 
 one is retried filled in; the scope is then remembered per kind for the process. Ambiguity is
 ASKED about, never guessed: a member of two teams gets both names back.
 
-Known gap: the CLI still has no artifact verbs (the MCP adapter gained `space_put_artifact` /
-`space_get_artifact` / `space_artifact_meta`). Bytes are reachable from a terminal only over HTTP
-(`POST /v0/artifacts`, `GET /v0/artifacts/{id}`) or through an SDK, so "if the CLI can do it, an
-external client can too" holds in one direction only for payloads. A `radia artifact put/get` pair
-would close it.
+`radia artifact put <file|-> | get <id> [--out <path|->]` moves bytes in and out of a terminal, so
+"if the CLI can do it, an external client can too" now holds for payloads too. It had held in one
+direction only: artifacts were reachable from an SDK and from the MCP adapter, and from a shell only
+by hand-rolling `curl` with a token on the command line, which is what an agent tried and what its
+harness's own classifier refused. `put` takes the media type from the EXTENSION when not stated,
+since that is what decides whether the receiving side can render it; stdout on `get` is opt-in
+(`--out -`), because a terminal is not a file and a megabyte of JPEG written to one wedges the
+session.
 
 The CLI has the full set: `radia reclaim|dead-letter|requeue` take either a record id or `--all`
 with an envelope selector (`--stale`, `--limit`, `--drain`), so draining a backlog is one call per
