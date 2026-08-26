@@ -96,7 +96,7 @@ which is a `401` unless the space was started with `--auth open`.
 URL; a person's `radia login` sits at `<base>#login` (`storedLogin`/`saveLogin`); the OBSERVER sits
 at `<base>#observer` (`storedObserver`/`saveObserver`): an `agent:local-observer` definition token,
 mint-only and revocable, whose `ops_grant` holds `observe`, plus two metadata `query` grants on
-the definition — `agent_run` (a run principal carries no agent name; the OTLP exporter resolves
+the definition: `agent_run` (a run principal carries no agent name; the OTLP exporter resolves
 services through these records) and `kind_def`
 ([architecture-ops-tiers.md](architecture-ops-tiers.md) phase 5); and a NAMED MCP session sits at
 `<base>#session:<name>` (`storedSession`/`saveSession`), holding the run that session resumes on.
@@ -153,7 +153,7 @@ same value for everybody. The chat consumes this via `RADIA_CHAT_TOKEN`.
 
 **`radia login --sso` is the same slot filled by an IdP** ([plan-oidc.md](plan-oidc.md)): the
 RFC 8252 loopback dance against the issuer the space's health advertises, landing an ordinary
-run token in the `#login` entry — with NO definition token, deliberately. A lapsed SSO session
+run token in the `#login` entry, with NO definition token, deliberately. A lapsed SSO session
 is one browser click, not a stored secret, and deprovisioning at the IdP ends terminal access
 within one run ceiling. Everything downstream (the chat, the CLI verbs, `storedLogin`) reads it
 identically; only the renewal story differs, and `keepAlive` covers a live process to the
@@ -226,7 +226,7 @@ the wire's own near-miss refusal never sees it.
 ([extensions/ts/team.ts](../extensions/ts/team.ts)): it declares the shared kinds, mints one
 DURABLE principal per name, and prints the harness config for that agent. Two of its behaviours are
 refusals rather than conveniences. It REFUSES a second definition for an existing agent and names
-`--rotate`, because a second one is not a rotation and looks like one — both tokens keep minting
+`--rotate`, because a second one is not a rotation and looks like one: both tokens keep minting
 while `radia revoke` reaches only the newest (`Space.definitionRecord` takes the newest record's
 status). And `radia team` LISTS THE TEAM rather than every definition on the space: a real space
 carries an app's workers, its logins and its probes, and listing all of them buried the four rows
@@ -240,7 +240,7 @@ with its lease, and `ack`/`nack`/`release` accept that object back, either as an
 
 `workspaces` lists what trees exist: one line per name, with the file count, how many versions it
 has been through, and a `FORKED` marker where a name has more than one head. It is not
-`query workspace`, and the difference is the point — every VERSION is a record, so a raw query
+`query workspace`, and the difference is the point: every VERSION is a record, so a raw query
 returns three rows for a tree saved three times. The projection is latest-wins-minus-retired, the
 same rule every registry here uses, and it reports `complete: false` rather than printing a prefix
 that reads as a population.
@@ -352,7 +352,19 @@ Tool descriptions in `tools.ts` are the documentation. A model learns *how* to u
 its description, never from a system prompt that teaches the space. Kinds are discovered via
 `space_kinds`, so a kind declared after startup is immediately usable.
 
-**A NAMED SESSION keeps its principal across restarts.** `--session <name>` (or `RADIA_SESSION`)
+**Both protocol eras are served.** MCP 2026-07-28 made the protocol STATELESS: no `initialize`
+handshake, per-request `_meta` carrying `io.modelcontextprotocol/protocolVersion` and
+`clientCapabilities`, and `server/discover` for capabilities. The adapter answers `server/discover`
+AND keeps `initialize`, which the spec's compatibility matrix calls dual-era and is the only
+posture that works for every client era. Keeping the handshake is not inertia: the reference SDK's
+client defaults to the 2025 handshake "byte for byte", probing is opt-in, and no deprecation date
+exists on either side, so only a client that deliberately pins modern would ever fail against a
+legacy-only server. A version we do not speak is refused with `UnsupportedProtocolVersionError`
+(-32022) NAMING what we do speak, so the client can retry rather than fail blind. Every result
+carries `resultType: "complete"`, which is required in the modern era and which older clients
+ignore (an absent one means exactly that).
+
+**A NAMED SESSION keeps its principal across restarts, and now also its CLAIMS.** `--session <name>` (or `RADIA_SESSION`)
 stores the run under a `#session:` credential entry and resumes it, with the durable half behind it
 so the session still recovers once that run passes its 12h ceiling. The name is SUPPLIED, not
 derived: no harness exposes a session identity portably, and guessing one from a pid or a cwd gives

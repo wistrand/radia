@@ -832,6 +832,19 @@ export class RadiaClient {
     return r.records;
   }
 
+  /** ONE record's envelope: its claim state and, when leased, the fenced lease that holds it.
+   *  Separate from `queryEnvelopes` because that one is an AGGREGATE and is narrowed by ops scope,
+   *  while this is a per-record read the pattern tier serves (`Space.readFilter`). Null on 404,
+   *  which for a scoped caller also covers "not yours to see". */
+  async getEnvelope(recordId: string): Promise<Envelope | null> {
+    try {
+      return await this.req("GET", `/v0/ops/records/${encodeURIComponent(recordId)}/envelope`);
+    } catch (e) {
+      if (e instanceof RadiaClientError && e.status === 404) return null;
+      throw e;
+    }
+  }
+
   async getRecord<T = unknown>(recordId: string): Promise<RadiaRecord<T> | null> {
     try {
       return await this.req("GET", `/v0/ops/records/${encodeURIComponent(recordId)}`);

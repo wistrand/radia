@@ -571,3 +571,48 @@ Deno.test("[team] the shared kinds teach the conventions two agents otherwise in
     await sp.close();
   }
 });
+
+Deno.test("[mcp] the adapter answers both protocol eras, and names what it speaks", async () => {
+  const src = await Deno.readTextFile(new URL("../src/surfaces/mcp/server.ts", import.meta.url));
+
+  // MCP 2026-07-28 made the protocol stateless: no handshake, per-request `_meta`. A server MUST
+  // implement `server/discover`, which is also the probe a dual-era client uses on stdio to decide
+  // whether we are modern before falling back.
+  assert(src.includes('case "server/discover"'), "the modern era has no discovery method");
+  // ...and `initialize` STAYS. The SDK's own client defaults to the 2025 handshake "byte for byte"
+  // and no deprecation date exists on either side, so dropping it would break every harness in use
+  // to satisfy nobody. The compatibility matrix calls a server that answers both dual-era.
+  assert(src.includes('case "initialize"'), "the legacy handshake was dropped; today's clients use it");
+
+  // A version we do not speak is refused BY NAME, so a client can retry with a mutually supported
+  // one rather than failing blind.
+  assert(src.includes("-32022"), "an unknown protocol version is not refused with UnsupportedProtocolVersionError");
+  assert(src.includes('"2026-07-28"'), "the modern revision is not in the supported set");
+
+  // `resultType` is REQUIRED on every result in the modern era and defaults to "complete" when
+  // absent, so stamping it is safe for every older client too.
+  assert(/resultType: "complete"/.test(src), "results carry no resultType");
+});
+
+Deno.test("[mcp] a claim outlives the process that made it, but only for a named session", async () => {
+  const src = await Deno.readTextFile(new URL("../src/surfaces/mcp/server.ts", import.meta.url));
+
+  // THE STATELESSNESS REQUIREMENT, applied to the one piece of per-connection state that mattered:
+  // a claimId only the minting process could settle. The spec says a stdio process "is not a
+  // conversation or session" and a server "SHOULD NOT require that a client reuse the same
+  // connection or process". Nothing is stored to fix it: the claimId embeds the record id and the
+  // envelope already carries every field of a Lease, so the lease is REDERIVED.
+  assert(src.includes("async function recoverClaim"), "a claim cannot be recovered by a later process");
+  assert(src.includes("getEnvelope"), "recovery does not read the lease back from the space");
+
+  // It is gated on the RUN matching, and that is not a formality: a settle is owner-bound
+  // (`warnOwnerMismatch` answers `lease_lost` to anyone else), so only a process that came back as
+  // the same run can settle. `--session` is what keeps a run across restarts, which makes the flag
+  // load-bearing for conformance rather than only for attribution.
+  assert(src.includes("env.leaseOwner !== me"), "recovery does not check the lease is ours");
+
+  // And the release-on-exit is now conditional for the same reason. Releasing an anonymous
+  // session's claims is right (nothing later can settle them); releasing a NAMED session's claims
+  // hands a teammate work that is already half done.
+  assert(/if \(!session\) await client\.release/.test(src), "a named session's claims are still released on exit");
+});

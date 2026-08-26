@@ -91,25 +91,29 @@ For work that must be picked up with no session alive at all, the answer is a wo
 (the SDK's event-driven loop, which holds a real watch stream), not a harness on MCP.
 
 **Do not record this as "MCP cannot push", which is false and would stop the next person looking.**
-MCP is bidirectional JSON-RPC: a server may send notifications (`notifications/message`,
-`.../progress`, `.../resources/updated`, the `list_changed` family) and may even make REQUESTS of
-the client (`sampling/createMessage`, `elicitation/create`). Three separate things stack up to the
-limit, and only the first is ours:
+As of the 2026-07-28 revision there is a NAMED mechanism: `subscriptions/listen`, a client-initiated
+long-lived request whose response is an open stream of notifications, and it works on stdio (every
+frame carries `io.modelcontextprotocol/subscriptionId` so several subscriptions demultiplex on the
+one channel). Three things stack up to the limit, and only the first is ours:
 
 1. **This adapter sends nothing.** `write()` is a general frame writer and only reply paths call
    it; we advertise `capabilities: {tools: {listChanged: false}}`. That is a choice, not a wall.
-2. **A notification reaches the HARNESS, not the model.** There is no turn running to deliver it
-   into, and a harness that started one on an unsolicited server frame would be surprising.
-   Whether any given harness does is its own behaviour, and not something this repo has tested.
-3. **`sampling/createMessage` is the affordance that would actually drive model work**, and it is
-   the wrong shape here anyway: it borrows the CLIENT's model and context to answer one question,
-   which is not the agent acting in its own session with its own tools and its own principal.
+2. **The notification filter is a CLOSED set**: `toolsListChanged`, `promptsListChanged`,
+   `resourcesListChanged`, and `resourceSubscriptions` (resource URIs). There is no arbitrary
+   domain event, so pushing "a note arrived for you" means exposing a mailbox as a RESOURCE and
+   letting `notifications/resources/updated` carry it. We expose no resources at all today.
+3. **A notification reaches the HARNESS, not the model.** Whether any harness turns one into a
+   turn is its own behaviour and is not something this repo has tested.
 
-So the honest form is: nothing pushes work into an agent TODAY, because this adapter emits no
-frames and the delivery path past the harness is untested. Closing it is a real project (emit a
-notification on a matching write, then find out what a harness does with one), not a protocol
-impossibility. And it matters less than it looks, because the subagent loop above already covers
-the case a running session cares about.
+`sampling/createMessage` used to be listed here as the affordance that would drive model work.
+**Sampling is DEPRECATED** in 2026-07-28 (with Roots and Logging, on a twelve-month support window),
+so do not build on it. Mid-flight input is now MRTR (`resultType: "input_required"`) or the Tasks
+extension's `inputRequests`.
+
+So the honest form is: nothing pushes work into an agent TODAY, because this adapter emits no frames
+and exposes no resources for a subscription to name. Closing it is now a scoped project against a
+standard rather than an open question. And it matters less than it looks, because the subagent loop
+above already covers the case a running session cares about.
 
 **It is not a security boundary against the agent itself.** A member's token IS its authority and it
 sits in a config file the harness reads. Teams separate honest agents from each other's work; they
@@ -161,8 +165,13 @@ same `agent:` name, across restarts and across machines. `radia revoke` is its o
 ONE MEMBER PER SESSION, not per harness. One credential in two windows is one principal, so nothing
 tells their work apart and stopping one stops both.
 
-`radia mcp --session <name>` is the weaker alternative and is not what this uses: it keeps the same
-RUN across restarts, which is continuity within a working day rather than an identity.
+`radia mcp --session <name>` is the weaker alternative for IDENTITY and is not what this uses: it
+keeps the same RUN across restarts, which is continuity within a working day rather than an
+identity. It is load-bearing for something else, though. MCP 2026-07-28 is stateless and says a
+stdio process "is not a conversation or session", so a claim must be settleable by a LATER adapter
+process; a settle is owner-bound, so that only works when the run came back the same. Without a
+named session the adapter releases its claims when stdin closes, because nothing later could ever
+settle them; with one it keeps them and `recoverClaim` rederives the lease from the envelope.
 
 A SECOND definition for one agent is not a rotation and looks exactly like one: both tokens keep
 minting while `radia revoke` reaches only the newest. `radia team add` refuses it and names

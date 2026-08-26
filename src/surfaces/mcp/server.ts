@@ -46,7 +46,28 @@ import { VERSION } from "../../version.ts";
 const SERVER_INFO = { name: "radia", version: VERSION };
 /** Echoed back to the client when it asks for a version we know; otherwise we answer with this. */
 const DEFAULT_PROTOCOL = "2025-06-18";
-const KNOWN_PROTOCOLS = new Set(["2024-11-05", "2025-03-26", DEFAULT_PROTOCOL]);
+/** Every revision this adapter speaks, legacy and modern. `2026-07-28` made the protocol stateless
+ *  and replaced the handshake with per-request `_meta`; the older three are handshake-based and are
+ *  what today's harnesses actually send. */
+const KNOWN_PROTOCOLS = new Set(["2024-11-05", "2025-03-26", DEFAULT_PROTOCOL, "2026-07-28"]);
+/** `_meta` key carrying a modern request's protocol version. */
+const META_VERSION = "io.modelcontextprotocol/protocolVersion";
+/** `_meta` key a server SHOULD put its identity under, so a stateless client can name us with no
+ *  prior handshake to have learned it from. */
+const META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";
+/** One capability set for both eras. `listChanged: false` is honest: nothing here pushes, so a
+ *  client must not wait for a notification we never send. */
+const CAPABILITIES = { tools: { listChanged: false } };
+
+/** Guidance for a model driving this adapter, identical in both eras. A DISPOSITION plus how to
+ *  start, never knowledge OF the space: what kinds exist is discovered, not taught. */
+function instructions(base: string): string {
+  return `A Radia coordination space at ${base}. Agents exchange immutable JSON records and claim ` +
+    `work by pattern matching, not by addressing. Start with space_kinds to discover what record ` +
+    `kinds exist, how each is indexed, and how each is meant to be used. Nothing about this space ` +
+    `is implied by the tool list. Claim work with space_take and settle it with space_ack; the ` +
+    `lease is held and renewed for you.`;
+}
 
 interface Claim {
   lease: Lease;
@@ -150,11 +171,24 @@ export async function runMcp(argv: string[]): Promise<void> {
     const res = await handle(msg, client, claims, base, scope, kinds);
     if (res) write(res);
   }
-  // Stdin closed: the harness is gone. Release anything still held rather than making the space
-  // wait out every lease.
+  // Stdin closed. What that MEANS depends on whether this process has an identity it can come back
+  // as, and MCP 2026-07-28 is explicit that the process is not the boundary: "an open connection,
+  // such as a STDIO process, is not a conversation or session", and clients "SHOULD NOT use an
+  // individual task, thread, or conversation as the lifetime boundary for the stdio process".
+  //
+  // ANONYMOUS: releasing is right. Each start is its own run, a settle is owner-bound, so nothing
+  // that comes later can ever finish this work. Holding the lease would make the space wait out a
+  // claim nobody can settle.
+  //
+  // NAMED SESSION: releasing is WRONG, and was. The run survives, so the next process settles the
+  // claim by id (`recoverClaim`), and giving the record back here hands a teammate work that is
+  // already half done, which is the exact thing a lease exists to prevent.
   for (const [, c] of claims) {
     clearInterval(c.timer);
-    await client.release(c.lease).catch(() => {});
+    if (!session) await client.release(c.lease).catch(() => {});
+  }
+  if (session && claims.size > 0) {
+    log(`radia mcp: ${claims.size} claim(s) still held for session=${session}; settle them by claimId when you return`);
   }
 }
 
@@ -179,21 +213,48 @@ async function handle(
   // A notification (no id) never gets a reply, per JSON-RPC.
   const isNotification = id === undefined || id === null;
 
+  // A MODERN request names its protocol version in `_meta`; a legacy one names it once, in
+  // `initialize`. Refusing an unknown one by NAMING what we speak is what lets a client retry with
+  // a mutually supported version instead of failing blind (spec: UnsupportedProtocolVersionError).
+  const wanted = (req.params?._meta as Record<string, unknown> | undefined)?.[META_VERSION];
+  if (typeof wanted === "string" && !KNOWN_PROTOCOLS.has(wanted) && !isNotification) {
+    return {
+      jsonrpc: "2.0",
+      id,
+      error: {
+        code: -32022,
+        message: "Unsupported protocol version",
+        data: { supported: [...KNOWN_PROTOCOLS].sort().reverse(), requested: wanted },
+      },
+    };
+  }
+
   switch (method) {
+    // LEGACY ERA. Kept alongside `server/discover` rather than replaced: the SDK's own client
+    // defaults to this handshake ("byte for byte", per its migration guide), no deprecation date
+    // exists on either side, and a dual-era server is what the spec's compatibility matrix says
+    // works for every client era. Dropping it would break today's harnesses to satisfy nobody.
     case "initialize": {
       const want = String((req.params?.protocolVersion as string) ?? "");
       return reply(id, {
         protocolVersion: KNOWN_PROTOCOLS.has(want) ? want : DEFAULT_PROTOCOL,
-        capabilities: { tools: { listChanged: false } },
+        capabilities: CAPABILITIES,
         serverInfo: SERVER_INFO,
-        instructions:
-          `A Radia coordination space at ${base}. Agents exchange immutable JSON records and claim ` +
-          `work by pattern matching, not by addressing. Start with space_kinds to discover what ` +
-          `record kinds exist and how each is indexed. Nothing about this space is implied by the ` +
-          `tool list. Claim work with space_take and settle it with space_ack; the lease is held ` +
-          `and renewed for you.`,
+        instructions: instructions(base),
       });
     }
+
+    // MODERN ERA (2026-07-28). The protocol became STATELESS: no handshake, every request carries
+    // its own version and capabilities in `_meta`, and a stdio process is explicitly "not a
+    // conversation or session". `server/discover` is what a dual-era client probes with, and a
+    // server MUST implement it; answering it is also how such a client learns we are modern rather
+    // than falling back.
+    case "server/discover":
+      return reply(id, {
+        supportedVersions: [...KNOWN_PROTOCOLS].sort().reverse(),
+        capabilities: CAPABILITIES,
+        instructions: instructions(base),
+      });
 
     case "notifications/initialized":
     case "notifications/cancelled":
@@ -224,8 +285,21 @@ async function handle(
   }
 }
 
-function reply(id: unknown, result: unknown) {
-  return { jsonrpc: "2.0", id, result };
+/**
+ * A JSON-RPC result, stamped for both eras.
+ *
+ * `resultType` became REQUIRED on every result in 2026-07-28, where it is what lets a client tell a
+ * finished answer from one still asking (`input_required`) or from a task handle. Adding it is safe
+ * for every older client: the spec makes an ABSENT `resultType` mean `"complete"`, so a legacy
+ * client that ignores the field reads exactly what it read before.
+ *
+ * `serverInfo` rides in `_meta` for the same reason it exists there: a stateless client had no
+ * handshake to learn our name from.
+ */
+function reply(id: unknown, result: Record<string, unknown> | unknown) {
+  const body = (result && typeof result === "object" ? result : {}) as Record<string, unknown>;
+  const meta = { ...(body._meta as Record<string, unknown> | undefined), [META_SERVER_INFO]: SERVER_INFO };
+  return { jsonrpc: "2.0", id, result: { resultType: "complete", ...body, _meta: meta } };
 }
 
 /** Never surfaces the credential: RadiaClientError carries the server's RFC 9457 detail only. */
@@ -495,7 +569,7 @@ async function call(
     }
 
     case "space_ack": {
-      const c = takeClaim(claims, a);
+      const c = await takeClaim(claims, a, client);
       const kind = a.resultKind ? String(a.resultKind) : undefined;
       // The RESULT body is a write like any other and needs the same fill: acking a scoped task
       // with an unlabelled note is refused, and that refusal would land after the work was done.
@@ -508,13 +582,13 @@ async function call(
     }
 
     case "space_nack": {
-      const c = takeClaim(claims, a);
+      const c = await takeClaim(claims, a, client);
       const backoff = num(a, "backoffSeconds");
       return pretty(await client.nack(c.lease, backoff !== undefined ? { backoffSeconds: backoff } : {}));
     }
 
     case "space_release": {
-      const c = takeClaim(claims, a);
+      const c = await takeClaim(claims, a, client);
       return pretty(await client.release(c.lease));
     }
 
@@ -535,10 +609,61 @@ function lose(claims: Map<string, Claim>, claimId: string, reason: "lease_lost" 
 }
 
 /** Resolve a claimId to its lease and stop its heartbeat. Settling ends the claim either way. */
-function takeClaim(claims: Map<string, Claim>, a: Record<string, unknown>): Claim {
+/**
+ * Recover a claim THIS PROCESS never made, from the space.
+ *
+ * MCP 2026-07-28 is stateless and says so about us directly: "an open connection, such as a STDIO
+ * process, is not a conversation or session", and a server "SHOULD NOT require that a client reuse
+ * the same connection or process to perform related operations". A claimId that only the process
+ * which minted it can settle breaks that, and it broke in practice first: a settle against a
+ * restarted adapter answered "this adapter never held it" while the lease was alive and the work
+ * was done.
+ *
+ * Nothing has to be stored to fix it. The claimId embeds the record id, and a `Lease` is exactly
+ * what the envelope already carries, so the lease is REDERIVED rather than remembered.
+ *
+ * THE RUN MUST MATCH, and that is not a formality: a settle is owner-bound (`warnOwnerMismatch`
+ * answers `lease_lost` to anyone else), so a restarted adapter can only settle if it came back as
+ * the SAME run. That is what `--session` does, which makes the flag load-bearing for conformance
+ * and not only for attribution. Without it the refusal says so instead of blaming the caller.
+ */
+async function recoverClaim(client: RadiaClient, claimId: string): Promise<Claim | undefined> {
+  const m = /^claim-([0-9A-Za-z]+)-(\d+)$/.exec(claimId);
+  if (!m) return undefined;
+  const [, recordId, epoch] = m;
+  const env = await client.getEnvelope(recordId).catch(() => null);
+  if (!env || env.state !== "leased" || !env.leaseId || env.leaseEpoch === undefined) return undefined;
+  // Only OUR run's lease. `health().principal` is the run this process resolved to.
+  const me = await client.health().then((h) => h.principal).catch(() => "");
+  if (!me || env.leaseOwner !== me) return undefined;
+  if (String(env.leaseEpoch) !== epoch) return undefined; // a later claim of the same record
+  const record = await client.getRecord(recordId).catch(() => null);
+  if (!record) return undefined;
+  return {
+    lease: {
+      recordId,
+      leaseId: env.leaseId,
+      epoch: env.leaseEpoch,
+      ownerRun: env.leaseOwner,
+      expiresAt: env.leasedUntil ?? "",
+    },
+    record,
+    // No heartbeat: this process did not start one and is about to settle. Renewing a lease it
+    // just adopted would keep alive something the next line ends.
+    timer: setInterval(() => {}, 1 << 30),
+  };
+}
+
+async function takeClaim(claims: Map<string, Claim>, a: Record<string, unknown>, client: RadiaClient): Promise<Claim> {
   const id = str(a, "claimId");
-  const c = claims.get(id);
-  if (!c) throw new Error(`unknown claimId '${id}': it was already settled, or this adapter never held it`);
+  const c = claims.get(id) ?? await recoverClaim(client, id);
+  if (!c) {
+    throw new Error(
+      `unknown claimId '${id}': it was already settled, or the lease is not held by this session's ` +
+        `run. A claim can be settled by a later adapter process only when the run is the same, ` +
+        `which is what \`radia mcp --session <name>\` keeps across restarts.`,
+    );
+  }
   clearInterval(c.timer);
   claims.delete(id);
   if (c.lost) {
