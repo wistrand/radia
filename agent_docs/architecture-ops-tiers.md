@@ -52,6 +52,16 @@ than the caller may see. Those kinds are therefore left out of `StatsScope.kinds
 `describeScope` exists to prevent. Making them exact needs oracle-evaluated counts under a scan
 budget; `events` needs more still, since a log row carries no body. Both are open.
 
+**Opening reachability CHANGED an existing app, and the change is the point.** The chat's session
+holds a pattern-scoped grant on its own conversation, so it now reaches the read plane where its
+suite asserted it could not. Measured, it learns nothing it did not have: the aggregates cover only
+kinds reached by AUTHORSHIP, so the counts are empty and name what they skipped, and another
+conversation's record is refused by id exactly as on the coordination plane. The three assertions in
+`smoke-selfgrant.ts` / `smoke-join.ts` were rewritten to check THAT rather than the refusal, because
+"the plane is shut" was a posture and "you see only your own" is the protection. Worth knowing
+before touching reachability again: `deno task test:chat` is where a widening shows up, and it is
+NOT part of `deno task test`.
+
 Source: `Space.readFilter` and `Space.opsScope` (`src/core/space.ts`), `visible`/`describeScope`
 (`src/server/handlers/ops.ts`), `StatsScope.patternScoped` (`src/storage/adapter.ts`). Guards:
 `test/team.test.ts` ("a teammate's record is readable on the ops plane", "the aggregates say what

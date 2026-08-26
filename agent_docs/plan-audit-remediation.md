@@ -361,8 +361,17 @@ stale pointers on its first run, all files that had moved: a bare src/cli.ts (no
 and `extensions/ts/model.ts`. Writing this entry tripped the guard again, because naming a dead
 path in backticks is indistinguishable from a stale pointer: say the old location in plain text.
 
-STILL OPEN from this package: pin the broker's `read_one` shape in `extensions/conformance/`, and
-assert in the chat suite that every kind carrying a prose field appears in `ENCRYPTED_FIELDS`.
+The other two guards this package promised were ALREADY BUILT, and an earlier version of this
+paragraph called them open. `extensions/conformance/broker.test.ts` pins `read_one` to record-or-null
+(the entrypoint reports the SHAPE it was handed, so the assertion is about the frame rather than
+about what the query found), and `examples/chat/smoke-encrypt.ts` holds the decided-set check over
+`ENCRYPTED_FIELDS`. Both pass.
+
+**That mistake is the third status line in this file to be wrong about its own subject**, after the
+OpenAPI refutation above and this sentence. The pattern is always the same: a status claim gets
+copied forward without re-deriving it, and the file's own convention (VERIFIED vs REPORTED) exists
+precisely because that keeps happening. A "still open" entry needs the same evidence as a finding:
+grep for the guard before saying it does not exist.
 
 ### Structural debt, not defects
 

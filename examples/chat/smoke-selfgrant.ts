@@ -102,9 +102,41 @@ for (let i = 0; i < 3; i++) {
   await session.put({ kind: "message", body: { conversationId: conv, index: i, role: "user", content: `m${i}` } });
 }
 
-// 1. The wall: the ops plane is shut to a scoped session.
-check("a scoped session cannot reach ops/stats", await forbidden(() => session.getStats()));
-check("…nor diagnostics", await forbidden(() => session.diagnostics()));
+// 1. The wall, which moved: a pattern-scoped session now REACHES the ops plane and sees nothing
+//    through it. This used to assert the plane was shut, and that was a posture rather than a
+//    protection: the reachability rule changed when the PATTERN tier was added
+//    (architecture-ops-tiers.md), because a grant pattern already says which records a principal
+//    may read and a teammate's record fails `createdBy: "self"` for no reason but its author.
+//
+//    So the assertion is now the thing that actually matters. The aggregates cover only kinds
+//    reached by AUTHORSHIP, so a purely pattern-scoped caller counts nothing, and the answer NAMES
+//    what it did not count rather than reporting a zero that reads as an empty space.
+const preReport = await session.getStatsReport();
+check(
+  "a pattern-scoped session reaches ops/stats and is told it was scoped",
+  preReport.scope !== undefined && preReport.scope.self === true,
+  preReport.scope ? "" : "an unscoped answer means the caller could not tell it was narrowed",
+);
+check(
+  "…and the aggregate counts nothing it reaches only by pattern",
+  preReport.stats.length === 0 && (preReport.scope?.patternScoped?.length ?? 0) > 0,
+  `stats=${preReport.stats.length} patternScoped=${JSON.stringify(preReport.scope?.patternScoped ?? [])}`,
+);
+const preDiag = await session.diagnostics();
+check(
+  "…nor does diagnostics",
+  preDiag.counts.available === 0 && preDiag.counts.leased === 0 && preDiag.counts.consumed === 0,
+  JSON.stringify(preDiag.counts),
+);
+// THE PROTECTION, which never depended on the plane being shut: another principal's record is
+// refused on the ops plane exactly as it is on the coordination plane. `messages` above wrote two
+// records under a conversation this session has no pattern for.
+const foreign = (await admin.queryOldest<{ content: string }>({ kind: "message", match: { conversationId: "other" } }, 1))[0];
+check(
+  "and ANOTHER conversation's record is still refused, by id, on the ops plane",
+  (await session.getRecord(foreign.id).catch(() => null)) === null,
+  "a scoped session read a record outside its pattern",
+);
 
 // 2. The escalation tool REACHES THE MODEL. The transcript's failure was a tool that existed but
 //    was never offered, so what matters is that it lands in the set the turn is given.

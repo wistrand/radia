@@ -90,9 +90,12 @@ check(
   "it cannot grant itself anything",
   await forbidden(() => session.put({ kind: "grant", body: { principal: owner, kind: "workspace", operations: ["query"] } })),
 );
+// It REACHES the ops plane (a pattern-scoped grant opens the read tier, architecture-ops-tiers.md)
+// and learns nothing from it: the aggregates cover kinds reached by AUTHORSHIP, and this session
+// reaches its conversation by pattern. What must hold is the emptiness, not the refusal.
 check(
-  "it cannot reach the ops plane",
-  await forbidden(() => session.getStats()),
+  "the ops plane tells it nothing it did not already have",
+  (await session.getStats().then((s) => s.length, () => 0)) === 0,
 );
 check(
   "it cannot sweep the space",
