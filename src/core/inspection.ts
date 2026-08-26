@@ -38,58 +38,8 @@ export interface LiveInterest {
  * that is not claiming, so the worker is down, wedged, or barred, and the fix is over there. The
  * old report called both "stale available" and left an operator to guess.
  */
-export interface StaleSplit {
-  /** No live interest matches. See `caveat`: this is evidence, not proof. */
-  orphaned: { count: number; sample: unknown[] };
-  /** A live interest matches and nothing has claimed it anyway. */
-  starving: { count: number; sample: unknown[] };
-  /** False when an interest registry read was truncated, so `orphaned` may be overstated. */
-  complete: boolean;
-  /** Always present, because both counts rest on the interest registry being a faithful picture of
-   *  who is listening, and it is only ever best-effort. */
-  caveat: string;
-}
-
-export interface Diagnostics {
-  now: string;
-  counts: Record<string, number>;
-  deadLetter: { count: number; sample: unknown[] };
-  stuckLeases: { count: number; atLeast: boolean; sampledFrom: number; sample: unknown[] };
-  /** Unclaimed *claimable* (work) records older than the threshold: a starvation signal.
-   *  Reference kinds (`claimable:false`: facts, config, grants, history) are excluded: they sit
-   *  available forever by design and are not stale. */
-  staleAvailable: {
-    count: number;
-    thresholdSeconds: number;
-    sample: unknown[];
-    /** The two failures age alone cannot tell apart. ABSENT when the space publishes no live
-     *  interests at all: with an empty registry every record looks orphaned, and that is a fact
-     *  about the fleet's instrumentation rather than about the work. */
-    split?: StaleSplit;
-  };
-  /** Erasures that no longer hold: the bytes are back at the same content address. ABSENT for a
-   *  scoped caller rather than zero, because a confident `0` about something the caller cannot see
-   *  is the "empty scoped answer reads as empty space" failure this file already guards elsewhere. */
-  undoneErasures?: { count: number; checked: number; complete: boolean; sample: unknown[] };
-  /** Records past their `retention_until`, waiting for a sweep (`POST /v0/ops/gc`). The sweep is
-   *  on demand, so without this row nobody learns there is anything to run. `atLeast` marks a
-   *  capped count; ABSENT for a scoped caller, like the rows above. */
-  sweepable?: { eligible: number; byKind: Record<string, number>; atLeast: boolean };
-  /** Superseded registry entries a compaction pass would delete (`radia gc`). Its own row, never
-   *  folded into `sweepable`: this is bookkeeping rather than a finding, and summing the two would
-   *  hide which number a retention policy actually governs. Reported because `doctor` said "19
-   *  sweepable" where `gc` said 19 plus 181, so the number a person acted on was the small one. */
-  compactable?: { superseded: number; byKind: Record<string, number>; atLeast: boolean };
-  /** Event-log retention backlog, present when `eventRetentionSeconds` is configured. `unsealed`
-   *  is the seal-first debt: those events cannot sweep (or be truncation candidates) until a gc
-   *  seals them, and on a never-doctored space it is the whole log, so without this row the first
-   *  gc looks hung. */
-  eventsSweepable?: { eligible: number; unsealed: number };
-  /** The event chain's verdict. ABSENT for a scoped caller, like `undoneErasures` and for the same
-   *  reason: the chain covers everyone's activity, so a scoped `ok:true` would be reassurance
-   *  about records the caller cannot see. */
-  integrity?: IntegrityReport;
-}
+import type { Diagnostics, EffectivePermissions, StaleSplit } from "../../sdk/ts/wire.ts";
+export type { Diagnostics, StaleSplit };
 
 /** What the digest reports about a space. Generated from records, never hand-written. */
 import type { SpaceDigest } from "../../sdk/ts/wire.ts";
@@ -122,7 +72,7 @@ export interface InspectionHost {
   liveInterests(kind: string): Promise<{ interests: LiveInterest[]; complete: boolean; published: number }>;
   interestMatches(i: LiveInterest, kind: string, body: unknown): boolean;
   matchingInterests(kind: string): Promise<{ interests: LiveInterest[]; complete: boolean }>;
-  effectivePermissions(principal: string): Promise<unknown>;
+  effectivePermissions(principal: string): Promise<EffectivePermissions>;
   erasures(opts: { onlyUndone?: boolean }): Promise<{ erasures: unknown[]; checked: number; complete: boolean }>;
   /** The retention sweep in dry-run: what a `POST /v0/ops/gc` would delete. A read, like everything
    *  here — dryRun is what makes it admissible through this port. `events` is present when

@@ -19,6 +19,7 @@ import { ARTIFACT, type ArtifactDef, SHRED, validateArtifactDef, validateArtifac
 import type { Pattern } from "./matching.ts";
 import type { PutRequest } from "./record.ts";
 import { RadiaError } from "./errors.ts";
+import type { ShredResult } from "../../sdk/ts/wire.ts";
 import { readExhaustively } from "./registry.ts";
 
 /** Everything the artifact verbs need from a space, and nothing else. */
@@ -138,7 +139,7 @@ export async function shredArtifact(
   h: ArtifactHost,
   recordId: string,
   opts: { principal?: string; reason?: string; acknowledgeShared?: boolean } = {},
-): Promise<{ digest: string; references: number; encrypted: boolean; alreadyGone: boolean }> {
+): Promise<ShredResult> {
   const record = await h.getRecord(recordId);
   if (!record || record.kind !== ARTIFACT) throw new RadiaError("not_found", `no artifact ${recordId}`);
   const def = record.body as ArtifactDef;

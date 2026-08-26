@@ -372,6 +372,185 @@ export interface OpsScope {
   note: string;
 }
 
+/**
+ * A record's RUNTIME half: the only part that changes after commit.
+ *
+ * Read through `GET /v0/ops/records?state=…`, which is what makes claim state a query rather than a
+ * bespoke endpoint. The five timing fields are distinct concepts and are never overloaded
+ * (agent_docs/design-data-model.md).
+ */
+export interface Envelope {
+  recordId: Ulid;
+  kind: string; // denormalized from record at commit
+  state: RecordState;
+  attempt: number;
+  availableAt: string; // eligibility / backoff
+  claimUntil?: string; // no NEW claims after this time
+  deadlineAt?: string; // denormalized
+  effectivePriority: number; // server-computed
+  leaseId?: Ulid;
+  leaseEpoch?: number;
+  leaseOwner?: string; // run id
+  leasedUntil?: string;
+}
+
+/**
+ * A freshly minted run: the SHORT half of a credential, and the only half that acts.
+ *
+ * `runToken` is returned once and never again. `expiresAt` is when it stops working, not when the
+ * run ends: renewal moves it up to the ceiling `RunRenewal.maxLifetimeAt` reports.
+ */
+export interface MintedRun {
+  run: string;
+  agent: string;
+  runToken: string;
+  expiresAt: string;
+}
+
+/** A renewed run. No token: renewal moves the expiry of the one the caller already holds, and
+ *  `maxLifetimeAt` is the ceiling past which no renewal helps and a fresh mint is required. */
+export interface RunRenewal {
+  run: string;
+  agent: string;
+  expiresAt: string;
+  maxLifetimeAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Authorization, as the space reports it (`GET /v0/ops/permissions`)
+// ---------------------------------------------------------------------------
+
+/** The coordination operations a grant can authorize. */
+export type GrantOp = "put" | "take" | "query" | "read_one";
+
+/** The ops-plane powers an `ops_grant` can carry (architecture-ops-tiers.md). */
+export type OpsPower = "observe" | "remediate" | "sweep" | "declassify" | "purge";
+
+export interface EffectivePermissions {
+  principal: string;
+  /** The agent a run resolves to. Grants are held by agents, not by individual runs. */
+  subject: string;
+  privileged: boolean;
+  /** Set for a DELEGATED run: the caller whose reach bounds it. `kinds` below is then the
+   *  intersection it was minted with, not `subject`'s own grants, so the two lines have to be read
+   *  together. See agent_docs/plan-delegation.md. */
+  actingFor?: string;
+  /** Authority this agent can reach ONLY by minting a delegated run (`delegable:<agent>` grants).
+   *  Absent from `kinds` on purpose: its own token cannot use these. */
+  delegable?: { kind: string; operations: GrantOp[] }[];
+  kinds: {
+    kind: string;
+    operations: GrantOp[];
+    readsScopedToSelf: boolean;
+    patterns: Record<string, unknown>[];
+    /** Set when NO such kind is declared on this space, so the grant authorizes nothing. A grant
+     *  may legitimately precede its kind (an operator bootstraps an agent before the fleet declares
+     *  its kinds), so this is a flag rather than an error. But an agent that guessed a kind name
+     *  and got it approved otherwise reads this row as working access. */
+    kindNotDeclared?: true;
+  }[];
+  ops: { reachable: boolean; kinds: string[] };
+  /** Ops-plane powers held via `ops_grant` records (all of them for a privileged principal).
+   *  Reported through the same resolution the gate enforces (`Space.opsPowers`), so this line IS
+   *  the enforcement, not a restatement of it. Distinct from `ops` above, which is the
+   *  self-scoped read tier (own records of granted kinds). */
+  opsPowers: OpsPower[];
+  /** False if the grant scan could not be exhausted. The picture may be missing entries. */
+  complete: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics (`GET /v0/ops/diagnostics`)
+// ---------------------------------------------------------------------------
+
+export interface StaleSplit {
+  /** No live interest matches. See `caveat`: this is evidence, not proof. */
+  orphaned: { count: number; sample: unknown[] };
+  /** A live interest matches and nothing has claimed it anyway. */
+  starving: { count: number; sample: unknown[] };
+  /** False when an interest registry read was truncated, so `orphaned` may be overstated. */
+  complete: boolean;
+  /** Always present, because both counts rest on the interest registry being a faithful picture of
+   *  who is listening, and it is only ever best-effort. */
+  caveat: string;
+}
+
+export interface Diagnostics {
+  now: string;
+  counts: Record<string, number>;
+  deadLetter: { count: number; sample: unknown[] };
+  stuckLeases: { count: number; atLeast: boolean; sampledFrom: number; sample: unknown[] };
+  /** Unclaimed *claimable* (work) records older than the threshold: a starvation signal.
+   *  Reference kinds (`claimable:false`: facts, config, grants, history) are excluded: they sit
+   *  available forever by design and are not stale. */
+  staleAvailable: {
+    count: number;
+    thresholdSeconds: number;
+    sample: unknown[];
+    /** The two failures age alone cannot tell apart. ABSENT when the space publishes no live
+     *  interests at all: with an empty registry every record looks orphaned, and that is a fact
+     *  about the fleet's instrumentation rather than about the work. */
+    split?: StaleSplit;
+  };
+  /** Erasures that no longer hold: the bytes are back at the same content address. ABSENT for a
+   *  scoped caller rather than zero, because a confident `0` about something the caller cannot see
+   *  is the "empty scoped answer reads as empty space" failure this file already guards elsewhere. */
+  undoneErasures?: { count: number; checked: number; complete: boolean; sample: unknown[] };
+  /** Records past their `retention_until`, waiting for a sweep (`POST /v0/ops/gc`). The sweep is
+   *  on demand, so without this row nobody learns there is anything to run. `atLeast` marks a
+   *  capped count; ABSENT for a scoped caller, like the rows above. */
+  sweepable?: { eligible: number; byKind: Record<string, number>; atLeast: boolean };
+  /** Superseded registry entries a compaction pass would delete (`radia gc`). Its own row, never
+   *  folded into `sweepable`: this is bookkeeping rather than a finding, and summing the two would
+   *  hide which number a retention policy actually governs. Reported because `doctor` said "19
+   *  sweepable" where `gc` said 19 plus 181, so the number a person acted on was the small one. */
+  compactable?: { superseded: number; byKind: Record<string, number>; atLeast: boolean };
+  /** Event-log retention backlog, present when `eventRetentionSeconds` is configured. `unsealed`
+   *  is the seal-first debt: those events cannot sweep (or be truncation candidates) until a gc
+   *  seals them, and on a never-doctored space it is the whole log, so without this row the first
+   *  gc looks hung. */
+  eventsSweepable?: { eligible: number; unsealed: number };
+  /** The event chain's verdict. ABSENT for a scoped caller, like `undoneErasures` and for the same
+   *  reason: the chain covers everyone's activity, so a scoped `ok:true` would be reassurance
+   *  about records the caller cannot see. */
+  integrity?: IntegrityReport;
+}
+
+// ---------------------------------------------------------------------------
+// Erasure (`POST /v0/ops/records/{id}/shred`, `GET /v0/ops/erasures`)
+// ---------------------------------------------------------------------------
+
+/** What a shred destroyed. Erasure is by CONTENT, so `references` is the number of artifact records
+ *  that named those bytes: above 1 the call refuses unless the caller acknowledges the sharing. */
+export interface ShredResult {
+  digest: string;
+  references: number;
+  encrypted: boolean;
+  /** The payload was already gone. Success, not a fault: erasing twice must converge. */
+  alreadyGone: boolean;
+}
+
+/** One recorded erasure, and whether it still holds. */
+export interface ErasureStatus {
+  shredId: string;
+  artifactId: string;
+  digest: string;
+  reason: string;
+  at: string;
+  method: string;
+  /** False when the payload is present again, which is a REVERSED erasure and the only interesting
+   *  value here. */
+  holds: boolean;
+}
+
+/** Every recorded erasure, with `complete: false` rather than a plausible prefix: a partial list
+ *  read as a population would say "all erasures hold" about a space nobody finished scanning. */
+export interface ErasureReport {
+  erasures: ErasureStatus[];
+  checked: number;
+  complete: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Space digest (`GET /v0/ops/digest`)
 // ---------------------------------------------------------------------------
@@ -390,7 +569,8 @@ export interface SpaceDigest {
   /** Interests hidden by the caller's scope. An empty list means "none you may see", never
    *  "nobody is listening", and the difference has to be stated or it gets reported as fact. */
   interestsWithheld?: number;
-  permissions: unknown;
+  /** What the CALLING principal may do: the same shape `GET /v0/ops/permissions` returns. */
+  permissions: EffectivePermissions;
   complete: boolean;
 }
 

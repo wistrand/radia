@@ -19,14 +19,18 @@ import { RadiaError } from "./errors.ts";
 // path inside `src/` is unchanged while the SDK ships without reaching back into the runtime.
 // See that file's header for why the direction runs this way.
 import type {
+  GrantOp,
   IndexedPath,
   IndexedType,
   KindDef,
+  OpsPower,
 } from "../../sdk/ts/wire.ts";
 export type {
+  GrantOp,
   IndexedPath,
   IndexedType,
   KindDef,
+  OpsPower,
 };
 
 /** The reserved kind whose records ARE kind declarations (body = a KindDef). */
@@ -103,7 +107,6 @@ export const OIDC_IDENTITY = WIRE_OIDC_IDENTITY;
  * failure names the next power.
  */
 export const OPS_POWERS = ["observe", "remediate", "sweep", "declassify", "purge"] as const;
-export type OpsPower = (typeof OPS_POWERS)[number];
 
 /** Body of an `ops_grant` record. `operations` mirrors the grant field name on purpose, so the
  *  console and `effectivePermissions` render both registries the same way. */
@@ -243,8 +246,6 @@ export function clientTaint(raw: unknown, opts: { reserved?: boolean } = {}): st
   throw new RadiaError("invalid_taint", "taint must be an array of labels");
 }
 
-/** The coordination operations a grant can authorize. */
-export type GrantOp = "put" | "take" | "query" | "read_one";
 const VALID_OPS = new Set<GrantOp>(["put", "take", "query", "read_one"]);
 
 /** The envelope-side selectors a grant may carry. Closed by design; extended only when a real

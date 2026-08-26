@@ -344,7 +344,9 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
      */
     space_permissions: async () => {
       const { principal } = await client.health();
-      return { principal, ...(await client.permissions(principal) as Record<string, unknown>) };
+      // The report carries its own `principal`, so prefixing one here only ever overwrote itself.
+      // Invisible while this returned `Record<string, unknown>`; a compile error once it was typed.
+      return await client.permissions(principal);
     },
 
     space_digest: async () => {

@@ -539,51 +539,12 @@ export interface ReadAccess {
   allowTaint?: string[];
 }
 
-export interface EffectivePermissions {
-  principal: string;
-  /** The agent a run resolves to. Grants are held by agents, not by individual runs. */
-  subject: string;
-  privileged: boolean;
-  /** Set for a DELEGATED run: the caller whose reach bounds it. `kinds` below is then the
-   *  intersection it was minted with, not `subject`'s own grants, so the two lines have to be read
-   *  together. See agent_docs/plan-delegation.md. */
-  actingFor?: string;
-  /** Authority this agent can reach ONLY by minting a delegated run (`delegable:<agent>` grants).
-   *  Absent from `kinds` on purpose: its own token cannot use these. */
-  delegable?: { kind: string; operations: GrantOp[] }[];
-  kinds: {
-    kind: string;
-    operations: GrantOp[];
-    readsScopedToSelf: boolean;
-    patterns: Record<string, unknown>[];
-    /** Set when NO such kind is declared on this space, so the grant authorizes nothing. A grant
-     *  may legitimately precede its kind (an operator bootstraps an agent before the fleet declares
-     *  its kinds), so this is a flag rather than an error. But an agent that guessed a kind name
-     *  and got it approved otherwise reads this row as working access. */
-    kindNotDeclared?: true;
-  }[];
-  ops: { reachable: boolean; kinds: string[] };
-  /** Ops-plane powers held via `ops_grant` records (all of them for a privileged principal).
-   *  Reported through the same resolution the gate enforces (`Space.opsPowers`), so this line IS
-   *  the enforcement, not a restatement of it. Distinct from `ops` above, which is the
-   *  self-scoped read tier (own records of granted kinds). */
-  opsPowers: OpsPower[];
-  /** False if the grant scan could not be exhausted. The picture may be missing entries. */
-  complete: boolean;
-}
+import type { EffectivePermissions, MintedRun, RunRenewal } from "../../sdk/ts/wire.ts";
+export type { EffectivePermissions, MintedRun, RunRenewal };
 
 /** One shred, and whether it still means anything. */
-export interface ErasureStatus {
-  shredId: string;
-  artifactId: string;
-  digest: string;
-  reason: string;
-  at: string;
-  method: string;
-  /** False when the payload is present again, which is a REVERSED erasure and the only interesting
-   *  value here. */
-  holds: boolean;
-}
+import type { ErasureReport, ErasureStatus, ShredResult } from "../../sdk/ts/wire.ts";
+export type { ErasureReport, ErasureStatus, ShredResult };
 
 /** A short, generic label for a graph node: kind plus a common discriminating field. */
 function labelFor(rec: RadiaRecord): string {
@@ -1498,7 +1459,7 @@ export class Space {
   async mintRun(
     definitionToken: string,
     opts: { reuse?: boolean } = {},
-  ): Promise<{ run: string; agent: string; runToken: string; expiresAt: string }> {
+  ): Promise<MintedRun> {
     const now = await this.storage.now();
     const resolved = await this.resolveCredential(definitionToken, now); // hydrates a cross-instance def token
     if (!resolved.ok || resolved.kind !== "def") {
@@ -1829,7 +1790,7 @@ export class Space {
    * because holding the id_token already mints; H(id_token) is exactly as secret. Two racing
    * first-POSTs can both write; the newest wins resolution and the orphan expires inert.
    */
-  async mintOidcRun(idToken: string): Promise<{ run: string; agent: string; runToken: string; expiresAt: string }> {
+  async mintOidcRun(idToken: string): Promise<MintedRun> {
     const cfg = this.ctx.oidc;
     if (!cfg) throw new RadiaError("oidc_not_configured", "this space has no OIDC issuer configured (dev: --oidc-issuer + --oidc-audience)");
     // The DB clock is fetched LAZILY, through the verifier: this is the unauthenticated path,
@@ -2003,7 +1964,7 @@ export class Space {
    *     on a fixed schedule and the holder has to authenticate again to get past it;
    *   - it renews the run it is CALLED WITH, so a token cannot extend somebody else's session.
    */
-  async renewRun(run: string): Promise<{ run: string; agent: string; expiresAt: string; maxLifetimeAt: string }> {
+  async renewRun(run: string): Promise<RunRenewal> {
     const now = await this.storage.now();
     const rows = await this.query({ kind: AGENT_RUN, match: { run } }, 5, { dir: "desc" });
     const bodies = rows.map((r) => r.body as RunBody);
@@ -2723,7 +2684,7 @@ export class Space {
   shredArtifact(
     recordId: string,
     opts: { principal?: string; reason?: string; acknowledgeShared?: boolean } = {},
-  ): Promise<{ digest: string; references: number; encrypted: boolean; alreadyGone: boolean }> {
+  ): Promise<ShredResult> {
     return shredArtifact(this.artifactHost, recordId, opts);
   }
 
@@ -4184,11 +4145,7 @@ export class Space {
    * Pages to exhaustion and reports `complete`, because a partial list of erasures read as a
    * population would say "all erasures hold" about a space nobody finished scanning.
    */
-  async erasures(opts: { onlyUndone?: boolean } = {}): Promise<{
-    erasures: ErasureStatus[];
-    checked: number;
-    complete: boolean;
-  }> {
+  async erasures(opts: { onlyUndone?: boolean } = {}): Promise<ErasureReport> {
     const view = await readExhaustively((page) => this.query({ kind: SHRED }, page.limit, page));
     const out: ErasureStatus[] = [];
     for (const rec of view.records) {

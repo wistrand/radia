@@ -28,7 +28,7 @@
 import type { KindDef } from "./kinds.ts";
 import { AGENT_DEFINITION, AGENT_RUN, GRANT, INTEREST, KIND_DEF, OIDC_IDENTITY, OPS_GRANT, SIGNAL } from "./kinds.ts";
 import { getPath } from "./matching.ts";
-import type { RadiaRecord } from "../storage/adapter.ts";
+import type { RadiaRecord, SweptIds } from "../storage/adapter.ts";
 import { newer } from "./registry.ts";
 
 /** Reserved kinds compaction knows how to key IN CODE. Everything else reserved is excluded.
@@ -61,7 +61,7 @@ export interface CompactionHost {
   listKinds(): KindDef[];
   /** Newest-first keyset page of a kind (dir desc, after = the previous page's last id). */
   pageDesc(kind: string, limit: number, after?: string): Promise<RadiaRecord[]>;
-  sweepIds(ids: string[], runId: string): Promise<{ swept: number; byKind: Record<string, number> }>;
+  sweepIds(ids: string[], runId: string): Promise<SweptIds>;
   /** Is this principal's run still able to act? Non-run principals are always "live". */
   runIsLive(run: string): Promise<boolean>;
 }

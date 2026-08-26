@@ -29,7 +29,10 @@ import {
   type StorageAdapter,
   type TakeResult,
   type TakeSelector,
+  type EventPosition,
+  type EventSweepResult,
   type SweepResult,
+  type SweptIds,
   type SweepSelector,
   type EventHorizonCheck,
   type EnvelopeQuery,
@@ -1102,7 +1105,7 @@ export class PgSqlAdapter implements StorageAdapter {
     });
   }
 
-  async sweepIds(ids: string[], runId: string): Promise<{ swept: number; byKind: Record<string, number> }> {
+  async sweepIds(ids: string[], runId: string): Promise<SweptIds> {
     if (ids.length === 0) return { swept: 0, byKind: {} };
     const now = await this.now();
     return await this.sql.transaction(async (tx) => {
@@ -1209,7 +1212,7 @@ export class PgSqlAdapter implements StorageAdapter {
     return resolveEventHorizon(oldest, exists, after);
   }
 
-  async appendGcEvent(e: EventInput): Promise<{ cursor: string; seq: number }> {
+  async appendGcEvent(e: EventInput): Promise<EventPosition> {
     const now = await this.now();
     const res = await this.sql.query<{ seq: string; cursor: string }>(
       `insert into events (id, ts, run_id, operation, record_id, kind, state, detail, body_sha256)
@@ -1229,7 +1232,7 @@ export class PgSqlAdapter implements StorageAdapter {
     return res.rows.length ? rowToSeal(res.rows[0]) : null;
   }
 
-  async sweepSealedEvents(anchor: { idx: number; seq: number }, limit: number, dryRun?: boolean): Promise<{ events: number; done: boolean }> {
+  async sweepSealedEvents(anchor: { idx: number; seq: number }, limit: number, dryRun?: boolean): Promise<EventSweepResult> {
     if (dryRun) {
       const res = await this.sql.query<{ c: string }>(
         "select count(*) c from event_seal s join events e on e.seq = s.seq where s.idx <= $1",

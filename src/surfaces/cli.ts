@@ -8,13 +8,11 @@
 // known kinds.
 
 import { RadiaClient, RadiaClientError } from "../../sdk/ts/client.ts";
+// From the SDK like every other wire shape. It reached into `src/core` before `Diagnostics` moved
+// into the wire vocabulary, under a type-only layering exemption that is no longer needed.
+import type { Diagnostics, MintedRun } from "../../sdk/ts/client.ts";
 import { RESERVED_KINDS } from "../../sdk/ts/wire.ts";
 import { newestByKey, unsafeAsPopulation } from "../../sdk/ts/registry.ts";
-// TYPE ONLY, which the layering guard exempts because it is erased: a surface may not hold a
-// runtime VALUE from `src/core`, and a shape is not one. Restating it here instead is what let the
-// two drift, and the drift compiled: `doctor` grew a `spotCheckedFrom` the CLI's private copy did
-// not have, and only `deno task compile` noticed.
-import type { Diagnostics } from "../core/inspection.ts";
 // A SURFACE may import a convention; the runtime may not. See test/layering.test.ts.
 import { exportWorkspaceGit } from "../../extensions/ts/git.ts";
 import { buildThreadSpans, postTraces, recordSpans, toResourceSpans, traceIdOf } from "../../extensions/ts/otlp.ts";
@@ -172,7 +170,7 @@ const OBSERVER_VERBS = new Set(["stats", "events", "doctor", "erasures", "flows"
 export async function ssoLogin(
   base: string,
   opts: { port?: number; onUrl?: (url: string) => void; timeoutMs?: number } = {},
-): Promise<{ run: string; agent: string; runToken: string; expiresAt: string }> {
+): Promise<MintedRun> {
   const port = opts.port ?? 8253;
   const health = await fetch(`${base}/v0/health`).then((r) => r.json()).catch(() => null) as
     | { oidc?: { issuer: string; clientId: string } }
@@ -290,7 +288,7 @@ export async function ssoLogin(
   });
   const sj = await sr.json().catch(() => ({})) as { run?: string; agent?: string; runToken?: string; expiresAt?: string; detail?: string };
   if (!sr.ok || !sj.runToken) throw new UsageError(`the space refused the id_token: ${sj.detail ?? `HTTP ${sr.status}`}`);
-  return sj as { run: string; agent: string; runToken: string; expiresAt: string };
+  return sj as MintedRun;
 }
 
 export async function runCli(cmd: string, argv: string[]): Promise<number> {

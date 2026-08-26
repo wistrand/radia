@@ -33,7 +33,10 @@ import {
   type StorageAdapter,
   type TakeResult,
   type TakeSelector,
+  type EventPosition,
+  type EventSweepResult,
   type SweepResult,
+  type SweptIds,
   type SweepSelector,
   type EventHorizonCheck,
   type EnvelopeQuery,
@@ -822,7 +825,7 @@ export class SqliteAdapter implements StorageAdapter {
     );
   }
 
-  sweepIds(ids: string[], runId: string): Promise<{ swept: number; byKind: Record<string, number> }> {
+  sweepIds(ids: string[], runId: string): Promise<SweptIds> {
     if (ids.length === 0) return Promise.resolve({ swept: 0, byKind: {} });
     return this.now().then((now) =>
       Promise.resolve(this.tx(() => {
@@ -915,7 +918,7 @@ export class SqliteAdapter implements StorageAdapter {
     return Promise.resolve(resolveEventHorizon(oldest, exists, after));
   }
 
-  async appendGcEvent(e: EventInput): Promise<{ cursor: string; seq: number }> {
+  async appendGcEvent(e: EventInput): Promise<EventPosition> {
     const now = await this.now();
     this.appendEvent(e, now);
     const row = this.db.prepare("select last_insert_rowid() as seq").get() as { seq: number };
@@ -931,7 +934,7 @@ export class SqliteAdapter implements StorageAdapter {
     return Promise.resolve(row ? rowToSeal(row) : null);
   }
 
-  sweepSealedEvents(anchor: { idx: number; seq: number }, limit: number, dryRun?: boolean): Promise<{ events: number; done: boolean }> {
+  sweepSealedEvents(anchor: { idx: number; seq: number }, limit: number, dryRun?: boolean): Promise<EventSweepResult> {
     if (dryRun) {
       const row = this.db.prepare(
         "select count(*) c from event_seal s join events e on e.seq = s.seq where s.idx <= ?",

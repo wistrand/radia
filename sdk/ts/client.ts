@@ -23,6 +23,11 @@ import type {
   SettleResult,
   BlobGcResult,
   CompactionResult,
+  Diagnostics,
+  EffectivePermissions,
+  Envelope,
+  ErasureReport,
+  ErasureStatus,
   DigestResponse,
   EventGcResult,
   FlowReport,
@@ -31,7 +36,10 @@ import type {
   GcReport,
   IntegrityReport,
   IntegrityResponse,
+  MintedRun,
   OpsScope,
+  RunRenewal,
+  ShredResult,
   SpaceDigest,
   SpaceEvent,
   TakeResult,
@@ -60,9 +68,9 @@ export { awaitResult } from "./await.ts";
 export type { AwaitOptions, AwaitOutcome } from "./await.ts";
 
 export type {
-  AckResult, BlobGcResult, CompactionResult, Cursor, DigestResponse, EventGcResult, FlowReport, FlowShape,
-  FlowsResponse, GcReport, IntegrityReport, IntegrityResponse, KindDef, Lease, OpsScope, Page, Pattern,
-  PutRequest, RadiaRecord, SpaceDigest, SpaceEvent,
+  AckResult, BlobGcResult, CompactionResult, Cursor, Diagnostics, DigestResponse, EffectivePermissions, Envelope, ErasureReport, ErasureStatus, EventGcResult, FlowReport, FlowShape,
+  FlowsResponse, GcReport, IntegrityReport, IntegrityResponse, KindDef, Lease, MintedRun, OpsScope, Page, Pattern,
+  PutRequest, RadiaRecord, RunRenewal, ShredResult, SpaceDigest, SpaceEvent,
 };
 
 export interface KindStateCount {
@@ -417,7 +425,7 @@ export class RadiaClient {
   createRun(
     definitionToken: string,
     opts: { reuse?: boolean } = {},
-  ): Promise<{ run: string; agent: string; runToken: string; expiresAt: string }> {
+  ): Promise<MintedRun> {
     return this.req("POST", "/v0/agent-runs", { reuse: opts.reuse === true }, { "Authorization": `Bearer ${definitionToken}` });
   }
 
@@ -452,7 +460,7 @@ export class RadiaClient {
    * sees it, so a client that waits for a 401 has already lost the session. `keepAlive` below does
    * the scheduling; call this directly only if you own the timer.
    */
-  renewRun(run: string): Promise<{ run: string; agent: string; expiresAt: string; maxLifetimeAt: string }> {
+  renewRun(run: string): Promise<RunRenewal> {
     return this.req("POST", `/v0/agent-runs/${encodeURIComponent(run)}/renew`);
   }
 
@@ -496,7 +504,7 @@ export class RadiaClient {
    * Irreversible, and by CONTENT: identical payloads are one blob, so every artifact record
    * referencing it loses the bytes. That case refuses unless `acknowledgeShared` is set.
    */
-  shredArtifact(recordId: string, opts: { reason?: string; acknowledgeShared?: boolean } = {}): Promise<unknown> {
+  shredArtifact(recordId: string, opts: { reason?: string; acknowledgeShared?: boolean } = {}): Promise<ShredResult> {
     return this.req("POST", `/v0/ops/records/${encodeURIComponent(recordId)}/shred`, opts);
   }
 
@@ -669,7 +677,7 @@ export class RadiaClient {
     {
       events: SpaceEvent[];
       nextAfter?: string;
-      scope?: unknown;
+      scope?: OpsScope;
       withheld?: number;
       withheldNote?: string;
       /** Present when the page started below the event-GC horizon: the log is complete only
@@ -699,7 +707,7 @@ export class RadiaClient {
   /** What a principal can actually do: the fold over its grants, computed and shown. Operator
    *  only. Use it before and after changing grants: the difference is whether the change did what
    *  was promised. */
-  permissions(principal: string): Promise<unknown> {
+  permissions(principal: string): Promise<EffectivePermissions> {
     return this.req("GET", `/v0/ops/permissions?principal=${encodeURIComponent(principal)}`);
   }
 
@@ -810,7 +818,7 @@ export class RadiaClient {
    *  the caller's grants already scope this read to, so it can only narrow. */
   async queryEnvelopes(
     q: { state: string; expired?: boolean; stale?: number; limit?: number; kind?: string | string[] },
-  ): Promise<{ record: RadiaRecord | null; envelope: unknown }[]> {
+  ): Promise<{ record: RadiaRecord | null; envelope: Envelope }[]> {
     const p = new URLSearchParams({ state: q.state });
     if (q.expired) p.set("expired", "1");
     if (q.stale !== undefined) p.set("stale", String(q.stale));
@@ -829,14 +837,14 @@ export class RadiaClient {
     }
   }
 
-  diagnostics(): Promise<unknown> {
+  diagnostics(): Promise<Diagnostics> {
     return this.req("GET", "/v0/ops/diagnostics");
   }
 
   /** Every erasure and whether it STILL HOLDS: a shred destroys the runtime's copy, not the ability
    *  to store those bytes again, so a payload can return to the same content address. `undone`
    *  narrows to the ones that were reversed. */
-  erasures(opts: { undone?: boolean } = {}): Promise<unknown> {
+  erasures(opts: { undone?: boolean } = {}): Promise<ErasureReport> {
     return this.req("GET", `/v0/ops/erasures${opts.undone ? "?undone=true" : ""}`);
   }
 

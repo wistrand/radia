@@ -115,20 +115,8 @@ export function resolveEventHorizon(
 }
 
 /** Mutable claim-state envelope. One row per record. */
-export interface Envelope {
-  recordId: Ulid;
-  kind: string; // denormalized from record at commit
-  state: RecordState;
-  attempt: number;
-  availableAt: string; // eligibility / backoff
-  claimUntil?: string; // no NEW claims after this time
-  deadlineAt?: string; // denormalized
-  effectivePriority: number; // server-computed
-  leaseId?: Ulid;
-  leaseEpoch?: number;
-  leaseOwner?: string; // run id
-  leasedUntil?: string;
-}
+import type { Envelope } from "../../sdk/ts/wire.ts";
+export type { Envelope };
 
 // ---------------------------------------------------------------------------
 // Compiled match: backend-neutral pattern AST
@@ -186,6 +174,30 @@ export interface StatsScope {
 
 /** Selector for `envelopesInState`. An options object rather than positional parameters because
  *  every field here has to be applied in SQL, before the cap, and the list grows. */
+/**
+ * The three shapes the sweep half of this port passes back.
+ *
+ * Named because a port restated at each implementation is a port that can drift from them: these
+ * were written out four, three and three times across `adapter.ts`, `pgbase.ts` and `sqlite.ts`,
+ * with nothing checking the copies agreed.
+ */
+export interface SweptIds {
+  swept: number;
+  byKind: Record<string, number>;
+}
+
+/** Where an appended event landed: the opaque cursor a reader resumes from, and its dense seq. */
+export interface EventPosition {
+  cursor: string;
+  seq: number;
+}
+
+/** What one event-sweep pass removed. `done` is false while a backlog remains. */
+export interface EventSweepResult {
+  events: number;
+  done: boolean;
+}
+
 export interface EnvelopeQuery {
   state: RecordState;
   limit: number;
@@ -552,7 +564,7 @@ export interface StorageAdapter {
    * becomes indistinguishable from tampering. Never a substitute for record events: those are
    * appended inside the transaction that performs the mutation. (M2)
    */
-  appendGcEvent(e: EventInput): Promise<{ cursor: string; seq: number }>;
+  appendGcEvent(e: EventInput): Promise<EventPosition>;
 
   /** The newest seal whose event still exists and predates `cutoffTs` (DB-clock ISO): the event
    *  sweep's anchor candidate. Selecting THROUGH seals is what enforces window ∩ sealed-only: an
@@ -566,7 +578,7 @@ export interface StorageAdapter {
    * progress. `dryRun` counts the events that would go. The caller MUST have sealed a horizon
    * statement covering the anchor first; `Space.gcEvents` owns that order. (M2)
    */
-  sweepSealedEvents(anchor: { idx: number; seq: number }, limit: number, dryRun?: boolean): Promise<{ events: number; done: boolean }>;
+  sweepSealedEvents(anchor: { idx: number; seq: number }, limit: number, dryRun?: boolean): Promise<EventSweepResult>;
 
   // Kind declarations are NOT a storage concern: they are kind_def records, written via put()
   // and read via query() like any record (see core/space.ts loadKinds). No kinds table.
@@ -618,7 +630,7 @@ export interface StorageAdapter {
    * the count of what was actually deleted is returned. Appends the same recordless `gc` events
    * the retention sweep does, marked `compacted: true`.
    */
-  sweepIds(ids: Ulid[], runId: string): Promise<{ swept: number; byKind: Record<string, number> }>;
+  sweepIds(ids: Ulid[], runId: string): Promise<SweptIds>;
 
   /**
    * Envelopes currently in a given state, capped (diagnostics, remediation).
