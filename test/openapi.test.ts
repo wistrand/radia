@@ -287,3 +287,65 @@ Deno.test("openapi: every request field a handler accepts is in the contract", a
   const unmapped = [...handlers.keys()].filter((h) => !ROUTES[h]);
   assertEquals(unmapped, [], "these handlers guard their request fields but no route row maps them to an operation");
 });
+
+// The operator lists, checked BEHAVIOURALLY against the compiler rather than against each other.
+//
+// It exists because an external reviewer read `x-reserved-operators`, did not find `$exists`, and
+// concluded it was unimplemented — when it is absent from that list precisely BECAUSE it is
+// implemented. An exclusion list makes absence ambiguous, so the spec now states the supported set
+// too, and both halves are worthless unless something checks them: a positive list nobody verifies
+// is the same trap one direction over.
+Deno.test("openapi: the documented operator lists match what the compiler accepts", async () => {
+  const yaml = await Deno.readTextFile(SPEC);
+  const list = (field: string) => {
+    const raw = yaml.match(new RegExp(`^${field}:\\s*\\[(.*)\\]`, "m"))?.[1];
+    assert(raw, `${field} is missing from the spec`);
+    return [...raw.matchAll(/"(\$[a-z]+)"/g)].map((m) => m[1]);
+  };
+  const supported = list("x-supported-operators");
+  const reserved = list("x-reserved-operators");
+  assert(supported.length >= 10, `expected the supported list to name the operator set, found ${supported.length}`);
+
+  // A pattern per operator, in the shape each one takes. `$eq` is the implicit form as well, but
+  // the explicit spelling is what the list names, so that is what is compiled.
+  const sample = (op: string): Record<string, unknown> =>
+    op === "$and" || op === "$or"
+      ? { [op]: [{ tag: "x" }] }
+      : op === "$any" || op === "$each"
+      ? { tag: { [op]: "x" } }
+      : op === "$in" || op === "$nin"
+      ? { tag: { [op]: ["x"] } }
+      : op === "$exists"
+      ? { tag: { [op]: true } }
+      : { tag: { [op]: "x" } };
+
+  const { handler, close } = await newHandler();
+  try {
+    // Through the WIRE, not the compiler's exported symbol: the question is what a client holding
+    // this contract gets back, and `unknown_operator` reaching a caller who read the spec is the
+    // failure being guarded.
+    const compile = async (match: Record<string, unknown>): Promise<string> => {
+      const res = await handler(
+        new Request("http://t/v0/records/query", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ kind: "task", match, limit: 1 }),
+        }),
+      );
+      const body = await res.json().catch(() => ({}));
+      return res.ok ? "ok" : String(body.title ?? body.type ?? res.status);
+    };
+    const wrong: string[] = [];
+    for (const op of supported) {
+      const got = await compile(sample(op));
+      if (got !== "ok") wrong.push(`${op}: documented as supported, the compiler answers ${got}`);
+    }
+    for (const op of reserved) {
+      const got = await compile(sample(op));
+      if (got !== "operator_deferred") wrong.push(`${op}: documented as reserved, the compiler answers ${got}`);
+    }
+    assertEquals(wrong, [], "the contract's operator lists disagree with src/core/matching.ts");
+  } finally {
+    await close();
+  }
+});

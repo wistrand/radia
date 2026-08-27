@@ -13,11 +13,22 @@ declares the kinds they share, mints one durable principal per name, and prints 
 that points that harness here as that principal. No application code is written.
 
 ```
-claude-alpha: space_put  {kind:"task", body:{title:"sum the first 1000 primes", assignee:"codex"}}
-codex-alpha:  space_take {kind:"task", match:{assignee:"codex"}}   -> claimId, lease held for it
+codex-alpha:  space_put  {kind:"capability", body:{tool:"compute", provider:"agent:codex-alpha",
+                                                   def:{...}}}     -> what it can do, published once
+claude-alpha: space_put  {kind:"task", body:{title:"sum the first 1000 primes", tags:["compute"]}}
+codex-alpha:  space_take {kind:"task", match:{tags:{$any:"compute"}}} -> claimId, lease held for it
 codex-alpha:  space_ack  {claimId, resultKind:"note", resultBody:{answer:3682913}}
 claude-alpha: space_watch {kind:"note", newOnly:true}              -> the answer, parented on the task
 ```
+
+**A name belongs on a fact, never in the routing position of a claimable record.** `note.to` is a
+mailbox and is right: mail is addressed by whoever knows the recipient. `task.assignee` exists and
+is a PREFERENCE only. Nothing enforces it (no grant reads it, so any member may claim a task
+addressed to someone else), and a task addressed to a member who leaves is claimable forever,
+because retention GC never sweeps unclaimed claimable work. `tags` is the routing field, and
+`capability` is what a member matches them against: the writer states what the work needs, the
+claimant states what it is, and `removeMember` withdraws the departing member's advertisements so
+the routing goes with it.
 
 ## What is core, what is the extension, what is the surface
 
@@ -27,7 +38,7 @@ reading as the worked example: almost nothing here is runtime.
 | Tier | What teams put there | Why there |
 |--------------------------|----------------------------------------------|--------------------------------|
 | **Core** (`src/core`, `server`, `storage`) | the ops-plane PATTERN tier, and nothing else | authorization is enforcement; a convention cannot add a read tier |
-| **Extension** (`extensions/ts/team.ts`) | `task`/`note`, the `artifact` redeclaration, the grant sets, the roster projection | two apps would want the same shape; the runtime has no business knowing what a "task" is |
+| **Extension** (`extensions/ts/team.ts`) | `task`/`note`, the `artifact` and `capability` redeclarations, the grant sets, the roster projection | two apps would want the same shape; the runtime has no business knowing what a "task" is |
 | **Surface** (`src/surfaces/`) | `radia team`, the harness config, the write fill | ways to reach a space that are not raw HTTP |
 
 **The runtime gained one thing, and only because authorization cannot live above it.** Teams need
@@ -46,7 +57,7 @@ Each row is a design claim made elsewhere in these docs, and the moment it becom
 
 | Claim | Where you see it |
 |-------------------------------------|--------------------------------------------------------------|
-| Work is routed by CONTENT, not addressed | neither agent names the other; a `task` is claimed by whoever matches its pattern |
+| Work is routed by CONTENT, not addressed | neither agent names the other: the claimant advertises what it does, the writer states what the work needs, and the `task` goes to whoever matches |
 | A lease is what stops duplicate work | two agents, one task: the second `space_take` returns nothing, not a second copy |
 | Authorization is by record content | a write carrying another team's label is refused at the write, with no check in any app code |
 | Records are immutable, and a result is a new record | the answer is a `note` parented on the task, so the exchange is a graph rather than a mutation |
@@ -207,6 +218,7 @@ minting while `radia revoke` reaches only the newest. `radia team add` refuses i
 | `task` | yes | `pattern: {team: …}` on the grant |
 | `note` | no | same |
 | `artifact` | no | same, via a redeclaration adding `team` |
+| `capability` | no | same; `team` joins its `contentKey` too, or one member advertising one tool in two teams is one registry entry and compaction keeps only the newer |
 
 There is deliberately **no `status` field** on `task`: state lives in the envelope (available /
 leased / acked), which is the one copy nothing can disagree with, and a body field beside it goes

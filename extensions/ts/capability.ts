@@ -82,14 +82,25 @@ export function liveCapabilities(
  * catches the two cases it cannot: a definition that CHANGED must supersede, and one that was
  * RETIRED must revive.
  */
-export async function publishCapability(client: RadiaClient, def: ToolDef, provider?: string): Promise<void> {
+export async function publishCapability(
+  client: RadiaClient,
+  def: ToolDef,
+  provider?: string,
+  /** Body fields a pattern-scoped grant requires, e.g. `{team: "alpha"}` for a team member
+   *  (`extensions/ts/team.ts`). Without them such a publisher is refused outright; with them the
+   *  scope has to reach the KEY and the read as well, or one member advertising one tool in two
+   *  scopes writes once (the second publish replays the first key) and reads the wrong scope's
+   *  record as "unchanged, nothing to say". Absent, every byte of this function is as it was. */
+  scope?: Record<string, string>,
+): Promise<void> {
   const tool = def.function.name;
   const hash = await defHash(def);
-  let key = `capability:${provider ?? "?"}:${tool}:${hash}`;
+  const scoped = scope && Object.keys(scope).length ? `:${await defHash(Object.entries(scope).sort())}` : "";
+  let key = `capability:${provider ?? "?"}:${tool}:${hash}${scoped}`;
   try {
     // Narrowed to THIS provider: another worker's advertisement of the same name must not read as
     // "unchanged, nothing to say" and suppress this one.
-    const match = provider ? { tool, provider } : { tool };
+    const match = { ...scope, ...(provider ? { tool, provider } : { tool }) };
     const existing = await client.queryNewest<CapabilityBody & { retired?: boolean }>({ kind: CAPABILITY, match }, 1);
     const current = existing[0]?.body;
     if (current?.retired) {
@@ -115,7 +126,9 @@ export async function publishCapability(client: RadiaClient, def: ToolDef, provi
         `so a retired one cannot be revived. Grant this principal \`capability: query\`.`,
     );
   }
-  const body: CapabilityBody = provider ? { tool, def, provider } : { tool, def };
+  // Scope UNDER the body, never over it: a value stated here is what the grant will check, and a
+  // caller that named one itself is left to be refused on its own terms rather than corrected.
+  const body: CapabilityBody = { ...scope, ...(provider ? { tool, def, provider } : { tool, def }) };
   await client.put({ kind: CAPABILITY, body }, key);
 }
 
@@ -130,11 +143,32 @@ export async function publishCapability(client: RadiaClient, def: ToolDef, provi
  * Callers that already read the record they are retiring pass its id; without one this stays
  * best-effort on the constant key.
  */
-export async function retireCapability(client: RadiaClient, tool: string, provider: string, supersedes?: string): Promise<void> {
+export async function retireCapability(
+  client: RadiaClient,
+  tool: string,
+  provider: string,
+  supersedes?: string,
+  /** The advertisement's scope fields, as `publishCapability` took them. A withdrawal is a put like
+   *  any other, so without them a pattern-scoped publisher cannot withdraw what it wrote. */
+  scope?: Record<string, string>,
+): Promise<void> {
+  const scoped = scope && Object.keys(scope).length ? `:${await defHash(Object.entries(scope).sort())}` : "";
   await client.put(
-    { kind: CAPABILITY, body: { tool, provider, retired: true } },
-    `capability:${provider}:${tool}:retired${supersedes ? `:after:${supersedes}` : ""}`,
+    { kind: CAPABILITY, body: { ...scope, tool, provider, retired: true } },
+    `capability:${provider}:${tool}:retired${scoped}${supersedes ? `:after:${supersedes}` : ""}`,
   );
+}
+
+/** The scope fields a record carries beyond the ones this module writes itself. Read off the record
+ *  rather than passed in, so a withdrawal lands in the same scope as the advertisement without the
+ *  launcher having to know which scopes its workers publish under. */
+function scopeOf(b: CapabilityBody): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(b as unknown as Record<string, unknown>)) {
+    if (k === "tool" || k === "def" || k === "provider" || k === "retired") continue;
+    if (typeof v === "string") out[k] = v;
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 /**
@@ -160,7 +194,7 @@ export async function retireProviderCapabilities(client: RadiaClient, providers:
         try {
           // Anchored on the record being withdrawn: this projection already read it, so a repeat
           // withdrawal after a republish is a fresh write rather than a replayed one.
-          await retireCapability(client, b.tool, b.provider, rec.id);
+          await retireCapability(client, b.tool, b.provider, rec.id, scopeOf(b));
           retired++;
         } catch { /* best effort: shutdown must not fail over a withdrawal */ }
       }),

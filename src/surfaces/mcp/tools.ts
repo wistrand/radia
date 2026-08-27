@@ -13,10 +13,16 @@ const KIND = { type: "string", description: "Record kind. Discover valid kinds w
 const MATCH = {
   type: "object",
   description:
+    // The list is the WHOLE list, and it named two operators the compiler refuses ($ne, $nin, both
+    // deferred): a description that promises an operator buys a guaranteed refusal, since a model
+    // reading it has no other source. Checked against `src/core/matching.ts` by `test/team.test.ts`.
     "Pattern match on the record body, e.g. {\"status\":\"open\"} or {\"n\":{\"$gt\":3}}. Operators: " +
-    "$eq $ne $gt $gte $lt $lte $in $nin $exists $and $or. Only paths declared indexed for the kind " +
-    "may be matched, and space_kinds lists them. Patterns are data: no regex, no expressions. Omit " +
-    "to match every record of the kind.",
+    "$eq $gt $gte $lt $lte $in $exists $any $each $and $or, and nothing else (there is no negation " +
+    "yet). Absence is matchable: {\"assignee\":{\"$exists\":false}} finds the records where nobody " +
+    "set it, which is how you claim unassigned work, and a missing field matches NO other " +
+    "predicate. $any/$each are for arrays: a scalar never distributes over one. Only paths declared " +
+    "indexed for the kind may be matched, and space_kinds lists them. Patterns are data: no regex, " +
+    "no expressions. Omit to match every record of the kind.",
 };
 const ORDER_BY = {
   type: "array",

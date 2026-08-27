@@ -1,5 +1,6 @@
 // A TEAM: several agent harnesses (Claude Code, Codex, anything that speaks MCP) sharing one
-// space so they can pass work between them. The convention is two kinds and one grant set;
+// space so they can pass work between them. The convention is two kinds of its own (`task`, `note`),
+// two it extends with the team field (`artifact`, `capability`), and one grant set;
 // everything that makes it work (claiming, fencing, at-least-once delivery, lineage) is the
 // runtime's own coordination and is not restated here.
 //
@@ -14,6 +15,7 @@
 
 import type { RadiaClient } from "../../sdk/ts/client.ts";
 import { AGENT_DEFINITION, ARTIFACT, KIND_DEF, type KindDef } from "../../sdk/ts/wire.ts";
+import { CAPABILITY, CAPABILITY_KIND, retireProviderCapabilities } from "./capability.ts";
 import { activeByKey, grantKey, isRetired, newestByKey, opsGrantKey } from "../../sdk/ts/registry.ts";
 
 export const TASK = "task";
@@ -38,7 +40,11 @@ export const DEFAULT_TEAM = "default";
  * goes stale the moment a lease lapses.
  *
  * `note` is not claimable: it is what agents say to each other, and what a finished task acks as
- * its result. `to` makes a mailbox (`match: {to: "agent:codex"}`), `topic` makes a thread.
+ * its result. `to` makes a mailbox (`match: {to: "agent:codex"}`), `topic` makes a thread. A NAME
+ * belongs here and not on `task`: a note is mail, addressed by the one who knows the recipient,
+ * while a claimable record's performer is what the claim decides.
+ *
+ * `capability` is how a member says what it can do, so `task.tags` has something to match against.
  *
  * `artifact` is RESERVED and redeclared here to add `team` alone. A reserved kind may be extended
  * and never shrunk (`src/core/kinds.ts`), and this extension is load-bearing rather than tidy: an
@@ -49,16 +55,24 @@ export const TEAM_KINDS: KindDef[] = [
   {
     kind: TASK,
     // `title` and `detail` are free text and index nothing: matching on prose is not what routes
-    // work here. `tags` is how an agent claims what it is good at, `assignee` how a task names one.
+    // work here. `tags` is the routing field, stating what the work NEEDS so a claimant can match
+    // it. `assignee` is indexed too, but it names a performer rather than a property, which is the
+    // writer answering the question the claim exists to answer: it binds nothing (no grant reads
+    // it), and a task addressed to a member who leaves is claimable forever, since retention GC
+    // never sweeps unclaimed claimable work. Hence the usage string below: tag it as well, always.
     indexedPaths: [
       { path: TEAM_FIELD, type: "keyword" },
       { path: "assignee", type: "keyword" },
       { path: "tags", type: "array" },
     ],
-    usage: "Work for whoever can do it. body: {title, detail?, tags?: string[], assignee?}. " +
-      "Claim with space_take, then settle with space_ack (resultKind 'note') so the answer links " +
-      "back to the request. There is no status field: the claim state IS the status. Match one tag " +
-      "with {tags: {$any: 'review'}}; a scalar does not distribute over an array here.",
+    usage: "Work for whoever can do it. body: {title, detail?, tags?, assignee?}. " +
+      "ROUTE WITH `tags` (string[]): they say what the work needs, and a claimant matches them " +
+      "({tags: {$any: 'review'}}; scalars do not distribute over arrays). `assignee` is a " +
+      "PREFERENCE: nothing enforces it, anyone may claim a task addressed to someone else, and " +
+      "one for a member who left is claimable forever. Tag every task. Claim " +
+      "yours-or-unclaimed with {$or: [{assignee: '<you>'}, {assignee: {$exists: false}}]}. Settle " +
+      "with space_ack (resultKind 'note') to link the answer back. No status field: the " +
+      "claim state IS the status.",
   },
   {
     kind: NOTE,
@@ -85,15 +99,41 @@ export const TEAM_KINDS: KindDef[] = [
     ],
     claimable: false,
   },
+  {
+    // The other direction from `tags`. A task's tags are the WRITER's claim about the work; this is
+    // a member's claim about ITSELF, which is what lets "who should do this" be answered at claim
+    // time instead of by whoever wrote the record. Without it a team has no channel for a member to
+    // say what it can do, and `assignee` is what people reach for in its absence.
+    ...CAPABILITY_KIND,
+    // Extended with `team` for the same reason `artifact` is: the grant pattern IS the isolation,
+    // and a kind carrying no `team` path can hold no pattern that compiles.
+    indexedPaths: [...CAPABILITY_KIND.indexedPaths, { path: TEAM_FIELD, type: "keyword" }],
+    // `team` JOINS the key. Under (provider, tool) alone, one member advertising one tool in two
+    // teams is ONE registry entry: compaction keeps the newer and the other team's copy disappears
+    // with nothing reporting it. Absence is a value in the key (`keyOf`, src/core/gc.ts), so
+    // records written without a team (the chat's workers) keep grouping exactly as they did.
+    contentKey: [...(CAPABILITY_KIND.contentKey ?? []), TEAM_FIELD],
+    usage: "What YOU can do, so work reaches you by content rather than by name. body: " +
+      "{tool, provider, def}, where `provider` is your own principal and `def` is the " +
+      "function-calling shape {type:'function', function:{name, description, parameters}}. " +
+      "Publish one per thing you can do; re-publishing an unchanged one is free. Read the team's " +
+      "with {kind: 'capability'} before deciding a task is yours or nobody's.",
+  },
 ];
 
 /** The operations a member holds per kind. The TEAM is what bounds them, and it is applied as a
  *  grant pattern rather than left to each write to respect. `put` on `note` is what lets a member
- *  ack a task with its result. */
+ *  ack a task with its result.
+ *
+ *  `query` on `capability` is not a nicety beside the `put`: `publishCapability` reads before
+ *  writing, and a publisher that cannot read republishes an unchanged definition under the key it
+ *  already used, so a RETIRED advertisement never revives and the member serves a tool nothing can
+ *  discover (`capability.ts`). */
 export const MEMBER_GRANTS: { kind: string; operations: string[] }[] = [
   { kind: TASK, operations: ["put", "take", "query", "read_one"] },
   { kind: NOTE, operations: ["put", "query", "read_one"] },
   { kind: ARTIFACT, operations: ["put", "query", "read_one"] },
+  { kind: CAPABILITY, operations: ["put", "query", "read_one"] },
 ];
 
 /**
@@ -137,7 +177,8 @@ export interface RosterEntry {
   /** Holds a grant on `task` or `note`: this principal is on the team. Every OTHER definition on a
    *  space (an app's workers, a person's login) is not, and listing them all was the roster's
    *  first bug: a real space has dozens and the team was buried in them. `artifact` alone does not
-   *  count, since anything that stores bytes holds it. */
+   *  count, since anything that stores bytes holds it, and neither does `capability`, which every
+   *  tool worker on the space publishes. */
   member: boolean;
   /** A member whose team-kind grants carry NO pattern, so it reads EVERY team. The state a member
    *  created before teams existed is in, and the one worth shouting about: adding teams around it
@@ -439,6 +480,10 @@ export interface MemberRemoval {
   /** Every ops power withdrawn, sorted. EVERY one, not just `observe`: removal means removal, and
    *  a `remediate` left standing comes back with the principal on the next `team add`. */
   opsPowersRetired: string[];
+  /** Advertisements withdrawn. A capability record is what makes work reach a member BY CONTENT, so
+   *  one left standing routes tasks to a principal that can no longer authenticate. Retiring the
+   *  grant does not retire the record: the projection reads what was written, not who may write. */
+  capabilitiesRetired: number;
   /** Run ids actually stopped, split by the two classes a principal acts through. */
   stoppedOwn: string[];
   stoppedDelegated: string[];
@@ -506,6 +551,10 @@ export async function removeMember(admin: RadiaClient, agent: string): Promise<M
     }
   }
   const opsPowersRetired = await retireOpsGrants(admin, agent);
+  // AFTER the grants, for the same reason the runs come last: this is a withdrawal of a claim, not
+  // of authority, and it is best-effort by construction (`retireProviderCapabilities` swallows a
+  // failed read). The provider a member publishes under is its own principal.
+  const capabilitiesRetired = await retireProviderCapabilities(admin, [agent]);
 
   // The DATABASE clock, never this process's: `expiresAt` is stamped by the space, and a local
   // clock running fast reads a live run as expired and skips stopping it. That run then RENEWS
@@ -524,7 +573,7 @@ export async function removeMember(admin: RadiaClient, agent: string): Promise<M
       if ((await admin.stopRun(b.run)).applied) out.push(b.run);
     }
   }
-  return { agent, revoked, grantsRetired, opsPowersRetired, stoppedOwn, stoppedDelegated };
+  return { agent, revoked, grantsRetired, opsPowersRetired, capabilitiesRetired, stoppedOwn, stoppedDelegated };
 }
 
 /** The half of a `grant` body this file rewrites. */

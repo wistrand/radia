@@ -122,7 +122,7 @@ Deno.test("[team] the roster reads from enforcement, not from what was assigned"
     assert(claude.opsPowers.includes("observe"));
     assert(!codex.opsPowers.includes("observe"), "--no-observe must actually withhold the power");
     // `kind_def` is the DISCOVERY grant and is deliberately unscoped; the rest carry the team.
-    assertEquals(claude.kinds.map((k) => k.kind).sort(), ["artifact", "kind_def", "note", "task"]);
+    assertEquals(claude.kinds.map((k) => k.kind).sort(), ["artifact", "capability", "kind_def", "note", "task"]);
     assertEquals(claude.teams, [DEFAULT_TEAM]);
     assert(claude.active);
   } finally {
@@ -383,7 +383,7 @@ Deno.test("[team] the aggregates say what they do NOT cover rather than reportin
     const r = await c.getStatsReport();
     assert(r.scope, "a scoped caller must be told it was scoped");
     assertEquals(r.scope!.kinds, [], "a pattern-scoped kind must not be counted; the count would over-report");
-    assertEquals(r.scope!.patternScoped, ["artifact", "note", "task"]);
+    assertEquals(r.scope!.patternScoped, ["artifact", "capability", "note", "task"]);
     assert(/grant PATTERN/.test(r.scope!.note), r.scope!.note);
   } finally {
     await s.close();
@@ -434,7 +434,7 @@ Deno.test("[team] a member can DISCOVER kinds, and that grant is not team-scoped
     // taught it. Without `kind_def: query` a member's opening move is a 403, which is how this was
     // found — on a real harness, against a real space.
     const kinds = (await c.listKinds()).map((k) => k.kind).sort();
-    assertEquals(kinds, ["artifact", "note", "task"]);
+    assertEquals(kinds, ["artifact", "capability", "note", "task"]);
 
     // AND IT MUST NOT CARRY THE TEAM PATTERN. A `kind_def` body has no `team` field, so a scoped
     // grant here matches nothing and refuses every declaration: the same 403, arrived at from the
@@ -1099,5 +1099,30 @@ Deno.test("[team] the roster bounds its in-flight reads, and reports every defin
     assert(roster.every((m) => m.member && m.teams.length === 1), "a parallel read returned a wrong row");
   } finally {
     await s.close();
+  }
+});
+
+Deno.test("[team] the MCP match description names every operator the compiler takes, and no other", async () => {
+  // A model reaching this surface has no second source: the description IS the documentation. It
+  // named `$ne` and `$nin`, both DEFERRED, so following it bought a guaranteed refusal, and it left
+  // out `$exists`, which is how unassigned work is claimed. Read from source rather than from the
+  // imported constant, since the failure being guarded is a hand-written list drifting from the
+  // compiler beside it.
+  const matching = await Deno.readTextFile(new URL("../src/core/matching.ts", import.meta.url));
+  const set = (name: string) =>
+    [...(matching.match(new RegExp(`const ${name} = new Set\\(\\[(.*?)\\]`, "s"))?.[1] ?? "").matchAll(/"(\$[a-z]+)"/g)]
+      .map((m) => m[1]);
+  const unavailable = [...set("FORBIDDEN"), ...set("DEFERRED")];
+  assert(unavailable.length >= 8, `failed to read the operator sets from matching.ts; found ${unavailable.length}`);
+
+  const tools = await Deno.readTextFile(new URL("../src/surfaces/mcp/tools.ts", import.meta.url));
+  const desc = tools.split("const MATCH = {")[1]?.split("};")[0] ?? "";
+  assert(desc.includes("Pattern match on the record body"), "the MATCH description moved; this guard is now checking nothing");
+  const promised = unavailable.filter((op) => desc.includes(`${op} `) || desc.includes(`${op}\\"`));
+  assertEquals(promised, [], "the tool description promises operators the compiler refuses");
+  // $eq is the implicit form and $in/$exists are the two a model has to be TOLD about: one for a
+  // mailbox, one for unclaimed work.
+  for (const op of ["$in", "$exists", "$any"]) {
+    assert(desc.includes(op), `the MATCH description does not mention ${op}, so nothing teaches it`);
   }
 });

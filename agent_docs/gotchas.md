@@ -2198,6 +2198,13 @@ lasts, the unit is the AGENT: a run is the session.
 
 ### Method: how these were found
 
+- **Absence from an EXCLUSION list is not evidence, and `x-reserved-operators` is the one that
+  misleads.** An external reviewer looked for `$exists` there, did not find it, and concluded it was
+  unimplemented; it is absent precisely BECAUSE it is implemented, since the list names only the
+  DEFERRED operators. Two rounds of design followed from the wrong answer. The fix is on both sides:
+  the spec now states `x-supported-operators` beside it, guarded against the compiler
+  (`test/openapi.test.ts`), and a nonexistence claim about a symbol is worth a grep before it is
+  worth a paragraph.
 - **A NUL byte anywhere in a source file makes `grep` silent about the WHOLE file.** `space.ts`
   used `\0` as a cache-key separator, so the largest and most central file in the repo answered
   every search with nothing — not an error, nothing. Two wrong conclusions were drawn from it in one

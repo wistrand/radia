@@ -608,6 +608,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
                 `  definition   ${r.revoked ? "revoked" : "already revoked"}`,
                 `  grants       ${r.grantsRetired} retired`,
                 `  ops powers   ${r.opsPowersRetired.length ? `${r.opsPowersRetired.join(",")} retired` : "none held"}`,
+                `  advertised   ${r.capabilitiesRetired} capabilities withdrawn`,
                 `  own runs     ${r.stoppedOwn.length} stopped`,
                 // NAMED even at zero: a worker holding a run on their behalf is the class that is
                 // easy to forget exists, and a silent zero reads as "there were none to check".

@@ -65,9 +65,14 @@ info:
 servers:
   - url: /v0
 
-# Deferred matching operators are reserved now so adding them later is not breaking:
-# $ne, $nin, $not, $prefix, full-text. $regex/$where/$expr are never added (patterns are
-# data, not code).
+# The matching operators, stated POSITIVELY here as well as negatively, because absence from the
+# reserved list is not evidence of anything and has been read as both answers: an external reviewer
+# concluded `$exists` was unimplemented because it was not reserved, when it is not reserved
+# BECAUSE it is implemented. Both lists are checked against `src/core/matching.ts` by
+# `test/openapi.test.ts`; that file is the source of truth and this is a restatement.
+x-supported-operators: ["$eq", "$gt", "$gte", "$lt", "$lte", "$in", "$exists", "$any", "$each", "$and", "$or"]
+# Deferred: reserved now so adding them later is not breaking. NOT a statement about anything
+# missing from this list. $regex/$where/$expr are never added (patterns are data, not code).
 x-reserved-operators: ["$ne", "$nin", "$not", "$prefix", "$text"]
 
 paths:
