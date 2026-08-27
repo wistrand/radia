@@ -105,6 +105,15 @@ export interface InspectionHost {
  * Never make this change the result. It annotates, so a caller that ignores it is exactly as
  * correct as before.
  */
+/** Does this condition address the ELEMENTS of an array path? `$exists` counts: it asks about the
+ *  field, not its contents. A bare array value does not: `{tags: ["a"]}` is whole-list equality,
+ *  which is legal and almost never what the caller meant. */
+function arrayPredicate(cond: unknown): boolean {
+  if (cond === null || typeof cond !== "object" || Array.isArray(cond)) return false;
+  const keys = Object.keys(cond as Record<string, unknown>);
+  return keys.length > 0 && keys.every((k) => k === "$any" || k === "$each" || k === "$exists");
+}
+
 export function explainQuery(
   h: InspectionHost,
   pattern: Pattern,
@@ -151,6 +160,19 @@ export function explainQuery(
       notes.push(
         `match names ${unindexed.join(", ")}, which ${unindexed.length === 1 ? "is" : "are"} not a ` +
           `declared indexed path of '${pattern.kind}' (declared: ${[...declared].sort().join(", ") || "(none)"}).`,
+      );
+    }
+    // A scalar predicate on an ARRAY path answers empty, and the near miss that DOES answer is
+    // worse: `{tags: ["image"]}` is whole-list equality, so it found a one-tag record and would
+    // have missed the same work tagged ["image","urgent"]. Both were observed in one session, on
+    // the first tag-routed claim between two harnesses.
+    const arrays = new Set(def.indexedPaths.filter((p) => p.type === "array").map((p) => p.path));
+    const flat = Object.keys(pattern.match).filter((k) => arrays.has(k) && !arrayPredicate((pattern.match as Record<string, unknown>)[k]));
+    if (flat.length > 0) {
+      notes.push(
+        `${flat.join(", ")} ${flat.length === 1 ? "is" : "are"} declared type array and matched with a ` +
+          `scalar predicate: a scalar never distributes over elements, and $in compares the WHOLE ` +
+          `array rather than testing membership. Use {$any: …} for "contains", {$each: …} for "all of".`,
       );
     }
   }

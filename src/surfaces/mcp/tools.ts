@@ -20,9 +20,13 @@ const MATCH = {
     "$eq $gt $gte $lt $lte $in $exists $any $each $and $or, and nothing else (there is no negation " +
     "yet). Absence is matchable: {\"assignee\":{\"$exists\":false}} finds the records where nobody " +
     "set it, which is how you claim unassigned work, and a missing field matches NO other " +
-    "predicate. $any/$each are for arrays: a scalar never distributes over one. Only paths declared " +
-    "indexed for the kind may be matched, and space_kinds lists them. Patterns are data: no regex, " +
-    "no expressions. Omit to match every record of the kind.",
+    "predicate. ON AN ARRAY FIELD (space_kinds says which), a scalar predicate never distributes " +
+    "over the elements: {\"tags\":\"image\"} matches nothing, and {\"tags\":{\"$in\":[\"image\"]}} " +
+    "does NOT mean 'has one of these' either, since $in compares the WHOLE array. Membership is " +
+    "{\"tags\":{\"$any\":\"image\"}}; 'every element' is $each. {\"tags\":[\"image\"]} is legal and " +
+    "is whole-list equality, so it silently misses a record tagged [\"image\",\"urgent\"]. Only " +
+    "paths declared indexed for the kind may be matched, and space_kinds lists them. Patterns are " +
+    "data: no regex, no expressions. Omit to match every record of the kind.",
 };
 const ORDER_BY = {
   type: "array",
@@ -84,7 +88,10 @@ export const TOOLS: McpTool[] = [
   },
   {
     name: "space_query",
-    description: "Read records matching a pattern. Read-only. It does not claim anything. Without order_by, records come back in ascending record-id order, so a limit gives you the OLDEST matches and never the newest: this is the wrong tool for \"the most recent X\". Narrow the match, or order_by a sortable path.",
+    // "3 available tasks" was reported off this call twice, on a space where two of the three were
+    // finished a day earlier: a record does not stop matching when its work is done, and nothing in
+    // the answer says otherwise. The reader has no other source, so the caveat belongs here.
+    description: "Read records matching a pattern. Read-only. It does not claim anything. Without order_by, records come back in ascending record-id order, so a limit gives you the OLDEST matches and never the newest: this is the wrong tool for \"the most recent X\". Narrow the match, or order_by a sortable path. A record here may be FINISHED WORK: claim state lives in the runtime envelope, not the body, so on a claimable kind the settled records come back looking exactly like open ones. Never report this list as what is outstanding. What is open is what space_take hands you; whether one record is done shows in space_children, where a settled one carries the result it was answered with.",
     inputSchema: {
       type: "object",
       properties: { kind: KIND, match: MATCH, orderBy: ORDER_BY, limit: { type: "number", description: "Default 50." } },

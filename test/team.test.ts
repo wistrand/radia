@@ -569,6 +569,11 @@ Deno.test("[team] the shared kinds teach the conventions two agents otherwise in
     assert(byKind.get("note")!.includes("message"), "the prose field is not pinned");
     assert(byKind.get("task")!.includes("$any"), "tag matching does not distribute; that has to be said");
     assert(byKind.get("task")!.includes("space_ack"), "how a task is answered is not documented");
+    // And two more, both from watching real harnesses: settled tasks were reported as available
+    // off a plain query (the body carries no claim state), and an answer was written as a separate
+    // put before the ack, which is the one shape that is NOT fenced.
+    assert(byKind.get("task")!.includes("space_children"), "nothing says how to tell a settled task from an open one");
+    assert(/fenced/i.test(byKind.get("task")!), "nothing says why the answer rides on the ack");
   } finally {
     await sp.close();
   }

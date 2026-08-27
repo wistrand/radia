@@ -124,6 +124,13 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   index, 1.42ms with**, for ~5% on `put`. Not to be confused with the headline pushdown win:
   against an unselective predicate GIN is not used at all, and the speedup is the pushed LIMIT
   letting the scan stop at the first match.
+- **`$in` on an array path is not membership, and the near miss is worse than the miss.** A scalar
+  predicate never distributes over elements, so `{tags: {$in: ["image"]}}` compares the WHOLE array
+  and answers empty; `{tags: ["image"]}` then MATCHES, by whole-list equality, and would have missed
+  the same work tagged `["image","urgent"]`. Both happened in one session on the first tag-routed
+  claim between two harnesses. `{$any: …}` is membership. Named in the MCP `MATCH` description and
+  by an `explain` note (`src/core/inspection.ts`), not refused: the empty answer is the frozen
+  contract (`test/conformance/suites/matching.ts`).
 - **Lineage goes UP; to follow links DOWN you need children.** `parent_ids` points at what a record
   was derived from, so `getLineage` returns ANCESTORS and a root record (a `conversation`, a `job`)
   has none. Use `getChildren` / `space_children` (backed by `childrenOf`) for records that

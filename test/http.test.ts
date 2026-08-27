@@ -568,6 +568,26 @@ Deno.test("http: explain names the traps a correct-looking query walked into", a
     assert((missing.explain as string[]).join(" ").includes("no kind 'nope' is declared"));
     assert((missing.explain as string[]).join(" ").includes("note"), "it lists what IS declared");
 
+    // An ARRAY path matched with a scalar predicate. Both shapes below were written by a real
+    // harness in one session: `$in` answered empty, and whole-list equality answered a row that a
+    // second tag would have hidden. Neither is an error, so the note is the only place to say so.
+    space.registerKind({ kind: "job", indexedPaths: [{ path: "tags", type: "array" }], claimable: false });
+    await space.put({ kind: "job", body: { tags: ["image"] } });
+    for (const match of [{ tags: { $in: ["image"] } }, { tags: ["image"] }, { tags: "image" }]) {
+      const r = await (await handler(post("/v0/records/query", { kind: "job", match, explain: true }))).json();
+      const said = (r.explain as string[]).join(" | ");
+      assert(said.includes("declared type array"), `${JSON.stringify(match)} went unexplained: ${said}`);
+      assert(said.includes("$any"), `the note must name the fix: ${said}`);
+    }
+    const quantified = await (await handler(
+      post("/v0/records/query", { kind: "job", match: { tags: { $any: "image" } }, explain: true }),
+    )).json();
+    assertEquals(quantified.records.length, 1);
+    assert(
+      !(quantified.explain as string[]).join(" ").includes("declared type array"),
+      "the correct form must not be warned about",
+    );
+
     // Without the flag the response is byte-identical to before.
     const plain = await (await handler(post("/v0/records/query", { kind: "note", limit: 2 }))).json();
     assertEquals(plain.explain, undefined, "explain is opt-in and never changes the result");

@@ -68,11 +68,10 @@ export const TEAM_KINDS: KindDef[] = [
     usage: "Work for whoever can do it. body: {title, detail?, tags?, assignee?}. " +
       "ROUTE WITH `tags` (string[]): they say what the work needs, and a claimant matches them " +
       "({tags: {$any: 'review'}}; scalars do not distribute over arrays). `assignee` is a " +
-      "PREFERENCE: nothing enforces it, anyone may claim a task addressed to someone else, and " +
-      "one for a member who left is claimable forever. Tag every task. Claim " +
-      "yours-or-unclaimed with {$or: [{assignee: '<you>'}, {assignee: {$exists: false}}]}. Settle " +
-      "with space_ack (resultKind 'note') to link the answer back. No status field: the " +
-      "claim state IS the status.",
+      "PREFERENCE: nothing enforces it, anyone may claim a task addressed to someone else, so tag " +
+      "every task. Settle with space_ack (resultKind 'note'), never a separate put: only the ack " +
+      "is fenced. No status field, and a SETTLED task still comes back from space_query looking " +
+      "open: to tell, read space_children for its result note.",
   },
   {
     kind: NOTE,
