@@ -151,16 +151,36 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/Pattern" }
+            schema:
+              allOf:
+                - { $ref: "#/components/schemas/Pattern" }
+                - type: object
+                  properties:
+                    explain:
+                      type: boolean
+                      description: >
+                        Add the space's own notes about this read (an undeclared kind, a scalar
+                        predicate on an array path). Opt-in, as on `query`: the notes cost a
+                        computation, the envelope does not.
       responses:
         "200":
-          description: record or null
+          description: >
+            `{record, scope?, explain?}`, where `record` is null when nothing matched. The record is
+            wrapped for the same reason `query` wraps its rows: `scope` is present exactly when a
+            grant narrowed the read, which is what tells a null that found nothing from a null that
+            found nothing THIS CALLER MAY READ.
           content:
             application/json:
               schema:
-                oneOf:
-                  - { $ref: "#/components/schemas/Record" }
-                  - { type: "null" }
+                type: object
+                required: [record]
+                properties:
+                  record:
+                    oneOf:
+                      - { $ref: "#/components/schemas/Record" }
+                      - { type: "null" }
+                  scope: { type: object, description: "present when a grant narrowed the read" }
+                  explain: { type: array, items: { type: string } }
         "400": { $ref: "#/components/responses/Problem" }
 
   /records/registry:

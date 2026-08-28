@@ -1333,8 +1333,10 @@ Deno.test("records: read-one answers with the OLDEST match, and a newest-first q
     }
 
     const oldest = await (await handler(post("/v0/records/read-one", { kind: "task", match: { tag: "t" } }))).json();
-    assertEquals(oldest.id, ids[0], "read-one is the oldest match");
-    assertEquals(oldest.body.v, "first");
+    // `{record, scope?}`, like `query`: the bare record could not say whether a null was "no such
+    // record" or "none you may read", and it was the last read that could not.
+    assertEquals(oldest.record.id, ids[0], "read-one is the oldest match");
+    assertEquals(oldest.record.body.v, "first");
 
     const newest = await (await handler(
       post("/v0/records/query", { kind: "task", match: { tag: "t" }, limit: 1, dir: "desc" }),

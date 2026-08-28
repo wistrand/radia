@@ -550,8 +550,27 @@ export class RadiaClient {
    * registry entry, a versioned record, key material a later write extends — that is the stale
    * answer, and it is stale silently. Use `readNewest`.
    */
-  readOne<T = unknown>(pattern: Pattern): Promise<RadiaRecord<T> | null> {
-    return this.req("POST", "/v0/records/read-one", pattern);
+  async readOne<T = unknown>(pattern: Pattern): Promise<RadiaRecord<T> | null> {
+    // The endpoint answers `{record, scope?}`, as `query` does; this unwraps it so the forty
+    // callers of `readOne` see what they always saw. `readOneReport` is the one that keeps the
+    // scope, which is what tells a null that found nothing from a null that found nothing YOU
+    // MAY READ.
+    return (await this.req("POST", "/v0/records/read-one", pattern)).record ?? null;
+  }
+
+  /**
+   * The same read, plus what qualifies a `null`.
+   *
+   * A caller that gets nothing back cannot otherwise tell NO SUCH RECORD from none within the
+   * bounds its grant imposes, and those are different facts: the second means the record may well
+   * exist and be somebody else's. `scope` is present exactly when a grant narrowed the read, so a
+   * null beside one is the second case. Same pair as `getStats`/`getStatsReport`.
+   */
+  async readOneReport<T = unknown>(
+    pattern: Pattern,
+  ): Promise<{ record: RadiaRecord<T> | null; scope?: ReadScope; explain?: string[] }> {
+    const r = await this.req("POST", "/v0/records/read-one", { ...pattern, explain: true });
+    return { record: r.record ?? null, scope: r.scope, explain: r.explain };
   }
 
   /**

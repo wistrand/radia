@@ -414,3 +414,36 @@ Deno.test("[flows] caller-named sums answer 'where does the metric go, by shape'
     await close();
   }
 });
+
+Deno.test("flows: the DELIVERABLE is in the shape; the runtime's bookkeeping is not", async () => {
+  // `artifact` was excluded with the reserved kinds, and the reason given for that exclusion does
+  // not describe it: it is what an app PRODUCED, referenced by parent_ids from the work that
+  // produced it, and written only when somebody stores bytes. Measured on a two-agent lab run whose
+  // whole point was a TypeScript program: the mined shape read `task → note`, two records, with the
+  // file the work existed to produce missing from the diagram (agent_docs/plan-agent-lab.md).
+  const { space, close } = await pipelineSpace();
+  try {
+    const job = await space.put({ kind: "job", body: { n: 1 } });
+    const task = await space.put({ kind: "task", body: { op: "render" }, parentIds: [job.id] });
+    // The deliverable, exactly as an agent writes one: bytes beside the record, parented on the
+    // work. `putArtifact` is the real path; the record is what mining walks.
+    await space.putArtifact(new TextEncoder().encode("console.log(1)"), {
+      filename: "out.ts",
+      mediaType: "text/typescript",
+      parentIds: [task.id],
+    });
+    await space.put({ kind: "summary", body: { text: "done" }, parentIds: [task.id] });
+
+    const r = await space.flows({ granularity: "kind" });
+    assert(r.scanned.kinds.includes("artifact"), `artifact was not even scanned: ${r.scanned.kinds}`);
+    assert(r.flows[0].signature.includes("artifact"), `the deliverable is missing: ${r.flows[0].signature}`);
+
+    // …and the noisy half stays out, which is what the exclusion was FOR. A quiet space writes far
+    // more grants and run records than work, so mining them buries it.
+    for (const noise of ["grant", "agent_run", "kind_def", "interest"]) {
+      assert(!r.scanned.kinds.includes(noise), `${noise} is bookkeeping and must stay out by default`);
+    }
+  } finally {
+    await close();
+  }
+});

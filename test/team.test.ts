@@ -1149,6 +1149,9 @@ Deno.test("[mcp] a narrowed read says so, on every tool that has a scope to repo
   // The other two facts that travel with a list, ported from the surface that already had them
   // (`extensions/ts/agent-tools.ts`): the server's own notes, and whether this is all of them.
   assert(/queryPage\(p, n \+ 1, undefined, \{ explain: true \}\)/.test(src), "space_query no longer asks for explain, or no longer probes one past the limit");
+  // `client.readOne` is legitimate elsewhere (space_watch polls with it, and the SDK unwraps the
+  // envelope), so the guard is that the TOOL answers from the report.
+  assert(src.includes("client.readOneReport("), "space_read_one no longer reports the scope behind a null");
 
   const s = await newSpace();
   try {
@@ -1163,10 +1166,20 @@ Deno.test("[mcp] a narrowed read says so, on every tool that has a scope to repo
     assert((await c.queryPage({ kind: TASK }, 10)).scope, "query");
     assert((await c.getChildrenPage(task.id)).scope, "children");
     assert((await c.getLineageReport(task.id)).scope, "lineage");
+    // A `null` inside a grant's bounds is not "no such record", and this read was the last one that
+    // could only be guessed at: the endpoint answered with the bare record and had nowhere to say.
+    const hit = await c.readOneReport({ kind: TASK, match: { [TEAM_FIELD]: "alpha" } });
+    assert(hit.record, "the member's own record is readable");
+    assert(hit.scope, "read_one under a grant must say it was narrowed");
+    const miss = await c.readOneReport({ kind: TASK, match: { [TEAM_FIELD]: "alpha", assignee: "nobody" } });
+    assertEquals(miss.record, null);
+    assert(miss.scope, "a NULL is where the scope matters most");
 
     // …and the bare convenience methods still answer the old way, since apps depend on them.
     assert(Array.isArray(await c.getStats()));
     assert(Array.isArray(await c.getChildren(task.id)));
+    // …including read_one, whose bare shape forty call sites parse.
+    assert((await c.readOne({ kind: TASK, match: { [TEAM_FIELD]: "alpha" } }))?.id);
   } finally {
     await s.close();
   }

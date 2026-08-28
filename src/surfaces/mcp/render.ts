@@ -33,6 +33,27 @@ export interface AnswerMeta {
   notes?: string[];
 }
 
+/**
+ * The single-record answer, same rule as `answer`: one shape either way, the record last.
+ *
+ * `null` alone cannot say WHY nothing came back. A null beside a `scope` was produced inside a
+ * grant's bounds, which means the record may exist and belong to somebody else; a null without one
+ * means no such record. Every other read gained that distinction this week and this was the one
+ * that could still only be guessed at.
+ */
+export function one(record: unknown, meta: { scope?: unknown; notes?: string[] } = {}): string {
+  return JSON.stringify(
+    {
+      found: record !== null && record !== undefined,
+      ...(meta.scope ? { scope: meta.scope } : {}),
+      ...(meta.notes && meta.notes.length > 0 ? { notes: meta.notes } : {}),
+      record: record ?? null,
+    },
+    null,
+    2,
+  );
+}
+
 export function answer(key: string, rows: unknown[], meta: AnswerMeta = {}): string {
   const warning = meta.more
     ? `more than ${meta.limit ?? rows.length} records match; this is a PAGE, not the total. Do not ` +

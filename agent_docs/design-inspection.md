@@ -190,6 +190,16 @@ this doc argues for: an inspection feature that can write can disagree with what
 The other derived reads (`digest`, `thread`, `diagnostics`, `explainQuery`) sit beside it in
 `src/core/inspection.ts` under the same rule.
 
+**What mining leaves out is BOOKKEEPING, never "reserved" (corrected 2026-08-28).** Declarations,
+grants, run records and interests are the highest-volume kinds in a quiet space, so mining them
+would make every top flow a registry write and bury the work. `artifact` was excluded with them and
+fails both halves of that reason: it is what an app PRODUCED, referenced by `parent_ids` from the
+work that produced it, and written only when somebody stores bytes. Excluding it hid the
+deliverable, measured on a two-agent lab run whose whole point was a TypeScript program: the shape
+read `task → note`, with the file absent. `includeReserved` still means the noisy half. Same
+carve-out the GC invariant already makes; artifact is reserved so its NAME cannot be redeclared,
+not because it is the runtime's own.
+
 [research-self-modeling.md](research-self-modeling.md) specifies signature mining: abstract completed
 subgraphs to `(kind, agent)` sequences, group, count, score. Recurring shapes with occurrence counts,
 success rates, durations and exemplars, with partial shapes ("starts often, rarely finishes") ranked

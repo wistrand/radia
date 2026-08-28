@@ -262,7 +262,7 @@ export async function handleReadOne(space: Space, req: Request, principal: strin
   }
   // Same rule as the query path: `read_one` answers with the FIRST record in the pattern's order,
   // so a dropped `orderBy` changes which record comes back, not merely the sequence.
-  const unknown = rejectUnknown(j, ["kind", "match", "orderBy"]);
+  const unknown = rejectUnknown(j, ["kind", "match", "orderBy", "explain"]);
   if (unknown) return unknown;
 
   const pattern: Pattern = {
@@ -274,7 +274,26 @@ export async function handleReadOne(space: Space, req: Request, principal: strin
     const { constraint, createdBy } = await space.readAccess(principal, "read_one", pattern.kind);
     if (constraint) pattern.match = combineMatch(pattern.match, constraint); // grant ∧ request
     const record = await space.readOne(pattern, createdBy ? { createdBy } : undefined);
-    return Response.json(record); // null serializes to `null`
+    // THE ENVELOPE, always, because a bare `null` cannot say WHY nothing came back: a null produced
+    // inside a grant's bounds means the record may exist and be somebody else's, and one outside
+    // any bound means no such record. Every other read gained that distinction; this was the last
+    // one that could only be guessed at.
+    //
+    // A SHAPE CHANGE rather than an opt-in flag, decided deliberately. `/records/query` already
+    // answers with an object, so the bare record here was the anomaly and an `explain: true` switch
+    // would have made it a polymorphic anomaly. The contract is additive-only to protect clients
+    // that exist, and the ones that exist are both SDKs plus one test: each unwraps `.record` in a
+    // line, so no caller of `readOne` changes.
+    //
+    // `explain` stays opt-in, as on `query`: the notes cost a computation, the envelope does not.
+    // The limit passed cannot read as a page (`explainQuery` warns when `returned >= limit`), since
+    // one record answering a request for one record is complete rather than truncated.
+    const explain = j.explain === true ? space.explainQuery(pattern, record ? 1 : 0, 2, undefined) : [];
+    return Response.json({
+      record,
+      ...describeReadScope(constraint, createdBy),
+      ...(explain.length > 0 ? { explain } : {}),
+    });
   } catch (e) {
     // Pattern validation failures (undeclared_path, unknown_kind, ...) are client errors.
     if (e instanceof RadiaError) return problem(statusFor(e.code, 400), e.code, e.message);

@@ -36,11 +36,7 @@ import type { Pattern } from "../../core/matching.ts";
 import { TOOLS } from "./tools.ts";
 import { ScopeFiller } from "./scope.ts";
 import { classify, fileTracer, type Tracer } from "./trace.ts";
-import { answer } from "./render.ts";
-
-/** `explainQuery`'s page note, which `space_query` states itself with the caller's own limit rather
- *  than the probe's. Exported for the guard in `test/trace.test.ts`. */
-export const PROBE_NOTE = /filled the limit/;
+import { answer, one } from "./render.ts";
 import { mediaTypeForPath } from "../media.ts";
 import { newer } from "../../../sdk/ts/registry.ts";
 import { ARTIFACT } from "../../../sdk/ts/wire.ts";
@@ -51,6 +47,9 @@ import { VERSION } from "../../version.ts";
 // The third place this string used to be written by hand. An MCP client shows it in its own
 // server list, so a stale literal here misreports the build to a person reading someone else's UI.
 const SERVER_INFO = { name: "radia", version: VERSION };
+/** `explainQuery`'s page note, which `space_query` states itself with the caller's own limit rather
+ *  than the probe's. Exported for the guard in `test/trace.test.ts`. */
+export const PROBE_NOTE = /filled the limit/;
 /** Echoed back to the client when it asks for a version we know; otherwise we answer with this. */
 const DEFAULT_PROTOCOL = "2025-06-18";
 /** Every revision this adapter speaks, legacy and modern. `2026-07-28` made the protocol stateless
@@ -424,8 +423,12 @@ async function call(
       });
     }
 
-    case "space_read_one":
-      return pretty(await client.readOne(pat(a)));
+    case "space_read_one": {
+      // The REPORT: a null here is either "no such record" or "none you may read", and a model
+      // told only `null` reports the first when it means the second.
+      const r = await client.readOneReport(pat(a));
+      return one(r.record, { scope: r.scope, notes: r.explain });
+    }
 
     case "space_get":
       return pretty(await client.getRecord(str(a, "recordId")));

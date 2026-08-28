@@ -655,7 +655,18 @@ class RadiaClient:
         SUCCESSORS -- a registry entry, a versioned record -- that is the stale answer, silently.
         Use :meth:`read_newest`.
         """
-        return self._req("POST", "/v0/records/read-one", pattern)
+        # The endpoint answers ``{record, scope?}``, like ``query``; unwrapped here so a caller
+        # sees the record. ``read_one_report`` keeps the scope, which is what distinguishes a
+        # ``None`` that found nothing from one that found nothing THIS PRINCIPAL MAY READ.
+        return self._req("POST", "/v0/records/read-one", pattern).get("record")
+
+    def read_one_report(self, pattern: Dict[str, Any]) -> Dict[str, Any]:
+        """The same read, plus what qualifies a ``None``.
+
+        ``scope`` is present exactly when a grant narrowed the read, so a ``None`` beside one means
+        the record may exist and belong to somebody else. Returns ``{"record": …, "scope": …}``.
+        """
+        return self._req("POST", "/v0/records/read-one", {**pattern, "explain": True})
 
     def read_newest(self, pattern: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """The NEWEST record matching ``pattern``, or ``None``.

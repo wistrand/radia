@@ -10,7 +10,7 @@
 // READER, and a reader that can reach the whole service will eventually write through it.
 
 import type { CompiledMatch, Envelope, EnvelopeQuery, Page, RadiaRecord, RecordState, StatsScope } from "../storage/adapter.ts";
-import { isClaimable, type KindDef, RESERVED_KINDS } from "./kinds.ts";
+import { ARTIFACT, isClaimable, type KindDef, RESERVED_KINDS } from "./kinds.ts";
 import { getPath } from "./matching.ts";
 
 /** Everything mining needs from a space, and nothing else. Implemented inline by `Space.flows`. */
@@ -100,10 +100,22 @@ opts: {
   const notes: string[] = [];
   let complete = true;
 
-  // Reserved kinds are the runtime's own bookkeeping (declarations, grants, run records). They
-  // are the highest-volume kinds in a quiet space, so including them by default would make every
-  // space's top flow a registry write and bury the work.
-  const reserved = new Set(RESERVED_KINDS);
+  // BOOKKEEPING, not "reserved", and the difference is one kind. The exclusion exists because the
+  // runtime's own records (declarations, grants, run records, interests) are the highest-volume
+  // kinds in a quiet space, so mining them would make every space's top flow a registry write and
+  // bury the work. `artifact` fails both halves of that: it is what an APP produced, referenced by
+  // `parent_ids` from the work that produced it, and it is written only when somebody stores bytes.
+  //
+  // Excluding it hid the DELIVERABLE. Measured on a two-agent lab run whose whole point was a
+  // TypeScript program: the mined shape read `task → note`, two records, with the file the work
+  // existed to produce absent from the diagram. The chat's images and the analysis pipeline's stage
+  // outputs are the same shape.
+  //
+  // `includeReserved` still means the bookkeeping, which is the noisy half nobody wants by default.
+  // Same carve-out the GC invariant already makes ("reserved kinds, except `artifact`, which sweeps
+  // like any reference record"): artifact is reserved so that its NAME cannot be redeclared, not
+  // because it is the runtime's own.
+  const reserved = new Set(RESERVED_KINDS.filter((k) => k !== ARTIFACT));
   const claimable = new Map(src.listKinds().map((d) => [d.kind, isClaimable(d)]));
   let kinds = src.listKinds().map((d) => d.kind).filter((k) => opts.includeReserved || !reserved.has(k));
   if (opts.scope?.kinds) kinds = kinds.filter((k) => opts.scope!.kinds!.includes(k));
