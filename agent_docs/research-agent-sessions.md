@@ -5,7 +5,7 @@ the fixes are linked to where they landed.** The subject is CLAUDE CODE and CODE
 space through `radia mcp`, first by hand and then through the lab
 ([plan-agent-lab.md](plan-agent-lab.md), which is the harness rather than the findings).
 
-Fifteen sessions so far, 2026-08-26 to 2026-08-28: four hand-run and pasted into a review, eleven
+Sixteen sessions so far, 2026-08-26 to 2026-08-28: four hand-run and pasted into a review, twelve
 through `deno task lab`. Each cost roughly $0.60 and 45 to 85 seconds.
 
 This doc does not restate. The traps live in [gotchas.md](gotchas.md), the team convention in
@@ -194,6 +194,16 @@ queue was drained and all five were settled, which is the conclusion-as-a-record
 plan-agent-lab.md wanted from a scenario and nothing asked for here. It cost it 7 empty calls and
 about three minutes of waiting to become sure of that, since an empty claim cannot distinguish a
 drained queue from a busy one.
+
+**Two-step, second run: verbatim again, and the requester wrote the constraint into the task.**
+`opus` and `gpt-5.6-luna` this time. Claude inspected the capability, asked for JavaScript by name,
+and titled the task "deliver as an artifact, do not run it"; Codex delivered `sum_primes.js` and
+stopped there. The `tool_call` hashes to the artifact's own digest (366 bytes, `4057313d…`), so the
+delivered bytes ran unchanged, 2 for 2 on this scenario. It is now a mechanical check rather than
+something a human hashes afterwards: a record descending from an artifact and carrying a payload of
+the same size is compared by digest (`deno task lab-report`, proved by planting one changed
+character). Codex also parented its `tool_call` on the ARTIFACT rather than the task, which is what
+makes the check precise, and nothing asked it to.
 
 **The prose credits the wrong principal about half the time.** Run 2's answer note read "The
 program ran successfully and printed 3682913" and the requester reported that Codex had run it;

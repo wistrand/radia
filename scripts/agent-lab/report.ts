@@ -73,6 +73,11 @@ interface Run {
   /** Whether this run collected `agent_run`, without which an untraced worker's records cannot be
    *  attributed to it. Runs recorded before that was collected answer "cannot tell", never "no". */
   mapped: boolean;
+  /** A record CARRYING the bytes of the artifact it descends from: verbatim, or altered. This is
+   *  "verify the execution path" made mechanical. Correctness of the final answer proves nothing
+   *  about whether the delivered code is the code that ran, and an agent that retypes or improves
+   *  what it was handed produces the same number by a different route. */
+  carried: { carrier: string; kind: string; artifact: string; bytes: number; verbatim: boolean }[];
   /** run id to agent name, recovered from the traces: the only place the two appear together. */
   actor: Map<string, string>;
 }
@@ -119,6 +124,30 @@ async function load(dir: string): Promise<Run | undefined> {
     if (lines.length) traces.set(name, lines);
     for (const l of lines) if (l.principal && !actor.has(l.principal)) actor.set(l.principal, name);
   }
+  // Hashed HERE because the checks are synchronous and WebCrypto is not. Only strings long enough
+  // to be a payload are considered, and only on records descending from the artifact itself, so a
+  // note that merely mentions an artifact is never mistaken for one carrying it.
+  const artifacts = new Map(
+    records.filter((x) => x.kind === "artifact" && typeof x.body.digest === "string")
+      .map((x) => [x.id, { digest: String(x.body.digest), size: Number(x.body.size ?? 0) }]),
+  );
+  const carried: Run["carried"] = [];
+  for (const rec of records) {
+    for (const parent of rec.runtimeMeta.parentIds ?? []) {
+      const art = artifacts.get(parent);
+      if (!art) continue;
+      for (const text of longStrings(rec.body)) {
+        const bytes = new TextEncoder().encode(text);
+        // Within a tenth of the artifact's size, or it is a summary rather than a copy: a mismatch
+        // is only interesting when the record was plainly meant to be carrying the payload.
+        if (art.size && Math.abs(bytes.length - art.size) > art.size * 0.1) continue;
+        const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
+          .map((b) => b.toString(16).padStart(2, "0")).join("");
+        carried.push({ carrier: rec.id, kind: rec.kind, artifact: parent, bytes: bytes.length, verbatim: digest === art.digest });
+      }
+    }
+  }
+
   return {
     dir,
     scenario: String(tally.scenario ?? "?"),
@@ -130,8 +159,18 @@ async function load(dir: string): Promise<Run | undefined> {
     traces,
     participants,
     mapped,
+    carried,
     actor,
   };
+}
+
+/** Every string in a body big enough to be a payload rather than a field, walked recursively. */
+function longStrings(v: unknown, out: string[] = []): string[] {
+  if (typeof v === "string") {
+    if (v.length >= 64) out.push(v);
+  } else if (Array.isArray(v)) for (const x of v) longStrings(x, out);
+  else if (v && typeof v === "object") for (const x of Object.values(v)) longStrings(x, out);
+  return out;
 }
 
 /** The agent behind a run id, or the run id when nothing claimed it (the operator, a worker). */
@@ -303,6 +342,25 @@ const CHECKS: Check[] = [
     },
   },
   {
+    // OUTCOME CORRECTNESS IS NOT ENOUGH. A run where the requester retypes the code it was handed
+    // produces the same number by a different route, and every other signal (exit code, the final
+    // answer, the mined flow) reads identical. The digest is the only thing that separates them.
+    id: "delivered-code-was-altered",
+    run(r) {
+      if (r.carried.length === 0) {
+        return { findings: [], applicable: false, note: "no record in this run carries an artifact it descends from" };
+      }
+      return {
+        applicable: true,
+        findings: r.carried.filter((c) => !c.verbatim).map((c) => ({
+          severity: "high" as const,
+          title: `${c.kind} ${c.carrier} carries ${c.bytes} bytes that are NOT artifact ${c.artifact}`,
+          detail: `same size to within a tenth, different digest: the payload was edited between delivery and use`,
+        })),
+      };
+    },
+  },
+  {
     id: "refusals",
     run(r) {
       const findings: Finding[] = [];
@@ -405,6 +463,9 @@ for (const { run: r, per, skipped, caveats } of reports) {
   console.log(`  records ${r.records.length} across ${new Set(r.records.map((x) => x.kind)).size} kinds`);
   for (const f of r.flows) {
     console.log(`  flow    ${f.occurrences}x ${f.outcomes.complete}/${f.occurrences} complete  ${f.signature}`);
+  }
+  for (const c of r.carried.filter((x) => x.verbatim)) {
+    console.log(`  carried ${c.kind} ${c.carrier.slice(-6)} holds artifact ${c.artifact.slice(-6)} VERBATIM (${c.bytes} bytes)`);
   }
 
   const all = [...per.values()].flat().sort((a, b) => RANK[a.severity] - RANK[b.severity]);

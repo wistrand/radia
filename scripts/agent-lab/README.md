@@ -202,10 +202,14 @@ history per record, the traces give what each model ASKED FOR, `space.json` give
 flows, `tally.json` gives models and exit codes. Nothing asks an agent whether it followed the
 intended path, which is the third evidence source and the weakest.
 
-Seven checks: an empty claim while work of that kind stood available (a concurrent winner within two
+Eight checks: an empty claim while work of that kind stood available (a concurrent winner within two
 seconds is the fence working, not a finding), a record settled twice, a record left claimed or
 dead-lettered when the run ended, a nack-and-reclaim loop on one record, a participant that authored
-nothing, refusals, and acting before calling `space_kinds`. A check that cannot decide says so
+nothing, refusals, acting before calling `space_kinds`, and code that was altered between delivery
+and use. That last one is "verify the execution path" made mechanical: a requester that retypes the
+program it was handed produces the same number by a different route, and the exit code, the answer
+and the mined flow all read identical. A record descending from an artifact and carrying a payload
+of the same size is compared by DIGEST; a verbatim carry is reported in the header. A check that cannot decide says so
 (`[n/a]`, `[part]`) rather than passing silently: over-reporting puts false findings in front of a
 reader, which is the one failure that makes a lab worse than no lab.
 

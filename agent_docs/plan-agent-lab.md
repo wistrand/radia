@@ -127,7 +127,7 @@ CONTENTION scenario needs: `team-queue` puts five claimable tasks in front of bo
 which is the only shape that measures leases rather than a handoff.
 
 **Phase 2: the assertion pass. BUILT 2026-08-28.** `scripts/agent-lab/report.ts`,
-`deno task lab-report <run-dir>…`: seven checks joining the trace against the space, ranked, with no
+`deno task lab-report <run-dir>…`: eight checks joining the trace against the space, ranked, with no
 new instrumentation, because the event log already carries claim history per record and the traces
 already carry what was asked for. One runner change was needed and it is the one that makes a bypass
 detectable: `agent_run` is collected into `space.json`, since a record's `createdBy` is a RUN and an
@@ -135,8 +135,9 @@ untraced SDK worker appears in no trace, so "which participant wrote this" was u
 exactly the participant a bypass check is about. A check that cannot decide REPORTS that (`[n/a]`,
 `[part]`) rather than passing, on the same rule as `classify` in the tracer: over-reporting puts
 false findings in front of a reader. Several directories print RATES, which is the form a finding
-takes here. Proved on a planted violation (a run with the worker's records removed reports it silent
-and the unplanted run does not).
+takes here. Proved on planted violations: a run with the worker's records removed reports it silent while the
+unplanted run does not, and one character changed inside an executed payload is caught by digest
+against the artifact it descends from.
 
 **Phase 3: replay in CI.** A recorded trace with the model stripped, replayed against a fresh
 binary, no API key, the same move `examples/chat/smoke-turnlink.ts` already makes for the chat.
@@ -167,8 +168,9 @@ Each line is a finding seen in a real session, stated as something a script can 
   named session's claims, so an abandoned lease is invisible until it expires)
 - a claim abandoned rather than released: no `space_release` or `space_nack` anywhere in a run whose
   work included something impossible
-- code that was DELIVERED and then not run: the sha256 of an executed `tool_call`'s source against
-  the digest of the artifact it came from (the two-step run passed 442 bytes through unchanged)
+- code ALTERED between delivery and use: the sha256 of a payload carried by a record against the
+  digest of the artifact it descends from (BUILT; both two-step runs passed their bytes through
+  unchanged, 442 and 366)
 - a `background` worker that AUTHORED NOTHING in a scenario built around it (the first `team-exec`
   run: a missing `tool_call` grant on the harnesses, two exit 0s, a correct answer, and the worker
   never invoked). The signal is a record it wrote, never `tally.json`: the tally counts MCP calls,
