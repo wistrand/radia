@@ -53,6 +53,7 @@ export function browserBackend(opts: BrowserBackendOptions = {}): Partial<Platfo
     osName: () => "browser",
     readTextFile: readText,
     writeTextFile: writeText,
+    appendTextFile: (path, text) => writeText(path, (readText(path) ?? "") + text),
     mkdirp: () => {},
     removeFile: (path) => {
       store?.removeItem(prefix + path);

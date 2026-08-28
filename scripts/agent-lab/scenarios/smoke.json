@@ -1,0 +1,36 @@
+{
+  "name": "smoke",
+  "team": "lab",
+  "agents": [
+    {
+      "name": "fake-a",
+      "timeoutSeconds": 120,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/scripts/agent-lab/fake-agent.ts",
+        "--config",
+        "{{config}}",
+        "--team",
+        "lab"
+      ],
+      "prompt": "unused: this harness has no model"
+    },
+    {
+      "name": "fake-b",
+      "timeoutSeconds": 120,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/scripts/agent-lab/fake-agent.ts",
+        "--config",
+        "{{config}}",
+        "--team",
+        "lab"
+      ],
+      "prompt": "unused: this harness has no model"
+    }
+  ]
+}

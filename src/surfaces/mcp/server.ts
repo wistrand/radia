@@ -35,6 +35,7 @@ import type { Lease, RadiaRecord } from "../../storage/adapter.ts";
 import type { Pattern } from "../../core/matching.ts";
 import { TOOLS } from "./tools.ts";
 import { ScopeFiller } from "./scope.ts";
+import { classify, fileTracer, type Tracer } from "./trace.ts";
 import { mediaTypeForPath } from "../media.ts";
 import { newer } from "../../../sdk/ts/registry.ts";
 import { ARTIFACT } from "../../../sdk/ts/wire.ts";
@@ -164,12 +165,32 @@ export async function runMcp(argv: string[]): Promise<void> {
       ? " session=none (each start is a new run; pass --session <name> to keep one across restarts)"
       : ""
   }`);
-  if (!observer && !token) {
+  // THE DEFINITION TOKEN COUNTS. `token` is deliberately undefined whenever one is present (it is
+  // the bearer half, and a definition token mints its own), so this said "no credential found" to
+  // every per-agent session on the line after announcing "auth=definition token". Found by the
+  // first real agent-lab run, where both harnesses printed it while working perfectly.
+  if (!observer && !token && !definitionToken) {
     log("radia mcp: no credential found. Start `radia dev` (auto-provisions one) or set RADIA_TOKEN.");
   }
 
+  // `--trace` records what the MODEL ASKED FOR, which no other surface can see: a claim that
+  // matched nothing writes no event, so the space cannot tell a bad pattern from an idle queue
+  // (agent_docs/plan-agent-lab.md). Off unless asked for, and never fatal.
+  const tracePath = flag(argv, "--trace");
+  let trace: Tracer | undefined;
+  if (tracePath) {
+    trace = fileTracer(tracePath, log);
+    // Stamped on every line so a run with several agents can be split by author afterwards.
+    // Resolved ONCE, best effort: a space that cannot answer still gets traced, unattributed.
+    const principal = await client.health().then((h) => h.principal, () => undefined);
+    const identity = { session, principal };
+    const inner = trace;
+    trace = { call: (e) => inner.call({ ...identity, ...e }) };
+    log(`radia mcp: tracing tool calls to ${tracePath}${principal ? ` as ${principal}` : ""}`);
+  }
+
   for await (const msg of frames(stdin())) {
-    const res = await handle(msg, client, claims, base, scope, kinds);
+    const res = await handle(msg, client, claims, base, scope, kinds, trace);
     if (res) write(res);
   }
   // Stdin closed. What that MEANS depends on whether this process has an identity it can come back
@@ -209,6 +230,7 @@ async function handle(
   base: string,
   scope: ScopeFiller,
   kinds: Map<string, boolean>,
+  trace?: Tracer,
 ): Promise<unknown | null> {
   const { id, method } = req;
   // A notification (no id) never gets a reply, per JSON-RPC.
@@ -270,12 +292,21 @@ async function handle(
     case "tools/call": {
       const name = String(req.params?.name ?? "");
       const args = (req.params?.arguments ?? {}) as Record<string, unknown>;
+      // ONE dispatch, so the trace is complete by construction: a tool added later is traced
+      // without anybody remembering to trace it.
+      const started = Date.now();
       try {
         const text = await call(name, args, client, claims, scope, kinds, base);
+        trace?.call({ tool: name, args, ...classify(text), ms: Date.now() - started });
         return reply(id, { content: [{ type: "text", text }] });
       } catch (e) {
         // Tool-level failures are results with isError, not JSON-RPC errors, so the model should
         // see them and adapt (a rejected pattern says why), not have the call disappear.
+        // The runtime's own code when there is one, and otherwise a short message: a lab has to
+        // tell a REFUSAL (`forbidden`, `undeclared_path`) from a space that was not there, and both
+        // arrive here as a thrown thing. An empty label makes them look identical.
+        const error = e instanceof RadiaClientError ? e.code : ((e as Error).message ?? "error").slice(0, 120);
+        trace?.call({ tool: name, args, outcome: "error", error, ms: Date.now() - started });
         return reply(id, { content: [{ type: "text", text: errorText(e) }], isError: true });
       }
     }

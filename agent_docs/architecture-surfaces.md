@@ -308,7 +308,16 @@ means "bad credential".
 `radia mcp` serves the space to an MCP-capable harness over stdio: newline-delimited JSON-RPC 2.0,
 19 tools. `server.ts` is the transport and dispatch; `tools.ts` is the tool definitions;
 `config.ts` renders the harness config that points an agent here; `scope.ts` fills in body fields
-the caller's own grants require.
+the caller's own grants require; `trace.ts` is `--trace`.
+
+**`--trace <file>` records what the model ASKED FOR, which nothing else can see.** A `take` appends
+its event only after it wins a record and reads append none, so a claim that matched nothing is
+invisible to the event log, to lineage and to `radia flows`: the fruitless call is exactly the one a
+lab needs (agent_docs/plan-agent-lab.md). One JSONL line per call, at the single `tools/call`
+dispatch so a tool added later is traced without anybody remembering to. A FILE, never records in
+the space, because the space is the thing under observation and trace records would land in its own
+flows, stats, chain and registry budgets. Off unless asked for, and a failed write disables tracing
+for the process rather than failing the call it observes.
 
 **It runs as the OBSERVER by default** ([architecture-ops-tiers.md](architecture-ops-tiers.md) phase 5): the
 stored `#observer` credential, holding the `observe` ops power and no coordination grants, so the

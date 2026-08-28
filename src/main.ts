@@ -39,8 +39,9 @@ const USAGE = `radia <command>
       [--oidc-issuer <url> --oidc-audience <client-id>]
       Run an embedded space + web console. Everything it writes goes under ./.radia
       (RADIA_DIR moves it); bare --db and --blob-kek take their defaults from there.
-  mcp [--url <base>] [--session <name>]
-      Serve the space to an MCP-capable harness over stdio.
+  mcp [--url <base>] [--session <name>] [--trace <file>]
+      Serve the space to an MCP-capable harness over stdio. --trace appends one JSON line
+      per tool call (what the model asked for, which the space never records).
   <cli command>
       Everything else is a verb over the public /v0 API. Those verbs are listed below.`;
 

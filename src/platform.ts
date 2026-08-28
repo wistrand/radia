@@ -52,6 +52,7 @@ export interface PlatformBackend {
   osName(): string;
   readTextFile(path: string | URL): string | undefined;
   writeTextFile(path: string, text: string): void;
+  appendTextFile(path: string, text: string): void;
   mkdirp(path: string): void;
   removeFile(path: string): void;
   restrictToOwner(path: string): void;
@@ -98,6 +99,7 @@ const denoBackend: PlatformBackend = {
     }
   },
   writeTextFile: (path, text) => Deno.writeTextFileSync(path, text),
+  appendTextFile: (path, text) => Deno.writeTextFileSync(path, text, { append: true }),
   mkdirp: (path) => Deno.mkdirSync(path, { recursive: true }),
   removeFile: (path) => {
     try {
@@ -294,6 +296,12 @@ export function readTextFile(path: string | URL): string | undefined {
 /** Write a file, creating parent directories. Throws on failure. Callers decide what that means. */
 export function writeTextFile(path: string, text: string): void {
   backend.writeTextFile(path, text);
+}
+
+/** Append to a file, creating it if absent. For a LOG, which is the only shape that wants this:
+ *  a reader tailing it must see whole lines, so callers append one terminated line at a time. */
+export function appendTextFile(path: string, text: string): void {
+  backend.appendTextFile(path, text);
 }
 
 export function mkdirp(path: string): void {

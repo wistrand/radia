@@ -41,3 +41,6 @@
 __pycache__/
 *.py[cod]
 
+# Agent-lab runs: a space, its credentials, every harness transcript (scripts/agent-lab)
+/runs/
+
