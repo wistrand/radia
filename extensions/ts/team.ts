@@ -86,7 +86,8 @@ export const TEAM_KINDS: KindDef[] = [
       "`agent` (your `principal` is a RUN and is gone tomorrow), or the literal 'all' for the whole " +
       "team. READ YOUR MAILBOX AS {to: {$in: ['<your agent name>', 'all']}}: a keyword " +
       "match is exact, so watching your own name alone silently misses every broadcast. Use " +
-      "`message` for the prose; nothing indexes it, but readers look for that name.",
+      "`message` for the prose; nothing indexes it, but readers look for that name. PROSE ONLY: " +
+      "code, a script or a file goes in space_put_artifact and the note names it.",
   },
   {
     kind: ARTIFACT,

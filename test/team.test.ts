@@ -567,6 +567,11 @@ Deno.test("[team] the shared kinds teach the conventions two agents otherwise in
     assert(byKind.get("note")!.includes("all"), "the broadcast recipient is not documented");
     assert(byKind.get("note")!.includes("$in"), "the mailbox pattern that SEES a broadcast is not documented");
     assert(byKind.get("note")!.includes("message"), "the prose field is not pinned");
+    // A third failure, from the lab: asked for a TypeScript program, a member pasted it into
+    // `message` while the requester queried `artifact` and found nothing. The kind's own line said
+    // "use `message` for the prose", which is what it did. The counterweight belongs where the
+    // model is looking, and it is looking at the kind it is about to write.
+    assert(byKind.get("note")!.includes("space_put_artifact"), "nothing says where code goes instead of a note body");
     assert(byKind.get("task")!.includes("$any"), "tag matching does not distribute; that has to be said");
     assert(byKind.get("task")!.includes("space_ack"), "how a task is answered is not documented");
     // And two more, both from watching real harnesses: settled tasks were reported as available
