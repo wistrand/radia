@@ -120,7 +120,11 @@ does it, since a member holds `kind_def: query` and never `put`) and per-agent `
 `unscopedGrants`. That split is load-bearing: `sandbox` and `interest` carry no team, so a
 team-scoped grant on them matches nothing and refuses every write. `scenarios/team-exec.json` is the
 worked example, with `scripts/agent-lab/exec-worker.ts` as the third party that costs nothing to run
-because it holds no model.
+because it holds no model. A scenario may also SEED records the operator writes before any agent
+starts (`seed`, written after the members because `team add` is what declares the team's kinds, with
+the team label stamped so an unlabelled seed cannot become an invisible queue). Seeding is what a
+CONTENTION scenario needs: `team-queue` puts five claimable tasks in front of both agents at once,
+which is the only shape that measures leases rather than a handoff.
 
 **Phase 2: the assertion pass.** A script joining trace against space, printing ranked findings. The
 catalogue below is derived from the four sessions and is what makes a run self-reporting.
@@ -149,6 +153,10 @@ Each line is a finding seen in a real session, stated as something a script can 
 - a 403 in the trace: each one is either a missing grant or a model error, and both are findings
 - a name-shaped field (`note.to`, `task.assignee`) whose value is not a live member
 - the agent's own `report` record disagreeing with the space
+- a task settled TWICE, or a task still claimed when every agent has exited (the adapter keeps a
+  named session's claims, so an abandoned lease is invisible until it expires)
+- a claim abandoned rather than released: no `space_release` or `space_nack` anywhere in a run whose
+  work included something impossible
 - code that was DELIVERED and then not run: the sha256 of an executed `tool_call`'s source against
   the digest of the artifact it came from (the two-step run passed 442 bytes through unchanged)
 - a `background` worker that AUTHORED NOTHING in a scenario built around it (the first `team-exec`

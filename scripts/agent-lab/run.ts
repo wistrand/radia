@@ -68,6 +68,16 @@ interface Scenario {
   /** Kind declarations this scenario needs beyond the team's own, as `kind_def` bodies. Declared by
    *  the OPERATOR before any member starts, because a member holds no `kind_def: put`. */
   kinds?: Record<string, unknown>[];
+  /**
+   * Records the OPERATOR writes before any agent starts, as `{kind, body}`.
+   *
+   * For a scenario whose subject is CLAIMING rather than handing off. Every scenario so far has one
+   * agent write the work another claims, which buys a realistic handoff and pays for it with a
+   * startup race wider than the work (agent_docs/plan-agent-lab.md). Seeding removes both, and is
+   * the only way to put a KNOWN number of claimable records in front of two agents at once, which
+   * is what a contention finding is measured against.
+   */
+  seed?: { kind: string; body: Record<string, unknown> }[];
 }
 
 // `team-code` by default: it exercises the same shape as `team-image` (ask, claim, answer with
@@ -278,6 +288,19 @@ for (const a of scenario.agents) {
   const args = [...server.args, "--session", a.name, "--trace", `${dir}/trace.jsonl`];
   agents.push({ ...a, dir, token, invocation: { command: server.command, args } });
 }
+
+// The seeded work, written AFTER the members exist because `team add` is what declares the team's
+// own kinds, so a `task` seeded before the first member is a `kind_not_declared`.
+//
+// The team label is STAMPED here rather than repeated in every seed body. A member's grants are
+// pattern-scoped to its team, and there is deliberately no unlabelled lane
+// (agent_docs/architecture-teams.md), so an unlabelled seed is invisible to every agent in the run
+// and reads as an empty queue. A body naming its own `team` still wins, since a scenario may want
+// exactly that: work nobody in this team can see is how an isolation test is written.
+for (const s of scenario.seed ?? []) {
+  await radia(["put", s.kind, JSON.stringify({ team, ...s.body })]);
+}
+if (scenario.seed?.length) console.log(`seed   ${scenario.seed.length} records written before any agent started`);
 
 /**
  * The adapter's tool names, asked of the BINARY over stdio rather than hardcoded.

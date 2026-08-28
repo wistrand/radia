@@ -5,7 +5,7 @@ the fixes are linked to where they landed.** The subject is CLAUDE CODE and CODE
 space through `radia mcp`, first by hand and then through the lab
 ([plan-agent-lab.md](plan-agent-lab.md), which is the harness rather than the findings).
 
-Thirteen sessions so far, 2026-08-26 to 2026-08-28: four hand-run and pasted into a review, nine
+Fourteen sessions so far, 2026-08-26 to 2026-08-28: four hand-run and pasted into a review, ten
 through `deno task lab`. Each cost roughly $0.60 and 45 to 85 seconds.
 
 This doc does not restate. The traps live in [gotchas.md](gotchas.md), the team convention in
@@ -129,6 +129,38 @@ after `space_kinds` was `space_query {kind: "sandbox"}`, which was refused: only
 grant. It recovered in one call by querying `capability` instead. A usage string is a promise made
 to every reader of the kind, so a kind that invites a query must be granted to everyone it invites,
 and `sandbox` carries no team, so that grant has to be unscoped.
+
+**Contention: five tasks, two claimants, nothing coordinated and nothing wrong.** `team-queue`
+seeds five tasks and gives both agents the same prompt. Every task settled exactly once, each note
+parented to a distinct task, nothing left claimed at exit. Neither agent held two leases: both ran
+take, ack, take, ack. Neither NARROWED its claim either, despite the tags on every task; both sent
+bare `{kind: "task"}` and let the space arbitrate, which is the correct read of what fencing is for
+and means the seeded tags went unused.
+
+**There is no way to settle a task as FAILED, and the model used the only shape there is.** The
+fifth task asks for a summary of a record id that does not exist. Codex claimed it, tried to fetch
+the record, got nothing, and ACKED with a note saying the record does not exist. Not a nack, which
+would have been wrong (nothing changes on retry, so it is a livelock), and not an abandoned claim.
+The answer is right and unreadable: the result is an ordinary `note`, indistinguishable from the
+four successes, so a reader querying notes sees five completions. `tool_result` carries `ok` and
+`note` carries nothing. Two things follow, and both are open: the team convention has no failure
+marker on an answer, and the `task` usage string cannot state the rule because it is at 597 of its
+600 characters.
+
+**`space_release` and `space_nack` have never been called.** Fourteen sessions, including one whose
+work contained something that could not be done. Both tools are advertised and described on every
+call. Nothing yet shows whether the descriptions are wrong or the situation that needs them has not
+occurred.
+
+**Nobody reasons about lease length.** Codex passed `leaseSeconds: 120` for work that takes a
+second, on every claim; Claude passed none at all and took the default. The number is the model's to
+pick and neither treated it as a decision.
+
+**An empty claim was VERIFIED rather than believed, unprompted.** Claude's take answered empty, and
+instead of reporting an empty queue it queried the tasks, saw four notes, queried again, saw five,
+and walked `space_children` on a task to confirm the work was done rather than taken. That is
+exactly the behaviour the settled-work hints were written for, appearing on a scenario where nothing
+prompted it.
 
 **The prose credits the wrong principal about half the time.** Run 2's answer note read "The
 program ran successfully and printed 3682913" and the requester reported that Codex had run it;

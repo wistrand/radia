@@ -92,7 +92,7 @@
     <p class="section-claim">The collaboration worked end to end, and every handoff remained inspectable afterwards.</p>
     <div class="cards">
       <div class="card"><h3>Agents found each other</h3><p>Claude and Codex had separate identities and permissions. They exchanged work through one shared space without a direct connection between them.</p></div>
-      <div class="card"><h3>Work was claimed once</h3><p>Codex matched the task by its content and received a renewable lease. Another agent could not claim the same work while that lease was held.</p></div>
+      <div class="card"><h3>Five tasks settled once each</h3><p>In a contention run, Claude and Codex repeatedly claimed from the same queue. Every task produced one answer, with no duplicate and nothing left claimed.</p></div>
       <div class="card"><h3>A tool was discovered</h3><p>Codex queried capability records, found <code>run_javascript</code>, and dispatched work to it. The scenario did not name or register that worker.</p></div>
       <div class="card"><h3>Code ran without authority</h3><p>The worker held the credential. The generated program ran in a probed sandbox with no credential, network, filesystem, or child-process access.</p></div>
     </div>
@@ -102,6 +102,11 @@
         &#9492;&#9472;&#8594; tool_result@agent:lab-exec
 
 answer: 3682913</code></pre></div>
+    <p>
+      The contention run needed no agreement between the agents. Both asked for any task, then
+      repeated take and acknowledge calls as leases made each win exclusive. The tags on the tasks
+      were not needed; the agents let the space arbitrate.
+    </p>
   </div>
 </section>
 
@@ -157,6 +162,13 @@ answer: 3682913</code></pre></div>
       <div class="card"><h3>Advice belongs at the decision</h3><p>A hint works only where the model is already looking when it chooses. Guidance moved into the exact tool or record description used at that moment.</p></div>
       <div class="card"><h3>Success can hide a bypass</h3><p>When tool dispatch was refused, an agent calculated the answer itself and exited zero. The final answer was right, but the collaboration being tested never happened.</p></div>
     </div>
+
+    <div class="callout">
+      <strong>An empty claim was checked rather than trusted.</strong> In the contention run, Claude
+      received no task, queried the records and their answers, then followed a task to its child
+      record to confirm that the queue was finished. That is the behaviour the earlier
+      settled-work guidance was intended to produce.
+    </div>
   </div>
 </section>
 
@@ -169,6 +181,12 @@ answer: 3682913</code></pre></div>
       <li><strong>A team credential is real authority.</strong> Team grants limit its blast radius; they do not prevent a prompt-injected agent from using permissions it legitimately holds.</li>
       <li><strong>One-shot agents have startup races.</strong> A worker may check before the requester writes. The scenarios tell it to wait with <code>space_watch</code>.</li>
       <li><strong>One run is an anecdote.</strong> Identical scenarios produce different choices. Findings are useful as rates across runs, not universal claims about a model.</li>
+      <li><strong>A failed result has no standard team shape yet.</strong> One impossible task was
+      correctly acknowledged with a note explaining the failure. That avoided a pointless retry,
+      but the note is structurally indistinguishable from the four successful answers.</li>
+      <li><strong>Nack and release remain unproven with models.</strong> Across the recorded
+      sessions, neither tool has been called. The situations may not have arisen, or their
+      descriptions may not make the choice clear enough.</li>
       <li><strong>This is not chat transport.</strong> Every handoff costs tool calls and model turns. Radia suits fewer, larger units of work better than rapid conversation.</li>
     </ul>
   </div>

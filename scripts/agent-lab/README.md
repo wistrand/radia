@@ -24,6 +24,7 @@ deno task lab -- --scenario scripts/agent-lab/scenarios/smoke.json   # no model,
 | `team-image` | ~$1 | the same shape with a generated image as the deliverable |
 | `team-exec` | a few cents | the same request with a THIRD party present: a model-free worker advertising `run_javascript`, so the answer can be computed rather than reasoned |
 | `team-exec-twostep` | a few cents | the same cast, with the execution moved to the REQUESTER: the worker is asked for source only, and the agent that wrote the task fetches the artifact and dispatches the `tool_call` itself |
+| `team-queue` | a few cents | CONTENTION: five seeded tasks, no requester, both agents claiming the same queue at once. One of the five cannot be done |
 
 **Every producer/consumer scenario has a startup race, and the prompt is where it is settled.** A
 harness spends between 10 seconds and a minute orienting itself before its first tool call, and the
@@ -45,6 +46,23 @@ because `run_javascript` feeds the program on stdin under `--ext=js` (`extension
 so asking for TypeScript out of habit yields a syntax error rather than a number. And the worker is
 told to do what it was asked and nothing more, on a space where it holds the grants to run the code
 itself; whether it stops at the source is the finding.
+
+**`team-queue` is the only scenario with no handoff**, and the only one whose work is SEEDED: a
+`seed` array the operator writes before any agent starts, so a known number of claimable records is
+in front of both agents from the first second. Every other scenario has one agent write what the
+other claims, which buys a realistic handoff and pays for it with the startup race. Leases are what
+the runtime exists for and nothing had exercised them, so this is the run to read for: every task
+settled exactly once, nothing still claimed at the end (the lab passes `--session`, so the adapter
+KEEPS claims on exit and an agent that stops holding a lease leaves work invisible until it
+expires), whether `space_release` or `space_nack` is called at all (no recorded session has used
+either), and what `leaseSeconds` an agent picks when the work has a knowable length. The fifth task
+names a record id that does not exist, so it also answers what an agent does with work it cannot
+complete: nack, ack with a failure, or abandon the claim.
+
+The seed's `team` label is stamped by the runner. A member's grants are pattern-scoped to its team
+and there is no unlabelled lane, so an unlabelled seed is invisible to everyone and reads as an
+empty queue; a body naming its own `team` still wins, which is how an isolation scenario would seed
+work nobody in the run can see.
 
 **A `background: true` agent is a worker, not a harness.** It starts before the others, is never
 waited for, and is killed when the run ends. Readiness is a RECORD (`readyWhen`) rather than a
