@@ -5,7 +5,7 @@ the fixes are linked to where they landed.** The subject is CLAUDE CODE and CODE
 space through `radia mcp`, first by hand and then through the lab
 ([plan-agent-lab.md](plan-agent-lab.md), which is the harness rather than the findings).
 
-Fourteen sessions so far, 2026-08-26 to 2026-08-28: four hand-run and pasted into a review, ten
+Fifteen sessions so far, 2026-08-26 to 2026-08-28: four hand-run and pasted into a review, eleven
 through `deno task lab`. Each cost roughly $0.60 and 45 to 85 seconds.
 
 This doc does not restate. The traps live in [gotchas.md](gotchas.md), the team convention in
@@ -164,6 +164,37 @@ and walked `space_children` on a task to confirm the work was done rather than t
 exactly the behaviour the settled-work hints were written for, appearing on a scenario where nothing
 prompted it.
 
+**`space_nack` was used for the first time, and used toward a dead-letter.** Second `team-queue`
+run, now pinned to `opus` and `gpt-5.6-luna`. Codex claimed the impossible task and nacked it with
+`backoffSeconds: 0`, re-claimed it immediately, nacked again, re-claimed, nacked again, and on
+attempt 4 acked with a failure note. `maxAttempts` is 5. One more turn of that loop and the record
+dead-letters, which emits NO result, so the member that asked would wait out its deadline learning
+nothing. `space_nack`'s description reads "use this when the work failed and retrying might
+succeed"; the model matched on the first clause and the qualifier did not bite. The indicated fix is
+to lead with the DISCRIMINATOR rather than the situation, but it is not made yet: see the confound
+below.
+
+**A hint read at orientation is not available at the decision.** `note.ok` shipped hours earlier and
+neither agent used it, on any note, including the failure. Codex called `space_kinds` at 12s, so it
+READ the usage naming `ok:false`, and did not use it at 55s, twenty calls later. That refines the
+rule at the top of this doc rather than contradicting it: "the thing the model is already reading"
+means at the moment of the decision, and a kind's usage is read once during orientation. What it was
+reading at 38s was `space_nack`'s description.
+
+**This run changed two things at once and can attribute neither.** The previous `team-queue` run
+acked the impossible task immediately; this one nacked three times first. Between them, both the
+tool descriptions AND the models changed (the earlier runs took the harness defaults). That is the
+whole argument for a PAIRED design over a table of absolute rates: one variable, two arms, same day.
+The model plumbing that makes it possible landed with this run (`--model`, and `tally.json` carrying
+`asked` versus `reported`, which differ: `opus` was asked and `claude-opus-5` reported).
+
+**The queue itself was handled correctly, again.** Five tasks, five answers, distinct parents,
+nothing left claimed. Claude also ended by writing an unparented `queue-status` note saying the
+queue was drained and all five were settled, which is the conclusion-as-a-record shape
+plan-agent-lab.md wanted from a scenario and nothing asked for here. It cost it 7 empty calls and
+about three minutes of waiting to become sure of that, since an empty claim cannot distinguish a
+drained queue from a busy one.
+
 **The prose credits the wrong principal about half the time.** Run 2's answer note read "The
 program ran successfully and printed 3682913" and the requester reported that Codex had run it;
 run 3's read "Executed successfully in the team's JavaScript sandbox". Same model, same tools, same
@@ -184,6 +215,17 @@ holding eight kinds, because the aggregates deliberately do not count pattern-sc
 surface dropped the `scope` that says so. Four MCP reads were fixed; the sibling surface
 (`extensions/ts/agent-tools.ts`) had it right all along, which is worth remembering before treating
 a gap as a design question.
+
+## Answering a refusal
+
+`space_permissions` (2026-08-28) is the tool the adapter did not have. Every recorded session that
+hit a 403 recovered by guessing: one queried a kind its member was not granted, one wrote a kind it
+could not write, one read an aggregate that came back narrowed and read it as an empty space.
+`radia permissions`, the console and the chat all answer "what may I do"; the MCP adapter, which is
+what a refused agent is holding, did not. It answers about the CALLER only, which is what makes it
+always answerable: `http.ts` checks `asksAboutSelf` before the ops gate, so a member with no ops
+power gets an answer, and a tool taking a principal argument would 403 on the one surface a refused
+caller reaches for. Guard: `test/team.test.ts`.
 
 ## What a run costs, measured
 

@@ -7,7 +7,10 @@
       "body": {
         "title": "Reverse a string",
         "detail": "Reverse the string 'content-routed-coordination' and reply with the result.",
-        "tags": ["text", "quick"]
+        "tags": [
+          "text",
+          "quick"
+        ]
       }
     },
     {
@@ -15,7 +18,10 @@
       "body": {
         "title": "Count vowels",
         "detail": "Count the vowels in 'a lease is fenced and renewable' and reply with the number.",
-        "tags": ["text", "quick"]
+        "tags": [
+          "text",
+          "quick"
+        ]
       }
     },
     {
@@ -23,7 +29,10 @@
       "body": {
         "title": "Sort words",
         "detail": "Sort these words alphabetically and reply with the sorted list: lease, envelope, grant, pattern, digest.",
-        "tags": ["text", "quick"]
+        "tags": [
+          "text",
+          "quick"
+        ]
       }
     },
     {
@@ -31,7 +40,10 @@
       "body": {
         "title": "Sum a list",
         "detail": "Add these numbers and reply with the total: 811, 4, 6857, 23, 190.",
-        "tags": ["numbers", "quick"]
+        "tags": [
+          "numbers",
+          "quick"
+        ]
       }
     },
     {
@@ -39,7 +51,10 @@
       "body": {
         "title": "Summarise a note",
         "detail": "Read the note with record id 01ZZZZZZZZZZZZZZZZZZZZZZZZ and reply with a one-line summary of it.",
-        "tags": ["text", "quick"]
+        "tags": [
+          "text",
+          "quick"
+        ]
       }
     }
   ],
@@ -52,6 +67,8 @@
       "command": [
         "claude",
         "-p",
+        "--model",
+        "{{model}}",
         "--mcp-config",
         "{{config}}",
         "--strict-mcp-config",
@@ -60,7 +77,8 @@
         "--output-format",
         "json"
       ],
-      "prompt": "You are on a shared Radia space with another agent. There is a queue of work already waiting, and BOTH of you are working the same queue at the same time. Claim a piece of work, do it, answer through the space, and keep going until there is nothing left for you to do. Then stop and report what you handled. Use the radia MCP tools for everything; there is no work to do on this machine."
+      "prompt": "You are on a shared Radia space with another agent. There is a queue of work already waiting, and BOTH of you are working the same queue at the same time. Claim a piece of work, do it, answer through the space, and keep going until there is nothing left for you to do. Then stop and report what you handled. Use the radia MCP tools for everything; there is no work to do on this machine.",
+      "model": "opus"
     },
     {
       "name": "codex-lab",
@@ -71,6 +89,8 @@
         "exec",
         "-",
         "--json",
+        "-m",
+        "{{model}}",
         "--skip-git-repo-check",
         "--ignore-user-config",
         "-s",
@@ -84,7 +104,8 @@
         "-c",
         "mcp_servers.radia.tools={{codexTools}}"
       ],
-      "prompt": "You are on a shared Radia space with another agent. There is a queue of work already waiting, and BOTH of you are working the same queue at the same time. Claim a piece of work, do it, answer through the space, and keep going until there is nothing left for you to do. Then stop and report what you handled. Use the radia MCP tools for everything; there is no work to do on this machine."
+      "prompt": "You are on a shared Radia space with another agent. There is a queue of work already waiting, and BOTH of you are working the same queue at the same time. Claim a piece of work, do it, answer through the space, and keep going until there is nothing left for you to do. Then stop and report what you handled. Use the radia MCP tools for everything; there is no work to do on this machine.",
+      "model": "gpt-5.6-luna"
     }
   ]
 }

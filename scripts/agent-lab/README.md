@@ -108,7 +108,7 @@ stops measuring what a naive agent does.
   space.json             flows, stats, events, every record, every member's permissions
   space.log space.err    the space's own output
   credentials.json       this run's credentials, never the ones you use
-  tally.json             calls, empties and refusals per agent
+  tally.json             models asked and reported, exit codes, calls/empties/refusals per agent
   <agent>/.mcp.json      the config that harness was given
   <agent>/trace.jsonl    one line per tool call: what the model ASKED FOR
   <agent>/stdout.log     what the harness said
@@ -123,6 +123,7 @@ MCP server two different ways:
 
 | placeholder    | is                                                          |
 |----------------|-------------------------------------------------------------|
+| `{{model}}`    | the model this agent runs (see below); the flag is DROPPED when none is set |
 | `{{config}}`   | the MCP config file this runner wrote for that agent        |
 | `{{binary}}`   | the absolute binary the adapter runs as                     |
 | `{{mcpArgs}}`  | its argv as a JSON/TOML array, `--session` and `--trace` included |
@@ -141,6 +142,27 @@ The two shipped commands were read off `claude --help` and `codex --help` on 202
   `--ignore-user-config` is the same isolation, and auth still resolves through `CODEX_HOME`, so a
   logged-in Codex stays logged in. `--skip-git-repo-check` because a run directory is not a
   repository.
+
+**The model is a variable of the experiment, so it is templated rather than appended.** The flag
+differs per harness (`--model` for Claude Code, `-m` for Codex) and harness argv is the one thing
+this runner deliberately does not know, so the scenario writes `{{model}}` into its own command. The
+shipped scenarios default to `opus` and `gpt-5.6-luna`; `--model <name>` moves every agent and
+`--model <agent>=<name>` moves one, repeatable, which is what a PAIRED run needs: same scenario,
+same day, one arm held fixed.
+
+```
+deno task lab -- --scenario …/team-queue.json --model claude-lab=sonnet
+```
+
+An unset model DROPS the flag pair rather than passing an empty argument, so "no model named" keeps
+meaning what it meant before this existed: the harness picks. A `--model` naming an agent the
+scenario does not have is refused, since it would otherwise run on the default while the evidence
+claimed a model that was never asked for.
+
+`tally.json` records `models.asked` and `models.reported` separately. They differ: an alias resolves
+on the vendor's side, and a fallback can substitute a model mid-run without changing the argv. Claude
+Code names what it used in its final JSON; Codex names none, and an absent value is recorded absent
+rather than assumed to be the ask.
 
 **Codex refuses an MCP call that is not pre-approved BY TOOL**, and an isolated session starts with
 no approvals, so the first real run answered "MCP tool call requires approval, but approval policy
@@ -169,6 +191,28 @@ accumulates; isolating it needs `CODEX_HOME` per agent with `auth.json` linked i
   looks exactly like one, so run 2 against a persistent space is refused without it.
 
 ## Reading a run
+
+```
+deno task lab-report ~/.radia-lab/team-queue-2026-08-28T13-28-17-483Z
+deno task lab-report ~/.radia-lab/team-queue-* --json      # several runs print RATES
+```
+
+Everything it prints is computed from evidence the run already collected: the event log gives claim
+history per record, the traces give what each model ASKED FOR, `space.json` gives records and mined
+flows, `tally.json` gives models and exit codes. Nothing asks an agent whether it followed the
+intended path, which is the third evidence source and the weakest.
+
+Seven checks: an empty claim while work of that kind stood available (a concurrent winner within two
+seconds is the fence working, not a finding), a record settled twice, a record left claimed or
+dead-lettered when the run ended, a nack-and-reclaim loop on one record, a participant that authored
+nothing, refusals, and acting before calling `space_kinds`. A check that cannot decide says so
+(`[n/a]`, `[part]`) rather than passing silently: over-reporting puts false findings in front of a
+reader, which is the one failure that makes a lab worse than no lab.
+
+**Several directories print rates, and a rate is what a finding is here.** The same scenario with
+the same models produces different choices, so one run is an anecdote. A PAIRED run is two sets of
+directories with one variable moved between them, which is also why `--model` exists: model drift
+cancels when both arms run the same day.
 
 `tally.json` is a count, not a verdict. The column that matters is `empty`: a call that answered
 nothing looks like success to the model and to every artifact except the trace, and it is how a

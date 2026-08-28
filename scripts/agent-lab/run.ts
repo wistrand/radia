@@ -18,6 +18,25 @@ const flag = (name: string, fallback?: string) => {
   return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[i + 1] : fallback;
 };
 const has = (name: string) => argv.includes(name);
+/** Every occurrence of a repeatable flag, in order. */
+const flagAll = (name: string) =>
+  argv.flatMap((x, i) => (x === name && argv[i + 1] && !argv[i + 1].startsWith("--") ? [argv[i + 1]] : []));
+
+/**
+ * `--model` on the command line, either for every agent or for one.
+ *
+ * `--model sonnet` sets all of them; `--model claude-lab=sonnet` sets one and is repeatable, which
+ * is what a paired run needs: hold one arm fixed and move the other. The resolved models land in
+ * `tally.json`, because a rate compared across runs is meaningless without knowing which model
+ * produced it, and the harnesses version themselves underneath us.
+ */
+const modelOverrides = new Map<string, string>();
+let modelForAll: string | undefined;
+for (const m of flagAll("--model")) {
+  const eq = m.indexOf("=");
+  if (eq > 0) modelOverrides.set(m.slice(0, eq), m.slice(eq + 1));
+  else modelForAll = m;
+}
 
 interface AgentSpec {
   name: string;
@@ -30,8 +49,18 @@ interface AgentSpec {
    *  Claude Code takes a project-local `.mcp.json`; Codex reads one file per HOME, which is the
    *  "one config for every project" trap architecture-teams.md names, so it needs a path here. */
   configPath?: string;
-  /** Extra environment for this harness only (an API key, a CODEX_HOME, a model pin). */
+  /** Extra environment for this harness only (an API key, a CODEX_HOME). */
   env?: Record<string, string>;
+  /**
+   * The model this harness runs, substituted as `{{model}}` into its own `command`.
+   *
+   * NOT a flag the runner appends, because the flag differs per harness (`--model` for Claude
+   * Code, `-m` for Codex) and harness argv is the one thing this file deliberately does not know
+   * (it changes on somebody else's release schedule). The scenario states the default; `--model` on
+   * the command line overrides it, which is what makes a PAIRED run possible without editing a
+   * scenario: one question, two arms, the same day and the same prompt.
+   */
+  model?: string;
   timeoutSeconds?: number;
   /**
    * A WORKER rather than a harness: started before the others, never waited for, killed at the end.
@@ -376,6 +405,21 @@ for (const a of agents) {
   console.log(`member ${a.name}  config ${configPath}`);
 }
 
+// A `--model` naming an agent that is not in this scenario is a TYPO, and a silent one: the run
+// proceeds on the harness default and the evidence says a model was asked for that never was.
+for (const name of modelOverrides.keys()) {
+  if (!agents.some((a) => a.name === name)) {
+    console.error(`--model ${name}=… names no agent in this scenario (it has ${agents.map((a) => a.name).join(", ")})`);
+    Deno.exit(1);
+  }
+}
+const models = Object.fromEntries(agents.filter((a) => modelOf(a)).map((a) => [a.name, modelOf(a)]));
+console.log(
+  Object.keys(models).length
+    ? `model  ${Object.entries(models).map(([n, m]) => `${n}=${m}`).join("  ")}`
+    : `model  each harness's own default (pass --model <name> or --model <agent>=<name> to pin one)`,
+);
+
 // Once, from the first member: every session sees the same tool list.
 tools = await toolNames(agents[0]);
 console.log(`tools  ${tools.length} advertised by the adapter`);
@@ -401,6 +445,11 @@ if (has("--dry-run")) {
  * mcp_servers.radia.args={{mcpArgs}}`), and neither can be written down before the run mints a
  * token. A scenario that hardcoded either would work for one harness only.
  */
+/** The model this agent runs: `--model <agent>=<name>`, then `--model <name>`, then the scenario. */
+function modelOf(a: AgentSpec): string {
+  return modelOverrides.get(a.name) ?? modelForAll ?? a.model ?? "";
+}
+
 function substitute(argv: string[], a: typeof agents[number], configPath: string): string[] {
   const values: Record<string, string> = {
     "{{config}}": configPath,
@@ -412,6 +461,7 @@ function substitute(argv: string[], a: typeof agents[number], configPath: string
     "{{token}}": a.token,
     // Codex's per-tool approvals as one TOML inline table, from the live tool list.
     "{{codexTools}}": `{ ${tools.map((t) => `${t} = { approval_mode = "approve" }`).join(", ")} }`,
+    "{{model}}": modelOf(a),
     "{{trace}}": `${a.dir}/trace.jsonl`,
     "{{session}}": a.name,
     "{{dir}}": a.dir,
@@ -419,7 +469,17 @@ function substitute(argv: string[], a: typeof agents[number], configPath: string
     // with its own directory as cwd, which is deliberately not the checkout.
     "{{repo}}": Deno.cwd(),
   };
-  return argv.map((s) => s.replace(/\{\{\w+\}\}/g, (m) => values[m] ?? m));
+  const filled = argv.map((s) => s.replace(/\{\{\w+\}\}/g, (m) => values[m] ?? m));
+  // AN UNSET MODEL DROPS ITS FLAG, rather than passing an empty argument the harness will reject.
+  // That keeps "no model named" meaning what it has always meant here: the harness picks, which is
+  // the behaviour every recorded run so far was measured under. It works because the flag and the
+  // value are separate argv entries in both harnesses (`--model X`, `-m X`), so the pair is the
+  // template token and the token before it.
+  if (!modelOf(a)) {
+    const at = argv.findIndex((s) => s === "{{model}}");
+    if (at > 0) filled.splice(at - 1, 2);
+  }
+  return filled;
 }
 
 // ---- live output ---------------------------------------------------------------
@@ -629,6 +689,11 @@ await collect("flows", ["flows", "--json"]);
 await collect("stats", ["stats", "--json"]);
 await collect("events", ["events", "--json", "--limit", "1000"]);
 for (const k of kinds) await collect(`records.${k.kind}`, ["query", k.kind, "--json", "--limit", "500"]);
+// RUN TO AGENT, which nothing else in the evidence carries for every participant. A record's
+// `createdBy` is a run, the traces pair a run with an agent only for the harnesses that HAVE a
+// trace, and a background SDK worker has none: without this, "which participant wrote this record"
+// is unanswerable for exactly the participant a bypass check is about (agent_docs/plan-agent-lab.md).
+await collect("records.agent_run", ["query", "agent_run", "--json", "--limit", "500"]);
 for (const a of agents) await collect(`permissions.${a.name}`, ["permissions", a.name, "--json"]);
 await Deno.writeTextFile(`${runDir}/space.json`, JSON.stringify(collected, null, 2));
 
@@ -659,7 +724,43 @@ for (const a of agents) {
     if (l.outcome === "error") per.errors[l.error ?? "unknown"] = (per.errors[l.error ?? "unknown"] ?? 0) + 1;
   }
 }
-await Deno.writeTextFile(`${runDir}/tally.json`, JSON.stringify({ scenario: scenario.name, results, tally }, null, 2));
+/**
+ * The model the harness says it USED, which is not always the one it was asked for.
+ *
+ * Asked and reported are recorded separately because an alias resolves on somebody else's side
+ * (`--model sonnet` becomes whatever `sonnet` points at today) and a fallback can substitute a
+ * different model mid-run without saying so in the argv. Claude Code names it in its final JSON;
+ * Codex names none, and an absent value is reported as absent rather than assumed to be the ask.
+ */
+async function reportedModel(dir: string): Promise<string | undefined> {
+  try {
+    const path = `${dir}/stdout.log`;
+    const size = (await Deno.stat(path)).size;
+    let text: string;
+    if (size > 2_000_000) {
+      // The tail only: the summary is the LAST line, and a run that moved megabytes of artifact
+      // through its transcript must not be read into memory to find it.
+      using f = await Deno.open(path);
+      await f.seek(size - 256_000, Deno.SeekMode.Start);
+      text = new TextDecoder().decode(await new Response(f.readable).arrayBuffer().then((b) => new Uint8Array(b)));
+    } else {
+      text = await Deno.readTextFile(path);
+    }
+    return text.match(/"canonicalModel"\s*:\s*"([^"]+)"/)?.[1] ??
+      text.match(/"modelUsage"\s*:\s*\{\s*"([^"]+)"/)?.[1];
+  } catch {
+    return undefined;
+  }
+}
+const reported: Record<string, string> = {};
+for (const a of harnesses) {
+  const m = await reportedModel(a.dir);
+  if (m) reported[a.name] = m;
+}
+await Deno.writeTextFile(
+  `${runDir}/tally.json`,
+  JSON.stringify({ scenario: scenario.name, models: { asked: models, reported }, results, tally }, null, 2),
+);
 
 console.log(`\ntool calls`);
 for (const [name, t] of Object.entries(tally)) {

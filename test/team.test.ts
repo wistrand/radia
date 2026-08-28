@@ -1253,3 +1253,44 @@ Deno.test("[team] a task that could not be done is answered, and the answer is q
     await s.close();
   }
 });
+
+Deno.test("[mcp] a refused member can ask what it may do, holding no ops power", async () => {
+  // Every recorded lab session that hit a 403 recovered by GUESSING: one queried a kind its member
+  // was not granted, one wrote a kind it could not write, one read an aggregate that came back
+  // narrowed and read it as an empty space. `radia permissions`, the console and the chat all
+  // answer "what may I do"; the MCP adapter, which is the surface a refused agent is holding, had
+  // no such tool (agent_docs/research-agent-sessions.md).
+  //
+  // SELF ONLY is what makes it always answerable: `http.ts` checks `asksAboutSelf` BEFORE the ops
+  // gate, so a member with no ops power at all gets an answer, and it accepts either the principal
+  // or the agent it resolves to. A tool taking a principal argument would 403 on the surface a
+  // refused caller reaches for.
+  const src = await Deno.readTextFile(new URL("../src/surfaces/mcp/server.ts", import.meta.url));
+  assert(src.includes(`case "space_permissions"`), "the adapter no longer answers space_permissions");
+  const tools = await Deno.readTextFile(new URL("../src/surfaces/mcp/tools.ts", import.meta.url));
+  const decl = tools.match(/name: "space_permissions",[\s\S]*?inputSchema: \{[^}]*\}/)?.[0] ?? "";
+  assert(decl && !/properties: \{\s*\w/.test(decl), "space_permissions takes an argument; it must answer about the caller only");
+
+  const s = await newSpace();
+  try {
+    await declareTeamKinds(s.admin);
+    const m = await addMember(s.admin, "agent:a1", { teams: ["alpha"] });
+    const c = new RadiaClient(s.base, { definitionToken: m.definitionToken });
+    await c.ensureCredential();
+
+    // The boundary the self-only design rests on: ANOTHER principal's authorization is operator
+    // work, so a tool taking a principal would have handed a refused caller a second refusal.
+    await addMember(s.admin, "agent:a2", { teams: ["alpha"] });
+    await assertRejects(() => c.permissions("agent:a2"), Error);
+
+    const me = await c.health();
+    const p = await c.permissions(me.agent ?? me.principal);
+    assertEquals(p.subject, "agent:a1", "the answer is about the durable agent, not the run");
+    assert(p.kinds.some((k) => k.kind === TASK), "a member holding task grants must see them");
+    // The pattern is the half a refusal cannot explain: the member is scoped to its team, and
+    // nothing else on this surface says so.
+    assert(p.kinds.some((k) => k.patterns.length > 0), "the narrowing pattern is what makes this answer worth having");
+  } finally {
+    await s.close();
+  }
+});

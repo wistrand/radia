@@ -103,6 +103,8 @@
       "command": [
         "claude",
         "-p",
+        "--model",
+        "{{model}}",
         "--mcp-config",
         "{{config}}",
         "--strict-mcp-config",
@@ -114,7 +116,8 @@
       "prompt": "You are on a shared Radia space with another agent. Ask that agent, through the space, for a TypeScript program that computes the sum of the first 1000 prime numbers. You want the ANSWER, the actual number, not only the source: say so in the task. Then wait for the reply (space_watch blocks for up to the timeout you pass it, and the other agent needs a couple of minutes) and report the number you were given and how it was arrived at. Use the radia MCP tools for everything; there is no work to do on this machine.",
       "unscopedGrants": [
         "sandbox:query,read_one"
-      ]
+      ],
+      "model": "opus"
     },
     {
       "name": "codex-lab",
@@ -129,6 +132,8 @@
         "exec",
         "-",
         "--json",
+        "-m",
+        "{{model}}",
         "--skip-git-repo-check",
         "--ignore-user-config",
         "-s",
@@ -145,7 +150,8 @@
       "prompt": "You are on a shared Radia space with another agent. Do one piece of work for the team. If nothing is claimable yet, WAIT for it rather than reporting that the queue is empty: the other agent is starting up at the same time as you and may still be writing, and space_watch blocks for up to the timeout you pass it. Once you have claimed something, do it, answer through the space, and stop. You do not have to do everything yourself: look at what this space offers before deciding how. Use the radia MCP tools for everything.",
       "unscopedGrants": [
         "sandbox:query,read_one"
-      ]
+      ],
+      "model": "gpt-5.6-luna"
     }
   ]
 }

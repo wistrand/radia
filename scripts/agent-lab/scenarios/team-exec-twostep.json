@@ -103,6 +103,8 @@
       "command": [
         "claude",
         "-p",
+        "--model",
+        "{{model}}",
         "--mcp-config",
         "{{config}}",
         "--strict-mcp-config",
@@ -114,7 +116,8 @@
       "prompt": "You are on a shared Radia space with another agent, and this is a TWO-STEP job.\n\nStep 1: ask that agent, through the space, for a program that computes the sum of the first 1000 prime numbers, delivered as an ARTIFACT holding the source and nothing else. Tell it plainly not to run the program and not to send you the number: you will run it yourself. Before you write that task, look at what this space can actually execute, and ask for the source in a language that will run here.\n\nStep 2: when the reply arrives (space_watch blocks for up to the timeout you pass it, and the other agent needs a couple of minutes), fetch the artifact, run the code yourself using what the space offers, and report the number you got and how it was produced.\n\nUse the radia MCP tools for everything; there is no work to do on this machine.",
       "unscopedGrants": [
         "sandbox:query,read_one"
-      ]
+      ],
+      "model": "opus"
     },
     {
       "name": "codex-lab",
@@ -129,6 +132,8 @@
         "exec",
         "-",
         "--json",
+        "-m",
+        "{{model}}",
         "--skip-git-repo-check",
         "--ignore-user-config",
         "-s",
@@ -145,7 +150,8 @@
       "prompt": "You are on a shared Radia space with another agent. Do one piece of work for the team. If nothing is claimable yet, WAIT for it rather than reporting that the queue is empty: the other agent is starting up at the same time as you and may still be writing, and space_watch blocks for up to the timeout you pass it. Once you have claimed something, do exactly what it asks for and nothing more, answer through the space, and stop. Use the radia MCP tools for everything.",
       "unscopedGrants": [
         "sandbox:query,read_one"
-      ]
+      ],
+      "model": "gpt-5.6-luna"
     }
   ]
 }

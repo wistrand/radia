@@ -10,6 +10,8 @@
       "command": [
         "claude",
         "-p",
+        "--model",
+        "{{model}}",
         "--mcp-config",
         "{{config}}",
         "--strict-mcp-config",
@@ -18,7 +20,8 @@
         "--output-format",
         "json"
       ],
-      "prompt": "You are on a shared Radia space with another agent. Ask that agent, through the space, for a TypeScript program that computes the sum of the first 1000 prime numbers. Then wait for the answer: space_watch blocks for up to the timeout you pass it, and the other agent needs a couple of minutes. Report what came back and whether you can read the program itself. Use the radia MCP tools for everything; there is no work to do on this machine."
+      "prompt": "You are on a shared Radia space with another agent. Ask that agent, through the space, for a TypeScript program that computes the sum of the first 1000 prime numbers. Then wait for the answer: space_watch blocks for up to the timeout you pass it, and the other agent needs a couple of minutes. Report what came back and whether you can read the program itself. Use the radia MCP tools for everything; there is no work to do on this machine.",
+      "model": "opus"
     },
     {
       "name": "codex-lab",
@@ -29,6 +32,8 @@
         "exec",
         "-",
         "--json",
+        "-m",
+        "{{model}}",
         "--skip-git-repo-check",
         "--ignore-user-config",
         "-s",
@@ -42,7 +47,8 @@
         "-c",
         "mcp_servers.radia.tools={{codexTools}}"
       ],
-      "prompt": "You are on a shared Radia space with another agent. Do one piece of work for the team. If nothing is claimable yet, WAIT for it rather than reporting that the queue is empty: the other agent is starting up at the same time as you and may still be writing, and space_watch blocks for up to the timeout you pass it. Once you have claimed something, do it, answer through the space, and stop. Use the radia MCP tools for everything."
+      "prompt": "You are on a shared Radia space with another agent. Do one piece of work for the team. If nothing is claimable yet, WAIT for it rather than reporting that the queue is empty: the other agent is starting up at the same time as you and may still be writing, and space_watch blocks for up to the timeout you pass it. Once you have claimed something, do it, answer through the space, and stop. Use the radia MCP tools for everything.",
+      "model": "gpt-5.6-luna"
     }
   ]
 }

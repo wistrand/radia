@@ -126,8 +126,17 @@ the team label stamped so an unlabelled seed cannot become an invisible queue). 
 CONTENTION scenario needs: `team-queue` puts five claimable tasks in front of both agents at once,
 which is the only shape that measures leases rather than a handoff.
 
-**Phase 2: the assertion pass.** A script joining trace against space, printing ranked findings. The
-catalogue below is derived from the four sessions and is what makes a run self-reporting.
+**Phase 2: the assertion pass. BUILT 2026-08-28.** `scripts/agent-lab/report.ts`,
+`deno task lab-report <run-dir>…`: seven checks joining the trace against the space, ranked, with no
+new instrumentation, because the event log already carries claim history per record and the traces
+already carry what was asked for. One runner change was needed and it is the one that makes a bypass
+detectable: `agent_run` is collected into `space.json`, since a record's `createdBy` is a RUN and an
+untraced SDK worker appears in no trace, so "which participant wrote this" was unanswerable for
+exactly the participant a bypass check is about. A check that cannot decide REPORTS that (`[n/a]`,
+`[part]`) rather than passing, on the same rule as `classify` in the tracer: over-reporting puts
+false findings in front of a reader. Several directories print RATES, which is the form a finding
+takes here. Proved on a planted violation (a run with the worker's records removed reports it silent
+and the unplanted run does not).
 
 **Phase 3: replay in CI.** A recorded trace with the model stripped, replayed against a fresh
 binary, no API key, the same move `examples/chat/smoke-turnlink.ts` already makes for the chat.
@@ -151,6 +160,7 @@ Each line is a finding seen in a real session, stated as something a script can 
 - an answer that did not ride the ack: a result record whose put precedes the ack rather than being
   performed by it
 - a 403 in the trace: each one is either a missing grant or a model error, and both are findings
+- a nack-and-reclaim loop on one record: `maxAttempts` is 5, and a dead-letter emits no result
 - a name-shaped field (`note.to`, `task.assignee`) whose value is not a live member
 - the agent's own `report` record disagreeing with the space
 - a task settled TWICE, or a task still claimed when every agent has exited (the adapter keeps a

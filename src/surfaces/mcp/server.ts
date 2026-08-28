@@ -365,6 +365,21 @@ async function call(
       await client.ensureCredential();
       return pretty(await client.health());
 
+    case "space_permissions": {
+      // SELF ONLY, and that is not a limitation to lift later: `http.ts` lets any principal read
+      // its OWN permissions without an ops power (`asksAboutSelf`), and reading anybody else's
+      // needs `observe`. Taking a principal argument would turn a call that always works into one
+      // that sometimes 403s, on the exact surface a refused caller reaches for.
+      //
+      // The exchange first, like `space_health`: the durable name is what the answer is about, and
+      // an unauthenticated adapter would ask about `anonymous`.
+      await client.ensureCredential();
+      const me = await client.health();
+      // The AGENT where there is one: grants are held by agents, not by the runs they mint, and
+      // `asksAboutSelf` accepts either the principal or the agent it resolves to (`http.ts`).
+      return pretty(await client.permissions(me.agent ?? me.principal));
+    }
+
     case "space_kinds":
       return answer("kinds", await client.listKinds());
 

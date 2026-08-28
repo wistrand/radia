@@ -63,6 +63,19 @@ export const TOOLS: McpTool[] = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "space_permissions",
+    // THE ANSWER TO A REFUSAL. Every recorded lab session that hit a 403 recovered by guessing:
+    // one queried a kind its member was not granted, one wrote a kind it could not write, and a
+    // third read an aggregate that came back narrowed. `radia permissions`, the console and the
+    // chat all answer this; the adapter did not, so the caller most likely to need it was the one
+    // surface that could not ask (agent_docs/research-agent-sessions.md).
+    description: "What you are allowed to do here: every kind you hold, which operations on each, " +
+      "and the pattern any grant narrows you to. Call this when a request is refused, or before " +
+      "reading an empty answer as an empty space: a read you lack is REFUSED, while a read that is " +
+      "narrowed simply returns less. It answers about YOU and about nothing else.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
     name: "space_stats",
     description: "Record counts grouped by kind and envelope state (available/leased/consumed/dead_letter).",
     inputSchema: { type: "object", properties: {} },
