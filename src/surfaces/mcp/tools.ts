@@ -160,10 +160,11 @@ export const TOOLS: McpTool[] = [
   {
     name: "space_ack",
     description:
-      "Finish a claim successfully. Set resultKind/resultBody to emit a result record in the same " +
-      "step. That result is itself a record others match on, which is how work flows onward. A " +
-      "status of lease_lost means the claim had already been reclaimed and someone else may have " +
-      "redone the work (delivery is at-least-once).",
+      "Settle a claim with an ANSWER, including an answer that reports failure: work that cannot " +
+      "succeed on a retry is acked saying so, never nacked. Set resultKind/resultBody to emit that " +
+      "result in the same step. It is itself a record others match on, which is how work flows " +
+      "onward. A status of lease_lost means the claim had already been reclaimed and someone else " +
+      "may have redone the work (delivery is at-least-once).",
     inputSchema: {
       type: "object",
       properties: {

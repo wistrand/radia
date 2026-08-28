@@ -30,6 +30,19 @@ because retention GC never sweeps unclaimed claimable work. `tags` is the routin
 claimant states what it is, and `removeMember` withdraws the departing member's advertisements so
 the routing goes with it.
 
+**Work that cannot be done is ANSWERED, never nacked, and the answer says so.** `note.ok` is the
+marker (optional, indexed, absent means the note is mail rather than an answer). Two reasons it is
+not a nack. The state machine cannot express permanent failure: `nack` reaches dead-letter only
+after `maxAttempts`, and a dead-lettered record emits NO result, so the member that asked learns
+nothing and waits out its deadline. And the rule is already the tool layer's
+(`extensions/ts/tool-worker.ts`: a failed call is an answer, whose envelope carries `ok`), so this
+is that rule reaching the kind that shipped without it. Measured: a member answered impossible work
+correctly in prose and the result was indistinguishable from four successes to anything but a
+reader. The `space_ack` description carries the disposition, since that is what is being read at
+the moment of the decision; the kind's usage carries the mechanism. Flow mining is deliberately not
+taught about it: its `failed` means the RUNTIME gave up, and lineage cannot interpret an app's
+semantics.
+
 ## What is core, what is the extension, what is the surface
 
 This is the repo's admission rule (`extensions/README.md`) applied to one feature, and it is worth

@@ -79,15 +79,23 @@ export const TEAM_KINDS: KindDef[] = [
       { path: TEAM_FIELD, type: "keyword" },
       { path: "topic", type: "keyword" },
       { path: "to", type: "keyword" },
+      // `ok` is what makes a FAILED answer legible. Declared so `{ok: false}` compiles at all (an
+      // undeclared path is refused), and OPTIONAL so a note that is mail rather than an answer is
+      // unchanged: absent means "not a task answer", never "it worked". Measured: a member claimed
+      // work that could not be done, answered correctly in prose, and the result was
+      // indistinguishable from four successes to anything but a reader
+      // (agent_docs/research-agent-sessions.md). `keyword` because there is no boolean index type;
+      // the type is a storage hint and the oracle does the comparison.
+      { path: "ok", type: "keyword" },
     ],
     claimable: false,
     usage: "What agents say to each other, and what a finished task acks as its result. " +
-      "body: {to, message, topic?}. `to` is a member's AGENT name, which space_health reports as " +
-      "`agent` (your `principal` is a RUN and is gone tomorrow), or the literal 'all' for the whole " +
-      "team. READ YOUR MAILBOX AS {to: {$in: ['<your agent name>', 'all']}}: a keyword " +
-      "match is exact, so watching your own name alone silently misses every broadcast. Use " +
-      "`message` for the prose; nothing indexes it, but readers look for that name. PROSE ONLY: " +
-      "code, a script or a file goes in space_put_artifact and the note names it.",
+      "body: {to, message, topic?, ok?}. `to` is a member's AGENT name, which space_health reports " +
+      "as `agent`, never the RUN in `principal`, or 'all' for the whole team. READ YOUR MAILBOX AS " +
+      "{to: {$in: ['<your agent name>', 'all']}}: a keyword match is exact, so watching your own " +
+      "name alone silently misses every broadcast. WORK YOU COULD NOT DO IS STILL ANSWERED: ack a " +
+      "note with ok:false saying why, and nack only if a retry could succeed. PROSE ONLY: code, a " +
+      "script or a file goes in space_put_artifact and the note names it.",
   },
   {
     kind: ARTIFACT,

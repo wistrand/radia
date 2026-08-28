@@ -10,7 +10,7 @@
 // A real socket, because the thing under test includes the client's own definition-for-run
 // exchange, and a stubbed fetch would test a mock's idea of a mint.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { makeHandler } from "../src/server/http.ts";
 import { Space } from "../src/core/space.ts";
 import { SqliteAdapter } from "../src/storage/sqlite.ts";
@@ -1207,6 +1207,48 @@ Deno.test("[team] health names the DURABLE agent, not only the run it resolved t
     // The OPERATOR is already durable, so there is nothing to add and the field stays absent:
     // its presence is the statement "your principal is not the name to use".
     assertEquals((await s.admin.health()).agent, undefined);
+  } finally {
+    await s.close();
+  }
+});
+
+Deno.test("[team] a task that could not be done is answered, and the answer is queryable as one", async () => {
+  // A member claimed work naming a record that does not exist, answered correctly in prose, and
+  // acked. The answer was then indistinguishable from four successes to anything but a reader:
+  // `tool_result` carries `ok` and `note` carried nothing, so a query over the answers reported
+  // five completions (agent_docs/research-agent-sessions.md).
+  //
+  // NACK IS THE WRONG VERB HERE and the runtime cannot express the right one: `nack` reaches
+  // dead-letter only after `maxAttempts`, and a dead-lettered record emits NO result, so the agent
+  // that asked learns nothing and waits out its deadline. The rule the tool layer already states
+  // ("a failed call is an ANSWER, never a nack") is what this brings to the team convention.
+  const s = await newSpace();
+  try {
+    await declareTeamKinds(s.admin);
+    const m = await addMember(s.admin, "agent:a1", { teams: [DEFAULT_TEAM] });
+    const c = new RadiaClient(s.base, { definitionToken: m.definitionToken });
+
+    await c.put({ kind: TASK, body: { [TEAM_FIELD]: DEFAULT_TEAM, title: "summarise a record that is not there" } });
+    const claim = await c.take({ pattern: { kind: TASK } }, { leaseSeconds: 30 });
+    assert(claim, "the seeded task should be claimable");
+    await c.ack(claim.lease, {
+      kind: NOTE,
+      body: { [TEAM_FIELD]: DEFAULT_TEAM, to: "all", ok: false, message: "that record does not exist" },
+    });
+
+    // The point of declaring the path, asserted rather than assumed: an UNDECLARED path is refused
+    // at compile, so without the declaration this pattern is not a narrower query, it is an error.
+    await assertRejects(() => c.queryAll({ kind: NOTE, match: { undeclared: false } }));
+    const failed = await c.queryAll({ kind: NOTE, match: { ok: false } });
+    assertEquals(failed.length, 1, "the failure is findable without reading prose");
+    const ok = await c.queryAll({ kind: NOTE, match: { ok: true } });
+    assertEquals(ok.length, 0);
+
+    // ABSENT means "not a task answer", never "it worked": ordinary mail must stay untouched, and
+    // a failure query must not sweep it up.
+    await c.put({ kind: NOTE, body: { [TEAM_FIELD]: DEFAULT_TEAM, to: "agent:a1", message: "hello" } });
+    assertEquals((await c.queryAll({ kind: NOTE, match: { ok: false } })).length, 1);
+    assertEquals((await c.queryAll({ kind: NOTE })).length, 2);
   } finally {
     await s.close();
   }

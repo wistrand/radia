@@ -143,9 +143,11 @@ the record, got nothing, and ACKED with a note saying the record does not exist.
 would have been wrong (nothing changes on retry, so it is a livelock), and not an abandoned claim.
 The answer is right and unreadable: the result is an ordinary `note`, indistinguishable from the
 four successes, so a reader querying notes sees five completions. `tool_result` carries `ok` and
-`note` carries nothing. Two things follow, and both are open: the team convention has no failure
-marker on an answer, and the `task` usage string cannot state the rule because it is at 597 of its
-600 characters.
+`note` carried nothing. FIXED 2026-08-28: `note.ok` is the marker (optional, indexed, absent means
+the note is mail), `space_ack`'s description now says a failure is acked rather than nacked, and
+the `note` usage carries the mechanism, trimmed to fit rather than raising `MAX_KIND_USAGE` to
+hold one string. Still not a nack: it reaches dead-letter only after `maxAttempts`, and a
+dead-lettered record emits no result, so the member that asked would learn nothing at all.
 
 **`space_release` and `space_nack` have never been called.** Fourteen sessions, including one whose
 work contained something that could not be done. Both tools are advertised and described on every
