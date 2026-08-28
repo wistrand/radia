@@ -36,7 +36,11 @@ import type { Pattern } from "../../core/matching.ts";
 import { TOOLS } from "./tools.ts";
 import { ScopeFiller } from "./scope.ts";
 import { classify, fileTracer, type Tracer } from "./trace.ts";
-import { scoped } from "./render.ts";
+import { answer } from "./render.ts";
+
+/** `explainQuery`'s page note, which `space_query` states itself with the caller's own limit rather
+ *  than the probe's. Exported for the guard in `test/trace.test.ts`. */
+export const PROBE_NOTE = /filled the limit/;
 import { mediaTypeForPath } from "../media.ts";
 import { newer } from "../../../sdk/ts/registry.ts";
 import { ARTIFACT } from "../../../sdk/ts/wire.ts";
@@ -362,13 +366,13 @@ async function call(
       return pretty(await client.health());
 
     case "space_kinds":
-      return pretty(await client.listKinds());
+      return answer("kinds", await client.listKinds());
 
     case "space_stats": {
       // The REPORT, never the bare array. A pattern-scoped member got `[]` from this call on a
       // space holding eight kinds and had nothing in the answer to say why (see render.ts).
       const r = await client.getStatsReport();
-      return scoped(r.stats, r.scope, "stats");
+      return answer("stats", r.stats, { scope: r.scope });
     }
 
     case "space_doctor":
@@ -393,15 +397,31 @@ async function call(
       // knows. A directional read cannot be combined with it (the space refuses, and the SDK now
       // refuses first), so the two cases dispatch instead of one silently losing.
       //
-      // `queryPage` for BOTH, because it is the one that carries `scope`: a grant that narrowed the
-      // read says so in the answer, and the two convenience methods return `r.records` alone. The
-      // order is unchanged (no page argument means the natural ascending id order, which is what
-      // `queryOldest` asks for) and `nextCursor` is deliberately not rendered, since this tool
-      // takes no cursor to send it back with.
+      // `queryPage` for BOTH, because it is the one that carries `scope` and `explain`; the two
+      // convenience methods return `r.records` alone. The order is unchanged (no page argument
+      // means the natural ascending id order, which is what `queryOldest` asks for).
+      //
+      // ONE PAST THE LIMIT, purely to answer "is this all of them?". No cursor is offered, because
+      // this tool takes none to send back; that is CONTINUATION, and it is not what was missing.
+      // What was missing is DISCLOSURE: a page that reports only its own size reads as a
+      // population, and "3 available tasks" has already been said off this call about a space where
+      // two of the three were finished.
       const p = pat(a);
       const n = num(a, "limit") ?? 50;
-      const r = await client.queryPage(p, n);
-      return scoped(r.records, r.scope, "records");
+      const r = await client.queryPage(p, n + 1, undefined, { explain: true });
+      const rows = r.records.slice(0, n);
+      return answer("records", rows, {
+        more: r.records.length > n,
+        limit: n,
+        scope: r.scope,
+        // The runtime's page note is dropped, and ONLY that one: it reports the limit it was
+        // given, which is the probe (`n + 1`), so a caller that asked for 2 was told "results
+        // filled the limit (3)" beside our own correct "more than 2 records match". It can only
+        // appear when the probe filled, which is exactly when `more` is already saying it better.
+        // Matched on the runtime's own wording, like `scope.ts`: a rename there drops the filter
+        // rather than misfiring, and `test/trace.test.ts` holds the string.
+        notes: r.explain?.filter((note) => !PROBE_NOTE.test(note)),
+      });
     }
 
     case "space_read_one":
@@ -411,13 +431,16 @@ async function call(
       return pretty(await client.getRecord(str(a, "recordId")));
 
     case "space_lineage": {
+      // The walk up is not paged: it ends at the roots, so there is no `more` to report.
       const r = await client.getLineageReport(str(a, "recordId"));
-      return scoped(r.lineage, r.scope, "lineage");
+      return answer("lineage", r.lineage, { scope: r.scope });
     }
 
     case "space_children": {
+      // Fan-out IS unbounded, so this one is a page and says so from the cursor the endpoint
+      // already returns. A record with 300 children reported 100 and looked complete.
       const r = await client.getChildrenPage(str(a, "recordId"));
-      return scoped(r.children, r.scope, "children");
+      return answer("children", r.children, { more: !!r.nextAfter, limit: r.children.length, scope: r.scope });
     }
 
     case "space_events":

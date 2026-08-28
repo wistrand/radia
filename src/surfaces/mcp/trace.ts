@@ -69,7 +69,7 @@ export function classify(text: string): { outcome: Outcome; records?: number } {
     // in. Reading only the bare array would have called every scoped read `ok`, including the empty
     // ones, which is the measurement this file exists to make.
     if (parsed && typeof parsed === "object") {
-      for (const key of ["records", "stats", "children", "lineage", "events"]) {
+      for (const key of ["records", "stats", "children", "lineage", "events", "kinds"]) {
         const list = (parsed as Record<string, unknown>)[key];
         if (Array.isArray(list)) return { outcome: list.length === 0 ? "empty" : "ok", records: list.length };
       }

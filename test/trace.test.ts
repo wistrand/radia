@@ -8,7 +8,8 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { classify, fileTracer } from "../src/surfaces/mcp/trace.ts";
-import { scoped } from "../src/surfaces/mcp/render.ts";
+import { answer } from "../src/surfaces/mcp/render.ts";
+import { PROBE_NOTE } from "../src/surfaces/mcp/server.ts";
 
 Deno.test("[trace] an answer that found nothing is classified as empty, not as success", () => {
   // The exact sentence the adapter writes, and the exact shape a real session produced: this is
@@ -73,14 +74,52 @@ Deno.test("[trace] a NARROWED answer is still counted, wrapper and all", () => {
   // `render.ts` wraps a list beside its scope when a grant narrowed the read, so the count moved
   // one level in. Reading only the bare array would call every scoped read `ok`, including the
   // empty ones, and the empty ones are the measurement.
-  const narrowed = scoped([], { self: true, kinds: ["task"], note: "…" }, "records");
+  const narrowed = answer("records", [], { scope: { self: true, kinds: ["task"], note: "…" } });
   assertEquals(classify(narrowed).outcome, "empty");
   assertEquals(classify(narrowed).records, 0);
 
-  const some = scoped([{ id: "a" }, { id: "b" }], { self: true, kinds: ["task"], note: "…" }, "stats");
+  const some = answer("stats", [{ id: "a" }, { id: "b" }]);
   assertEquals(classify(some).outcome, "ok");
   assertEquals(classify(some).records, 2);
 
-  // And an UNSCOPED answer keeps its old shape exactly, so nothing about the common case moved.
-  assertEquals(scoped([], undefined, "records"), "[]");
+  // EVERY read answers with an object now, scoped or not, so there is one shape to read.
+  assertEquals(classify(answer("kinds", [])).outcome, "empty");
+});
+
+Deno.test("[render] a bounded answer says it is bounded, and an exact one does not", () => {
+  // "A page that reports only its own size reads as a population: the model counts 10 records and
+  // states a total" (extensions/ts/agent-tools.ts, where this was already solved). The MCP surface
+  // lacked it, and "3 available tasks" was reported off `space_query` on a space where two of the
+  // three were settled.
+  const page = JSON.parse(answer("records", [1, 2], { more: true, limit: 2 }));
+  assertEquals(page.count, 2);
+  assertEquals(page.more, true);
+  assert(/PAGE, not the total/.test(page.warning), page.warning);
+  assert(/Do not count or aggregate/.test(page.warning));
+
+  // An answer that fit says nothing about pages: a warning on every read is a warning nobody reads.
+  const whole = JSON.parse(answer("records", [1, 2], { limit: 50 }));
+  assertEquals(whole.count, 2);
+  assertEquals(whole.more, undefined);
+  assertEquals(whole.warning, undefined);
+
+  // The rows come LAST, after what qualifies them.
+  assertEquals(Object.keys(JSON.parse(answer("records", [1], { more: true, limit: 1, scope: { self: true }, notes: ["x"] }))), [
+    "count",
+    "more",
+    "warning",
+    "scope",
+    "notes",
+    "records",
+  ]);
+});
+
+Deno.test("[render] the page note the adapter filters is still the note the runtime writes", async () => {
+  // `space_query` probes one past the limit, so `explainQuery`'s page note reports the PROBE's
+  // limit: a caller asking for 2 was told "results filled the limit (3)" beside a correct "more
+  // than 2 records match". The adapter drops that one note and states the fact itself. Matched on
+  // the runtime's wording, so this holds the string: a rename in `inspection.ts` must fail HERE,
+  // where the filter stops matching, rather than silently letting the wrong number back through.
+  const inspection = await Deno.readTextFile(new URL("../src/core/inspection.ts", import.meta.url));
+  assert(PROBE_NOTE.test(inspection), "explainQuery's page note was reworded; update the filter in server.ts");
 });

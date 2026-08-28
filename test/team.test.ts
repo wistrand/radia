@@ -1146,6 +1146,9 @@ Deno.test("[mcp] a narrowed read says so, on every tool that has a scope to repo
   for (const dropping of ["client.getStats(", "client.getLineage(", "client.getChildren(", "client.queryOldest(", "client.queryOrdered("]) {
     assert(!src.includes(dropping), `the adapter calls ${dropping}…), which drops the scope the endpoint attached`);
   }
+  // The other two facts that travel with a list, ported from the surface that already had them
+  // (`extensions/ts/agent-tools.ts`): the server's own notes, and whether this is all of them.
+  assert(/queryPage\(p, n \+ 1, undefined, \{ explain: true \}\)/.test(src), "space_query no longer asks for explain, or no longer probes one past the limit");
 
   const s = await newSpace();
   try {

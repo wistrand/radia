@@ -1,24 +1,52 @@
-// Rendering an answer that the runtime NARROWED, without hiding that it did.
+// How a read ANSWERS, when the honest answer is more than the rows.
 //
-// Every ops-plane read and the coordination query attach an `OpsScope`/`ReadScope` when a grant
-// bounded what came back: which kinds the numbers cover, which are reachable by pattern and
-// therefore deliberately not counted, and a sentence saying so. The runtime is careful about this
-// and `test/team.test.ts` asserts it. The SURFACE was not: `space_stats` called the SDK method that
-// returns `r.stats` alone, so a team member asking for stats got `[]` and read it as an empty
-// space. Observed in a real agent-lab run (agent_docs/plan-agent-lab.md), which is where a model
-// meets these answers and has no second source.
+// Ported from `extensions/ts/agent-tools.ts`, which is the other model-facing surface and had all
+// of this already. Three facts travel with a list and were being dropped here:
 //
-// A BARE LIST WHEN NOTHING WAS NARROWED. An unscoped caller sees exactly what it saw before, so the
-// common answer keeps its shape and only the narrowed one grows a wrapper. That also keeps the
-// wrapper meaningful: its presence IS the statement.
+// SCOPE. Every ops read and the coordination query attach an `OpsScope`/`ReadScope` when a grant
+// bounded what came back. A member asking for stats on a space holding eight kinds got `[]` and
+// read it as an empty space (seen in an agent-lab run, agent_docs/plan-agent-lab.md).
+//
+// TRUNCATION. "A page that reports only its own size reads as a population: the model counts 10
+// records and states a total" (`agent-tools.ts`). A limit is not a total, and the answer has to say
+// so even when this surface offers no cursor to continue with: disclosure and continuation are
+// separate, and only the first was ever in question.
+//
+// THE SERVER'S OWN NOTES. `explain` already names the traps a correct-looking query walked into
+// (an undeclared kind, a scalar predicate on an array path, a full page). It is opt-in, and the
+// adapter never asked for it, so warnings the runtime wrote for exactly this reader were discarded.
+//
+// ONE SHAPE, ALWAYS AN OBJECT. The first version wrapped only when there was something to say,
+// which made the answer polymorphic: a bare array sometimes, an object others. Text is what a model
+// gets, so it copes, but everything mechanical downstream then handles both, and the lab's own
+// trace classifier had to do exactly that inside one commit. The rows go LAST, after the caveats,
+// so what qualifies them is read first.
 
-/**
- * A list answer plus the scope, when there is one.
- *
- * `key` names the list in the wrapped form (`records`, `stats`, `children`, `lineage`), matching
- * what the wire calls it, so a model that has seen the endpoint sees the same word.
- */
-export function scoped(list: unknown[], scope: unknown, key: string): string {
-  const j = (v: unknown) => JSON.stringify(v, null, 2);
-  return scope ? j({ [key]: list, scope }) : j(list);
+export interface AnswerMeta {
+  /** True when more exist than came back. Known from a `limit + 1` probe, or from a page cursor. */
+  more?: boolean;
+  /** The limit that bounded this answer, named in the warning so the reader can raise it. */
+  limit?: number;
+  /** The `OpsScope`/`ReadScope` the runtime attached, when a grant narrowed the read. */
+  scope?: unknown;
+  /** `explain` notes from the same code that answered. */
+  notes?: string[];
+}
+
+export function answer(key: string, rows: unknown[], meta: AnswerMeta = {}): string {
+  const warning = meta.more
+    ? `more than ${meta.limit ?? rows.length} records match; this is a PAGE, not the total. Do not ` +
+      `count or aggregate from it. Use space_stats for totals, or narrow the match.`
+    : undefined;
+  return JSON.stringify(
+    {
+      count: rows.length,
+      ...(meta.more ? { more: true, warning } : {}),
+      ...(meta.scope ? { scope: meta.scope } : {}),
+      ...(meta.notes && meta.notes.length > 0 ? { notes: meta.notes } : {}),
+      [key]: rows,
+    },
+    null,
+    2,
+  );
 }
