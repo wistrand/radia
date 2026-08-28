@@ -149,6 +149,8 @@ Each line is a finding seen in a real session, stated as something a script can 
 - a 403 in the trace: each one is either a missing grant or a model error, and both are findings
 - a name-shaped field (`note.to`, `task.assignee`) whose value is not a live member
 - the agent's own `report` record disagreeing with the space
+- code that was DELIVERED and then not run: the sha256 of an executed `tool_call`'s source against
+  the digest of the artifact it came from (the two-step run passed 442 bytes through unchanged)
 - a `background` worker that AUTHORED NOTHING in a scenario built around it (the first `team-exec`
   run: a missing `tool_call` grant on the harnesses, two exit 0s, a correct answer, and the worker
   never invoked). The signal is a record it wrote, never `tally.json`: the tally counts MCP calls,

@@ -5,7 +5,7 @@ the fixes are linked to where they landed.** The subject is CLAUDE CODE and CODE
 space through `radia mcp`, first by hand and then through the lab
 ([plan-agent-lab.md](plan-agent-lab.md), which is the harness rather than the findings).
 
-Twelve sessions so far, 2026-08-26 to 2026-08-28: four hand-run and pasted into a review, eight
+Thirteen sessions so far, 2026-08-26 to 2026-08-28: four hand-run and pasted into a review, nine
 through `deno task lab`. Each cost roughly $0.60 and 45 to 85 seconds.
 
 This doc does not restate. The traps live in [gotchas.md](gotchas.md), the team convention in
@@ -111,6 +111,24 @@ recovered the three-principal shape with nothing declared:
 `task@claude-lab → note@codex-lab + tool_call@codex-lab → tool_result@lab-exec → artifact@codex-lab`.
 Run 3 repeated it in 35s with the same result and no artifact, and claimed by
 `{tags: {$any: "javascript"}}` first try, on a tag the requester had invented for itself.
+
+**Two-step: the requester ran what it was given, byte for byte.** `team-exec-twostep` moves the
+execution to the agent that wrote the task, and it ran first try:
+`task@claude-lab → artifact@codex-lab + note@codex-lab → tool_call@claude-lab → tool_result@lab-exec`,
+28s, `3682913`. Two things are worth keeping. The code in the `tool_call` hashes to the artifact's
+own digest (`d796b2…`, 442 bytes), so the requester passed the delivered bytes through rather than
+retyping or improving them, which is an assertion a script can compute. And the requester read the
+capability's description and wrote its constraints INTO the task ("this space's run_javascript
+sandbox, plain JS, no network, no filesystem, must finish within 5 seconds, so use no imports"),
+which is why the dialect trap never fired: `run_javascript` runs stdin under `--ext=js`, so
+TypeScript annotations are a syntax error, and nothing told it that.
+
+**A kind's usage promised a read the grants refused.** The scenario's `sandbox` usage says "Query
+this to learn what running code here can and cannot reach", and the first thing the requester did
+after `space_kinds` was `space_query {kind: "sandbox"}`, which was refused: only the worker held the
+grant. It recovered in one call by querying `capability` instead. A usage string is a promise made
+to every reader of the kind, so a kind that invites a query must be granted to everyone it invites,
+and `sandbox` carries no team, so that grant has to be unscoped.
 
 **The prose credits the wrong principal about half the time.** Run 2's answer note read "The
 program ran successfully and printed 3682913" and the requester reported that Codex had run it;

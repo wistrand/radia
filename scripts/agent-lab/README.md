@@ -23,6 +23,7 @@ deno task lab -- --scenario scripts/agent-lab/scenarios/smoke.json   # no model,
 | `team-code` (default) | a few cents | one agent asks the other for a TypeScript program that sums the first 1000 primes |
 | `team-image` | ~$1 | the same shape with a generated image as the deliverable |
 | `team-exec` | a few cents | the same request with a THIRD party present: a model-free worker advertising `run_javascript`, so the answer can be computed rather than reasoned |
+| `team-exec-twostep` | a few cents | the same cast, with the execution moved to the REQUESTER: the worker is asked for source only, and the agent that wrote the task fetches the artifact and dispatches the `tool_call` itself |
 
 **Every producer/consumer scenario has a startup race, and the prompt is where it is settled.** A
 harness spends between 10 seconds and a minute orienting itself before its first tool call, and the
@@ -35,6 +36,15 @@ report an empty queue, which is what a real agent does anyway and exercises the 
 is told only to do whatever work is waiting; whether the answer arrives as an artifact, as prose in
 a note, or not at all is the finding. The kinds and the tools are all the agents are given, and what
 they do with `space_put_artifact` when nobody named it is exactly what the lab is for.
+
+**`team-exec-twostep` moves the execution to the requester**, so the deliverable has to survive a
+handoff: the worker answers with source in an artifact, and the agent that wrote the task fetches it
+and dispatches the `tool_call`. Two things are under observation and neither is prompted for by
+name. The requester is told to check what the space can execute BEFORE deciding what to ask for,
+because `run_javascript` feeds the program on stdin under `--ext=js` (`extensions/ts/sandbox.ts`),
+so asking for TypeScript out of habit yields a syntax error rather than a number. And the worker is
+told to do what it was asked and nothing more, on a space where it holds the grants to run the code
+itself; whether it stops at the source is the finding.
 
 **A `background: true` agent is a worker, not a harness.** It starts before the others, is never
 waited for, and is killed when the run ends. Readiness is a RECORD (`readyWhen`) rather than a
