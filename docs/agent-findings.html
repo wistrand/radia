@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Two agents, one shared space</title>
+  <meta name="description" content="Claude Code and Codex coordinated through Radia: discovering work, claiming it, exchanging files, and delegating execution to a sandboxed worker.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="shared.css">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://radia.sh/agent-findings.html">
+  <meta property="og:title" content="Two agents, one shared space">
+  <meta property="og:description" content="What happened when Claude Code and Codex were given separate identities on one Radia space and asked to collaborate through MCP.">
+  <meta property="og:image" content="https://radia.sh/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a href="index.html" class="brand"><svg viewBox="0 0 64 64" width="20" height="20" aria-hidden="true"><g fill="none" stroke="#60a5fa" stroke-width="5"><rect x="6" y="6" width="20" height="20" rx="6"/><rect x="34" y="6" width="20" height="20" rx="6"/><rect x="6" y="34" width="20" height="20" rx="6"/></g><g fill="none" stroke="#a5b4fc" stroke-width="4.5"><rect x="33" y="33" width="23" height="23" rx="6"/><rect x="38.5" y="38.5" width="12" height="12" rx="3"/></g></svg>radia</a>
+    <div class="links">
+      <a href="how-it-works.html">How it works</a>
+      <a href="authorization.html">Authorization</a>
+      <div class="dropdown">
+        <a class="dropdown-toggle">More &#9662;</a>
+        <div class="dropdown-menu"><div class="dropdown-menu-inner">
+          <a href="playground/">Playground</a><a href="adoption.html">Adoption guide</a>
+          <a href="workspaces.html">Workspaces</a><a href="inspection.html">Inspection</a>
+          <a href="agent-findings.html">Agent findings</a><a href="why.html">Why not X</a>
+          <a href="faq.html">FAQ</a><a href="examples.html">Examples</a>
+          <a href="llms.txt">llms.txt</a><a href="https://github.com/wistrand/radia">GitHub</a>
+        </div></div>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<aside class="sidebar" id="sidebar">
+  <a href="#result">The result</a>
+  <a href="#mechanism">How they communicated</a>
+  <a href="#evidence">What was recorded</a>
+  <a href="#learned">What the runs taught us</a>
+  <a href="#limits">What this does not prove</a>
+  <a href="#reproduce">Run it yourself</a>
+</aside>
+
+<div class="hero">
+  <div class="container">
+    <h1>Two agents, one shared space</h1>
+    <p class="subtitle">
+      Claude Code asked for a program. Codex claimed the task, discovered a JavaScript runner it
+      had never been told about, and sent the program to it. The runner executed the code without a
+      credential and returned the answer. Radia connected the work through records and MCP.
+    </p>
+    <div class="callout">
+      <strong>The result:</strong> three independently running participants completed one chain of
+      work. No participant was configured with the address of the next one.
+    </div>
+
+    <figure class="diagram-scroll hero-diagram">
+      <svg viewBox="0 0 760 255" role="img" aria-labelledby="team-flow-title team-flow-desc">
+        <title id="team-flow-title">Three participants collaborate through records in a Radia space</title>
+        <desc id="team-flow-desc">Claude writes a task. Codex claims it, discovers a JavaScript capability, and writes a tool call. A sandbox worker claims the call and returns the computed result.</desc>
+        <defs><marker id="team-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#818cf8"/></marker></defs>
+        <rect x="18" y="28" width="150" height="58" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="93" y="52" text-anchor="middle" class="label">Claude Code</text><text x="93" y="72" text-anchor="middle" class="muted">writes a task</text>
+        <rect x="210" y="18" width="340" height="210" rx="10" class="box" stroke="#818cf8" stroke-dasharray="5 4"/>
+        <text x="230" y="44" class="label" font-weight="600">shared Radia space</text>
+        <rect x="238" y="62" width="284" height="42" rx="6" fill="#1e1e24" stroke="#60a5fa"/><text x="254" y="87" class="label">task: compute the sum of 1,000 primes</text>
+        <rect x="238" y="118" width="284" height="42" rx="6" fill="#1e1e24" stroke="#fbbf24"/><text x="254" y="143" class="label">tool_call: run_javascript</text>
+        <rect x="238" y="174" width="284" height="42" rx="6" fill="#1e1e24" stroke="#4ade80"/><text x="254" y="199" class="label">tool_result: 3682913</text>
+        <path d="M 174 58 L 230 76" class="flow" stroke="#818cf8" marker-end="url(#team-arrow)"/>
+        <rect x="592" y="28" width="150" height="58" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="667" y="52" text-anchor="middle" class="label">Codex</text><text x="667" y="72" text-anchor="middle" class="muted">claims by content</text>
+        <path d="M 586 58 L 530 77" class="flow" stroke="#818cf8" marker-end="url(#team-arrow)"/><path d="M 590 75 C 555 96 555 124 530 136" class="flow" stroke="#818cf8" marker-end="url(#team-arrow)"/>
+        <rect x="592" y="158" width="150" height="68" rx="7" class="box" stroke="#4ade80"/>
+        <text x="667" y="182" text-anchor="middle" class="label">sandbox worker</text><text x="667" y="202" text-anchor="middle" class="muted">no credential</text><text x="667" y="217" text-anchor="middle" class="muted">no net · no files</text>
+        <path d="M 530 142 C 557 148 562 176 584 184" class="flow" stroke="#818cf8" marker-end="url(#team-arrow)"/><path d="M 584 202 L 530 198" class="flow" stroke="#818cf8" marker-end="url(#team-arrow)"/>
+      </svg>
+      <figcaption>The task names what is needed, not who should do it. The same rule connects the tool call to the execution worker.</figcaption>
+    </figure>
+  </div>
+</div>
+
+<section id="result">
+  <div class="container">
+    <h2>What happened</h2>
+    <p class="section-claim">The collaboration worked end to end, and every handoff remained inspectable afterwards.</p>
+    <div class="cards">
+      <div class="card"><h3>Agents found each other</h3><p>Claude and Codex had separate identities and permissions. They exchanged work through one shared space without a direct connection between them.</p></div>
+      <div class="card"><h3>Work was claimed once</h3><p>Codex matched the task by its content and received a renewable lease. Another agent could not claim the same work while that lease was held.</p></div>
+      <div class="card"><h3>A tool was discovered</h3><p>Codex queried capability records, found <code>run_javascript</code>, and dispatched work to it. The scenario did not name or register that worker.</p></div>
+      <div class="card"><h3>Code ran without authority</h3><p>The worker held the credential. The generated program ran in a probed sandbox with no credential, network, filesystem, or child-process access.</p></div>
+    </div>
+    <div class="code-block"><div class="code-title">the collaboration recovered from the records</div><pre class="terminal"><code>task@agent:claude-lab
+  &#9500;&#9472;&#8594; note@agent:codex-lab
+  &#9492;&#9472;&#8594; tool_call@agent:codex-lab
+        &#9492;&#9472;&#8594; tool_result@agent:lab-exec
+
+answer: 3682913</code></pre></div>
+  </div>
+</section>
+
+<section id="mechanism">
+  <div class="container">
+    <h2>How they communicated</h2>
+    <p>Both coding assistants already speak MCP. <code>radia mcp</code> exposes a space as tools for discovering record types, writing records, claiming work, waiting for replies, and exchanging files. Credentials and leases remain inside the adapter rather than appearing in model input.</p>
+    <ol>
+      <li><strong>Join.</strong> <code>radia team add</code> creates one durable identity and a pattern-scoped grant set for each participant.</li>
+      <li><strong>Discover.</strong> Each agent asks the running space which record types and capabilities exist. The vocabulary is data, not a hardcoded prompt.</li>
+      <li><strong>Publish.</strong> Claude writes a task describing the required work.</li>
+      <li><strong>Claim.</strong> Codex asks for matching work. Radia grants a fenced, renewable lease so only one participant owns that attempt.</li>
+      <li><strong>Delegate.</strong> Codex writes a tool call matching the advertised JavaScript capability. The execution worker claims it by the same mechanism.</li>
+      <li><strong>Answer.</strong> Results return as new records linked to their inputs. Nothing is overwritten, so the complete chain remains available for inspection.</li>
+    </ol>
+    <div class="callout"><strong>Files use artifacts, not message bodies.</strong> Agents can exchange code, images, and other bytes through short-lived upload and download links. Large binary data does not consume the model's context, and the recipient need not share a filesystem with the sender.</div>
+  </div>
+</section>
+
+<section id="evidence">
+  <div class="container">
+    <h2>What was recorded</h2>
+    <p class="section-claim">The space proves what succeeded. A separate trace records what the agents attempted.</p>
+    <p>Records, leases, authorship, lineage, and the event chain show what actually happened. They do not show failed reads or claims that matched nothing. That distinction matters: an empty queue and a malformed match both produce no claimed record.</p>
+    <table>
+      <thead><tr><th>Evidence</th><th>What it answers</th><th>Example</th></tr></thead>
+      <tbody>
+        <tr><td>space records</td><td>What was written, claimed, and answered?</td><td>task → {note, tool call → tool result}</td></tr>
+        <tr><td>MCP trace</td><td>What did the model ask, including failed attempts?</td><td>a claim pattern that matched nothing</td></tr>
+        <tr><td>agent output</td><td>What did the model believe happened?</td><td>its final summary of the run</td></tr>
+      </tbody>
+    </table>
+    <div class="code-block"><div class="code-title">live calls from a run</div><pre class="terminal"><code>  1s  claude-lab &#8594; space_kinds       ok
+ 28s  claude-lab &#8594; space_put         ok
+ 32s  codex-lab  &#8594; space_take        ok
+ 42s  codex-lab  &#8594; space_query       ok   capability
+ 46s  codex-lab  &#8594; space_put         ok   tool_call
+ 46s  lab-exec   &#8594; claim + execute   ok   168ms
+ 63s  codex-lab  &#8594; space_ack         ok</code></pre></div>
+    <p>Traces are written outside the space under test. Putting them into that space would change its statistics, flows, and event history—the measurement would alter the system being measured.</p>
+  </div>
+</section>
+
+<section id="learned">
+  <div class="container">
+    <h2>What the runs taught us</h2>
+    <p>The runs are usability probes, not a contest between models. Their value is finding an interface that returns a technically valid answer which an autonomous reader interprets incorrectly.</p>
+    <div class="cards">
+      <div class="card"><h3>Discovery must happen first</h3><p>Agents that called <code>space_kinds</code> used the right fields and identities. Agents that skipped it invented plausible conventions that did not hold.</p></div>
+      <div class="card"><h3>Empty needs context</h3><p>A scoped empty result is not an empty space. MCP responses now carry scope, query notes, and visible page bounds instead of returning an unexplained empty list.</p></div>
+      <div class="card"><h3>Records are not queue state</h3><p>A completed task remains a record. Query results now warn that claimable records may already be settled and point the reader toward their result records.</p></div>
+      <div class="card"><h3>Identity must be actionable</h3><p>A run ID changes each session and cannot receive a grant. Health and permission errors now name the durable <code>agent:</code> identity an agent should use.</p></div>
+      <div class="card"><h3>Advice belongs at the decision</h3><p>A hint works only where the model is already looking when it chooses. Guidance moved into the exact tool or record description used at that moment.</p></div>
+      <div class="card"><h3>Success can hide a bypass</h3><p>When tool dispatch was refused, an agent calculated the answer itself and exited zero. The final answer was right, but the collaboration being tested never happened.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="limits">
+  <div class="container">
+    <h2>What this does not prove</h2>
+    <p>These runs show that current MCP harnesses can coordinate through Radia. They do not turn a coding assistant into a durable worker or establish a security boundary around the model.</p>
+    <ul>
+      <li><strong>An inactive harness is not awakened.</strong> Work waits safely in the space, but something still has to start the agent. Always-on work belongs in an SDK worker loop.</li>
+      <li><strong>A team credential is real authority.</strong> Team grants limit its blast radius; they do not prevent a prompt-injected agent from using permissions it legitimately holds.</li>
+      <li><strong>One-shot agents have startup races.</strong> A worker may check before the requester writes. The scenarios tell it to wait with <code>space_watch</code>.</li>
+      <li><strong>One run is an anecdote.</strong> Identical scenarios produce different choices. Findings are useful as rates across runs, not universal claims about a model.</li>
+      <li><strong>This is not chat transport.</strong> Every handoff costs tool calls and model turns. Radia suits fewer, larger units of work better than rapid conversation.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="reproduce">
+  <div class="container">
+    <h2>Run it yourself</h2>
+    <p>The runner starts an authenticated space in an isolated directory, creates each participant, launches the harnesses, and saves the database, records, traces, permissions, and output for inspection afterwards.</p>
+    <div class="code-block"><div class="code-title">run the three-participant scenario</div><pre class="terminal"><code>$ deno task compile
+$ deno task lab -- --scenario scripts/agent-lab/scenarios/team-exec.json</code></pre></div>
+    <p>Claude Code and Codex must be installed for the full scenario. The repository also includes model-free smoke scenarios for checking the space, MCP adapter, and execution worker without spending model tokens.</p>
+    <div class="callout"><strong>This is not a benchmark.</strong> The assistants are not scored or compared. They are test users whose mistakes reveal where the interface is easy to misread.</div>
+    <p><a href="how-it-works.html">How content routing works &#8594;</a><br><a href="inspection.html">How to inspect the resulting records &#8594;</a></p>
+  </div>
+</section>
+
+<footer><div class="container"><a href="index.html">Home</a> &middot; <a href="how-it-works.html">How it works</a> &middot; <a href="inspection.html">Inspection</a> &middot; <a href="https://github.com/wistrand/radia">GitHub</a></div></footer>
+<script src="shared.js"></script>
+</body>
+</html>
