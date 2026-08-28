@@ -15,6 +15,26 @@ deno task lab -- --out ~/lab/x --keep     # a free port is chosen unless --port 
 deno task lab -- --scenario scripts/agent-lab/scenarios/smoke.json   # no model, no API key
 ```
 
+## The scenarios
+
+| scenario | costs | asks |
+|---------------|--------------|--------------------------------------------------------|
+| `smoke` | nothing | two model-free harnesses, for checking the plumbing |
+| `team-code` (default) | a few cents | one agent asks the other for a TypeScript program that sums the first 1000 primes |
+| `team-image` | ~$1 | the same shape with a generated image as the deliverable |
+
+**Every producer/consumer scenario has a startup race, and the prompt is where it is settled.** A
+harness spends between 10 seconds and a minute orienting itself before its first tool call, and the
+spread is wider than the work: measured, the worker claimed at 19s, found an empty queue, posted "no
+work available" and exited at 36s, while the requester wrote the task at 30s. A one-shot `codex
+exec` is not a worker loop. So the worker prompt says to WAIT with `space_watch` rather than to
+report an empty queue, which is what a real agent does anyway and exercises the blocking read.
+
+**`team-code` deliberately never says "artifact".** The requester asks for a program and the worker
+is told only to do whatever work is waiting; whether the answer arrives as an artifact, as prose in
+a note, or not at all is the finding. The kinds and the tools are all the agents are given, and what
+they do with `space_put_artifact` when nobody named it is exactly what the lab is for.
+
 Start with `smoke.json`. It runs two `fake-agent.ts` harnesses, which speak JSON-RPC to the adapter
 with no model behind them, so it answers "is my lab wired up" in three seconds and for nothing. Its
 fixed call sequence is the one a real session got wrong: claim by `$in` on an array path, then by

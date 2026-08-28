@@ -149,6 +149,18 @@ Each line is a finding seen in a real session, stated as something a script can 
   stops existing. The lab runs authenticated.
 - **`--session`** on the adapter if a claim must survive an adapter restart mid-scenario.
 
+## A scenario with two roles has a startup race
+
+Measured on the first `team-code` run: the worker claimed at 19s, found an empty queue, posted "no
+work available" and exited at 36s; the requester wrote the task at 30s. Eleven seconds, and the run
+produced a clean pair of exit 0s with nothing coordinated.
+
+A harness spends anywhere from 10 seconds to a minute orienting itself before its first tool call,
+and that spread is wider than the work in a cheap scenario. A one-shot `codex exec` is not a worker
+loop. THE PROMPT IS WHERE THIS IS SETTLED, and the fix is the one a real agent wants anyway: tell
+the worker to WAIT with `space_watch` rather than to report an empty queue. Seeding the task before
+launch would also remove the race and removes the collaboration being measured with it.
+
 ## Findings are rates, not booleans
 
 The `$in` failure appeared in one of two Codex sessions, and the difference was whether

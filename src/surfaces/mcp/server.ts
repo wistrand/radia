@@ -36,6 +36,7 @@ import type { Pattern } from "../../core/matching.ts";
 import { TOOLS } from "./tools.ts";
 import { ScopeFiller } from "./scope.ts";
 import { classify, fileTracer, type Tracer } from "./trace.ts";
+import { scoped } from "./render.ts";
 import { mediaTypeForPath } from "../media.ts";
 import { newer } from "../../../sdk/ts/registry.ts";
 import { ARTIFACT } from "../../../sdk/ts/wire.ts";
@@ -353,13 +354,22 @@ async function call(
 ): Promise<string> {
   switch (name) {
     case "space_health":
+      // EXCHANGE FIRST. `/v0/health` is public, so an unauthenticated request gets a cheerful
+      // `principal: "anonymous"` rather than the 401 that would make the client mint a run. A model
+      // whose first call is "who am I" was therefore told "nobody" while the adapter was holding a
+      // perfectly good definition token, and the `agent` name below would be missing with it.
+      await client.ensureCredential();
       return pretty(await client.health());
 
     case "space_kinds":
       return pretty(await client.listKinds());
 
-    case "space_stats":
-      return pretty(await client.getStats());
+    case "space_stats": {
+      // The REPORT, never the bare array. A pattern-scoped member got `[]` from this call on a
+      // space holding eight kinds and had nothing in the answer to say why (see render.ts).
+      const r = await client.getStatsReport();
+      return scoped(r.stats, r.scope, "stats");
+    }
 
     case "space_doctor":
       return pretty(await client.diagnostics());
@@ -382,9 +392,16 @@ async function call(
       // The pattern is the MODEL's, so `orderBy` is data here rather than something this call site
       // knows. A directional read cannot be combined with it (the space refuses, and the SDK now
       // refuses first), so the two cases dispatch instead of one silently losing.
+      //
+      // `queryPage` for BOTH, because it is the one that carries `scope`: a grant that narrowed the
+      // read says so in the answer, and the two convenience methods return `r.records` alone. The
+      // order is unchanged (no page argument means the natural ascending id order, which is what
+      // `queryOldest` asks for) and `nextCursor` is deliberately not rendered, since this tool
+      // takes no cursor to send it back with.
       const p = pat(a);
       const n = num(a, "limit") ?? 50;
-      return pretty(p.orderBy?.length ? await client.queryOrdered(p, n) : await client.queryOldest(p, n));
+      const r = await client.queryPage(p, n);
+      return scoped(r.records, r.scope, "records");
     }
 
     case "space_read_one":
@@ -393,11 +410,15 @@ async function call(
     case "space_get":
       return pretty(await client.getRecord(str(a, "recordId")));
 
-    case "space_lineage":
-      return pretty(await client.getLineage(str(a, "recordId")));
+    case "space_lineage": {
+      const r = await client.getLineageReport(str(a, "recordId"));
+      return scoped(r.lineage, r.scope, "lineage");
+    }
 
-    case "space_children":
-      return pretty(await client.getChildren(str(a, "recordId")));
+    case "space_children": {
+      const r = await client.getChildrenPage(str(a, "recordId"));
+      return scoped(r.children, r.scope, "children");
+    }
 
     case "space_events":
       // The page, not the bare array: it carries the event-GC truncation annotation

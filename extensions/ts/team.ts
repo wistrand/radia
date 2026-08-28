@@ -82,8 +82,9 @@ export const TEAM_KINDS: KindDef[] = [
     ],
     claimable: false,
     usage: "What agents say to each other, and what a finished task acks as its result. " +
-      "body: {to, message, topic?}. `to` is a member principal ('agent:name') or the literal 'all' " +
-      "for the whole team. READ YOUR MAILBOX AS {to: {$in: ['<your principal>', 'all']}}: a keyword " +
+      "body: {to, message, topic?}. `to` is a member's AGENT name, which space_health reports as " +
+      "`agent` (your `principal` is a RUN and is gone tomorrow), or the literal 'all' for the whole " +
+      "team. READ YOUR MAILBOX AS {to: {$in: ['<your agent name>', 'all']}}: a keyword " +
       "match is exact, so watching your own name alone silently misses every broadcast. Use " +
       "`message` for the prose; nothing indexes it, but readers look for that name.",
   },

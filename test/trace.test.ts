@@ -8,6 +8,7 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { classify, fileTracer } from "../src/surfaces/mcp/trace.ts";
+import { scoped } from "../src/surfaces/mcp/render.ts";
 
 Deno.test("[trace] an answer that found nothing is classified as empty, not as success", () => {
   // The exact sentence the adapter writes, and the exact shape a real session produced: this is
@@ -66,4 +67,20 @@ Deno.test("[trace] a failing trace disables itself and never breaks the call it 
 
   assertEquals(said.length, 1, "it must say so ONCE, not once per call");
   assert(said[0].includes("continuing untraced"), said[0]);
+});
+
+Deno.test("[trace] a NARROWED answer is still counted, wrapper and all", () => {
+  // `render.ts` wraps a list beside its scope when a grant narrowed the read, so the count moved
+  // one level in. Reading only the bare array would call every scoped read `ok`, including the
+  // empty ones, and the empty ones are the measurement.
+  const narrowed = scoped([], { self: true, kinds: ["task"], note: "…" }, "records");
+  assertEquals(classify(narrowed).outcome, "empty");
+  assertEquals(classify(narrowed).records, 0);
+
+  const some = scoped([{ id: "a" }, { id: "b" }], { self: true, kinds: ["task"], note: "…" }, "stats");
+  assertEquals(classify(some).outcome, "ok");
+  assertEquals(classify(some).records, 2);
+
+  // And an UNSCOPED answer keeps its old shape exactly, so nothing about the common case moved.
+  assertEquals(scoped([], undefined, "records"), "[]");
 });

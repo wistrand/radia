@@ -65,6 +65,15 @@ export function classify(text: string): { outcome: Outcome; records?: number } {
     const parsed = JSON.parse(text);
     if (Array.isArray(parsed)) return { outcome: parsed.length === 0 ? "empty" : "ok", records: parsed.length };
     if (parsed === null) return { outcome: "empty" };
+    // A NARROWED answer wraps its list beside the scope (`render.ts`), so the count moved one level
+    // in. Reading only the bare array would have called every scoped read `ok`, including the empty
+    // ones, which is the measurement this file exists to make.
+    if (parsed && typeof parsed === "object") {
+      for (const key of ["records", "stats", "children", "lineage", "events"]) {
+        const list = (parsed as Record<string, unknown>)[key];
+        if (Array.isArray(list)) return { outcome: list.length === 0 ? "empty" : "ok", records: list.length };
+      }
+    }
   } catch { /* not JSON: a sentence, a rendered table, or an error string */ }
   return { outcome: "ok" };
 }

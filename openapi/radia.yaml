@@ -95,6 +95,7 @@ paths:
                   storage: { type: string }
                   now: { type: string }
                   principal: { type: string, description: "the resolved caller (from the bearer token, or the operator default)" }
+                  agent: { type: string, description: "the durable agent behind that principal when it is a run (`agent:name`), which is how conventions above the runtime address each other; absent when the principal IS the durable identity" }
                   instance: { type: string, description: "identity of THIS run of the space; changes on every restart, so a client can tell 'same space' from 'same port'" }
                   startedAt: { type: string, description: "database clock at boot; absent when the boot path did not stamp one" }
                   persistent: { type: boolean, description: "whether records survive a restart (storage alone cannot say: pglite runs both ways)" }

@@ -537,6 +537,15 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
           storage: space.storageName,
           now: await space.now(),
           principal, // the resolved caller (so the console can show who it's authenticated as)
+          // THE DURABLE NAME BEHIND THAT RUN, when there is one. `principal` is a run, which is
+          // the only identity this endpoint used to report, so an agent asked "who am I" and got
+          // `run:01M13R…`. Conventions above the runtime address each other by AGENT (`note.to` is
+          // documented as `agent:name`), and two harnesses in a lab run therefore addressed their
+          // mail to run ids: it worked, by coincidence of both being wrong the same way, and would
+          // have stopped working at the 12h ceiling. Present only when it differs from `principal`,
+          // so its presence is the statement. For a DELEGATED run this is the worker's agent, which
+          // is what `grantSubject` means and what actually runs the work.
+          ...(space.grantSubject(principal) !== principal ? { agent: space.grantSubject(principal) } : {}),
           instance: space.instance,
           // WHICH space, and whether it will still be here. A restart on the same port answers 200
           // either way, so a client watching `now` alone cannot see that its records are gone.

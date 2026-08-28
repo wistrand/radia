@@ -44,7 +44,10 @@ interface Scenario {
   sequential?: boolean;
 }
 
-const scenarioPath = flag("--scenario", "scripts/agent-lab/scenarios/team-image.json")!;
+// `team-code` by default: it exercises the same shape as `team-image` (ask, claim, answer with
+// something too big for a body) for a fraction of the money, because generating an image costs more
+// than the coordination being measured.
+const scenarioPath = flag("--scenario", "scripts/agent-lab/scenarios/team-code.json")!;
 const scenario = JSON.parse(await Deno.readTextFile(scenarioPath)) as Scenario;
 const binary = flag("--binary", "./radia")!;
 /**

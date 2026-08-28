@@ -263,7 +263,19 @@ export class RadiaClient {
    *  reconnecting client can tell "same space" from "same port". Both are absent from a space too
    *  old to report them. */
   health(): Promise<
-    { storage: string; now: string; version: string; principal: string; instance?: string; startedAt?: string; persistent?: boolean }
+    {
+      storage: string;
+      now: string;
+      version: string;
+      principal: string;
+      /** The durable agent behind `principal` when that is a run: `agent:name`, which is what
+       *  conventions above the runtime address (`note.to`). Absent when the principal is already
+       *  the durable identity, or when the run's agent could not be resolved. */
+      agent?: string;
+      instance?: string;
+      startedAt?: string;
+      persistent?: boolean;
+    }
   > {
     return this.req("GET", "/v0/health");
   }
@@ -935,8 +947,17 @@ export class RadiaClient {
   }
 
   async getLineage(recordId: string): Promise<{ record: RadiaRecord; depth: number }[]> {
+    return (await this.getLineageReport(recordId)).lineage;
+  }
+
+  /** The walk plus the SCOPE a grant imposed on it, for a caller that must report what it could not
+   *  see. Same pair as `getStats`/`getStatsReport`, and for the same reason: the bare list is the
+   *  convenient shape and drops the runtime's own statement about what it left out. */
+  async getLineageReport(
+    recordId: string,
+  ): Promise<{ lineage: { record: RadiaRecord; depth: number }[]; scope?: OpsScope }> {
     const r = await this.req("GET", `/v0/ops/records/${encodeURIComponent(recordId)}/lineage`);
-    return r.lineage;
+    return { lineage: r.lineage, scope: r.scope };
   }
 
   /** Records that reference this one via parent_ids: its children (the reverse of lineage).
@@ -967,11 +988,13 @@ export class RadiaClient {
     recordId: string,
     limit = 100,
     after?: string,
-  ): Promise<{ children: RadiaRecord[]; nextAfter?: string }> {
+  ): Promise<{ children: RadiaRecord[]; nextAfter?: string; scope?: OpsScope }> {
     const q = new URLSearchParams({ limit: String(limit) });
     if (after) q.set("after", after);
     const r = await this.req("GET", `/v0/ops/records/${encodeURIComponent(recordId)}/children?${q}`);
-    return { children: r.children, nextAfter: r.nextAfter };
+    // `scope` carried through: the endpoint attaches it whenever a grant narrowed the walk, and
+    // dropping it here is how a caller comes to report a partial answer as the whole one.
+    return { children: r.children, nextAfter: r.nextAfter, scope: r.scope };
   }
 
   // ---- artifacts (design-data-model §2.4) ----

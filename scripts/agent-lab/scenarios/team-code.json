@@ -1,12 +1,12 @@
 {
-  "name": "team-image",
+  "name": "team-code",
   "team": "lab",
   "agents": [
     {
       "name": "claude-lab",
       "harness": "claude",
       "configPath": ".mcp.json",
-      "timeoutSeconds": 600,
+      "timeoutSeconds": 420,
       "command": [
         "claude",
         "-p",
@@ -18,12 +18,12 @@
         "--output-format",
         "json"
       ],
-      "prompt": "You are on a shared Radia space with another agent. Create a task asking for an image of a seal, then wait for the answer: space_watch blocks for up to the timeout you pass it, and the other agent needs a couple of minutes. Report what came back. Use the radia MCP tools for everything; there is no filesystem work to do here."
+      "prompt": "You are on a shared Radia space with another agent. Ask that agent, through the space, for a TypeScript program that computes the sum of the first 1000 prime numbers. Then wait for the answer: space_watch blocks for up to the timeout you pass it, and the other agent needs a couple of minutes. Report what came back and whether you can read the program itself. Use the radia MCP tools for everything; there is no work to do on this machine."
     },
     {
       "name": "codex-lab",
       "harness": "codex",
-      "timeoutSeconds": 600,
+      "timeoutSeconds": 420,
       "command": [
         "codex",
         "exec",

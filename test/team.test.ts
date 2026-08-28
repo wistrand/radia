@@ -1131,3 +1131,62 @@ Deno.test("[team] the MCP match description names every operator the compiler ta
     assert(desc.includes(op), `the MATCH description does not mention ${op}, so nothing teaches it`);
   }
 });
+
+Deno.test("[mcp] a narrowed read says so, on every tool that has a scope to report", async () => {
+  // The runtime is careful here and the SURFACE was not. `space_stats` called the SDK method that
+  // returns `r.stats` alone, so a pattern-scoped member asking for stats on a space holding eight
+  // kinds got `[]` and read it as an empty space. Seen in a real agent-lab run, by a model, which
+  // is the reader with no second source (agent_docs/plan-agent-lab.md).
+  const src = await Deno.readTextFile(new URL("../src/surfaces/mcp/server.ts", import.meta.url));
+  for (const dropping of ["client.getStats(", "client.getLineage(", "client.getChildren(", "client.queryOldest(", "client.queryOrdered("]) {
+    assert(!src.includes(dropping), `the adapter calls ${dropping}…), which drops the scope the endpoint attached`);
+  }
+
+  const s = await newSpace();
+  try {
+    await declareTeamKinds(s.admin);
+    const m = await addMember(s.admin, "agent:a1", { teams: ["alpha"] });
+    const c = new RadiaClient(s.base, { definitionToken: m.definitionToken });
+    const task = await c.put({ kind: TASK, body: { [TEAM_FIELD]: "alpha", title: "one" } });
+    await c.put({ kind: NOTE, body: { [TEAM_FIELD]: "alpha", to: "all", message: "done" }, parentIds: [task.id] });
+
+    // Each of these is what a tool now calls, and each must carry what the endpoint attached.
+    assert((await c.getStatsReport()).scope, "stats");
+    assert((await c.queryPage({ kind: TASK }, 10)).scope, "query");
+    assert((await c.getChildrenPage(task.id)).scope, "children");
+    assert((await c.getLineageReport(task.id)).scope, "lineage");
+
+    // …and the bare convenience methods still answer the old way, since apps depend on them.
+    assert(Array.isArray(await c.getStats()));
+    assert(Array.isArray(await c.getChildren(task.id)));
+  } finally {
+    await s.close();
+  }
+});
+
+Deno.test("[team] health names the DURABLE agent, not only the run it resolved to", async () => {
+  // A run is not what anything addresses. `note.to` is documented as `agent:name`, and this call
+  // was the only place a model could ask who it is: it answered `run:01M13R…`, so two harnesses in
+  // a lab run addressed their mail to run ids. It worked, because both were wrong the same way,
+  // and it would have stopped at the 12h ceiling (agent_docs/plan-agent-lab.md).
+  const s = await newSpace();
+  try {
+    await declareTeamKinds(s.admin);
+    const m = await addMember(s.admin, "agent:a1", { teams: ["alpha"] });
+    const c = new RadiaClient(s.base, { definitionToken: m.definitionToken });
+
+    // The exchange first, as the adapter's `space_health` now does: `/v0/health` is PUBLIC, so an
+    // unauthenticated call answers `anonymous` instead of 401ing into a mint, and a model whose
+    // first question is "who am I" would be told "nobody".
+    await c.ensureCredential();
+    const h = await c.health();
+    assert(h.principal.startsWith("run:"), `a member acts as a run, got ${h.principal}`);
+    assertEquals(h.agent, "agent:a1", "the durable name a note can be addressed to");
+
+    // The OPERATOR is already durable, so there is nothing to add and the field stays absent:
+    // its presence is the statement "your principal is not the name to use".
+    assertEquals((await s.admin.health()).agent, undefined);
+  } finally {
+    await s.close();
+  }
+});

@@ -53,7 +53,13 @@ export const TOOLS: McpTool[] = [
   },
   {
     name: "space_health",
-    description: "Storage backend, database clock, and the principal your requests resolve to.",
+    // `principal` is a RUN, and a run is not what anything addresses. Two harnesses in a lab run
+    // asked this call who they were, got run ids, and addressed their mail to them; it worked only
+    // because both were wrong the same way, and a run dies at the 12h ceiling.
+    description: "Storage backend, database clock, and who you are. `principal` is the RUN your " +
+      "requests resolve to, which changes every session; `agent` is your durable name (`agent:you`) " +
+      "and is what conventions address, so use it when a record asks who something is for or from. " +
+      "`agent` is absent when your principal is already durable.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -217,8 +223,12 @@ export const TOOLS: McpTool[] = [
   {
     name: "space_put_artifact",
     description:
-      "Store bytes beside the space and get back a record that NAMES them. Use this for anything " +
-      "bigger than a record body: a file, a diff, a transcript, output another agent should read. " +
+      "Store bytes beside the space and get back a record that NAMES them. THE WAY TO SHARE CODE, " +
+      "a script, a file, a diff, a transcript, or any output another agent should read: source " +
+      "pasted into a record body is prose in a field nothing indexes, cannot be run or downloaded, " +
+      "and cannot be erased, while an artifact keeps its filename and media type, is fetched by " +
+      "whoever needs it, and can be shredded. Reach for it whenever you are about to put a code " +
+      "block in a message. " +
       "Bytes never travel inside a record body, so this is how agents hand each other content. " +
       "Four ways to supply the bytes, and only one of them puts them in this conversation. " +
       "`link:true` returns a single-use URL to PUT them to with no credential, which assumes " +
