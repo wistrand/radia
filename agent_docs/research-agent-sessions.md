@@ -30,6 +30,25 @@ decision happens while writing a note, so the counterweight belongs in `note`. A
 reaches an agent that called `space_kinds`; a pattern is written on every call, so that one belongs
 in the always-read tool description.
 
+**"Already reading" is two variables, and the second is WHEN.** A kind's usage is read ONCE, during
+orientation, and is not in front of the model twenty calls later; a tool description is re-read on
+every call that considers that tool. So a hint about a decision taken late in a session survives
+only in a tool description, however well it fits the kind.
+
+Measured, on the rule's own terms: `note.ok` was placed in the `note` usage, which is where the
+answer is written and is the correct artifact by the rule above. Codex called `space_kinds` at 12s
+and therefore READ it, then decided at 38s and never used it. What it was reading at 38s was
+`space_nack`'s description. The placement was right and the timing was wrong, which is the one case
+the rule as first stated predicts a success for.
+
+| the hint | right artifact | wrong moment |
+|---|---|---|
+| answer failed work, do not nack it | the `note` usage, read at 12s | decided at 38s, reading `space_nack` |
+
+The corollary for a kind's usage: it teaches SHAPE (which fields a body carries, how the kind is
+addressed), because shape is what an agent is deciding when it first reads the kind. A rule about
+WHEN to reach for one verb over another belongs on the verbs.
+
 ## Findings
 
 **Calling `space_kinds` predicts whether the session goes well.** Two sessions that skipped it wrote
@@ -175,11 +194,9 @@ to lead with the DISCRIMINATOR rather than the situation, but it is not made yet
 below.
 
 **A hint read at orientation is not available at the decision.** `note.ok` shipped hours earlier and
-neither agent used it, on any note, including the failure. Codex called `space_kinds` at 12s, so it
-READ the usage naming `ok:false`, and did not use it at 55s, twenty calls later. That refines the
-rule at the top of this doc rather than contradicting it: "the thing the model is already reading"
-means at the moment of the decision, and a kind's usage is read once during orientation. What it was
-reading at 38s was `space_nack`'s description.
+neither agent used it, on any note, including the failure, though Codex had read the usage naming it.
+This is the observation behind the TEMPORAL half of the rule at the top of this doc, and the reason
+the `space_nack` wording is the next thing to change rather than the `note` usage.
 
 **This run changed two things at once and can attribute neither.** The previous `team-queue` run
 acked the impossible task immediately; this one nacked three times first. Between them, both the
