@@ -254,7 +254,14 @@ function noGrant(h: AuthorizationHost, principal: string, what: string, kind: st
   const undeclared = h.kinds.get(kind)
     ? ""
     : `; '${kind}' is not a declared kind on this space, so no grant would help — query 'kind_def' for the ones that are`;
-  return new RadiaError("forbidden", `principal '${principal}' has no ${what} kind '${kind}'${undeclared}`);
+  // NAME THE SUBJECT A GRANT WOULD BE WRITTEN AGAINST, not only the principal that asked. A run
+  // inherits its definition's grants, so `run:01M…` is the wrong half of the answer for the two
+  // readers of this sentence: a model deciding what to ask for, and a person reading a trace. Both
+  // need `agent:<name>`, which is what a `grant` record's `principal` holds. Measured in the lab:
+  // a session was told a run id had no `tool_call: put` grant and had no way to name itself.
+  const subject = grantSubject(h, principal);
+  const who = subject === principal ? `'${principal}'` : `'${subject}' (acting as ${principal})`;
+  return new RadiaError("forbidden", `principal ${who} has no ${what} kind '${kind}'${undeclared}`);
 }
 
 /** The pattern constraint an already-read grant set imposes. Split from the read so `readAccess`

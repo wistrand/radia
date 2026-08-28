@@ -1,0 +1,112 @@
+{
+  "name": "exec-smoke",
+  "team": "lab",
+  "kinds": [
+    {
+      "kind": "tool_call",
+      "indexedPaths": [
+        {
+          "path": "tool",
+          "type": "keyword"
+        },
+        {
+          "path": "team",
+          "type": "keyword"
+        }
+      ]
+    },
+    {
+      "kind": "tool_result",
+      "indexedPaths": [
+        {
+          "path": "callId",
+          "type": "keyword"
+        },
+        {
+          "path": "team",
+          "type": "keyword"
+        }
+      ],
+      "claimable": false
+    },
+    {
+      "kind": "sandbox",
+      "indexedPaths": [
+        {
+          "path": "name",
+          "type": "keyword"
+        },
+        {
+          "path": "language",
+          "type": "keyword"
+        },
+        {
+          "path": "isolation",
+          "type": "keyword"
+        },
+        {
+          "path": "network",
+          "type": "keyword"
+        },
+        {
+          "path": "processes",
+          "type": "keyword"
+        }
+      ],
+      "claimable": false
+    }
+  ],
+  "agents": [
+    {
+      "name": "lab-exec",
+      "background": true,
+      "grants": [
+        "tool_call:take",
+        "tool_result:put"
+      ],
+      "unscopedGrants": [
+        "sandbox:put,query,read_one",
+        "interest:put,query"
+      ],
+      "readyWhen": {
+        "kind": "capability",
+        "match": {
+          "tool": "run_javascript"
+        }
+      },
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/scripts/agent-lab/exec-worker.ts",
+        "--url",
+        "{{url}}",
+        "--provider",
+        "agent:lab-exec",
+        "--team",
+        "lab"
+      ],
+      "prompt": "unused"
+    },
+    {
+      "name": "caller",
+      "timeoutSeconds": 120,
+      "grants": [
+        "tool_call:put,query,read_one",
+        "tool_result:query,read_one"
+      ],
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/scripts/agent-lab/fake-agent.ts",
+        "--config",
+        "{{config}}",
+        "--team",
+        "lab",
+        "--exec"
+      ],
+      "prompt": "unused"
+    }
+  ]
+}

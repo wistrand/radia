@@ -101,7 +101,12 @@ export interface ServeOptions {
   /** This worker's principal. Namespaces its advertisements, so two workers serving one name are
    *  distinguishable rather than silently replacing each other (./capability.ts). */
   provider: string;
-  /** Tool name -> implementation. */
+  /** Tool name -> implementation. READ LIVE: adding a key after `serveTools` is running makes that
+   *  name claimable on the next pass, and removing one stops it. That is what a worker whose tool
+   *  set is data needs (the chat's saved procedures are tool names), and its absence is why that
+   *  worker hand-rolled its loop and re-implemented the parts around it. `publishCapability` is
+   *  NOT re-run for a later addition: advertise it yourself, since only the caller knows its
+   *  schema. */
   tools: Record<string, Tool>;
   /** Definitions to advertise, matched to `tools` BY NAME. A tool with no definition is served but
    *  never advertised, which is how a worker keeps something callable without offering it. */
@@ -109,6 +114,16 @@ export interface ServeOptions {
   /** What to report before running a tool. Omit, or return undefined, for tools that answer fast
    *  enough that a status line is noise. */
   stage?: (tool: string) => string | undefined;
+  /**
+   * Body fields the ADVERTISEMENT must carry, where a grant is pattern-scoped.
+   *
+   * `publishCapability` writes `{tool, def, provider}` and nothing else, so on a space whose
+   * `capability` grant is scoped (a team labels every record it stores) the advertisement is
+   * refused and the worker serves tools nothing can discover. Measured: the lab's exec worker
+   * printed "serving run_javascript", then died on `forbidden: record body is outside the pattern
+   * scope of your put grant for 'capability'`.
+   */
+  scope?: Record<string, string>;
   /** For a loop label; defaults to `provider`. */
   name?: string;
   leaseSeconds?: number;
@@ -188,19 +203,35 @@ export async function serveTools(client: RadiaClient, opts: ServeOptions): Promi
   for (const name of Object.keys(opts.tools)) {
     const def = opts.schemas.find((s) => s.function.name === name);
     if (!def) continue;
-    await publishCapability(client, def, provider);
+    await publishCapability(client, def, provider, opts.scope);
     served.push(name);
   }
+
+  // Rebuilt in place from the LIVE tool set, since `agentLoop` reads this array on every pass.
+  const patterns: { kind: string; match: { tool: string } }[] = [];
+  const refresh = () => {
+    const want = Object.keys(opts.tools);
+    if (want.length === patterns.length && want.every((t, i) => patterns[i].match.tool === t)) return;
+    patterns.length = 0;
+    for (const tool of want) patterns.push({ kind: "tool_call", match: { tool } });
+  };
+  refresh();
 
   await agentLoop<ToolCallBody>(client, {
     name: opts.name ?? provider,
     // One pattern per NAME, never `tool_call` wholesale: claiming the kind would steal other
     // workers' work, and content-routing per name is the whole point.
-    patterns: Object.keys(opts.tools).map((tool) => ({ kind: "tool_call", match: { tool } })),
+    // LIVE, not a snapshot. `agentLoop` re-reads this array on every pass, so a worker whose tool
+    // set grows at run time (the chat's saved procedures become claimable tool NAMES the moment
+    // they are saved) can add one by mutating `opts.tools`. Building the list once was the reason
+    // that worker had to hand-roll its loop, and hand-rolling it is why the encryption path, the
+    // answer envelope and the advertisement were re-implemented there rather than shared.
+    patterns,
     ...(opts.leaseSeconds ? { leaseSeconds: opts.leaseSeconds } : {}),
     ...(opts.concurrency ? { concurrency: opts.concurrency } : {}),
     ...(opts.watch === false ? { watch: false } : {}),
     handle: async (rec, c) => {
+      refresh(); // a tool added since the last claim becomes claimable without a restart
       const raw = rec.body;
       const callId = rec.id;
       const ctx: ToolContext = { callId, conversationId: raw.conversationId, owner: raw.owner, caller: () => callerClient(rec) };

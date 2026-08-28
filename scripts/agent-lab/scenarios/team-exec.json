@@ -1,0 +1,145 @@
+{
+  "name": "team-exec",
+  "team": "lab",
+  "kinds": [
+    {
+      "kind": "tool_call",
+      "indexedPaths": [
+        {
+          "path": "tool",
+          "type": "keyword"
+        },
+        {
+          "path": "team",
+          "type": "keyword"
+        }
+      ],
+      "usage": "Ask a worker to do something it advertised. body: {tool, team, args}. `tool` is a name from the capability registry: query {kind:'capability'} to see what this space can do, and use the tool NAME exactly. The answer arrives as a tool_result whose callId is this record's id, so read it with space_children on the call."
+    },
+    {
+      "kind": "tool_result",
+      "indexedPaths": [
+        {
+          "path": "callId",
+          "type": "keyword"
+        },
+        {
+          "path": "team",
+          "type": "keyword"
+        }
+      ],
+      "claimable": false,
+      "usage": "A worker's answer to one tool_call. body: {callId, ok, output}. Find it with space_children on the call you made. It may be CLASSIFIED (the output of code somebody else wrote is untrusted by construction), so a claim refusing taint will not see work derived from it."
+    },
+    {
+      "kind": "sandbox",
+      "indexedPaths": [
+        {
+          "path": "name",
+          "type": "keyword"
+        },
+        {
+          "path": "language",
+          "type": "keyword"
+        },
+        {
+          "path": "isolation",
+          "type": "keyword"
+        },
+        {
+          "path": "network",
+          "type": "keyword"
+        },
+        {
+          "path": "processes",
+          "type": "keyword"
+        }
+      ],
+      "claimable": false,
+      "usage": "An execution environment and what it GUARANTEES, declared by the worker that serves it and verified before it served anything. Query this to learn what running code here can and cannot reach."
+    }
+  ],
+  "agents": [
+    {
+      "name": "lab-exec",
+      "background": true,
+      "grants": [
+        "tool_call:take",
+        "tool_result:put"
+      ],
+      "unscopedGrants": [
+        "sandbox:put,query,read_one",
+        "interest:put,query"
+      ],
+      "readyWhen": {
+        "kind": "capability",
+        "match": {
+          "tool": "run_javascript"
+        }
+      },
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/scripts/agent-lab/exec-worker.ts",
+        "--url",
+        "{{url}}",
+        "--provider",
+        "agent:lab-exec",
+        "--team",
+        "lab"
+      ],
+      "prompt": "unused: this worker holds no model"
+    },
+    {
+      "name": "claude-lab",
+      "harness": "claude",
+      "grants": [
+        "tool_call:put,query,read_one",
+        "tool_result:query,read_one"
+      ],
+      "configPath": ".mcp.json",
+      "timeoutSeconds": 420,
+      "command": [
+        "claude",
+        "-p",
+        "--mcp-config",
+        "{{config}}",
+        "--strict-mcp-config",
+        "--allowedTools",
+        "mcp__radia",
+        "--output-format",
+        "json"
+      ],
+      "prompt": "You are on a shared Radia space with another agent. Ask that agent, through the space, for a TypeScript program that computes the sum of the first 1000 prime numbers. You want the ANSWER, the actual number, not only the source: say so in the task. Then wait for the reply (space_watch blocks for up to the timeout you pass it, and the other agent needs a couple of minutes) and report the number you were given and how it was arrived at. Use the radia MCP tools for everything; there is no work to do on this machine."
+    },
+    {
+      "name": "codex-lab",
+      "harness": "codex",
+      "grants": [
+        "tool_call:put,query,read_one",
+        "tool_result:query,read_one"
+      ],
+      "timeoutSeconds": 420,
+      "command": [
+        "codex",
+        "exec",
+        "-",
+        "--json",
+        "--skip-git-repo-check",
+        "--ignore-user-config",
+        "-s",
+        "workspace-write",
+        "-c",
+        "mcp_servers.radia.command={{binary}}",
+        "-c",
+        "mcp_servers.radia.args={{mcpArgs}}",
+        "-c",
+        "mcp_servers.radia.env={ RADIA_DEFINITION_TOKEN = \"{{token}}\" }",
+        "-c",
+        "mcp_servers.radia.tools={{codexTools}}"
+      ],
+      "prompt": "You are on a shared Radia space with another agent. Do one piece of work for the team. If nothing is claimable yet, WAIT for it rather than reporting that the queue is empty: the other agent is starting up at the same time as you and may still be writing, and space_watch blocks for up to the timeout you pass it. Once you have claimed something, do it, answer through the space, and stop. You do not have to do everything yourself: look at what this space offers before deciding how. Use the radia MCP tools for everything."
+    }
+  ]
+}

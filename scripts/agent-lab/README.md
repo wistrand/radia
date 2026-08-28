@@ -22,6 +22,7 @@ deno task lab -- --scenario scripts/agent-lab/scenarios/smoke.json   # no model,
 | `smoke` | nothing | two model-free harnesses, for checking the plumbing |
 | `team-code` (default) | a few cents | one agent asks the other for a TypeScript program that sums the first 1000 primes |
 | `team-image` | ~$1 | the same shape with a generated image as the deliverable |
+| `team-exec` | a few cents | the same request with a THIRD party present: a model-free worker advertising `run_javascript`, so the answer can be computed rather than reasoned |
 
 **Every producer/consumer scenario has a startup race, and the prompt is where it is settled.** A
 harness spends between 10 seconds and a minute orienting itself before its first tool call, and the
@@ -34,6 +35,20 @@ report an empty queue, which is what a real agent does anyway and exercises the 
 is told only to do whatever work is waiting; whether the answer arrives as an artifact, as prose in
 a note, or not at all is the finding. The kinds and the tools are all the agents are given, and what
 they do with `space_put_artifact` when nobody named it is exactly what the lab is for.
+
+**A `background: true` agent is a worker, not a harness.** It starts before the others, is never
+waited for, and is killed when the run ends. Readiness is a RECORD (`readyWhen`) rather than a
+sleep, because a worker advertises what it serves and its own `capability` record is the honest
+signal that it is up. `team-exec` is the worked example: `exec-worker.ts` (about 60 lines over
+`serveTools` and `execTools`) picks a jail, PROBES it, declares what it guarantees as a `sandbox`
+record and serves `run_javascript`. It holds no model, so it costs nothing per run, and it is the
+first publisher of a `capability` on a lab space, which is what turns "an agent discovers a tool
+from records and dispatches by content" into something a run either does or does not do.
+
+A scenario also declares its own `kinds` (the operator does, since a member holds `kind_def: query`
+and never `put`) and per-agent `grants` / `unscopedGrants`. That split is load-bearing: `sandbox`
+and `interest` carry no team, so a team-scoped grant on them matches nothing and refuses every
+write.
 
 Start with `smoke.json`. It runs two `fake-agent.ts` harnesses, which speak JSON-RPC to the adapter
 with no model behind them, so it answers "is my lab wired up" in three seconds and for nothing. Its
@@ -130,6 +145,10 @@ accumulates; isolating it needs `CODEX_HOME` per agent with `auth.json` linked i
 `tally.json` is a count, not a verdict. The column that matters is `empty`: a call that answered
 nothing looks like success to the model and to every artifact except the trace, and it is how a
 pattern bug (`{tags: {$in: […]}}` against an array path) went unnoticed for a session.
+
+A `background` worker appears as "not traced": `--trace` lives in the MCP adapter and an SDK worker
+holds none, so zero calls is what a working one reports. Whether it did anything is a record it
+authored, in `space.json`.
 
 One run is an anecdote. The failure that started this appeared in one of two sessions, and the
 difference was whether `space_kinds` had been called first, so a scenario is worth running k times

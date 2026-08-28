@@ -6,6 +6,10 @@ days: the `$in`-on-array claim that answered nothing, settled tasks reported as 
 answer written as a separate put instead of riding the ack. Each was found by reading a pasted
 transcript.
 
+WHAT THE RUNS FOUND lives in [research-agent-sessions.md](research-agent-sessions.md); this doc is
+the harness. Keeping them apart is deliberate: the lab's construction changes rarely and the
+findings accumulate every run.
+
 Built: the runner (`scripts/agent-lab/`, `deno task lab`) and `radia mcp --trace`
 (`src/surfaces/mcp/trace.ts`). Proved on a live space by driving the adapter over stdio: a `put` of
 a task tagged `["image"]`, then a claim with `{tags: {$in: ["image"]}}`, which the trace recorded as
@@ -108,6 +112,16 @@ than no lab. Long arguments are truncated with their original length stated (`sp
 carries base64 megabytes). A failed write disables tracing for the process and says so once, rather
 than failing the call it observes. Guards: `test/trace.test.ts`.
 
+**Scenario shape, as built.** An `agents[]` entry is a harness or, with `background: true`, a WORKER:
+started before the others, never waited for, killed at the end, and gated on a readiness RECORD
+(`readyWhen`) rather than a sleep, because a worker advertises what it serves and its own
+`capability` record is the honest signal. A scenario also declares its own `kinds` (the operator
+does it, since a member holds `kind_def: query` and never `put`) and per-agent `grants` /
+`unscopedGrants`. That split is load-bearing: `sandbox` and `interest` carry no team, so a
+team-scoped grant on them matches nothing and refuses every write. `scenarios/team-exec.json` is the
+worked example, with `scripts/agent-lab/exec-worker.ts` as the third party that costs nothing to run
+because it holds no model.
+
 **Phase 2: the assertion pass.** A script joining trace against space, printing ranked findings. The
 catalogue below is derived from the four sessions and is what makes a run self-reporting.
 
@@ -135,6 +149,10 @@ Each line is a finding seen in a real session, stated as something a script can 
 - a 403 in the trace: each one is either a missing grant or a model error, and both are findings
 - a name-shaped field (`note.to`, `task.assignee`) whose value is not a live member
 - the agent's own `report` record disagreeing with the space
+- a `background` worker that AUTHORED NOTHING in a scenario built around it (the first `team-exec`
+  run: a missing `tool_call` grant on the harnesses, two exit 0s, a correct answer, and the worker
+  never invoked). The signal is a record it wrote, never `tally.json`: the tally counts MCP calls,
+  and an SDK worker holds no adapter, so it reads 0 on a successful run too.
 
 ## Traps the runner will hit, all of them rules that already exist
 

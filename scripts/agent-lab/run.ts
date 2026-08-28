@@ -33,6 +33,29 @@ interface AgentSpec {
   /** Extra environment for this harness only (an API key, a CODEX_HOME, a model pin). */
   env?: Record<string, string>;
   timeoutSeconds?: number;
+  /**
+   * A WORKER rather than a harness: started before the others, never waited for, killed at the end.
+   *
+   * It is what lets a scenario have a third party that holds no model and costs nothing to run. A
+   * one-shot harness answers and exits; a worker serves until the run is over, so waiting for it
+   * would hang the lab.
+   */
+  background?: boolean;
+  /** Extra grants for this member, `<kind>:<op,op>`, TEAM-SCOPED like everything else it holds. */
+  grants?: string[];
+  /**
+   * Grants written WITHOUT the team pattern, for reference kinds that carry no team: `sandbox`
+   * describes what the space can execute, the way `kind_def` describes what it stores. A
+   * team-scoped grant on one of those matches nothing and refuses every write, which is the same
+   * trap `DISCOVERY_GRANTS` exists for (agent_docs/architecture-teams.md).
+   */
+  unscopedGrants?: string[];
+  /**
+   * When this worker is READY, as a record that exists once it is. Polled rather than slept on: a
+   * worker advertises what it serves, so its own `capability` record is the honest signal, and a
+   * sleep long enough to be safe is a sleep added to every run.
+   */
+  readyWhen?: { kind: string; match?: Record<string, unknown> };
 }
 
 interface Scenario {
@@ -42,6 +65,9 @@ interface Scenario {
   /** Run agents one after another instead of together. Concurrency is the default because
    *  CONTENTION is what a space is for, and a lab that serialises never sees a lost race. */
   sequential?: boolean;
+  /** Kind declarations this scenario needs beyond the team's own, as `kind_def` bodies. Declared by
+   *  the OPERATOR before any member starts, because a member holds no `kind_def: put`. */
+  kinds?: Record<string, unknown>[];
 }
 
 // `team-code` by default: it exercises the same shape as `team-image` (ask, claim, answer with
@@ -168,6 +194,9 @@ const spaceLog = await Deno.open(`${runDir}/space.log`, { create: true, write: t
 space.stdout.pipeTo(spaceLog.writable).catch(() => {});
 space.stderr.pipeTo(Deno.openSync(`${runDir}/space.err`, { create: true, write: true, truncate: true }).writable).catch(() => {});
 
+/** Background agents, killed with the space. Declared HERE for the dead-zone reason in
+ *  `startWorker` below. */
+const workers: { name: string; child: Deno.ChildProcess; trace?: { stop(): void } }[] = [];
 let stopped = false;
 // `--keep` and `--dry-run` both end with the runner exiting while the space must stay up, and
 // `Deno.exit` fires `unload`, so the handler below would kill the space the message just said was
@@ -177,6 +206,7 @@ let keepAlive = false;
 const stopSpace = () => {
   if (stopped || keepAlive) return;
   stopped = true;
+  stopWorkers();
   try {
     space.kill("SIGTERM");
   } catch { /* already gone */ }
@@ -198,6 +228,14 @@ console.log(`space  ${base}  (db ${spaceDir})`);
 
 // ---- members ------------------------------------------------------------------
 
+// The scenario's own kinds, declared by the OPERATOR before any member starts: a member holds
+// `kind_def: query` and never `put`, deliberately (the team pattern belongs on kinds that carry
+// data, never on the ones that describe them).
+for (const def of scenario.kinds ?? []) {
+  await radia(["put", "kind_def", JSON.stringify(def)]);
+}
+if (scenario.kinds?.length) console.log(`kinds  ${scenario.kinds.length} declared for this scenario`);
+
 // One `team add` per agent, so each gets its own harness block. ONE MEMBER PER SESSION is the rule
 // being honoured (architecture-teams.md): two harnesses sharing a credential are one principal, and
 // nothing afterwards can tell their work apart.
@@ -207,7 +245,24 @@ for (const a of scenario.agents) {
   await Deno.mkdir(dir, { recursive: true });
   // `--rotate` unconditionally: run 2 against a persistent space would otherwise be refused,
   // because a SECOND definition for one agent is not a rotation and looks exactly like one.
-  const raw = await radia(["team", "add", a.name, "--team", team, "--harness", "claude", "--rotate", "--json"]);
+  const raw = await radia([
+    "team",
+    "add",
+    a.name,
+    "--team",
+    team,
+    "--harness",
+    "claude",
+    "--rotate",
+    "--json",
+    ...(a.grants ?? []).flatMap((g) => ["--grant", g]),
+  ]);
+  // Reference kinds carry no team, so a team-scoped grant on one matches nothing and refuses every
+  // write. Written directly as the operator, which is also the only way to say "unscoped" here.
+  for (const g of a.unscopedGrants ?? []) {
+    const [kind, ops] = g.split(":");
+    await radia(["put", "grant", JSON.stringify({ principal: `agent:${a.name}`, kind, operations: ops.split(",") })]);
+  }
   const parsed = JSON.parse(raw) as { members: { agent: string; config: string }[] };
   const block = JSON.parse(parsed.members[0].config) as {
     mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
@@ -442,21 +497,96 @@ async function runAgent(a: typeof agents[number]): Promise<{ name: string; code:
   return { name: a.name, code: status.success ? 0 : (status.signal ? "timeout" : status.code), calls: trace.count() };
 }
 
-console.log(`\nrunning ${agents.length} agent(s)${scenario.sequential ? " in sequence" : " together"}…`);
+// ---- workers ------------------------------------------------------------------
+
+/** A background agent, started and left running. Its output is teed like any other; nothing waits
+ *  for it, and `stopWorkers` ends it when the harnesses are done. `workers` itself is declared with
+ *  `stopSpace` above, not here: the early-exit paths (a port taken, a space that never answered)
+ *  run `stopSpace` long before this line is evaluated, and a `const` reached in its temporal dead
+ *  zone would replace the real error with "Cannot access 'workers' before initialization".
+ */
+async function startWorker(a: typeof agents[number]): Promise<void> {
+  const command = substitute(a.command, a, `${a.dir}/.mcp.json`);
+  say(a.name, `starting ${clip(command.join(" "), 120)}`);
+  const child = new Deno.Command(command[0], {
+    args: command.slice(1),
+    cwd: a.dir,
+    env: childEnv({ ...a.env, RADIA_DEFINITION_TOKEN: a.token, RADIA_URL: base }),
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+  }).spawn();
+  const trace = tailTrace(`${a.dir}/trace.jsonl`, a.name);
+  // The tail's INTERVAL is kept so it can be cleared. Dropping the handle left a live
+  // `setInterval` per worker, and Deno does not exit while one is pending: the whole run finished,
+  // wrote its evidence, and then hung until the outer timeout killed it.
+  workers.push({ name: a.name, child, trace });
+  const out = await Deno.open(`${a.dir}/stdout.log`, { create: true, write: true, truncate: true });
+  const err = await Deno.open(`${a.dir}/stderr.log`, { create: true, write: true, truncate: true });
+  tee(child.stdout, out, a.name, "|").catch(() => {});
+  tee(child.stderr, err, a.name, "!").catch(() => {});
+}
+
+/**
+ * Wait until a worker's readiness RECORD exists.
+ *
+ * Polled against the space rather than slept on: a worker advertises what it serves, so its own
+ * `capability` record is the honest signal that it is up, jailed and listening. A sleep long enough
+ * to be safe on a cold jail probe is a sleep added to every run.
+ */
+async function awaitReady(a: typeof agents[number], seconds = 60): Promise<boolean> {
+  const ready = a.readyWhen;
+  if (!ready) return true;
+  for (let i = 0; i < seconds * 2; i++) {
+    const rows = await radia([
+      "query",
+      ready.kind,
+      "--json",
+      ...(ready.match ? ["--match", JSON.stringify(ready.match)] : []),
+    ]).then((t) => JSON.parse(t)).catch(() => null);
+    const found = Array.isArray(rows) ? rows.length : (rows?.records?.length ?? 0);
+    if (found > 0) {
+      say(a.name, `ready (${ready.kind} record present after ${(i / 2).toFixed(1)}s)`);
+      return true;
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  say(a.name, `NOT READY after ${seconds}s: no ${ready.kind} record. The harnesses run anyway; expect refusals.`);
+  return false;
+}
+
+function stopWorkers(): void {
+  for (const w of workers) {
+    w.trace?.stop();
+    try {
+      w.child.kill("SIGTERM");
+    } catch { /* already gone */ }
+  }
+}
+
+const background = agents.filter((a) => a.background);
+const harnesses = agents.filter((a) => !a.background);
+for (const a of background) await startWorker(a);
+for (const a of background) await awaitReady(a);
+
+console.log(`\nrunning ${harnesses.length} agent(s)${scenario.sequential ? " in sequence" : " together"}…`);
 console.log(`  | is the harness's stdout, ! its stderr, → a tool call reaching the space\n`);
 // A HEARTBEAT, because the quiet stretch is real: a harness can spend a minute starting before its
 // first token, and silence has to be distinguishable from a stall.
 const beat = setInterval(() => {
-  const idle = agents.map((a) => a.name).join(", ");
+  const idle = harnesses.map((a) => a.name).join(", ");
   say("lab", `still running (${idle}); logs under ${runDir}`);
 }, 30_000);
 const results: { name: string; code: number | "timeout"; calls: number }[] = [];
 if (scenario.sequential) {
-  for (const a of agents) results.push(await runAgent(a));
+  for (const a of harnesses) results.push(await runAgent(a));
 } else {
-  results.push(...await Promise.all(agents.map(runAgent)));
+  results.push(...await Promise.all(harnesses.map(runAgent)));
 }
 clearInterval(beat);
+// The workers stop once the work does. Their evidence is already on disk; leaving them running
+// would hold the space open and make `--keep` mean something different for them than for it.
+stopWorkers();
 for (const r of results) console.log(`  ${r.name}: exit ${r.code}, ${r.calls} tool calls`);
 
 // ---- evidence -----------------------------------------------------------------
@@ -491,11 +621,16 @@ interface Line {
   principal?: string;
   session?: string;
 }
-const tally: Record<string, { calls: number; empty: number; errors: Record<string, number> }> = {};
+const tally: Record<string, { calls: number; empty: number; errors: Record<string, number>; traced?: false }> = {};
 for (const a of agents) {
   const text = await Deno.readTextFile(`${a.dir}/trace.jsonl`).catch(() => "");
   const lines = text.split("\n").filter(Boolean).map((l) => JSON.parse(l) as Line);
   const per = tally[a.name] = { calls: lines.length, empty: 0, errors: {} as Record<string, number> };
+  // AN SDK WORKER IS NOT TRACED, and zero is what a successful one prints. `--trace` sits in the
+  // MCP adapter, so a `background` agent speaking the SDK directly leaves no line here whatever it
+  // did: the first `team-exec` run read `lab-exec: 0 calls` on a failure and the second read the
+  // same on a success. Whether it worked is a RECORD it authored, in space.json.
+  if (a.background && lines.length === 0) (per as { traced?: false }).traced = false;
   for (const l of lines) {
     if (l.outcome === "empty") per.empty++;
     if (l.outcome === "error") per.errors[l.error ?? "unknown"] = (per.errors[l.error ?? "unknown"] ?? 0) + 1;
@@ -505,6 +640,10 @@ await Deno.writeTextFile(`${runDir}/tally.json`, JSON.stringify({ scenario: scen
 
 console.log(`\ntool calls`);
 for (const [name, t] of Object.entries(tally)) {
+  if (t.traced === false) {
+    console.log(`  ${name}: not traced (an SDK worker holds no adapter); what it did is in space.json`);
+    continue;
+  }
   const errs = Object.entries(t.errors).map(([k, n]) => `${k}×${n}`).join(" ");
   console.log(`  ${name}: ${t.calls} calls, ${t.empty} answered EMPTY${errs ? `, refused: ${errs}` : ""}`);
 }

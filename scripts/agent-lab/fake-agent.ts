@@ -40,12 +40,23 @@ const drain = (async () => {
 })();
 
 const team = Deno.args[Deno.args.indexOf("--team") + 1] ?? "lab";
-const steps: [string, Record<string, unknown>][] = [
-  ["space_kinds", {}],
-  ["space_put", { kind: "task", body: { team, tags: ["image"], description: "a seal, please" } }],
-  ["space_take", { kind: "task", match: { tags: { $in: ["image"] } } }],
-  ["space_take", { kind: "task", match: { tags: { $any: "image" } } }],
-];
+const steps: [string, Record<string, unknown>][] = Deno.args.includes("--exec")
+  // The EXEC path, for checking the wiring of a scenario with a worker in it: discover what the
+  // space can do, ask for it, then read the answer off the call's children. No model anywhere.
+  ? [
+    ["space_kinds", {}],
+    ["space_query", { kind: "capability" }],
+    ["space_put", {
+      kind: "tool_call",
+      body: { team, tool: "run_javascript", args: { code: "console.log(6*7)" } },
+    }],
+  ]
+  : [
+    ["space_kinds", {}],
+    ["space_put", { kind: "task", body: { team, tags: ["image"], description: "a seal, please" } }],
+    ["space_take", { kind: "task", match: { tags: { $in: ["image"] } } }],
+    ["space_take", { kind: "task", match: { tags: { $any: "image" } } }],
+  ];
 
 await send({ jsonrpc: "2.0", id: 0, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {} } });
 console.log("connected to the adapter");
