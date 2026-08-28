@@ -33,6 +33,9 @@ import { API_VERSION, VERSION } from "../version.ts";
 import { RadiaError } from "../core/errors.ts";
 import type { StatsScope } from "../storage/adapter.ts";
 import { moduleRelative, readTextFile, serve } from "../platform.ts";
+import { getLogger } from "../log.ts";
+
+const log = getLogger("server");
 
 export interface ServerOptions {
   port: number;
@@ -114,7 +117,12 @@ export function startServer(opts: ServerOptions): { finished: Promise<void> } {
   const hostname = opts.host ?? "127.0.0.1"; // loopback by default; --host 0.0.0.0 to expose
   const handler = makeHandler(opts.space, loadUi(), opts.authRequired ?? false);
   const { finished } = bind({ port: opts.port, hostname, signal: opts.signal }, handler, "the space");
-  console.log(`radia dev listening on http://${hostname}:${opts.port} (web console at /). Auth ${opts.authRequired ? "required" : "open (no-header → operator)"}`);
+  // The startup line names which side of every either/or you got, and that must not regress
+  // (plan-startup-ergonomics.md). It is `info`, so a default run still prints it; what changed is
+  // that it goes to stderr with a level, like everything else the process says about itself.
+  log.info(`listening on http://${hostname}:${opts.port} (web console at /)`, {
+    auth: opts.authRequired ? "required" : "open (no-header → operator)",
+  });
 
   // Artifact BYTES get their own origin. An origin is scheme + host + PORT, so a second port is a
   // different origin to a browser: content served here cannot read the console's storage and its
@@ -130,7 +138,7 @@ export function startServer(opts: ServerOptions): { finished: Promise<void> } {
     opts.space.artifactOrigin = `http://${advertised}:${opts.artifactPort}`;
     const bytes = makeArtifactHandler(opts.space);
     bind({ port: opts.artifactPort, hostname, signal: opts.signal }, bytes, "the artifact origin");
-    console.log(`radia dev: artifact origin http://${hostname}:${opts.artifactPort} (capability URLs only, isolated from the console)`);
+    log.info(`artifact origin http://${hostname}:${opts.artifactPort} (capability URLs only, isolated from the console)`);
   }
   return { finished };
 }
@@ -623,7 +631,7 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
       // Any uncaught error becomes problem+json, never a plain-text 500 the client can't parse.
       // A RadiaError a handler didn't translate maps by its code; anything else is unexpected.
       if (e instanceof RadiaError) return problem(statusFor(e.code, 422), e.code, e.message);
-      console.error(`unhandled error on ${route}:`, e);
+      log.error("unhandled error", { route, error: e });
       return problem(500, "internal", "unexpected server error");
     }
   };

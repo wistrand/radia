@@ -143,9 +143,12 @@ Deno.test("[layering] a surface is a /v0 client, so it takes no runtime VALUE fr
   // privileged in a way no other client can be.
   const root = new URL("surfaces/", SRC);
   // Host infrastructure a surface may take a VALUE from, because none of it is the runtime:
-  // the platform seam, flag parsing, where a credential lives, where files go, and what this
-  // build calls itself. Widening this list is the thing to think twice about.
-  const infrastructure = /(^|\/)(platform|flags|credentials|paths|version)\.ts$/;
+  // the platform seam, flag parsing, where a credential lives, where files go, what this build
+  // calls itself, and where a diagnostic goes. Widening this list is the thing to think twice
+  // about, so the test for membership is stated rather than assumed: `src/log.ts` qualifies
+  // because it imports only `platform.ts`, holds no space state, and would be the FIRST thing a
+  // port to another host had to provide. It is a destination, not a runtime.
+  const infrastructure = /(^|\/)(platform|flags|credentials|paths|version|log)\.ts$/;
   const violations: string[] = [];
   for (const file of await tsFiles(root, "src/surfaces/")) {
     const text = code(await Deno.readTextFile(new URL(file.replace("src/surfaces/", ""), root)));
@@ -176,4 +179,28 @@ Deno.test("[layering] a surface is a /v0 client, so it takes no runtime VALUE fr
     }
   }
   assertEquals(violations, [], "a surface reaches a space over /v0, like any other client");
+});
+
+Deno.test("[layering] the RUNTIME logs; only a surface prints", async () => {
+  // `console.log` had 40 call sites with no level, no source, no destination and no way to turn any
+  // of it on or off (`src/log.ts`). The split this enforces is not "no printing": a CLI verb's
+  // ANSWER is stdout and must stay there, and `radia mcp` must never print to stdout at all, since
+  // that is its JSON-RPC channel. So the rule is about WHO: the runtime says things about itself
+  // through the logger, and a surface prints what its user asked for.
+  //
+  // `src/main.ts` is exempt as the entry point, which owns the usage text, the startup summary and
+  // the exit path. `src/log.ts` is exempt because it IS the destination.
+  const runtime = ["core/", "server/", "storage/"];
+  const allowed = new Set(["main.ts", "log.ts"]);
+  const violations: string[] = [];
+  for (const file of await tsFiles(SRC)) {
+    if (allowed.has(file) || !runtime.some((d) => file.startsWith(d))) continue;
+    const text = code(await Deno.readTextFile(new URL(file, SRC)));
+    // A STATEMENT, so a line-start match: `src/core/seal.ts` and `src/storage/crypto.ts` both
+    // advise the reader to run `deno eval 'console.log(btoa(…))'` to generate a key, and that
+    // string is not a call. Stripping comments is not enough when the text is help output.
+    const hits = [...text.matchAll(/^\s*console\.[a-z]+\(/gm)].map((m) => m[0].trim());
+    if (hits.length > 0) violations.push(`src/${file}: ${[...new Set(hits)].join(", ")}`);
+  }
+  assertEquals(violations, [], "use getLogger(<component>) from src/log.ts; a bare console call has no level and no destination");
 });

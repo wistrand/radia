@@ -37,11 +37,12 @@ import { TOOLS } from "./tools.ts";
 import { ScopeFiller } from "./scope.ts";
 import { classify, fileTracer, type Tracer } from "./trace.ts";
 import { answer, one } from "./render.ts";
+import { getLogger } from "../../log.ts";
 import { mediaTypeForPath } from "../media.ts";
 import { newer } from "../../../sdk/ts/registry.ts";
 import { ARTIFACT } from "../../../sdk/ts/wire.ts";
 import { flag } from "../../flags.ts";
-import { readBinaryFile, stdin, writeStderr, writeStdout } from "../../platform.ts";
+import { readBinaryFile, stdin, writeStdout } from "../../platform.ts";
 import { VERSION } from "../../version.ts";
 
 // The third place this string used to be written by hand. An MCP client shows it in its own
@@ -928,6 +929,16 @@ function write(msg: unknown): void {
   writeStdout(JSON.stringify(msg) + "\n");
 }
 
+/**
+ * Diagnostics for this adapter, and the one place in the codebase where the destination is not a
+ * preference: stdout carries JSON-RPC frames, so a line printed there corrupts the stream and the
+ * harness sees a dead server. The logger writes to stderr by default, which is the same rule
+ * expressed once instead of remembered here.
+ *
+ * The `radia mcp:` prefix is dropped: `source` carries it now, and a harness showing stderr shows
+ * the level beside it.
+ */
+const mcpLog = getLogger("mcp");
 function log(msg: string): void {
-  writeStderr(msg + "\n");
+  mcpLog.info(msg.replace(/^radia mcp: /, ""));
 }

@@ -21,6 +21,7 @@ import { combineMatch, matchesRecord } from "./matching.ts";
 import { activeSet, grantKey } from "./registry.ts";
 import { RadiaError } from "./errors.ts";
 import type { EffectivePermissions, OpsPower } from "../../sdk/ts/wire.ts";
+import { getLogger } from "../log.ts";
 
 /**
  * What authorization needs from the space, and nothing more.
@@ -384,9 +385,9 @@ export async function readAccess(h: AuthorizationHost, principal: string, op: Gr
  */
 function warnIfIncomplete(h: AuthorizationHost, view: { complete: boolean; scanned: number }, principal: string, op: GrantOp, kind: string): void {
   if (view.complete) return;
-  console.warn(
-    `[radia] grant view for '${principal}' (${op} on '${kind}') is INCOMPLETE after ${view.scanned} records; ` +
-      `this decision was computed from part of its grants`,
+  getLogger("core.authz").warn(
+    "grant view is INCOMPLETE; this decision was computed from part of its grants",
+    { principal, op, kind, scanned: view.scanned },
   );
 }
 

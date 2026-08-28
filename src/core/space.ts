@@ -299,6 +299,7 @@ const DEFAULT_CONTEXT: SpaceContext = {
 
 /** What one event-log retention pass did (`Space.gcEvents`; rides the `gc` verb). */
 import type { EventGcResult, GcReport } from "../../sdk/ts/wire.ts";
+import { getLogger } from "../log.ts";
 export type { EventGcResult, GcReport };
 
 /** How a caller selects work to take. */
@@ -1747,7 +1748,12 @@ export class Space {
   }
 
   private warnOwnerMismatch(recordId: string, principal: string, owner: string, op: string): void {
-    console.warn(`[radia] owner-match: ${op} on ${recordId} by '${principal}' rejected (lease owned by '${owner}') -> lease_lost`);
+    getLogger("core.space").warn("settle rejected: the lease is owned by somebody else -> lease_lost", {
+      op,
+      recordId,
+      principal,
+      owner,
+    });
   }
 
   /** The mutable envelope for a record (diagnostics / inspector / tests). */

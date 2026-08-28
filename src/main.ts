@@ -27,7 +27,15 @@ import { flag, optionalFlag } from "./flags.ts";
 import { defaultBlobDir, defaultDbPath, defaultKekPath, defaultSealPath, ensureParent, radiaDir } from "./paths.ts";
 import { acquireDbLock, lockRefusal } from "./lock.ts";
 import { args as argv, env, exit, onShutdown, UsageError } from "./platform.ts";
+import { configureLogging, getLogger, logLevel, parseLevel } from "./log.ts";
 import { RadiaError } from "./core/errors.ts";
+
+// WHAT THIS PROCESS IS goes to the logger; WHAT THE PERSON MUST DO NEXT stays on stdout. The split
+// is not style: a `--log-file` would otherwise collect the operator token and the console sign-in
+// link, and a credential in a log file is a credential in every backup of that log. So facts about
+// storage, blobs and limits are logged, and the credential lines, the sign-in URL and the shutdown
+// notice are printed.
+const devLog = getLogger("dev");
 
 const USAGE = `radia <command>
 
@@ -43,7 +51,12 @@ const USAGE = `radia <command>
       Serve the space to an MCP-capable harness over stdio. --trace appends one JSON line
       per tool call (what the model asked for, which the space never records).
   <cli command>
-      Everything else is a verb over the public /v0 API. Those verbs are listed below.`;
+      Everything else is a verb over the public /v0 API. Those verbs are listed below.
+
+  Any command: [--log-level debug|info|warn|error] [--log-file <path>]
+      Process logging (RADIA_LOG_LEVEL / RADIA_LOG_FILE). Text to stderr, JSONL to the
+      file. This is what the PROCESS did; what the SPACE did is records, and \`radia
+      events\` reads those.`;
 
 /** Run the embedded space until it is stopped. Returns the process exit code: a refusal to
  *  start (a database already open, a port already bound) is reported and returns 1. */
@@ -111,7 +124,7 @@ async function dev(args: string[]): Promise<number> {
 
   await storage.init();
   const where = backend === "postgres" ? "shared server" : (dbPath ? `persisted at ${dbPath}` : "in-memory (--db to persist)");
-  console.log(`radia dev: storage=${storage.name} (${where})`);
+  devLog.info(`storage=${storage.name} (${where})`);
   // Artifact BYTES live beside the data they belong to: a directory next to --db (or wherever
   // --blobs says), and in memory otherwise, since an ephemeral space must not leave blobs behind on
   // disk. `--blobs` is what a postgres deployment uses, since its --db is a connection URL with no
@@ -134,9 +147,9 @@ async function dev(args: string[]): Promise<number> {
   // a sweep that cannot recognise the old names would delete what it cannot see.
   const cipher = kek ? await BlobCipher.fromKey(kek.key, kek.retired) : undefined;
   const blobs = openBlobs(blobSpec, cipher);
-  console.log(`radia dev: blobs=${blobs.name}${blobSpec ? ` (${blobSpec})` : " (in-memory)"}${kek ? ` (encrypted, KEK from ${kek.source})` : ""}`);
+  devLog.info(`blobs=${blobs.name}${blobSpec ? ` (${blobSpec})` : " (in-memory)"}${kek ? ` (encrypted, KEK from ${kek.source})` : ""}`);
   // One line naming the whole on-disk footprint, so "where did this write?" never needs archaeology.
-  if (dbPath || blobSpec || kek) console.log(`radia dev: runtime dir=${radiaDir()}`);
+  if (dbPath || blobSpec || kek) devLog.info(`runtime dir=${radiaDir()}`);
   // The one resource limit a deployment genuinely has to tune, and the first `SpaceContext` value
   // this entry point passes at all: it bounds the rows ONE read may push through the oracle when
   // the pre-filter could not decide the pattern (`storage/pushdown.ts`). Measured at 5.5M records,
@@ -192,13 +205,13 @@ async function dev(args: string[]): Promise<number> {
     ...(oidcIssuer && oidcAudience ? { oidc: { issuer: oidcIssuer, audience: oidcAudience } } : {}),
   }, blobs);
   if (oidcIssuer && oidcAudience) {
-    console.log(`radia dev: OIDC sign-in enabled (issuer ${oidcIssuer}, audience ${oidcAudience})`);
+    devLog.info(`OIDC sign-in enabled (issuer ${oidcIssuer}, audience ${oidcAudience})`);
   }
   if (eventRetentionSeconds !== undefined) {
-    console.log(`radia dev: event-log retention ${eventRetentionSeconds}s (gc truncates the sealed log to this window)`);
+    devLog.info(`event-log retention ${eventRetentionSeconds}s (gc truncates the sealed log to this window)`);
   }
   if (maxRecordBytes !== undefined) {
-    console.log(`radia dev: record bodies capped at ${maxRecordBytes} bytes (artifacts unaffected)`);
+    devLog.info(`record bodies capped at ${maxRecordBytes} bytes (artifacts unaffected)`);
   }
   if (maxPutDelaySeconds !== undefined) {
     console.log(
@@ -218,7 +231,7 @@ async function dev(args: string[]): Promise<number> {
   const sealPath = sealFlag === "" ? defaultSealPath() : (sealFlag ?? (dbPath ? defaultSealPath() : undefined));
   if (sealPath) ensureParent(sealPath);
   space.sealKey = await loadSealKey({ env: env("RADIA_SEAL_KEY"), file: sealPath, retiredEnv: env("RADIA_SEAL_KEY_RETIRED") });
-  if (space.sealKey) console.log(`radia dev: event chain signed (key from ${space.sealKey.source})`);
+  if (space.sealKey) devLog.info(`event chain signed (key from ${space.sealKey.source})`);
   await space.loadKinds(); // restore persisted kind declarations
   // What `GET /v0/health` reports about this process: which space it is, since when, and whether
   // anything survives a restart. Only the boot path knows the last one (`--db`, or a server).
@@ -310,6 +323,19 @@ async function dev(args: string[]): Promise<number> {
  *  entry point is callable from a test or an embedding process without terminating it. */
 async function main(argsIn: string[]): Promise<number> {
   const [cmd, ...rest] = argsIn;
+  // BEFORE anything can log, and in the one place that already owns process concerns. `src/log.ts`
+  // reads no configuration itself, which is what keeps `src/core` from importing flag parsing to be
+  // able to say something. The environment matters as much as the flags here: `radia mcp` is
+  // started by a harness config that sets env comfortably and argv awkwardly.
+  const badLevel = flag(argsIn, "--log-level") ?? env("RADIA_LOG_LEVEL");
+  const level = parseLevel(badLevel);
+  configureLogging({
+    ...(level ? { level } : {}),
+    ...(flag(argsIn, "--log-file") ?? env("RADIA_LOG_FILE") ? { file: flag(argsIn, "--log-file") ?? env("RADIA_LOG_FILE") } : {}),
+  });
+  // A misspelled level is reported rather than silently ignored: it is the flag whose whole job is
+  // to change what you can see, so failing quiet leaves you looking for missing lines.
+  if (badLevel && !level) getLogger("main").warn(`unknown --log-level '${badLevel}'; using ${logLevel()}`);
   try {
     switch (cmd) {
       case "dev":
