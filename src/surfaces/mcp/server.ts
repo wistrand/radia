@@ -413,6 +413,7 @@ async function call(
       return answer("records", rows, {
         more: r.records.length > n,
         limit: n,
+        remedy: "Use space_stats for totals, or narrow the match.",
         scope: r.scope,
         // The runtime's page note is dropped, and ONLY that one: it reports the limit it was
         // given, which is the probe (`n + 1`), so a caller that asked for 2 was told "results
@@ -444,7 +445,15 @@ async function call(
       // Fan-out IS unbounded, so this one is a page and says so from the cursor the endpoint
       // already returns. A record with 300 children reported 100 and looked complete.
       const r = await client.getChildrenPage(str(a, "recordId"));
-      return answer("children", r.children, { more: !!r.nextAfter, limit: r.children.length, scope: r.scope });
+      return answer("children", r.children, {
+        more: !!r.nextAfter,
+        limit: r.children.length,
+        // NOT the query remedy: there is no match to narrow here, and `space_stats` counts records
+        // per kind, never the fan-out of one record. This tool takes no cursor either, so the only
+        // true thing to say is that the count is a floor.
+        remedy: "This tool returns one page and takes no cursor, so treat the count as a floor rather than the fan-out.",
+        scope: r.scope,
+      });
     }
 
     case "space_events":

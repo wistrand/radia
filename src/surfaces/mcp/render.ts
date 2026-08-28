@@ -31,6 +31,13 @@ export interface AnswerMeta {
   scope?: unknown;
   /** `explain` notes from the same code that answered. */
   notes?: string[];
+  /**
+   * What to DO about the page, in the operation's own vocabulary. Caller-supplied because the
+   * remedy is operation-specific and the disclosure is not: "use space_stats for totals, or narrow
+   * the match" is right for a query and false for `space_children`, which has no match to narrow
+   * and whose fan-out `space_stats` cannot count. Omit it rather than say something untrue.
+   */
+  remedy?: string;
 }
 
 /**
@@ -56,8 +63,8 @@ export function one(record: unknown, meta: { scope?: unknown; notes?: string[] }
 
 export function answer(key: string, rows: unknown[], meta: AnswerMeta = {}): string {
   const warning = meta.more
-    ? `more than ${meta.limit ?? rows.length} records match; this is a PAGE, not the total. Do not ` +
-      `count or aggregate from it. Use space_stats for totals, or narrow the match.`
+    ? `more records exist than the ${meta.limit ?? rows.length} returned; this is a PAGE, not the ` +
+      `total. Do not count or aggregate from it.${meta.remedy ? ` ${meta.remedy}` : ""}`
     : undefined;
   return JSON.stringify(
     {

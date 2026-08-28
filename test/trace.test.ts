@@ -97,6 +97,13 @@ Deno.test("[render] a bounded answer says it is bounded, and an exact one does n
   assert(/PAGE, not the total/.test(page.warning), page.warning);
   assert(/Do not count or aggregate/.test(page.warning));
 
+  // THE REMEDY IS THE CALLER'S, because it is operation-specific while the disclosure is not.
+  // "Use space_stats for totals, or narrow the match" is right for a query and false for
+  // space_children, which has no match to narrow and whose fan-out space_stats cannot count.
+  assert(!/space_stats|narrow/.test(page.warning), page.warning);
+  const q = JSON.parse(answer("records", [1, 2], { more: true, limit: 2, remedy: "Use space_stats for totals." }));
+  assert(/Use space_stats for totals\./.test(q.warning), q.warning);
+
   // An answer that fit says nothing about pages: a warning on every read is a warning nobody reads.
   const whole = JSON.parse(answer("records", [1, 2], { limit: 50 }));
   assertEquals(whole.count, 2);
