@@ -20,6 +20,7 @@ import { integritySuites } from "./suites/integrity.ts";
 import { starvationSuites } from "./suites/starvation.ts";
 import { limitSuites } from "./suites/limits.ts";
 import { faultSuites } from "./suites/faults.ts";
+import { failoverSuites } from "./suites/failover.ts";
 import { watchSuites } from "./suites/watches.ts";
 import { adminSuites, remediateSuites } from "./suites/admin.ts";
 import { gcSuites } from "./suites/gc.ts";
@@ -51,6 +52,7 @@ conformance(adapters, [
   ...starvationSuites,
   ...limitSuites,
   ...faultSuites,
+  ...failoverSuites,
   ...watchSuites,
   ...adminSuites,
   ...gcSuites,

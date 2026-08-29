@@ -19,6 +19,7 @@ import { Space } from "../src/core/space.ts";
 import { SqliteAdapter } from "../src/storage/sqlite.ts";
 import { RadiaError } from "../src/core/errors.ts";
 import { rawExec } from "./conformance/suites/integrity.ts";
+import { SealKey } from "../src/core/seal.ts";
 
 type Handler = (req: Request) => Promise<Response>;
 
@@ -1146,8 +1147,10 @@ Deno.test("http: an undecidable pattern over a large kind is a 429, not a stalle
 
 // ---------------------------------------------------------------------------
 // Event-log truncation at the boundary: the watch 410 and the ops annotation.
-// The truncated state is planted (the M2 sweep is not built); what these pin is
-// the boundary contract that must already hold when it lands.
+// The two cases here PLANT the truncated state, which is how they were written before the sweep
+// existed; the storm case below makes the same state with the real sweep (`gcEvents`, 2026-08-06).
+// Both readings are worth keeping: the planted one pins the boundary against any state a future
+// sweep could produce, and the swept one pins it against the sweep we actually ship.
 // ---------------------------------------------------------------------------
 
 Deno.test("http: a stale watch cursor is 410 cursor_expired; the sentinel clamps, because the SDKs recover with it", async () => {
@@ -1187,6 +1190,78 @@ Deno.test("http: a stale watch cursor is 410 cursor_expired; the sentinel clamps
     await atHorizon.body?.cancel();
     // A cancelled stream's loop may still be parked on waitForEvents; one mutation wakes and ends
     // it, so no keepalive timer outlives the test.
+    await space.put({ kind: "task", body: { tag: "wake" } });
+  } finally {
+    await adapter.close();
+  }
+});
+
+// CURSOR EXPIRY UNDER RECONNECT STORM (plan-validation.md's fault matrix). The case above plants
+// the truncated state and checks ONE reconnect; this one makes the horizon with the real sweep
+// (`gcEvents`, built 2026-08-06) and reconnects everything at once, which is what a fleet does when
+// a space it was watching comes back. What it pins: a stale cursor is refused rather than answered
+// wrongly, EVERY refusal names the same horizon (a client that catches up to a moving answer never
+// converges), the sentinel recovery every SDK performs on that 410 still connects under the same
+// load, and the space is healthy afterwards rather than merely alive.
+Deno.test("http: a reconnect storm below a swept horizon 410s every stale cursor and serves every recovery", async () => {
+  const adapter = new SqliteAdapter(":memory:");
+  await adapter.init();
+  const space = new Space(adapter, { eventRetentionSeconds: -1 });
+  space.registerKind({ kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }] });
+  space.sealKey = await SealKey.fromBytes(new Uint8Array(32).fill(9), "test");
+  const handler = makeHandler(space, "<html>console</html>", false);
+  const STREAMS = 24;
+  try {
+    for (let i = 0; i < 12; i++) await space.put({ kind: "task", body: { tag: `t${i}` } });
+    // The cursor every watcher is holding when the log is swept out from under it.
+    const stale = (await space.getEvents("0", 1))[0].cursor;
+
+    const watches: string[] = [];
+    for (let i = 0; i < STREAMS; i++) {
+      watches.push((await (await handler(post("/v0/watches", { kind: "task" }))).json()).watchId);
+    }
+
+    const swept = await space.gcEvents();
+    assertEquals(swept.attested, true, "the horizon must be attested before anything is deleted");
+    const horizon = (await adapter.eventHorizon("0")).horizon!;
+    assert(BigInt(stale) <= BigInt(horizon.cursor), "the planted cursor must actually be below the horizon");
+
+    // The storm: every stream reconnects at once with the cursor it last saw.
+    const refused = await Promise.all(
+      watches.map((id) => handler(get(`/v0/watches/${id}/events`, { "Last-Event-ID": stale }))),
+    );
+    // Cancel anything that CONNECTED before asserting anything about it. A stream served in error
+    // has no body to read to the end, so reading it first would park this test forever, and a fault
+    // suite that hangs on the regression it exists to catch is worse than no suite. Proved: the
+    // check below fails in 30ms with this line, and hung past five minutes without it.
+    for (const r of refused) if (r.status !== 410) await r.body?.cancel();
+    assertEquals(refused.map((r) => r.status), new Array(STREAMS).fill(410));
+    const bodies = await Promise.all(refused.map((r) => r.json()));
+    assertEquals(
+      new Set(bodies.map((b) => `${b.type}|${b.horizon}|${b.swept}`)).size,
+      1,
+      "every refusal must name the SAME horizon, or a catching-up client chases a moving answer",
+    );
+    assertEquals(bodies[0].type, "about:radia/cursor_expired");
+    assertEquals(bodies[0].horizon, horizon.cursor);
+
+    // The recovery every SDK performs on that 410, all of them at once.
+    const recovered = await Promise.all(
+      watches.map((id) => handler(get(`/v0/watches/${id}/events`, { "Last-Event-ID": "0" }))),
+    );
+    assertEquals(recovered.map((r) => r.status), new Array(STREAMS).fill(200));
+    await Promise.all(recovered.map((r) => r.body?.cancel()));
+
+    // Healthy afterwards, not merely alive: a new watch still connects, the log still verifies as
+    // honestly truncated rather than tampered with, and a write still reaches the streams.
+    const fresh = (await (await handler(post("/v0/watches", { kind: "task" }))).json()).watchId;
+    const after = await handler(get(`/v0/watches/${fresh}/events`));
+    assertEquals(after.status, 200);
+    await after.body?.cancel();
+    const v = await space.verifyIntegrity();
+    assertEquals(v.ok, true);
+    assertEquals(v.truncated?.attested, true);
+    // Wakes any stream still parked on waitForEvents, so no keepalive timer outlives the test.
     await space.put({ kind: "task", body: { tag: "wake" } });
   } finally {
     await adapter.close();

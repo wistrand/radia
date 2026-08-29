@@ -13,9 +13,10 @@
 > things, and an audit on 2026-08-29 found the third outnumbering the first: OPEN (nobody decided),
 > GATED (decided, waiting on a first user or a measurement, and it says what would ungate it), or
 > ALREADY ANSWERED ELSEWHERE under another name. Genuinely open and ungated, in order of size: the
-> FAULT-INJECTION SUITE (M2's own verify condition), schema versioning + migration, SSE
-> backpressure, externally-anchored checkpoints, KMS wrapping, and the Python SDK's missing
-> credential exchange.
+> BASELINES in [plan-validation.md](plan-validation.md), which are what ungate the scheduler and the
+> marketplace; schema versioning + migration; SSE backpressure; externally-anchored checkpoints; KMS
+> wrapping; and the Python SDK's missing credential exchange. That doc's other half, the
+> FAULT-INJECTION MATRIX, was the largest of these and was completed 2026-08-29.
 
 ## Goal
 
@@ -102,7 +103,7 @@ two-terminal demo works.
 
 ### M1: usable runtime
 
-- [x] Postgres storage adapter (same conformance suite as embedded). `src/storage/postgres.ts` (deno-postgres pool) over the shared `src/storage/pgbase.ts` body PGlite also uses, so both speak identical SQL; `take` claims atomically across connections with a checked compare-and-set over a bounded candidate window (it originally used `FOR UPDATE ... SKIP LOCKED` over the whole kind, which starved peers; see [gotchas.md](gotchas.md)). `--storage postgres` in `radia dev`. **VERIFIED:** `scripts/pg-conformance.sh` green against a live Postgres 16 (**698 passed, 0 failed** as of 2026-08-04; 508 embedded plus the postgres rows), each test in an ephemeral schema. That run is the only cover for the pool-only paths: `SKIP LOCKED` claims across connections, and the `xid8` watermark in `getEvents` that keeps watch cursors gap-free when transactions commit out of seq order. **That run is now in CI** (`.github/workflows/ci.yml`, the `postgres` job against a service container), together with the two CONTENDED claim-path cases the embedded adapters cannot express (`test/concurrency.test.ts`). Still to do: the partition/failover fault suite (M2).
+- [x] Postgres storage adapter (same conformance suite as embedded). `src/storage/postgres.ts` (deno-postgres pool) over the shared `src/storage/pgbase.ts` body PGlite also uses, so both speak identical SQL; `take` claims atomically across connections with a checked compare-and-set over a bounded candidate window (it originally used `FOR UPDATE ... SKIP LOCKED` over the whole kind, which starved peers; see [gotchas.md](gotchas.md)). `--storage postgres` in `radia dev`. **VERIFIED:** `scripts/pg-conformance.sh` green against a live Postgres 16 (**698 passed, 0 failed** as of 2026-08-04; 508 embedded plus the postgres rows), each test in an ephemeral schema. That run is the only cover for the pool-only paths: `SKIP LOCKED` claims across connections, and the `xid8` watermark in `getEvents` that keeps watch cursors gap-free when transactions commit out of seq order. **That run is now in CI** (`.github/workflows/ci.yml`, the `postgres` job against a service container), together with the two CONTENDED claim-path cases the embedded adapters cannot express (`test/concurrency.test.ts`). The partition and failover rows landed 2026-08-29 and run on every adapter (`test/conformance/suites/failover.ts`, `suites/faults.ts`).
 - [~] single-node deployment mode with admin-provisioned auth. **Auth bootstrap chain + per-run leases built** (agent definitions → run tokens → stop/quarantine; `Authorization: Bearer` is the sole channel; a run inherits its agent's grants and owns its leases; graceful stop vs. emergency quarantine; credentials resolve from `agent_definition`/`agent_run` records per request, uncached; the dev console holds any session token, operator or a person's, and mints the latter). A person gets a session through the same chain (`radia login`, or the console's Auth tab), so identity-scoped grants can separate two people on one space. **OIDC for `human:*` is BUILT** (2026-08-11, [plan-oidc.md](plan-oidc.md)): `POST /v0/sessions/oidc` mints runs from a verified id_token, the `oidc_identity` registry names the principal (first login enrolls, retire is a ban), the console has "Sign in with SSO" and the CLI `radia login --sso`, with `docker/keycloak/` as the worked issuer. Still to do: the documented deployment mode itself, and more than one issuer per space. See [design-auth.md](design-auth.md).
 - [x] read_one + **keyset query**: `after`/`dir` on `POST /v0/records/query` (`Page` in `src/storage/adapter.ts`). A cursor over record id, not an offset, so a page stays correct while the space is written to; `dir: "desc"` is what makes "the newest N" expressible at all, since the deterministic tie-break is ascending id and a plain limit therefore returns the OLDEST matches. Defined for the natural id order only. Combining a cursor with `order_by` is rejected rather than silently resolved, because a keyset over a body field needs the whole sort key plus the oracle's type rules. Pinned by `test/conformance/suites/keyset.ts`, including paging while records are inserted.
 - [x] long-polls: **DECIDED AGAINST 2026-08-29, not deferred.** The outline asked for a blocking
@@ -194,7 +195,16 @@ pinned in `test/http.test.ts` and the horizon derivation per adapter in
   **Offboarding a person is therefore not one verb**: stop their own runs AND the delegated runs
   minted on their behalf, and for an SSO identity retire the `oidc_identity` mapping so nothing
   re-mints. See [plan-delegation.md](plan-delegation.md) and `radia runs`.
-- [ ] fault-injection suite
+- [x] **fault-injection suite** (2026-08-29, [plan-validation.md](plan-validation.md)): the matrix is
+  complete. The last three rows landed together, each with the injection method stated and most
+  proved red on a planted regression: partition during renewal in both directions (unheard request,
+  lost response), DB failover as a Proxy around one adapter method that throws before or after
+  delegating (`test/conformance/suites/failover.ts`, six cases on every adapter), and cursor expiry
+  under a 24-stream reconnect storm over a horizon made by the REAL sweep. What the suite does not
+  cover is stated there rather than implied: it cannot fail inside a storage transaction without a
+  test-only hook in production code, and a real primary kill stays a deployment test. **The
+  BASELINES half of that doc is still not run**, and it is what gates the scheduler and the
+  marketplace.
 - [x] **push `$any` into SQL** (`pushdown.ts`, both dialects): a type-guarded `EXISTS` over the
   array's elements for a scalar element predicate, exact, so the caller's LIMIT rides with it.
   Measured over HTTP against Postgres, it is flat at 1.6–1.9ms from 25k to 1M records

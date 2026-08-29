@@ -116,4 +116,59 @@ export const faultSuites: Suite[] = [
       assertEquals((await space.getEnvelope(id))?.state, "consumed");
     },
   },
+  {
+    // PARTITION DURING RENEWAL, the outbound half: the renew never reaches the space. Simulating
+    // it by not calling is EXACT rather than approximate, because a request the space never
+    // receives and a request never sent are the same event at the space, and the space is where
+    // every guarantee here lives.
+    name: "partition during renewal: the unheard renew loses the lease, and the healed worker cannot settle",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      const { id } = await space.put({ kind: "task", body: { tag: "a" } });
+
+      // A holds a lease. Its renew is cut off, so the lease lapses where the space can see it.
+      const a = await crashBeforeAck(space);
+      assert(a);
+      const b = await space.take({ pattern: { kind: "task" } });
+      assert(b, "the lapsed lease must be reclaimable");
+
+      // The partition heals. A's renew arrives late, and is refused: renewing is not a way back in.
+      assertEquals((await space.renew(a!.lease)).status, "lease_lost");
+      // And a refused renew leaves nothing behind that would let the same worker settle after it.
+      assertEquals((await space.ack(a!.lease)).status, "lease_lost");
+      assertEquals((await space.nack(a!.lease)).status, "lease_lost");
+      assertEquals((await space.release(a!.lease)).status, "lease_lost");
+
+      // B is untouched by any of it, which is the property that makes reassignment safe.
+      assertEquals((await space.ack(b!.lease)).status, "ok");
+      assertEquals((await space.getEnvelope(id))?.state, "consumed");
+    },
+  },
+  {
+    // PARTITION DURING RENEWAL, the RETURN half, and the more dangerous one: the renew COMMITTED
+    // and the response was lost, so the worker believes it holds nothing while the space says it
+    // holds the record. A worker that reacts by abandoning must not corrupt anything, and a worker
+    // that reacts by retrying must get the same answer rather than a second lease.
+    name: "partition during renewal: a lost renew RESPONSE extended the lease anyway",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      const { id } = await space.put({ kind: "task", body: { tag: "a" } });
+      const a = await space.take({ pattern: { kind: "task" } }, { leaseSeconds: 60 });
+      assert(a);
+
+      // The renew commits. Its response is dropped on the way back, so the worker never sees it.
+      const renewed = await space.renew(a!.lease, { leaseSeconds: 60 }, "renew:1");
+      assertEquals(renewed.status, "ok");
+
+      // Nobody else can take it: the extension is real whether or not the holder heard about it,
+      // which is what stops a lost response from becoming a double execution.
+      assertEquals(await space.take({ pattern: { kind: "task" } }), null);
+
+      // The worker retries the same renew. Keyed, so it REPLAYS rather than issuing a second one.
+      assertEquals((await space.renew(a!.lease, { leaseSeconds: 60 }, "renew:1")).status, "ok");
+      // And the fence it already holds still settles: a renew never rotates the epoch.
+      assertEquals((await space.ack(a!.lease)).status, "ok");
+      assertEquals((await space.getEnvelope(id))?.state, "consumed");
+    },
+  },
 ];

@@ -105,6 +105,7 @@ Paths are relative to `test/`; the first three files live in `conformance/`.
 | `openapi.test.ts`  | the frozen contract against the router, both directions: every documented operation is routed, and every `/v0` path the router names is documented |
 | `notifier.test.ts` | the watch wakeup state machine: who wakes, when the cross-instance poll runs |
 | `concurrency.test.ts` | the fault matrix's CONTENDED half: the two claim-path races that need real parallel connections, so they skip without `RADIA_PG_URL` |
+| `http.test.ts` (storm) | the fault matrix's last row: 24 streams reconnecting at once below a horizon made by the REAL sweep, each refused with the SAME horizon, each recovery served |
 | `flows.test.ts`    | flow mining, including the acceptance test written before the feature: the pipeline example's shape, recovered without the miner being told to look for it |
 | `tree.test.ts`     | serving a multi-file tree over one path capability: relative resolution, traversal missing the index, the mint-time read check, the isolated origin. Its three security cases were each validated against a planted regression |
 | `loop.test.ts`     | the SDK worker loop losing a lease: the handler's cancellation channel (the one test here that binds a real port, since the SDK client and its SSE watchers are what is under test) |
@@ -162,8 +163,15 @@ Seven conventions worth copying rather than reinventing:
   fired and how often.
 
 - **Simulate faults by composition, not test hooks.** A crashed worker is one that took a lease
-  and never acked, with the lease forced expired via a negative `leaseSeconds`. Deterministic, no
-  sleeps, and no test-only code paths in production. See `conformance/suites/faults.ts`.
+  and never acked, with the lease forced expired via a negative `leaseSeconds`. A partition is a
+  request not delivered, which is EXACT rather than approximate: a request the space never receives
+  and a request never sent are the same event at the space. A failover is a Proxy around one adapter
+  method, throwing before delegating (nothing committed) or after (committed, answer lost).
+  Deterministic, no sleeps, and no test-only code paths in production. See
+  `conformance/suites/faults.ts` and `conformance/suites/failover.ts`.
+- **A fault test must FAIL fast, never hang.** The reconnect-storm case (`http.test.ts`) asserts
+  response STATUS before reading any body, because a stream served in error has no body that ends:
+  reading first parked the suite past five minutes on the exact regression it exists to catch.
 - **Never assert on wall-clock timing.** All time comparisons use the database clock; a test that
   sleeps is a test that flakes in CI. The one exception is where LATENCY IS THE CONTRACT: the
   cross-instance wakeup (`conformance/suites/watches.ts`, `notifier.test.ts`) and the fenced handler

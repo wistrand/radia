@@ -431,7 +431,10 @@ live at the top of the relevant `agent_docs/` file, not here.
   (`docs/**`, `agent_docs/**`, `**/*.md`; `docs.yml` runs `deno task test:quick` for the site instead),
   which never narrows this guard: `paths-ignore` skips a workflow only when EVERY changed file
   matches, so any change to code runs the whole matrix. The fault-injection matrix
-  (plan-validation.md) is still to come.
+  (plan-validation.md) is COMPLETE as of 2026-08-29, and its last three rows say what they do not
+  claim: a fault cannot be injected INSIDE a storage transaction without a test-only hook in
+  production code, and a real primary kill is a deployment test. What remains of that doc is the
+  BASELINES, which are what gate the scheduler and the marketplace.
 - **The wire contract is what's frozen, not the implementation.** OpenAPI-first;
   implementation language and storage backend can change behind the stable protocol, and
   `test/openapi.test.ts` checks the spec against the router in both directions, so a new
