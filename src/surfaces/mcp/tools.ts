@@ -214,8 +214,9 @@ export const TOOLS: McpTool[] = [
       "that already exists comes back immediately, so this answers 'is there anything for me?'. " +
       "Set newOnly:true for 'tell me when the NEXT one arrives' — you need that for a MAILBOX, " +
       "because nothing consumes a fact: on a kind that is not claimable the default hands you the " +
-      "same record every time, however you narrow the match. The reply says which you got " +
-      "(`existing`). It does NOT claim anything: call space_take to claim, which is what stops two " +
+      "same record every time, however you narrow the match. Waiting for a REPLY is the other case " +
+      "and wants the default: an answer that arrived before your watch opened is invisible to " +
+      "newOnly. The reply says which you got (`existing`). It does NOT claim anything: call space_take to claim, which is what stops two " +
       "agents doing the same work. Returns {found:false} on timeout, an ordinary outcome and not " +
       "an error: nobody wrote one in time.",
     inputSchema: {
@@ -227,8 +228,12 @@ export const TOOLS: McpTool[] = [
         newOnly: {
           type: "boolean",
           description:
-            "Only report a record written AFTER this call started. What a mailbox wants: without it, " +
-            "a kind that is not claimable returns the same existing record every time.",
+            "Only report a record written AFTER this call started. What a MAILBOX wants: without it, " +
+            "a kind that is not claimable returns the same existing record every time. NEVER use it " +
+            "to wait for the ANSWER to something you just asked for: the worker may answer before " +
+            "your watch opens, and then the reply you are waiting for is the one record this flag " +
+            "hides, so you wait out the whole timeout for a second answer nobody will send. Leave it " +
+            "off and let the reconcile find what already arrived.",
         },
       },
       required: ["kind"],

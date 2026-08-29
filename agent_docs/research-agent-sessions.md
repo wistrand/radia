@@ -74,21 +74,33 @@ rather than into the kind: the scenario prompts now name TWO KINDS OF EMPTY with
 bound the first wait to 30 seconds, and say a second empty answer makes the PATTERN the likelier
 problem than the timing.
 
-**The paired run, same models, same scenario, one variable moved.** Total time PARKED in a watch
-fell from 250s to 82s, and the run from about three minutes to 93 seconds:
+**Four runs each arm, alternating so a drift in either model's service lands on both.** Time PARKED
+in a watch, and how often a run burned the 120s ceiling:
 
-| | codex | claude | parked |
-|---|---|---|---|
-| before | 120.5s + 0.1s | 120.0s + 9.9s | 250s |
-| after | 7.3s + 30.2s | 30.2s + 14.0s | 82s |
+| arm | runs | median parked | range | ceiling hit |
+|---|---|---|---|---|
+| before | 4 | 253.0s | 18.3-258.7s | **3 of 4** |
+| after | 4 | 17.8s | 11.0-81.6s | **0 of 4** |
 
-**Only the BOUNDING is attributable, and the distinction matters more than the number.** Codex
-passed `timeoutSeconds: 30` and said in its own words that it was "doing the required single
-30-second watch", so the instruction is visible in the call it produced; the watch then returned in
-7.3s when the work actually arrived. Claude's requester-side hops (30.2s then 14.0s in place of one
-120s park) are the other half of the same edit. What is NOT attributable is the pattern: codex simply
-did not use an `assignee` filter this time, and the prompt says nothing about `assignee`, so one run
-cannot tell a fix from variance. Two runs are a pair, not a rate.
+**The three ceilings had three different proximate causes, which is what makes this a rate rather
+than one story told four times:** the `assignee` filter above; a REPLY RACE (below); and one run
+where both happened at once, codex on `assignee` and claude on `newOnly` for its mailbox.
+
+**What the after arm actually changed is not what the prompt said.** The prompt never mentions
+`newOnly`; it says look again rather than wait longer. Codex then passed `newOnly: false` in 3 of the
+4 after runs, with a bare `{team}` match or none at all, and the one slower after run (81.6s) is the
+one where it passed `newOnly: true`. Reconcile-first defeats both failure modes at once, because it
+finds work already sitting there AND replies that already landed. Emergent, then, not instructed:
+report it as the rate it is.
+
+**THE REPLY RACE, and the one fix here that removes a failure class rather than shifting its
+probability.** In the second ceiling run codex claimed correctly (`{tags: {$any: "run_javascript"}}`,
+0.0s), dispatched a `tool_call`, and opened `space_watch {callId, newOnly: true}` at 17:02:15.250.
+The worker had answered at **17:02:12.525**, 2.7 seconds earlier. `newOnly` means "written after this
+call started", so the one record it was waiting for was the one record the flag hides, and it waited
+out the full 120s for a second answer nobody would send. Its description gave the REASON to use it (a
+fact kind hands back the same record forever) and never the cost; it now says a reply is the other
+case and wants the default.
 
 **A claim that matched nothing looks exactly like an empty queue.** Codex claimed with
 `{tags: {$in: ["image"]}}` on an array path, got nothing, and recovered with `{tags: ["image"]}`,
