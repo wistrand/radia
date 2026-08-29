@@ -1,6 +1,6 @@
 # Plan: what a registry read costs
 
-**Status: items 1-3 BUILT (1 on 2026-08-22, 2-3 on 2026-08-23); item 4 open and probably unnecessary.** Every number here was measured the same
+**Status: items 1-3 BUILT (1 on 2026-08-22, 2-3 on 2026-08-23); item 4 decided against pending a measurement.** Every number here was measured the same
 day, in-process, against both embedded adapters and a throwaway `postgres:16`. Opened by asking where the "bounded read as
 population" disease should be fixed (audit package W4 fixed one site; this is the class).
 
@@ -143,7 +143,7 @@ Two existing tests now opt out explicitly (`suites/gc.ts`'s page-boundary walk n
 one kind to still exist when the verb runs). Same shape as the ceiling's opt-out: the automation
 bites a real path, and the test that needs the un-swept state says so.
 
-**4. Memoize `access()` per (principal, kind). OPEN, and probably unnecessary.** Deliberately last.
+**4. Memoize `access()` per (principal, kind). DECIDED AGAINST pending a measurement.** Deliberately last.
 With the ceiling from item 1, `authorize()` is bounded near 2.9ms and cannot grow, which already
 satisfies "flat and the default". A cache on the authorization path buys the remaining milliseconds
 at the price of an invalidation bug being silent misauthorization, the worst failure class in this

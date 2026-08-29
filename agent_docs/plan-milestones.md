@@ -8,6 +8,14 @@
 > slice is built too (GC + compaction, event-log retention, ops-plane tiers, revocation,
 > pushdown + the scan budget); the rest of M2/M3 is unbuilt. Workspaces and the git projection
 > are complete beside the list, bar push. Origin: outline §11.
+>
+> **Read `[~]` before assuming an item is work waiting to be done.** A box here is one of three
+> things, and an audit on 2026-08-29 found the third outnumbering the first: OPEN (nobody decided),
+> GATED (decided, waiting on a first user or a measurement, and it says what would ungate it), or
+> ALREADY ANSWERED ELSEWHERE under another name. Genuinely open and ungated, in order of size: the
+> FAULT-INJECTION SUITE (M2's own verify condition), schema versioning + migration, SSE
+> backpressure, externally-anchored checkpoints, KMS wrapping, and the Python SDK's missing
+> credential exchange.
 
 ## Goal
 
@@ -108,7 +116,7 @@ two-terminal demo works.
   something. See [design-api.md](design-api.md), "Wire protocol".
 - [~] schema version registry: kind *declarations* persist (as `kind_def` records, reloaded at startup by `Space.loadKinds`, and re-read per kind on a stale-projection compile error so N instances over one database stay correct); schema *versioning* + migration still to do
 - [x] kind- and pattern-scoped grants: grants are `grant` records; `Space.authorize` + `isPrivileged`; enforced at the HTTP boundary; `/v0/ops/*` is power-gated (`ops_grant` records, [architecture-ops-tiers.md](architecture-ops-tiers.md)) and `grant`/`signal` writes are operator-or-supervisor, everything else reserved operator-only. **Pattern-scoped** grants built for read (query/read_one/take, `grant ∧ request` via `combineMatch`) AND write (put/ack, the record body must satisfy the pattern via `bodyMatchesGrant`). Delegation and taint are also built (rows below); budgets and per-principal trust classification still to do. See [design-auth.md](design-auth.md).
-- [~] resource limits enforced: record body bytes, artifact bytes, `$and`/`$or` nesting depth and watches per principal, plus (2026-08-04) **body depth** (`413 body_too_deep`), **body array length** (`413 array_too_long`), **pattern size** (`413 pattern_too_large`), **compiled predicate count** (`too_many_predicates`), **`$or` branch count** (`too_many_branches`), **`$in` cardinality** (`too_many_values`) and **registered interests per principal per kind** (`429 too_many_interests`). Each bounds a cost bytes do not: a pattern is stored and re-evaluated per candidate record, a body's shape is walked by the matcher and the event chain, and the interest registry is read by the dry-run matcher and the starvation split. Enforced in the RUNTIME, not the handler, since the SDK/MCP/in-process callers never pass through one; guarded by `test/conformance/suites/limits.ts`. Plus (2026-08-05) the **row-scan budget** (`429 scan_budget_exceeded`, default 200k), the first of these that needed a MECHANISM rather than a validator: the walk is chunked and yields between chunks, so the cost of a pattern SQL cannot decide is paid by its caller instead of by the whole space. Still to do: a slow-lane TIME budget and SSE backpressure (see [design-data-model.md](design-data-model.md) §2).
+- [~] resource limits enforced: record body bytes, artifact bytes, `$and`/`$or` nesting depth and watches per principal, plus (2026-08-04) **body depth** (`413 body_too_deep`), **body array length** (`413 array_too_long`), **pattern size** (`413 pattern_too_large`), **compiled predicate count** (`too_many_predicates`), **`$or` branch count** (`too_many_branches`), **`$in` cardinality** (`too_many_values`) and **registered interests per principal per kind** (`429 too_many_interests`). Each bounds a cost bytes do not: a pattern is stored and re-evaluated per candidate record, a body's shape is walked by the matcher and the event chain, and the interest registry is read by the dry-run matcher and the starvation split. Enforced in the RUNTIME, not the handler, since the SDK/MCP/in-process callers never pass through one; guarded by `test/conformance/suites/limits.ts`. Plus (2026-08-05) the **row-scan budget** (`429 scan_budget_exceeded`, default 200k), the first of these that needed a MECHANISM rather than a validator: the walk is chunked and yields between chunks, so the cost of a pattern SQL cannot decide is paid by its caller instead of by the whole space. Still to do: SSE backpressure. The slow-lane TIME budget listed here is a SCHEDULER concept (design-data-model.md §2 says so), so it is gated with M3 rather than open in M1.
 - [x] hash-chained event log: each event is sealed into a chain (`event_seal`) once the log's finality watermark passes it, so the hot path pays nothing and the chain is eventually consistent (`unsealed` says how far behind). Sealing runs ON DEMAND, never on a timer (the lesson `Notifier` and `sweepWatches` learned). The hash covers the event AND the record's `body_sha256`, so editing a body directly is caught rather than leaving a perfect chain. `src/core/seal.ts`, `GET /v0/ops/integrity`, `radia integrity`, in `radia doctor`. **A chain stored in the database it protects detects corruption and careless edits, not a rewrite**: each link is HMAC'd under a key that lives beside the database (`RADIA_SEAL_KEY`, else `.radia/seal.json`), which is what makes a rebuild detectable. Externally anchored checkpoints stay M2.
 - [~] polished Python + TS SDKs. **TS gained the credential exchange** (`ClientAuth.definitionToken`:
   a client whose short token lapses mints another instead of ending the session, once per failure,
@@ -130,7 +138,12 @@ pinned in `test/http.test.ts` and the horizon derivation per adapter in
 
 ### M2: coordination protocols
 
-- [ ] request/bid/award (see [design-marketplace.md](design-marketplace.md)): speculative ahead of a first user; gate behind a measured baseline like the scheduler, not build-on-spec (see [plan-validation.md](plan-validation.md))
+- [~] request/bid/award (see [design-marketplace.md](design-marketplace.md)): **GATED, not queued.**
+  Speculative ahead of a first user; gate behind a measured baseline like the scheduler, not
+  build-on-spec (see [plan-validation.md](plan-validation.md)). Its TIMING half already shipped under
+  another name: "durable timers" became delayed visibility (`PutRequest.availableAt`), and the
+  sweeper that section describes was deliberately not built. Read design-marketplace.md before
+  proposing a timer, a sweeper, or anything that fires at a deadline.
 - [x] **retention GC + registry compaction** (2026-08-05, [plan-gc.md](plan-gc.md)): `Space.gc` /
   `POST /v0/ops/gc` / `radia gc`, on demand only. `retention_until` is finally consulted: writers
   declare expiry, the sweep deletes settled/reference records past it (never a held lease, never
@@ -147,7 +160,10 @@ pinned in `test/http.test.ts` and the horizon derivation per adapter in
   below the horizon 410 (the `"0"` sentinel clamps, or the SDKs' recovery would loop); ops reads
   annotate. What a space wins and loses by enabling it: plan-gc.md, "The ledger".
 - [x] **delayed visibility** (2026-08-21), which is what the in-scope half of "durable timers" turned out to be. `PutRequest.availableAt` seeds the envelope column retry backoff already drove, so a record simply is not a take candidate until the database clock passes it; a worker sees it on its next poll (`agentLoop`'s 1s floor) and an idle space runs nothing. THE SWEEPER THIS ENTRY ASKED FOR WAS NOT BUILT, and should not be: the claim path went lazy (`rankClaimable` + the CAS in each dialect), so nothing needs sweeping, and an amortized sweeper rides a write counter, which an idle space does not turn. Bounded by `maxPutDelaySeconds` (7 days) because retention GC never sweeps unclaimed claimable work. Out of scope and still out: a general workflow-timer / cron / signal library, which is Temporal's ground; Radia does not reimplement durable execution (see [research-positioning.md](research-positioning.md))
-- [ ] transactional budget reservation/settlement
+- [~] transactional budget reservation/settlement: **NOT A SEPARATE ITEM.** `design-auth.md`
+  ("Budgets") puts observability in records and enforcement in the scheduler's reservation +
+  settlement, so this inherits the M3 scheduler's gate and cannot be worked before it. The rule that
+  survives either way: two readers of one budget record must not both spend it.
 - [~] runtime envelope encryption + crypto-shredding: **built for artifact blobs** (`src/storage/crypto.ts`: per-blob DEK, wrapped under a space KEK from env/keyring, destroyable sidecar so deleting the key destroys the payload while the record and its digest stay verifiable). Record *bodies* stay plaintext IN THE RUNTIME, and always will: matching reads them. What closed the gap is an APP-layer convention ([plan-encryption.md](plan-encryption.md), BUILT 2026-08-16, `extensions/ts/encrypted.ts`): the chat seals the fields nothing routes on, keeps the wraps in artifacts so a conversation can be crypto-shredded, and every reader refuses a marker it cannot open. KMS wrapping + rotation are open.
 - [ ] signed, externally-anchored log checkpoints. The INTERNAL half converged with event GC
   (plan-gc.md phase 3): each seal is self-contained and the retained suffix verifies from an
@@ -197,11 +213,24 @@ crypto-shredding deletes a body while the event chain still verifies.
 
 ### M3: intelligent control
 
-- [ ] scheduler-enforced atomic admission (see [design-scheduler.md](design-scheduler.md))
-- [ ] semantic matching
+- [~] scheduler-enforced atomic admission (see [design-scheduler.md](design-scheduler.md)):
+  **GATED on a measured baseline** ([plan-validation.md](plan-validation.md) isolates the agenda's
+  contribution), and the scheduler is OPTIONAL by design. Two other rows here wait on it rather than
+  on their own work: transactional budgets, and the slow-lane TIME budget listed under M1 limits.
+- [~] semantic matching: **SHAPE DECIDED, timing gated** ([design-matching.md](design-matching.md),
+  "Semantic matching (late)"): embeddings over declared semantic fields computed on the
+  STRUCTURALLY-FILTERED set only, per-agent rerank under a cost budget, shadow mode before
+  enforcement. It is not a substitute for deterministic prefix/token/filename matching, which is a
+  separate deferred item on the same page.
 - [~] delegation contexts end-to-end. **Built (M1):** `delegation_context` is server-derived from the lease on ack-emitted work (authority chain accumulates per hop; never data parents); ack authorizes the acting agent's `put`. Since 2026-08-12 a worker can also ACT for its caller: `POST /v0/agent-runs/delegated` mints a run whose authority is `grants(worker) INTERSECT grants(caller)`, resolved through the run behind `created_by` rather than any body field, with the authority a worker may use only on somebody's behalf held under a `delegable:<agent>` principal nothing can authenticate as ([plan-delegation.md](plan-delegation.md)). Remaining for M3: the stricter chain-intersection policy composed with taint, which this deliberately does NOT anticipate — it intersects two principals at mint, and says nothing about a chain of five.
 - [~] taint + declassification. **Built (M1):** taint is a closed set of BARRIER labels (`file`/`net`/`foreign`, `TAINT_LABELS`) that UNION along data parents (put + ack); clients may raise but never clear one; `take {allowTaint}` and a grant's `scope.taint` are claim-time ALLOWLISTS; a privileged `declassify` clears named labels and emits a successor carrying the remainder. It began as one boolean, which saturated after the first tool call and therefore barred nothing; see [design-taint.md](design-taint.md). Remaining for M3: per-principal trust classification and taint-composed access checks.
-- [ ] repeated-shape livelock detection
+- [~] repeated-shape livelock detection: **the same implementation as flow mining, and the READ half
+  is built** (2026-08-04: `Space.flows`, `GET /v0/ops/flows`, `radia flows`, the console's Flows
+  tab). One primitive, a signature over ancestry, read two ways: repetition WITHOUT progress is
+  rumination and gets interrupted, repetition WITH progress is skill and gets kept
+  ([research-self-modeling.md](research-self-modeling.md), which says these must stop being two
+  items). What remains is the no-progress predicate and the `flow` RECORD, without which there is no
+  provenance for the measurement and no drift over time.
 - [ ] re-execution tooling
 - [ ] learned scoring after static scoring is measurable
 

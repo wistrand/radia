@@ -723,8 +723,8 @@ not both spend it.
 Boundary signing and agent-held keys (federation-time; rationale in
 [design-observability.md](design-observability.md) and [gotchas.md](gotchas.md)) ·
 recipient-keyed encryption as a runtime feature · field-level ACLs · multi-tenancy (one
-space per team for now) · ops-plane tiers (decided and planned, not built:
-[architecture-ops-tiers.md](architecture-ops-tiers.md)).
+space per team for now). Ops-plane tiers were listed here as deferred and are BUILT (all phases,
+2026-08-06): [architecture-ops-tiers.md](architecture-ops-tiers.md).
 
 ### OIDC: built, on the shape decided here
 
