@@ -26,6 +26,7 @@ deno task lab -- --scenario scripts/agent-lab/scenarios/smoke.json   # no model,
 | `team-exec-twostep` | a few cents | the same cast, with the execution moved to the REQUESTER: the worker is asked for source only, and the agent that wrote the task fetches the artifact and dispatches the `tool_call` itself |
 | `team-queue` | a few cents | CONTENTION: five seeded tasks, no requester, both agents claiming the same queue at once. One of the five cannot be done |
 | `team-queue-codex` | a few cents | the same queue worked by TWO codex agents, which is what a private `CODEX_HOME` per agent made possible |
+| `team-queue-three` | ~$1 | THREE harnesses at once: Claude Code, Codex and agy. Its seed is HELD until all three have made a call (`seedWhen`), and with that all three claim: 2, 2 and 1 of five, in 75 seconds |
 | `workspace-smoke` | nothing | the workspace chain with no model: author a tree, promote, bind, run it brokered |
 | `team-workspace` | a few cents | the same chain with a MODEL authoring the tree: does it produce something a host can actually run |
 | `team-tree` | ~$1 | THREE models on one tree: one writes it, one changes it, one checks the answer after it ran |
@@ -219,7 +220,23 @@ binary for its tool list over stdio and expands it into
 anybody editing a scenario. An interactive Codex accumulates the same entries in
 `~/.codex/config.toml` as you click through them, which is why this only bites automation.
 
-**Every codex agent gets its own `CODEX_HOME`**, because one home cannot hold two of them.
+**Three harnesses are supported: Claude Code, Codex and agy** (Google Antigravity). They differ in
+exactly two ways the runner has to know about, and the differences live in one table
+(`PRIVATE_HOMES`) rather than in branches:
+
+| | MCP config | prompt | private state |
+|---|---|---|---|
+| Claude Code | a file named on the command line (`--mcp-config`) | stdin | none needed |
+| Codex | flags on the command line (`-c mcp_servers.…`) | stdin | `CODEX_HOME` |
+| agy | a file at a FIXED path, `<home>/.gemini/config/mcp_config.json` | `-p='…'`, argv | `HOME` |
+
+agy's config is the same `mcpServers` object Claude Code takes, so the runner writes one shape and
+only the path changes. It is SLOWER TO START than the other two, around 20 seconds to its first
+call against 4 and 15, which is what `seedWhen: "agents-ready"` exists for; once working it turns
+around in about 5 seconds like the others. Its prompt is the exception the `{{prompt}}` template exists for: a command
+that uses it gets no stdin, because a harness reading both would run the turn twice.
+
+**Every codex and agy agent gets its own private home**, because one home cannot hold two of them.
 `--ignore-user-config` governs READS, so each run still wrote a
 `[projects."<run dir>"] trust_level = "trusted"` entry into the operator's real
 `~/.codex/config.toml`; twenty lab directories had accumulated there before this was fixed. Two
@@ -227,15 +244,15 @@ codex agents in one run also shared that file, the history, the caches and the s
 were one installation used twice rather than two participants, which is the same mistake as two
 harnesses on one Radia credential.
 
-The credential is the one thing NOT isolated. `auth.json` is SYMLINKED into each private home rather
-than copied: a login is a login, every codex process on the machine already writes that one file, and
+The credential is the one thing NOT isolated. `auth.json` for codex, and `oauth_creds.json` with
+three companions for agy, are SYMLINKED into each private home rather than copied: a login is a login, every codex process on the machine already writes that one file, and
 a copy would break the sharing instead of preserving it, leaving the operator's own token stale after
 a refresh inside a run. If codex ever replaces the file rather than writing in place, the symlink is
 replaced and the run continues against a stale copy while the operator's file stays untouched:
 degradation, never corruption.
 
-Cost: about 45 MB per codex agent per run, most of it a plugin cache fetched per home, and it is
-thrown away with the run directory.
+Cost: about 45 MB per codex agent per run, most of it a plugin cache fetched per home; agy's is far
+smaller. Both are thrown away with the run directory.
 
 `configPath` is where a file-configured harness reads its config, relative to the agent's directory
 (default `.mcp.json`). Codex needs none, since its config rides in the argv.

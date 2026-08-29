@@ -40,7 +40,7 @@ for (const m of flagAll("--model")) {
 
 interface AgentSpec {
   name: string;
-  harness?: "claude" | "codex" | "json";
+  harness?: "claude" | "codex" | "agy" | "json";
   /** argv for the harness, run with the agent's directory as cwd. The PROMPT goes in on stdin, so
    *  a scenario never has to quote it into a shell. */
   command: string[];
@@ -109,6 +109,19 @@ interface Scenario {
   /** Kind declarations this scenario needs beyond the team's own, as `kind_def` bodies. Declared by
    *  the OPERATOR before any member starts, because a member holds no `kind_def: put`. */
   kinds?: Record<string, unknown>[];
+  /**
+   * WHEN the seed is written. `start` (the default) is before any agent launches; `agents-ready`
+   * holds it until every harness has made its first tool call.
+   *
+   * The second exists because a contention scenario with fast work measures STARTUP LATENCY
+   * instead. Measured three times: harnesses orient between 5 and 25 seconds apart, two of them
+   * drained nine instant tasks in the 23 seconds before the third's first claim, so the third
+   * did everything right and got nothing. Raising the seed count does not fix it, because the
+   * fast agents drain whatever is there; the fix is to put the work in front of all of them at
+   * once. The readiness signal is the TRACE, which already exists and is already tailed: an agent
+   * that has made a tool call is an agent that can claim.
+   */
+  seedWhen?: "start" | "agents-ready";
   /**
    * Records the OPERATOR writes before any agent starts, as `{kind, body}`.
    *
@@ -338,10 +351,15 @@ for (const a of scenario.agents) {
 // (agent_docs/architecture-teams.md), so an unlabelled seed is invisible to every agent in the run
 // and reads as an empty queue. A body naming its own `team` still wins, since a scenario may want
 // exactly that: work nobody in this team can see is how an isolation test is written.
-for (const s of scenario.seed ?? []) {
-  await radia(["put", s.kind, JSON.stringify({ team, ...s.body })]);
+async function writeSeed(): Promise<void> {
+  for (const s of scenario.seed ?? []) {
+    await radia(["put", s.kind, JSON.stringify({ team, ...s.body })]);
+  }
 }
-if (scenario.seed?.length) console.log(`seed   ${scenario.seed.length} records written before any agent started`);
+if (scenario.seed?.length && scenario.seedWhen !== "agents-ready") {
+  await writeSeed();
+  console.log(`seed   ${scenario.seed.length} records written before any agent started`);
+}
 
 /**
  * The adapter's tool names, asked of the BINARY over stdio rather than hardcoded.
@@ -389,7 +407,34 @@ async function toolNames(a: typeof agents[number]): Promise<string[]> {
 let tools: string[] = [];
 
 /**
- * A private `CODEX_HOME` per codex agent, because one home cannot hold two of them.
+ * Where a harness keeps its own state, and which credential file makes a private copy usable.
+ *
+ * Two harnesses need this and they name the directory differently: codex reads `CODEX_HOME`, and
+ * antigravity has no variable of its own, so its whole `HOME` moves and it finds `~/.gemini` inside
+ * it. Both accumulate a TRUST LIST for every directory they are run in, which is the leak this
+ * exists to stop.
+ */
+const PRIVATE_HOMES: Record<string, { dir: string; env: string; from: string; credentials: string[] }> = {
+  codex: { dir: "codex-home", env: "CODEX_HOME", from: ".codex", credentials: ["auth.json"] },
+  // HOME, not a config path: agy resolves `~/.gemini` from it, so moving HOME moves the config, the
+  // trust list, the history and the caches together. The four credential files were established by
+  // running it with nothing else linked in.
+  agy: {
+    dir: "agy-home",
+    env: "HOME",
+    from: ".gemini",
+    credentials: ["oauth_creds.json", "google_accounts.json", "user_id", "settings.json"],
+  },
+};
+
+/** The private home a harness gets, and the variable that points it there. */
+function privateHome(a: AgentSpec & { dir: string }): { env: string; value: string } | undefined {
+  const spec = a.harness ? PRIVATE_HOMES[a.harness] : undefined;
+  return spec ? { env: spec.env, value: `${a.dir}/${spec.dir}` } : undefined;
+}
+
+/**
+ * A private home per agent, because one home cannot hold two of them.
  *
  * MEASURED, in the operator's own file: `--ignore-user-config` governs READS, so every codex run
  * still wrote `[projects."<run dir>"] trust_level = "trusted"` into the real `~/.codex/config.toml`,
@@ -408,18 +453,27 @@ let tools: string[] = [];
  * Everything else is per agent and per run, which is what makes the trust entry, the history and
  * the caches land in the run directory where they can be read afterwards and thrown away with it.
  */
-async function codexHome(a: AgentSpec & { dir: string }): Promise<string | undefined> {
-  if (a.harness !== "codex") return undefined;
-  const source = Deno.env.get("CODEX_HOME") ?? `${home}/.codex`;
-  const target = `${a.dir}/codex-home`;
-  await Deno.mkdir(target, { recursive: true });
-  try {
-    await Deno.symlink(`${source}/auth.json`, `${target}/auth.json`);
-  } catch (e) {
-    // A missing or unreadable credential is NOT fatal: a scenario may authenticate by environment
-    // variable instead, and failing here would turn a working setup into a broken one.
-    if (!(e instanceof Deno.errors.AlreadyExists)) {
-      say(a.name, `no codex credential linked (${e instanceof Error ? e.message : e}); it may still authenticate by environment`);
+async function harnessHome(a: AgentSpec & { dir: string }): Promise<string | undefined> {
+  const spec = a.harness ? PRIVATE_HOMES[a.harness] : undefined;
+  if (!spec) return undefined;
+  // The operator's own, wherever it is: an explicitly set variable wins, since somebody running the
+  // lab from an already-isolated home means it.
+  const source = `${Deno.env.get(spec.env) ?? home}/${spec.from}`.replace(`${home}/${spec.from}/${spec.from}`, `${home}/${spec.from}`);
+  const target = `${a.dir}/${spec.dir}`;
+  // agy's credentials sit one level down, in `<home>/.gemini`; codex's sit in `CODEX_HOME` itself.
+  // Naming the source directory and the target the same way keeps that difference in the table
+  // above rather than in a branch here.
+  const into = spec.env === "HOME" ? `${target}/${spec.from}` : target;
+  await Deno.mkdir(into, { recursive: true });
+  for (const file of spec.credentials) {
+    try {
+      await Deno.symlink(`${source}/${file}`, `${into}/${file}`);
+    } catch (e) {
+      // A missing or unreadable credential is NOT fatal: a scenario may authenticate by environment
+      // variable instead, and failing here would turn a working setup into a broken one.
+      if (!(e instanceof Deno.errors.AlreadyExists)) {
+        say(a.name, `no ${a.harness} credential '${file}' linked (${e instanceof Error ? e.message : e}); it may still authenticate by environment`);
+      }
     }
   }
   return target;
@@ -430,8 +484,14 @@ async function codexHome(a: AgentSpec & { dir: string }): Promise<string | undef
 // can settle claims it left behind, and `--trace`, which is the only record of what the model
 // ASKED FOR (a claim that matched nothing writes no event anywhere).
 for (const a of agents) {
+  // WHERE THIS HARNESS LOOKS. Claude Code takes a config file on the command line, so any path
+  // works; agy takes none and reads `<home>/.gemini/config/mcp_config.json`, so the file has to be
+  // written where its private home will put it. The SHAPE is the same `mcpServers` object for both,
+  // which is why there is one writer below and not two.
   const configPath = a.configPath
     ? (a.configPath.startsWith("/") ? a.configPath : `${a.dir}/${a.configPath}`)
+    : a.harness === "agy"
+    ? `${a.dir}/agy-home/.gemini/config/mcp_config.json`
     : `${a.dir}/.mcp.json`;
   const config = {
     mcpServers: {
@@ -452,9 +512,10 @@ for (const a of agents) {
   await Deno.mkdir(configPath.replace(/\/[^/]*$/, ""), { recursive: true });
   await Deno.writeTextFile(configPath, JSON.stringify(config, null, 2));
   // Not `home`: that name is the operator's HOME at module scope, and shadowing it here would put
-  // two very different directories one letter apart in a function that copies a credential.
-  const codexDir = await codexHome(a);
-  console.log(`member ${a.name}  config ${configPath}${codexDir ? `  CODEX_HOME ${codexDir}` : ""}`);
+  // two very different directories one letter apart in a function that links a credential.
+  const privateDir = await harnessHome(a);
+  const where = privateHome(a);
+  console.log(`member ${a.name}  config ${configPath}${privateDir ? `  ${where!.env} ${privateDir}` : ""}`);
 }
 
 // A HARNESS MAY NEVER HOLD THE OPERATOR. The lab's whole posture is that each agent acts as itself
@@ -524,6 +585,11 @@ function substitute(argv: string[], a: typeof agents[number], configPath: string
     // Codex's per-tool approvals as one TOML inline table, from the live tool list.
     "{{codexTools}}": `{ ${tools.map((t) => `${t} = { approval_mode = "approve" }`).join(", ")} }`,
     "{{model}}": modelOf(a),
+    // THE PROMPT IN ARGV, for a harness that takes no stdin. Claude Code and Codex both read one
+    // from stdin, which is why a scenario never has to quote a multi-line prompt into a shell;
+    // `agy` takes it as the value of `-p` and says so if you get it wrong. A command using this
+    // gets no stdin at all, so the two paths cannot both deliver a prompt.
+    "{{prompt}}": a.prompt,
     "{{trace}}": `${a.dir}/trace.jsonl`,
     "{{session}}": a.name,
     "{{dir}}": a.dir,
@@ -610,11 +676,11 @@ async function runAgent(a: typeof agents[number]): Promise<{ name: string; code:
     // would sit in `ps` for every process on the machine. An `operator` step gets neither and
     // resolves the run's operator from `RADIA_CREDENTIALS`, which is what `promote` and `bind`
     // need and what no model is ever given.
-    // CODEX_HOME per agent, so two codex agents are two installations rather than one used twice,
-    // and so the trust entry a run writes lands in the run directory instead of the operator's
-    // `~/.codex/config.toml` (measured: twenty lab directories had accumulated there).
+    // A PRIVATE HOME per agent, so two of one harness are two installations rather than one used
+    // twice, and so the trust entry a run writes lands in the run directory instead of the
+    // operator's own config (measured: twenty lab directories had accumulated in `~/.codex`).
     env: childEnv({
-      ...(a.harness === "codex" ? { CODEX_HOME: `${a.dir}/codex-home` } : {}),
+      ...(privateHome(a) ? { [privateHome(a)!.env]: privateHome(a)!.value } : {}),
       ...(a.harness || a.credential === "operator" ? a.env : { ...a.env, RADIA_DEFINITION_TOKEN: a.token, RADIA_URL: base }),
     }),
     stdin: "piped",
@@ -622,9 +688,11 @@ async function runAgent(a: typeof agents[number]): Promise<{ name: string; code:
     stderr: "piped",
   }).spawn();
   // The prompt on STDIN, so a scenario never has to quote it into a shell and a multi-line prompt
-  // stays readable in its own file.
+  // stays readable in its own file. A command that templates `{{prompt}}` has already been handed
+  // it in argv, so stdin is closed empty: sending it twice would run the turn twice on a harness
+  // that reads both, and hang one that reads neither.
   const w = child.stdin.getWriter();
-  await w.write(new TextEncoder().encode(a.prompt));
+  if (!a.command.some((x) => x.includes("{{prompt}}"))) await w.write(new TextEncoder().encode(a.prompt));
   await w.close();
 
   const outFile = await Deno.open(`${a.dir}/stdout.log`, { create: true, write: true, truncate: true });
@@ -668,7 +736,7 @@ async function startWorker(a: typeof agents[number]): Promise<void> {
     args: command.slice(1),
     cwd: a.dir,
     env: childEnv({
-      ...(a.harness === "codex" ? { CODEX_HOME: `${a.dir}/codex-home` } : {}),
+      ...(privateHome(a) ? { [privateHome(a)!.env]: privateHome(a)!.value } : {}),
       ...a.env,
       RADIA_DEFINITION_TOKEN: a.token,
       RADIA_URL: base,
@@ -732,6 +800,37 @@ for (const a of background) await awaitReady(a);
 
 console.log(`\nrunning ${harnesses.length} agent(s)${scenario.sequential ? " in sequence" : " together"}…`);
 console.log(`  | is the harness's stdout, ! its stderr, → a tool call reaching the space\n`);
+
+// THE SEED, HELD UNTIL EVERY HARNESS CAN CLAIM. Runs alongside them rather than blocking the
+// launch, because the thing it waits for is the agents themselves starting. A harness that never
+// makes a call must not cost the whole run, so the wait has a ceiling and says which agent it gave
+// up on: seeding late is a worse experiment, seeding never is no experiment at all.
+if (scenario.seed?.length && scenario.seedWhen === "agents-ready") {
+  (async () => {
+    const started = Date.now();
+    const CEILING_MS = 120_000;
+    const waitingFor = () =>
+      harnesses.filter((a) => {
+        try {
+          return Deno.statSync(`${a.dir}/trace.jsonl`).size === 0;
+        } catch {
+          return true; // no file yet: it has made no call
+        }
+      }).map((a) => a.name);
+    let late: string[] = [];
+    while ((late = waitingFor()).length > 0 && Date.now() - started < CEILING_MS) {
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    const waited = Math.round((Date.now() - started) / 1000);
+    await writeSeed();
+    say(
+      "lab",
+      late.length
+        ? `seed ${scenario.seed!.length} records after ${waited}s; gave up waiting for ${late.join(", ")}`
+        : `seed ${scenario.seed!.length} records after ${waited}s, once every agent had made a call`,
+    );
+  })();
+}
 // A HEARTBEAT, because the quiet stretch is real: a harness can spend a minute starting before its
 // first token, and silence has to be distinguishable from a stall.
 const beat = setInterval(() => {

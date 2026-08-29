@@ -335,13 +335,25 @@ const CHECKS: Check[] = [
       if (decidable.length === 0) {
         return { findings: [], applicable: false, note: `cannot attribute authorship (this run collected no agent_run)` };
       }
+      // ARRIVING LATE IS NOT BEING BYPASSED. An agent that tried to claim and was answered empty
+      // every time lost a race; one that never tried, or whose work went somewhere else, is the
+      // finding this check exists for. Measured: three harnesses on five instant tasks orient
+      // 16 seconds apart, and the last one to arrive found the queue drained, did the right thing,
+      // and was reported at the same severity as a bypass (agent_docs/research-agent-sessions.md).
+      const raced = (a: string) => {
+        const calls = r.traces.get(a) ?? [];
+        const takes = calls.filter((l) => l.tool === "space_take");
+        return takes.length > 0 && takes.every((l) => l.outcome === "empty");
+      };
       return {
         applicable: true,
         note: undecided.length ? `not decidable for ${undecided.join(", ")}: no trace and no agent_run` : undefined,
         findings: silent.map((a) => ({
-          severity: "high" as const,
-          title: `${a} authored no records`,
-          detail: r.traces.has(a)
+          severity: raced(a) ? ("low" as const) : ("high" as const),
+          title: raced(a) ? `${a} claimed nothing: every attempt found the queue empty` : `${a} authored no records`,
+          detail: raced(a)
+            ? `it tried and lost every race, which is a scenario with too little work for its agents rather than a bypass`
+            : r.traces.has(a)
             ? `it made ${r.results.find((x) => x.name === a)?.calls ?? 0} tool calls and wrote nothing`
             : `an untraced worker, so a record it wrote is the ONLY evidence it took part`,
         })),

@@ -69,7 +69,7 @@ Inspect
                                       session token alone; --compact-definition prints the
                                       durable one, for a tool that cannot re-authenticate
   team                                every principal that holds a definition, and what it can do
-  team add <name>… [--team <t>]… [--harness claude|codex|json] [--grant <kind>:<op,op>]…
+  team add <name>… [--team <t>]… [--harness claude|codex|agy|json] [--grant <kind>:<op,op>]…
                    [--observe] [--rotate] [--name <mcp-server>]
                                       put an agent harness on this space: declare the shared
                                       kinds, mint one DURABLE principal per name, print the MCP
@@ -516,7 +516,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
     // stops both.
     case "team": {
       const [sub] = positional(argv, 1);
-      const USAGE = "team [list [--all] | add <name>… [--team <t>]… [--harness claude|codex|json] [--grant <kind>:<op,op>]… [--observe] [--rotate] | remove <name>…]";
+      const USAGE = "team [list [--all] | add <name>… [--team <t>]… [--harness claude|codex|agy|json] [--grant <kind>:<op,op>]… [--observe] [--rotate] | remove <name>…]";
       if (sub !== undefined && sub !== "add" && sub !== "remove" && sub !== "list") return usage(USAGE);
       // A bare name is a convenience, not a second namespace: `claude` means `agent:claude`, and
       // anything already carrying a prefix is passed through so a `human:` member still works.
@@ -623,7 +623,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
 
       // ---- add ----
       const harnessFlag = flag(argv, "--harness");
-      if (harnessFlag && !["claude", "codex", "json"].includes(harnessFlag)) return usage(USAGE);
+      if (harnessFlag && !["claude", "codex", "agy", "json"].includes(harnessFlag)) return usage(USAGE);
       // Repeatable: a member on two teams holds both grant sets, which UNION, and is a CROSSER.
       // That is how work moves between teams, and `radia compartment` is the verb that finds them.
       const teams = flags(argv, "--team").map(String);

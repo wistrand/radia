@@ -1003,10 +1003,29 @@ function num(a: Record<string, unknown>, k: string): number | undefined {
   return n;
 }
 
+/**
+ * A nested argument a model sent as a JSON STRING, parsed back into the object it means.
+ *
+ * Observed once in nineteen calls: `match: "{\"to\": {\"$in\": […]}}"`, refused as
+ * `invalid_predicate`, and the same agent sent the object correctly on its next call. Same rule as
+ * the `recordId` aliases: the key and its encoding are the MODEL's, the wire never sees this form,
+ * and a near-miss the adapter can resolve is not worth a wasted call. NARROW deliberately: only a
+ * string that parses to a plain object is accepted, so a genuine type error still fails.
+ */
+function unstring(v: unknown): unknown {
+  if (typeof v !== "string") return v;
+  try {
+    const parsed = JSON.parse(v);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : v;
+  } catch {
+    return v;
+  }
+}
+
 function pat(a: Record<string, unknown>): Pattern {
   return {
     kind: str(a, "kind"),
-    match: (a.match ?? undefined) as Record<string, unknown> | undefined,
+    match: (unstring(a.match) ?? undefined) as Record<string, unknown> | undefined,
     // Both spellings: the key is the MODEL's, the wire reads only `orderBy`, and a dropped sort
     // key is a wrong answer rather than an error. The wire's own near-miss refusal cannot help
     // here, because this rebuilds the pattern and the model's key never crosses the socket.

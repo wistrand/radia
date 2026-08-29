@@ -14,7 +14,7 @@ import { execPath, moduleRelative } from "../../platform.ts";
 
 /** Which harness a block is for. `json` is the portable `mcpServers` object every MCP client
  *  other than Codex reads (Claude Code's `.mcp.json`, Claude Desktop, Cursor, Zed). */
-export type Harness = "claude" | "codex" | "json";
+export type Harness = "claude" | "codex" | "agy" | "json";
 
 export interface McpTarget {
   /** Space base URL, written into the args so the harness needs no environment of its own. */
@@ -88,10 +88,16 @@ export function renderMcpConfig(harness: Harness, target: McpTarget): string {
  * session exists to prevent.
  */
 export function renderMcpInstall(harness: Harness, target: McpTarget): string | undefined {
-  if (harness !== "claude") return undefined;
+  if (harness !== "claude" && harness !== "agy") return undefined;
   const { command, args } = mcpInvocation(target.url);
   const shell = (s: string) => (/^[A-Za-z0-9_.:@/=+-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
   const envArg = target.definitionToken ? ` --env RADIA_DEFINITION_TOKEN=${shell(target.definitionToken)}` : "";
+  if (harness === "agy") {
+    // `agy mcp add` writes `~/.gemini/config/mcp_config.json`, and has NO per-project scope: one
+    // machine, one server list, which is why two agy members on one machine need `HOME` moved
+    // rather than a second config file (scripts/agent-lab/run.ts).
+    return `agy mcp add${envArg.replace(" --env ", " --env ")} ${shell(target.name)} -- ${shell(command)} ${args.map(shell).join(" ")}`;
+  }
   return `claude mcp add ${shell(target.name)} --scope local${envArg} -- ${shell(command)} ${args.map(shell).join(" ")}`;
 }
 
@@ -99,5 +105,6 @@ export function renderMcpInstall(harness: Harness, target: McpTarget): string | 
 export function configLocation(harness: Harness): string {
   if (harness === "codex") return "~/.codex/config.toml";
   if (harness === "claude") return ".mcp.json in the project, or ~/.claude.json";
+  if (harness === "agy") return "~/.gemini/config/mcp_config.json";
   return "your MCP client's server list";
 }

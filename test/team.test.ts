@@ -1387,3 +1387,24 @@ Deno.test("[mcp] a record id is accepted under the name a model reaches for", as
   // And it still refuses when there is nothing usable, rather than passing an empty id down.
   assertStringIncludes(fn, "'recordId' is required");
 });
+
+Deno.test("[team] a third harness needs a config location and an install line, not a new format", async () => {
+  // agy (Google Antigravity) reads the SAME `mcpServers` object Claude Code does, from a fixed path
+  // rather than a flag, so adding it is a location and an install hint. Verified against the real
+  // binary before it was added: `agy mcp add` writes `~/.gemini/config/mcp_config.json`, and moving
+  // HOME moves that file, the trust list, the history and the caches together
+  // (agent_docs/research-agent-sessions.md).
+  const target = { url: "http://127.0.0.1:7788", name: "radia", definitionToken: "tok" };
+  const block = JSON.parse(renderMcpConfig("agy", target));
+  const claude = JSON.parse(renderMcpConfig("claude", target));
+  assertEquals(Object.keys(block), Object.keys(claude), "the two harnesses take the same shape");
+  assertEquals(block.mcpServers.radia.command, claude.mcpServers.radia.command);
+
+  assertStringIncludes(configLocation("agy"), ".gemini/config/mcp_config.json");
+  const install = renderMcpInstall("agy", target) ?? "";
+  assertStringIncludes(install, "agy mcp add");
+  assertStringIncludes(install, "RADIA_DEFINITION_TOKEN=tok");
+  // NO `--scope local`, and that absence is the finding behind the private HOME: agy has one server
+  // list per machine, so two members on one machine are one principal unless HOME moves.
+  assert(!install.includes("--scope"), "agy has no per-project scope; claiming one would be false");
+});

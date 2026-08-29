@@ -5,7 +5,7 @@ the fixes are linked to where they landed.** The subject is CLAUDE CODE and CODE
 space through `radia mcp`, first by hand and then through the lab
 ([plan-agent-lab.md](plan-agent-lab.md), which is the harness rather than the findings).
 
-Twenty-nine sessions so far, 2026-08-26 to 2026-08-29: four hand-run and pasted into a review, twenty-five
+Thirty-four sessions so far, 2026-08-26 to 2026-08-29: four hand-run and pasted into a review, thirty
 through `deno task lab`. Each cost roughly $0.30 to $1.00 and 45 to 120 seconds; a three-model scenario is about $0.90.
 
 This doc does not restate. The traps live in [gotchas.md](gotchas.md), the team convention in
@@ -447,6 +447,70 @@ reasoned WITH rather than inferred from behaviour.
 2 of these 5 runs, both `gpt-5.4-mini` arms; neither luna run touched it, and the fifth run's two mini agents did not either. The mini arms
 were also more thorough and more expensive: 25 and 13 calls against luna's 12, with one of them
 walking `space_get` and `space_children` over every task to confirm each carried an answer.
+
+**A third harness, added by reading its `--help` rather than its docs.** agy (Google Antigravity)
+joined as a full peer: five seeded tasks split 2, 2 and 1 between Claude Code, Codex and agy, each
+settled exactly once. It differs from the other two in exactly two ways. Its MCP config is the same
+`mcpServers` object Claude Code takes, but at a FIXED path with no flag to move it
+(`<home>/.gemini/config/mcp_config.json`), so isolating two of them means moving `HOME` the way
+codex needs `CODEX_HOME`; verified the only way that counts, with the operator's own
+`~/.gemini/trustedFolders.json` byte-identical after a three-harness run. And its prompt is an
+ARGUMENT (`-p='…'`), not stdin, which is the one thing every scenario had assumed.
+
+**Its one refusal was a model slip, not a harness incompatibility.** 18 of 19 calls carried correct
+object arguments, nested `resultBody` included; one sent `match` as a JSON STRING and the next call
+sent the object. That is the same family as `{"id": …}` for `recordId` and `orderBy` on an unsortable
+path, and it is answered the same way: a `match` that parses to a plain object is accepted, narrowly,
+so a genuine type error still fails.
+
+**Three harnesses at once, and the slowest one got nothing.** `team-queue-three`, with `opus`,
+`gpt-5.6-luna` and `gemini-3.1-pro-high` on five instant tasks: Codex took three, Claude two, agy
+none. agy did everything right, and its first tool call landed 16 seconds after Claude's; by its
+first claim the queue was drained. It then walked `space_children` over all five tasks, confirmed
+each carried an answer, and said so honestly rather than claiming work.
+
+**A contention scenario with fast work measures STARTUP LATENCY, not claiming, and MORE WORK DOES
+NOT FIX IT.** Orientation runs 5 to 25 seconds and varies by harness. Raising the seed from five to
+nine changed nothing: the two faster agents drained all nine in the 23 seconds before the third's
+first claim, and it again got none. The fast agents drain whatever is there, so the fix is not more
+work but putting the work in front of everyone at once. `seedWhen: "agents-ready"` holds the seed
+until every harness has made its first tool call, using the TRACE as the readiness signal, since an
+agent that has made a call is an agent that can claim. It has a ceiling and names whoever it gave up
+waiting for: seeding late is a worse experiment, seeding never is no experiment.
+
+The report also stopped scoring this like a bypass. An agent that TRIED to claim and was answered
+empty every time lost a race (low); one that never tried, or whose work went elsewhere, is the
+bypass the check exists for (high). A finding that fires on correct behaviour is the noise that gets
+a lab ignored.
+
+**The flagship check fired for the first time on a real run.** Codex claimed with
+`{tags: {$any: "text"}}` while two `numbers`-tagged tasks stood available, so its empty answer was a
+narrowed pattern rather than a drained queue. It recovered by trying the other tag, but this is
+exactly the case the trace exists for: the space records nothing about a claim that matched nothing,
+so without the request log the run reads as a queue that was simply empty.
+
+**Holding the seed worked, and the follow-up corrected my reading of it.** With
+`seedWhen: "agents-ready"` the seed lands once all three have made a call. On the first such run the
+two fast agents still took everything, and agy's median gap between tool calls measured 98 seconds
+against 3 and 4 for the others, so I wrote that no seeding policy could fix a 25x turnaround
+difference and that agy could not be measured in a race.
+
+THAT WAS WRONG, and one more run showed it: the same three agents split the queue 2, 2 and 1, and
+agy's median gap was 5.0 seconds. The 98 was not agy's speed, it was agy sitting inside its own long
+`space_watch` calls with nothing to claim, which the unconditional wait instruction had told it to
+do. I measured a scenario artefact and reported it as a property of a harness, off one run, in a log
+whose own rule is that findings are rates. The rule applies to the person writing it down.
+
+With the work actually present when it looked, all three harnesses claimed, five tasks produced five
+answers with five distinct parents and no duplicate, no call in the run took over a minute, and the
+whole thing finished in 75 seconds against 400 for the run before.
+
+**"Wait rather than conclude the queue is empty" is expensive at the END of a run.** The same
+instruction that stops a late agent giving up makes a finished agent park on a 120-second watch for
+work that will never come: three of Claude's four watches ran over a minute and its span stretched
+to 400 seconds. The prompt now names the two states, which need opposite responses: empty on the
+FIRST look means the others are still starting, so wait briefly; empty AFTER completing something
+means drained, so stop. One instruction covering both was the mistake.
 
 ## The broker, measured rather than assumed
 
