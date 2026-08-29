@@ -928,6 +928,13 @@ on a space with 500 live ones and a stuck one. Fixed 2026-08-21 by pushing both 
   and the space REFUSES that token for coordination, so the durable half cannot act. Hold both,
   exchange on expiry. Renew where lease ownership must survive (exchange changes the `run:`
   principal, so in-flight claims fence out); exchange everywhere else.
+- **`health().principal` is `anonymous` until the credential resolves.** The endpoint is public, so
+  a client holding only a definition token answers `anonymous` while its requests still arrive as
+  the run behind that token. Ask `permissions` about that name and the self carve-out in `http.ts`
+  (`asksAboutSelf`) misses, so the refusal is about the ops plane and not about what was asked.
+  `await client.ensureCredential()` first (`examples/chat/chat.ts`). Three sites had it wrong, each
+  latent behind an authenticated call that usually ran first; the guard is the call ORDER, asserted
+  in `test/team.test.ts`.
 - **A retry wrapper must not wrap the retry.** Routing the credential exchange through the same
   `req` that triggers it made a FAILING exchange re-enter the wrapper, await the in-flight exchange
   it was already inside, and deadlock: a revoked definition hung the caller instead of reporting

@@ -41,6 +41,14 @@ const CLAIM_ID = {
   type: "string",
   description: "The claimId returned by space_take. The lease itself is held by the adapter.",
 };
+/** WHICH tree of a name, for a caller whose grants scope workspaces more than one way. A workspace
+ *  is found by NAME, so belonging to two teams makes one name two trees; the refusal names the
+ *  choices rather than guessing (`whichCompartment` in `server.ts`). */
+const WORKSPACE_SCOPE = {
+  type: "object",
+  description: "Which compartment this workspace belongs to, e.g. {\"team\": \"alpha\"}. Needed only " +
+    "if you belong to more than one, and you will be told the choices if so.",
+};
 
 export const TOOLS: McpTool[] = [
   {
@@ -358,6 +366,7 @@ export const TOOLS: McpTool[] = [
             "it is what a runner executes with no code passed, and what a host bound to this tree runs. " +
             "Must be one of the paths in `files`.",
         },
+        scope: WORKSPACE_SCOPE,
       },
       required: ["name", "files"],
     },
@@ -393,6 +402,7 @@ export const TOOLS: McpTool[] = [
         add: { type: "object", description: "New files, path to contents. A path that exists is refused." },
         remove: { type: "array", description: "Paths to drop.", items: { type: "string" } },
         entrypoint: { type: "string", description: "Set or change the file this tree runs as." },
+        scope: WORKSPACE_SCOPE,
       },
       required: ["name"],
     },
@@ -408,6 +418,7 @@ export const TOOLS: McpTool[] = [
       properties: {
         name: { type: "string", description: "The workspace, as space_list_workspaces reports it." },
         path: { type: "string", description: "A path inside the tree. Omit for the manifest." },
+        scope: WORKSPACE_SCOPE,
       },
       required: ["name"],
     },
@@ -419,6 +430,6 @@ export const TOOLS: McpTool[] = [
       "has FORKED (more than one version nothing supersedes, which means two writers diverged). A " +
       "plain query of the workspace kind cannot answer this, since it returns every version, so " +
       "three versions of one tree read as three trees.",
-    inputSchema: { type: "object", properties: {} },
+    inputSchema: { type: "object", properties: { scope: WORKSPACE_SCOPE } },
   },
 ];

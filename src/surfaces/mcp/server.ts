@@ -192,6 +192,11 @@ export async function runMcp(argv: string[]): Promise<void> {
     trace = fileTracer(tracePath, log);
     // Stamped on every line so a run with several agents can be split by author afterwards.
     // Resolved ONCE, best effort: a space that cannot answer still gets traced, unattributed.
+    //
+    // THE CREDENTIAL FIRST, or `health` answers `anonymous` (see `scope.ts`) and every line of the
+    // file is stamped with that. Only the `--session` branch above resolves one, so a trace taken
+    // without a session name is exactly the case that lost its author.
+    await client.ensureCredential().catch(() => {});
     const principal = await client.health().then((h) => h.principal, () => undefined);
     const identity = { session, principal };
     const inner = trace;
@@ -648,7 +653,7 @@ async function call(
       for (const [path, text] of Object.entries(files)) {
         if (typeof text !== "string") throw new Error(`files['${path}'] must be a string`);
       }
-      const head = await headOf(client, str(a, "name"));
+      const which = await whichCompartment(scope, a);
       // NESTED FILLS, because a tree write touches TWO kinds: every file lands as an `artifact` and
       // the manifest as a `workspace`. On a compartmented space the artifact puts are refused first
       // and the manifest second, each needing the label its own grants are scoped to, so learning
@@ -656,8 +661,13 @@ async function call(
       // write that would have succeeded, since pre-stamping narrows a record written under an
       // UNSCOPED grant (agent_docs/architecture-teams.md).
       const r = await scope.fill("artifact", (art) =>
-        scope.fill("workspace", async (ws) =>
-          await writeWorkspace(client, {
+        scope.fill("workspace", async (ws) => {
+          const at = { ...ws, ...(which ?? {}) };
+          // READ THE PREDECESSOR INSIDE THE FILL, so a scope learned from a refusal bounds it on
+          // the retry. Read outside, the first save in a process looks the name up across every
+          // compartment the caller can reach and supersedes whichever head is newest.
+          const head = await headOf(client, str(a, "name"), at);
+          return await writeWorkspace(client, {
             name: str(a, "name"),
             owner: await ownerName(client),
             files,
@@ -666,8 +676,10 @@ async function call(
             // every save of an existing name forks the tree, and a fork is what this surface then
             // has to report to a model that did nothing wrong.
             ...head,
-            meta: { ...art, ...ws },
-          })));
+            ...(Object.keys(at).length ? { scope: at } : {}),
+            meta: { ...art, ...at },
+          });
+        }));
       return pretty({
         workspace: str(a, "name"),
         id: r.id,
@@ -680,16 +692,20 @@ async function call(
     }
 
     case "space_edit_workspace": {
+      const which = await whichCompartment(scope, a);
       const r = await scope.fill("artifact", (art) =>
-        scope.fill("workspace", (ws) =>
-          editWorkspace(client, {
+        scope.fill("workspace", (ws) => {
+          const at = { ...ws, ...(which ?? {}) };
+          return editWorkspace(client, {
             name: str(a, "name"),
             edits: (a.edits ?? []) as Parameters<typeof editWorkspace>[1]["edits"],
             ...(a.add ? { add: a.add as Record<string, string> } : {}),
             ...(Array.isArray(a.remove) ? { remove: a.remove as string[] } : {}),
             ...(typeof a.entrypoint === "string" ? { entrypoint: a.entrypoint } : {}),
-            meta: { ...art, ...ws },
-          })));
+            ...(Object.keys(at).length ? { scope: at } : {}),
+            meta: { ...art, ...at },
+          });
+        }));
       return pretty({
         workspace: str(a, "name"),
         id: r.id,
@@ -703,7 +719,7 @@ async function call(
     }
 
     case "space_read_workspace": {
-      const m = await readWorkspace(client, str(a, "name"));
+      const m = await readWorkspace(client, str(a, "name"), undefined, await whichCompartment(scope, a));
       if (!m) return `no workspace named '${str(a, "name")}' (or no grant to read it)`;
       const path = typeof a.path === "string" ? a.path : undefined;
       if (!path) {
@@ -725,7 +741,10 @@ async function call(
     }
 
     case "space_list_workspaces": {
-      const r = await summarizeWorkspaces(client);
+      // Grouped by NAME, so a caller that can read two compartments would report their same-named
+      // trees as one workspace with two heads.
+      const which = await whichCompartment(scope, a);
+      const r = await summarizeWorkspaces(client, which ? { scope: which } : {});
       // `complete` travels, for the same reason every other list here carries `more`: a partial
       // listing presented as a population is the most repeated bug in this codebase.
       return answer("workspaces", r.workspaces, { more: !r.complete, limit: r.workspaces.length });
@@ -952,16 +971,56 @@ async function ownerName(client: RadiaClient): Promise<string> {
   return ownerMemo = h.agent ?? h.principal;
 }
 
+/**
+ * WHICH compartment a workspace call means, when the caller can reach more than one.
+ *
+ * A workspace is looked up by NAME and bounded by the caller's grant, which is exactly right for a
+ * member of one team and wrong for a member of several: their lookup spans both, so a save
+ * supersedes the other team's tree, an identical one dedups into it and writes NOTHING, and two
+ * teams' same-named trees read as one FORKED workspace (agent_docs/architecture-teams.md).
+ *
+ * ASKED, never inferred, which is `ScopeFiller.choose`: the label cannot be learned from a refusal
+ * here, because the read happens before any write.
+ *
+ * TWO CALLERS IT CANNOT SEE, both from `EffectivePermissions.patterns` rather than from here. An
+ * unscoped grant contributes no entry at all, so one sitting beside a scoped grant reads as a
+ * single scope (`definitionState.unscoped` in `extensions/ts/team.ts` shouts about that state for
+ * the same reason). And a pattern carrying an operator (`{team: {$in: […]}}`) states a set rather
+ * than a value, so `flat` drops it. Both go on reading across compartments by name.
+ */
+function whichCompartment(
+  scope: ScopeFiller,
+  a: Record<string, unknown>,
+): Promise<Record<string, string | number | boolean> | undefined> {
+  return scope.choose("workspace", a.scope === undefined ? undefined : flatScope(a.scope));
+}
+
+/** A `scope` argument: flat scalars only, because it becomes a match on indexed paths. An empty
+ *  object narrows nothing, so it is the same as naming none and is answered the same way. */
+function flatScope(v: unknown): Record<string, string | number | boolean> | undefined {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) throw new Error("'scope' must be an object, e.g. {\"team\": \"alpha\"}");
+  const out: Record<string, string | number | boolean> = {};
+  for (const [k, val] of Object.entries(v)) {
+    if (val === null || typeof val === "object") throw new Error(`scope['${k}'] must be a string, number or boolean`);
+    out[k] = val as string | number | boolean;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 /** The manifest a re-save supersedes, or nothing for a first write.
  *
  *  Read here rather than left to the caller: a model asked to "save this workspace again" has no
  *  way to know the id it must name, and omitting it makes every second save a FORK. */
-async function headOf(client: RadiaClient, name: string): Promise<{ basedOn?: string }> {
+async function headOf(
+  client: RadiaClient,
+  name: string,
+  scope?: Record<string, string | number | boolean>,
+): Promise<{ basedOn?: string }> {
   // NOT caught. `readWorkspace` answers null for "no such workspace" and THROWS for a refusal, and
   // swallowing the second turns a caller with `put` but no `query` into one that silently forks the
   // tree on every save: it cannot read the head, so it never names a predecessor. A refusal is the
   // caller's to see.
-  const head = await readWorkspace(client, name);
+  const head = await readWorkspace(client, name, undefined, scope && Object.keys(scope).length ? scope : undefined);
   return head ? { basedOn: head.id } : {};
 }
 

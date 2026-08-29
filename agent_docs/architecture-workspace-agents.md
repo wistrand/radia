@@ -516,6 +516,18 @@ the binary round-trip (0x00 and 0xff, the bytes a line channel would mangle), th
 sequence, and the plant that matters, an entrypoint trying to overwrite its own `main.ts` and
 reporting whether it got away with it.
 
+**An output tree needs BOTH `workspace` grants unscoped, and that is a real widening.** The empty
+first version is the one record a host writes with no stamp on it: a tree is shared by every run of
+the binding while `outputMeta` is read from the claimed record, so nothing per-run can label it.
+A scoped `put` refuses the first capture, permanently, with a message naming the tree and pointing
+away from the code (`captureOutput`). Scoping only `query` is WORSE and silent: the read stops
+matching the tree, so every run re-bases on v0 and the history FORKS per run instead of chaining
+(measured: two runs, three records, both versions naming the same v0, and nothing reports it since
+the host never asks `forksOf`). `auditCompartment` reports the unscoped grant as a payload door and
+is right to, since it also lets that agent read every tree in the space: the two cannot both be had,
+and this is the trade a compartmented host makes. Contract case in
+`extensions/conformance/host.test.ts`.
+
 **6. Warm pools per promoted digest.**
 Shipped: `treeCache` in `extensions/ts/host.ts`, used by both invokers, keyed by digest and
 caching the PROMISE so two claims for one digest share a materialisation rather than racing to

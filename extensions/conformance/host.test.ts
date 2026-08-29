@@ -543,6 +543,45 @@ Deno.test("[host] a refusal a retry cannot fix is reported as permanent and not 
   });
 });
 
+Deno.test("[host] an output tree the host cannot label refuses once, and says whose record it is", async () => {
+  await withSpace(async ({ operator, credential }) => {
+    // `auditCompartment` reports an UNSCOPED `workspace` grant as a door out of a compartment, so
+    // somebody will scope one. This is what happens then, and it is worth a case because the
+    // refusal names a `put` grant while the code it would send you to never writes a workspace and,
+    // brokered, could not. Scoped by `owner` because the kind declares that path here; a
+    // compartment label is the same refusal under the same rule.
+    const agent = uniq("agent:unlabelled");
+    const digest = (await writeWorkspace(operator, {
+      name: uniq("outrefused"),
+      owner: "human:alice",
+      files: { "main.ts": `export default () => ({ kind: "exec_result", body: { tag: "x" } });\n` },
+    })).treeDigest;
+    const credentials = { [agent]: await credential(agent) };
+    const tier = uniq("prod");
+    await promote(operator, { digest, tier, pins: [{ principal: agent, operations: ["take"] }] });
+    await operator.grant(agent, "exec_result", ["put"]);
+    // The whole setup: a workspace grant this agent's OWN output tree falls outside of.
+    await operator.grant(agent, "workspace", ["put", "query"], { owner: "human:alice" });
+    const out = uniq("out-tree");
+    await operator.put({ kind: BINDING, body: { agent, workspaceDigest: digest, entrypoint: "main.ts", outputWorkspace: out } });
+    const req = await operator.put({ kind: EXEC_REQUEST, body: { workspace: digest, tier } });
+
+    const host = new WorkspaceHost({ base: url, credentials, reader: operator, invoke: sandboxInvoker(operator) });
+    const mine = (os: Outcome[]) => os.filter((o) => (o as { recordId?: string }).recordId === req.id);
+    let first: Outcome[] = [];
+    for (let i = 0; i < 5 && first.length === 0; i++) first = mine(await host.tick());
+    assertEquals(first.map((o) => o.status), ["failed"], JSON.stringify(first));
+    // PERMANENCE FIRST. The explanation is appended to the refusal in place precisely so `status`
+    // survives it: a rethrown plain Error reads as retryable and spends the attempt budget on an
+    // answer that cannot change.
+    assertEquals((first[0] as { permanent?: true }).permanent, true, "a scope refusal must stay permanent");
+    const error = (first[0] as { error: string }).error;
+    assertStringIncludes(error, "outside the pattern scope");
+    assertStringIncludes(error, out);
+    assertStringIncludes(error, "not your code");
+  });
+});
+
 Deno.test("[host] code reaches the space only when its BINDING asked to be brokered", async () => {
   await withSpace(async ({ operator, credential }) => {
     // LEAST PRIVILEGE FOR MODEL-WRITTEN CODE, and the inversion of what used to happen: the

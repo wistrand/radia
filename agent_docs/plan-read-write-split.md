@@ -114,6 +114,6 @@ Two facts make the reader posture real rather than a routing rule:
 ## Open
 
 - No measurement exists for the event-loop isolation this is partly aimed at. Before phase 3, take
-  one: `bench/suites/deployment.ts` against a space while a `graph` walk or `flows` mine runs, and
+  one: `bench/deployment.ts` against a space while a `graph` walk or `flows` mine runs, and
   compare take latency with and without the ops traffic on the same process. If the number is small,
   phases 1 and 4 are the whole of the value and the role flag is not worth its surface.

@@ -44,15 +44,18 @@ existed: every file lands as an artifact, each one was refused for carrying no l
 written under an unscoped grant. Nothing joins a content key, unlike `capability`, because
 `workspace` declares none: dedup is a read-before-write plus a per-agent idempotency key.
 
-**A workspace lookup is scoped by the GRANT, which is enough for one team and not for two.**
-`readWorkspace` matches by name and is bounded by the caller's pattern-scoped grant, so a member of
-one team sees only its own trees and every save supersedes the right head. A member of SEVERAL teams
-sees across them: saving a tree whose name another of its teams already uses finds that head, and an
-identical tree deduplicates into the other team's record rather than creating one. OPEN, and narrow
-(it needs a multi-team member and a colliding name), and the obvious fix is circular: the compartment
-label is learned from a refusal, so it is not known at the moment the head is read. Named here rather
-than patched, because the patch that suggests itself (folding the label into the manifest's
-idempotency key) fixes a collision the dedup already short-circuits.
+**A workspace lookup is by NAME, so a member of two teams has to SAY which tree it means.**
+`readWorkspace` matches on name, bounded by the caller's pattern-scoped grant: the whole answer for
+a member of one team, and not for a member of several, whose read spans both. The head it lands on
+then decides three things wrongly: a save supersedes the other team's tree, an identical one dedups
+into it and writes NOTHING, and two same-named trees read as one FORKED workspace. FIXED 2026-08-29
+by asking. `WorkspaceScope` narrows every lookup by name (`extensions/ts/workspace.ts`), and the four
+workspace tools take a `scope` argument, REFUSING a call that names none with the choices named when
+the caller's grants scope the kind several ways (`ScopeFiller.choose`, the read-side twin of the
+write fill's `discover`). Only that case changed: with one scope or none the grant still bounds
+the read alone, since a caller holding an unscoped grant beside a scoped one may legitimately read
+past the pattern. It could not be INFERRED, which is what kept it open: a label is learned from a
+refusal, and this read happens before any write.
 
 **Work that cannot be done is ANSWERED, never nacked, and the answer says so.** `note.ok` is the
 marker (optional, indexed, absent means the note is mail rather than an answer). Two reasons it is

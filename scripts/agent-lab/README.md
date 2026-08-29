@@ -59,8 +59,9 @@ other claims, which buys a realistic handoff and pays for it with the startup ra
 the runtime exists for and nothing had exercised them, so this is the run to read for: every task
 settled exactly once, nothing still claimed at the end (the lab passes `--session`, so the adapter
 KEEPS claims on exit and an agent that stops holding a lease leaves work invisible until it
-expires), whether `space_release` or `space_nack` is called at all (no recorded session has used
-either), and what `leaseSeconds` an agent picks when the work has a knowable length. The fifth task
+expires), how often `space_release` or `space_nack` is called (a rate, not a yes/no;
+[agent_docs/research-agent-sessions.md](../../agent_docs/research-agent-sessions.md) holds what has
+been seen), and what `leaseSeconds` an agent picks when the work has a knowable length. The fifth task
 names a record id that does not exist, so it also answers what an agent does with work it cannot
 complete: nack, ack with a failure, or abandon the claim.
 

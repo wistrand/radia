@@ -343,6 +343,10 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
      * could name the principal could name someone else's.
      */
     space_permissions: async () => {
+      // The credential first: `health` is public, so an unauthenticated client answers
+      // `principal: "anonymous"` while the request arrives as its run, and asking about somebody
+      // else is a 403 about the ops plane rather than an answer (`src/surfaces/mcp/scope.ts`).
+      await client.ensureCredential();
       const { principal } = await client.health();
       // The report carries its own `principal`, so prefixing one here only ever overwrote itself.
       // Invisible while this returned `Record<string, unknown>`; a compile error once it was typed.

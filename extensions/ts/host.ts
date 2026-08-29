@@ -275,7 +275,22 @@ async function captureOutput(
   if (!prev) {
     // An empty v0 so the versions below it have a predecessor to be based on. One record, once per
     // output workspace, and honest: before the first run there were no outputs.
-    const created = await writeWorkspace(client, { name, owner, files: {} });
+    //
+    // POINT AWAY FROM THE CODE on a refusal. This is the one record a host writes with no stamp on
+    // it, so a pattern-scoped `workspace` grant refuses it with a message about a put grant, and
+    // the operator goes looking at an entrypoint that never wrote a workspace and, brokered, could
+    // not have. Augmented IN PLACE rather than rethrown: `permanent()` reads `status`, and a plain
+    // Error would lose it and turn one clean refusal into a retry to a dead-letter.
+    const created = await writeWorkspace(client, { name, owner, files: {} }).catch((e) => {
+      const err = e as { status?: number; message?: string };
+      if (err?.status === 403 && typeof err.message === "string") {
+        err.message = `${err.message}. ${JSON.stringify(name)} is this binding's output tree and the HOST wrote ` +
+          `that record, not your code: a tree is shared by every run of the binding, so there is nothing per-run ` +
+          `to label it with, the way outputMeta labels the result and the captured artifacts. This agent needs a ` +
+          `workspace put grant that is not pattern-scoped, or the binding needs no outputWorkspace.`;
+      }
+      throw e;
+    });
     prev = { id: created.id, name, owner, treeDigest: created.treeDigest, files: [] };
   }
   // `input/` is the REQUEST's data, materialised by the host, so it is never this run's output:

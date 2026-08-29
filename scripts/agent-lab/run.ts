@@ -873,7 +873,11 @@ for (const k of kinds) await collect(`records.${k.kind}`, ["query", k.kind, "--j
 // trace, and a background SDK worker has none: without this, "which participant wrote this record"
 // is unanswerable for exactly the participant a bypass check is about (agent_docs/plan-agent-lab.md).
 await collect("records.agent_run", ["query", "agent_run", "--json", "--limit", "500"]);
-for (const a of agents) await collect(`permissions.${a.name}`, ["permissions", a.name, "--json"]);
+// BY THE PRINCIPAL, which is `agent:<name>` and not the member name the grants above are written
+// under (line ~330). Asking about a name nothing holds is not an error: the space answers about a
+// principal with no grants, so every member's permissions read `kinds: []` and the evidence said
+// each of them held NOTHING while they were coordinating perfectly well.
+for (const a of agents) await collect(`permissions.${a.name}`, ["permissions", `agent:${a.name}`, "--json"]);
 await Deno.writeTextFile(`${runDir}/space.json`, JSON.stringify(collected, null, 2));
 
 // THE SCENARIO AS RUN, resolved. The evidence held what happened and never what was ASKED: the

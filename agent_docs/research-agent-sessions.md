@@ -5,8 +5,8 @@ the fixes are linked to where they landed.** The subject is CLAUDE CODE and CODE
 space through `radia mcp`, first by hand and then through the lab
 ([plan-agent-lab.md](plan-agent-lab.md), which is the harness rather than the findings).
 
-Thirty-four sessions so far, 2026-08-26 to 2026-08-29: four hand-run and pasted into a review, thirty
-through `deno task lab`. Each cost roughly $0.30 to $1.00 and 45 to 120 seconds; a three-model scenario is about $0.90.
+Thirty-six sessions so far, 2026-08-26 to 2026-08-29: four hand-run and pasted into a review,
+thirty-two through `deno task lab`. Each cost roughly $0.30 to $1.00 and 45 to 120 seconds; a three-model scenario is about $0.90.
 
 This doc does not restate. The traps live in [gotchas.md](gotchas.md), the team convention in
 [architecture-teams.md](architecture-teams.md), the lab's construction in
@@ -204,7 +204,9 @@ this to learn what running code here can and cannot reach", and the first thing 
 after `space_kinds` was `space_query {kind: "sandbox"}`, which was refused: only the worker held the
 grant. It recovered in one call by querying `capability` instead. A usage string is a promise made
 to every reader of the kind, so a kind that invites a query must be granted to everyone it invites,
-and `sandbox` carries no team, so that grant has to be unscoped.
+and `sandbox` carries no team, so that grant has to be unscoped. HOLDS: two `team-workspace` runs on
+2026-08-29 opened with the same call and were answered (1 record), on a scenario that is not the one
+the grant was fixed for.
 
 **Contention: five tasks, two claimants, nothing coordinated and nothing wrong.** `team-queue`
 seeds five tasks and gives both agents the same prompt. Every task settled exactly once, each note
@@ -227,9 +229,9 @@ dead-lettered record emits no result, so the member that asked would learn nothi
 
 **`space_release` and `space_nack` went uncalled for fourteen sessions**, including one whose
 work contained something that could not be done. Both tools are advertised and described on every
-call. Both have been seen since, and neither reading held: `space_nack` was used three times in a
-row on work a retry could never fix, and has not recurred in five later runs of the same scenario.
-The rate, not the absence, is the finding.
+call. `space_nack` has been seen since, three times in a row on work a retry could never fix, and
+not once in the five later runs of that same scenario, so the rate rather than the absence is the
+finding there. `space_release` has still not been called in any recorded session.
 
 **Nobody reasons about lease length.** Codex passed `leaseSeconds: 120` for work that takes a
 second, on every claim; Claude passed none at all and took the default. The number is the model's to

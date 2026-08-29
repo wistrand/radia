@@ -252,6 +252,13 @@ Two corrections to the obvious reading, both of which make this better than "uns
   fork. One caveat learned in the building: the useful signal is "this workspace HAS more than one
   head", not "I just created a second one" — the latter misses the writer who lost the race and
   keeps working on a head nobody else can see.
+- **A NAME is unique per compartment, not per space, so a lookup by name has to say which one.**
+  Two teams may hold a tree called `inventory`, and to a caller who can read both they are one name
+  with two heads: `forksOf` reports a FORK that nobody caused, a save supersedes the other team's
+  tree, and an identical one dedups into it and writes nothing. Every lookup by name therefore takes
+  an optional `WorkspaceScope`; a caller whose grants scope `workspace` several ways is ASKED rather
+  than guessed for (`ScopeFiller.choose`), since the label cannot be learned from a refusal when the
+  read happens before any write. See agent_docs/architecture-teams.md.
 
 So: **fork detection in v1, merge unsupported.** Saying multi-agent editing is unsupported does not
 stop two agents from doing it, and silent divergence is the one outcome worse than either supporting

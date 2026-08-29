@@ -254,6 +254,15 @@ export interface WriteInput {
    * compartment and never rewrite `name`, `owner` or `treeDigest`.
    */
   meta?: Record<string, string | number | boolean>;
+  /**
+   * Which tree of this name this supersedes, when the caller can read several (`WorkspaceScope`).
+   *
+   * Narrows the predecessor and fork lookups, and joins `meta` so the same compartment labels what
+   * is written: looking up one and storing into another is the failure this exists to end. Without
+   * it a member of two teams dedups into the other team's identical tree and writes NOTHING, or
+   * names it as `basedOn` and lands a data-parent edge across the compartment boundary.
+   */
+  scope?: WorkspaceScope;
 }
 
 /**
@@ -284,6 +293,11 @@ export async function writeWorkspace(
     }
   }
 
+  // The compartment this tree belongs to labels the write as well as bounding the lookup, so the
+  // two cannot disagree: narrowing the predecessor read to `{team: "beta"}` while writing a body
+  // that carries no team would look up one compartment and store into another.
+  const labels = { ...(input.meta ?? {}), ...(input.scope ?? {}) };
+
   // Bounded concurrency. Measured, a sequential write is ~1.8 ms per file, so a 6 000-file tree
   // took eleven seconds and the cost was entirely round trips rather than bytes. The bound exists
   // because an unbounded fan-out over a large tree is a self-inflicted load test.
@@ -296,7 +310,7 @@ export async function writeWorkspace(
         mediaType: mediaTypeFor(path),
         filename: path.split("/").pop(),
         // What a grant pattern binds, exactly as the chat's other writers stamp it.
-        meta: { ...(input.meta ?? {}), conversationId: input.conversationId ?? "", owner: input.owner, workspace: input.name },
+        meta: { ...labels, conversationId: input.conversationId ?? "", owner: input.owner, workspace: input.name },
         ...(input.taint?.length ? { taint: input.taint } : {}),
       });
       return { path, mode: input.modes?.[path] ?? "100644", digest: art.digest, artifactId: art.id } as WorkspaceFile;
@@ -323,7 +337,7 @@ export async function writeWorkspace(
   if (input.entrypoint) validateEntrypoint(input.entrypoint, files);
   const treeDigest = await treeDigestOf(files);
 
-  const before = await readWorkspace(reader, input.name, input.conversationId);
+  const before = await readWorkspace(reader, input.name, input.conversationId, input.scope);
   // The entrypoint is part of the comparison, and it has to be: it is deliberately OUTSIDE the tree
   // digest, so "same files, different entry" is a real change that this would otherwise dedupe into
   // doing nothing. Re-pointing a tree at another file is a version, not a no-op.
@@ -334,7 +348,7 @@ export async function writeWorkspace(
   }
 
   const body: WorkspaceManifest = {
-    ...(input.meta ?? {}),
+    ...labels,
     name: input.name,
     owner: input.owner,
     ...(input.conversationId ? { conversationId: input.conversationId } : {}),
@@ -389,7 +403,7 @@ export async function writeWorkspace(
     treeDigest,
     files,
     deduped: false,
-    forked: await isForked(reader, input.name, input.conversationId),
+    forked: await isForked(reader, input.name, input.conversationId, input.scope),
     ...(input.entrypoint ? { entrypoint: input.entrypoint } : {}),
   };
 }
@@ -402,8 +416,35 @@ export async function writeWorkspace(
  * while head B exists is the case a caller has to be told about, and it is the common one: the
  * writer that lost the race then keeps working, unaware, on a version nobody else can see.
  */
-async function isForked(client: RadiaClient, name: string, conversationId?: string): Promise<boolean> {
-  return (await forksOf(client, name, conversationId)).forked;
+async function isForked(
+  client: RadiaClient,
+  name: string,
+  conversationId?: string,
+  scope?: WorkspaceScope,
+): Promise<boolean> {
+  return (await forksOf(client, name, conversationId, scope)).forked;
+}
+
+/**
+ * WHICH tree of this name, when one name exists in several compartments.
+ *
+ * A lookup by name is bounded by the caller's GRANT, which is enough for a member of one
+ * compartment and not for a member of several: their read spans both, so the head can belong to
+ * the other one, and then a save supersedes another compartment's tree or dedups into it and
+ * writes nothing (agent_docs/architecture-teams.md). Nothing can infer the answer here, because
+ * the compartment label is learned from a REFUSAL and the read happens before any write, so it is
+ * asked for instead.
+ *
+ * Every field must be a declared indexed path, which the fields of a grant pattern always are. An
+ * EMPTY object narrows nothing and is treated as absent, so a caller need not special-case it.
+ */
+export type WorkspaceScope = Record<string, string | number | boolean>;
+
+/** The match that identifies one workspace. `name` is applied last, so a scope cannot rewrite it. */
+function nameMatch(name: string, conversationId?: string, scope?: WorkspaceScope): Record<string, unknown> {
+  const match: Record<string, unknown> = { ...(scope ?? {}), name };
+  if (conversationId !== undefined) match.conversationId = conversationId;
+  return match;
 }
 
 /**
@@ -420,9 +461,11 @@ export async function forksOf(
   client: RadiaClient,
   name: string,
   conversationId?: string,
+  /** Which compartment's heads. Without it a multi-team caller reads two teams' same-named trees
+   *  as one FORKED workspace, and is told somebody changed its tree while it worked. */
+  scope?: WorkspaceScope,
 ): Promise<{ heads: (WorkspaceManifest & { id: string })[]; forked: boolean; versions: number }> {
-  const match: Record<string, unknown> = { name };
-  if (conversationId !== undefined) match.conversationId = conversationId;
+  const match = nameMatch(name, conversationId, scope);
   const rows = await client.queryNewest<WorkspaceManifest>({ kind: "workspace", match }, 500);
   const superseded = new Set(rows.map((r) => r.body.basedOn).filter(Boolean) as string[]);
   const heads = rows
@@ -441,9 +484,10 @@ export async function readWorkspace(
   client: RadiaClient,
   name: string,
   conversationId?: string,
+  /** Which compartment's tree, when the caller can read more than one. See `WorkspaceScope`. */
+  scope?: WorkspaceScope,
 ): Promise<(WorkspaceManifest & { id: string }) | null> {
-  const match: Record<string, unknown> = { name };
-  if (conversationId !== undefined) match.conversationId = conversationId;
+  const match = nameMatch(name, conversationId, scope);
   const rows = await client.queryNewest<WorkspaceManifest>({ kind: "workspace", match }, 1);
   if (rows.length === 0) return null;
   return { id: rows[0].id, ...rows[0].body };
@@ -475,13 +519,16 @@ export async function listWorkspaces(
 async function readAllManifests(
   client: RadiaClient,
   maxPages: number,
+  scope?: WorkspaceScope,
 ): Promise<{ all: Population<WorkspaceManifest>; complete: boolean }> {
   const all: RadiaRecord<WorkspaceManifest>[] = [];
   let cursor: Cursor | undefined;
   let complete = false;
   const PAGE = 500;
+  // An empty match is not the same request as no match; treat `{}` as absent, as `nameMatch` does.
+  const pattern = scope && Object.keys(scope).length ? { kind: "workspace", match: { ...scope } } : { kind: "workspace" };
   for (let page = 0; page < maxPages; page++) {
-    const r = await client.queryPage<WorkspaceManifest>({ kind: "workspace" }, PAGE, cursor ? { cursor } : { dir: "desc" });
+    const r = await client.queryPage<WorkspaceManifest>(pattern, PAGE, cursor ? { cursor } : { dir: "desc" });
     all.push(...r.records);
     // A SHORT page is what proves exhaustion; `nextCursor` only says where to resume. Reading its
     // absence as "that was all" would let a space that does not send it report a first page as the
@@ -529,9 +576,11 @@ export interface WorkspaceSummary {
  */
 export async function summarizeWorkspaces(
   client: RadiaClient,
-  opts: { conversationId?: string; maxPages?: number } = {},
+  /** `scope` narrows to ONE compartment. Grouping is by name, so without it a caller that can read
+   *  two compartments reports their same-named trees as one workspace with two heads. */
+  opts: { conversationId?: string; maxPages?: number; scope?: WorkspaceScope } = {},
 ): Promise<{ workspaces: WorkspaceSummary[]; complete: boolean; scanned: number }> {
-  const { all, complete } = await readAllManifests(client, opts.maxPages ?? 40);
+  const { all, complete } = await readAllManifests(client, opts.maxPages ?? 40, opts.scope);
   const byName = new Map<string, RadiaRecord<WorkspaceManifest>[]>();
   for (const r of all) {
     const b = r.body;
@@ -632,6 +681,9 @@ export interface EditInput {
   /** App fields stamped on the artifacts this edit writes and on the successor manifest. See
    *  `WriteInput.meta`: without it an edit cannot land in a pattern-scoped compartment. */
   meta?: Record<string, string | number | boolean>;
+  /** WHICH tree of this name to edit, when the caller can read several. See `WriteInput.scope`:
+   *  without it a multi-team caller edits whichever compartment's head is newest. */
+  scope?: WorkspaceScope;
 }
 
 /**
@@ -689,9 +741,15 @@ export async function editWorkspace(
   // whatever this passes, and a conversation-scoped session still cannot reach another
   // conversation's. The successor keeps `...head`'s own `conversationId`, so an edit adds a
   // version where the tree lives rather than moving it here.
-  const head = await readWorkspace(reader, input.name, input.conversationId) ??
-    await readWorkspace(reader, input.name);
+  //
+  // `scope` bounds BOTH steps, including the unscoped fallback: that fallback is what would
+  // otherwise reach another compartment's tree of the same name once the conversation-scoped
+  // lookup came up empty.
+  const head = await readWorkspace(reader, input.name, input.conversationId, input.scope) ??
+    await readWorkspace(reader, input.name, undefined, input.scope);
   if (!head) throw new Error(`no workspace named ${JSON.stringify(input.name)} to edit`);
+  // Same rule as `writeWorkspace`: the compartment that bounded the lookup labels what is written.
+  const editLabels = { ...(input.meta ?? {}), ...(input.scope ?? {}) };
 
   const edits = input.edits ?? [];
   const adds = Object.entries(input.add ?? {});
@@ -1031,7 +1089,7 @@ export async function editWorkspace(
       mediaType: mediaTypeFor(path),
       filename: path.split("/").pop(),
       meta: {
-        ...(input.meta ?? {}),
+        ...editLabels,
         conversationId: input.conversationId ?? head.conversationId ?? "",
         owner: head.owner,
         workspace: input.name,
@@ -1064,7 +1122,7 @@ export async function editWorkspace(
   // rather than dropped by an edit that did not restate them; `input.meta` still wins where given.
   const body: WorkspaceManifest = {
     ...head,
-    ...(input.meta ?? {}),
+    ...editLabels,
     treeDigest,
     basedOn: head.id,
     files,
@@ -1092,7 +1150,7 @@ export async function editWorkspace(
     preview,
     // REPORTED, never refused: consistent with every other writer here. Both heads survive, and an
     // edit inherits every file it did not mention, so the caller needs to know its base moved.
-    forked: await isForked(reader, input.name, input.conversationId),
+    forked: await isForked(reader, input.name, input.conversationId, input.scope),
   };
 }
 

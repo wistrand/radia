@@ -21,7 +21,7 @@ import { ScopeFiller } from "../src/surfaces/mcp/scope.ts";
 import { newer, newestByKey } from "../sdk/ts/registry.ts";
 import { kindDefKey } from "../sdk/ts/wire.ts";
 import { extensionFor, mediaTypeForPath } from "../src/surfaces/media.ts";
-import { readWorkspace, writeWorkspace } from "../extensions/ts/workspace.ts";
+import { readWorkspace, summarizeWorkspaces, writeWorkspace } from "../extensions/ts/workspace.ts";
 
 async function newSpace() {
   const adapter = new SqliteAdapter(":memory:");
@@ -222,6 +222,67 @@ Deno.test("[team] two teams do not see each other's work, and there is no unlabe
   }
 });
 
+Deno.test("[team] a workspace name belongs to a TEAM, so a crosser has to say which tree it means", async () => {
+  const s = await newSpace();
+  try {
+    await declareTeamKinds(s.admin);
+    const alpha = await addMember(s.admin, "agent:alpha", { teams: ["alpha"] });
+    const relay = await addMember(s.admin, "agent:relay", { teams: ["alpha", "beta"] });
+    const a = new RadiaClient(s.base, { definitionToken: alpha.definitionToken });
+    const r = new RadiaClient(s.base, { definitionToken: relay.definitionToken });
+    const at = (team: string) => ({ [TEAM_FIELD]: team });
+    const files = { "main.js": "export default () => 1;\n" };
+    const teamOf = (m: unknown) => (m as Record<string, unknown>)[TEAM_FIELD];
+
+    // THE SURFACE'S TRIGGER, against a real space rather than a stub: `whichCompartment` asks only
+    // when the caller's own grants state two scopes, so a member per (team, kind) grant is what
+    // makes it fire. One `{team: {$in: […]}}` grant would state a SET, `flat` would drop it, and
+    // the refusal would never happen.
+    assertEquals((await new ScopeFiller(r).candidates("workspace")).length, 2);
+    assertEquals((await new ScopeFiller(a).candidates("workspace")).length, 1);
+
+    await writeWorkspace(a, { name: "shared", owner: "agent:alpha", files, meta: at("alpha") });
+
+    // THE PRECONDITION. A lookup is by NAME, bounded by the caller's grant: exactly right for a
+    // member of one team, and for a member of two it answers with whichever head is newest.
+    assertEquals(teamOf(await readWorkspace(a, "shared")), "alpha");
+    assertEquals(teamOf(await readWorkspace(r, "shared")), "alpha");
+
+    // Unscoped, the crosser's save of the SAME tree into beta finds alpha's identical head and
+    // dedups into it: nothing is written, and beta ends up with no tree at all. This is the case
+    // the surface refuses (`whichCompartment`) rather than passing through.
+    const blind = await writeWorkspace(r, { name: "shared", owner: "agent:relay", files, meta: at("beta") });
+    assert(blind.deduped, "an unscoped save stopped crossing teams; the surface refusal may now be dead code");
+
+    // Scoped, the same save lands in beta: its own record, not a fork of alpha's, and each team's
+    // lookup answers with its own tree.
+    const scoped = await writeWorkspace(r, { name: "shared", owner: "agent:relay", files, meta: at("beta"), scope: at("beta") });
+    assert(!scoped.deduped, "a scoped save deduped into another team's identical tree");
+    assert(!scoped.forked, "two teams' same-named trees were reported as one FORKED workspace");
+    assertEquals((await readWorkspace(r, "shared", undefined, at("beta")))!.id, scoped.id);
+    assertEquals(teamOf(await readWorkspace(r, "shared", undefined, at("alpha"))), "alpha");
+    assertEquals((await readWorkspace(a, "shared"))!.owner, "agent:alpha", "alpha's tree moved");
+
+    // THE HARM THE DEDUP DID, stated from the side that suffered it: beta's own members could not
+    // see the tree at all, because the crosser's save had landed nothing and the record it named
+    // belongs to a team they cannot read.
+    const betaMember = await addMember(s.admin, "agent:beta", { teams: ["beta"] });
+    const b = new RadiaClient(s.base, { definitionToken: betaMember.definitionToken });
+    assertEquals((await readWorkspace(b, "shared"))!.id, scoped.id);
+    assertEquals((await summarizeWorkspaces(b)).workspaces.map((w) => w.name), ["shared"]);
+
+    // The listing groups by NAME, so a crosser reads two teams' trees as one workspace with two
+    // heads until it says which team it means.
+    assertEquals((await summarizeWorkspaces(r)).workspaces.length, 1);
+    const beta = await summarizeWorkspaces(r, { scope: at("beta") });
+    assertEquals(beta.workspaces.map((w) => w.name), ["shared"]);
+    assertEquals(beta.workspaces[0].versions, 1, "the scoped listing counted another team's versions");
+    assert(!beta.workspaces[0].forked);
+  } finally {
+    await s.close();
+  }
+});
+
 Deno.test("[team] `observe` reads every team, which is why it is opt-in", async () => {
   const s = await newSpace();
   try {
@@ -253,11 +314,22 @@ Deno.test("[team] the adapter fills a scope only after the space says it is requ
   // A stand-in for the client: it answers `permissions` with the patterns a member's grants carry,
   // and counts what was asked, because "how many round trips" is half of what is being tested.
   const fake = (patterns: Record<string, unknown>[]) => {
-    const calls = { permissions: 0 };
+    const calls = { permissions: 0, order: [] as string[] };
     return {
       calls,
       client: {
-        health: () => Promise.resolve({ principal: "run:x" }),
+        // NOT decoration. `health` is PUBLIC, so a client that has not authenticated yet answers
+        // `principal: "anonymous"` while its request still arrives as the run behind the token,
+        // and asking about "anonymous" is asking about somebody else: a 403 about the ops plane
+        // instead of a scope. The order below is the guard.
+        ensureCredential: () => {
+          calls.order.push("ensureCredential");
+          return Promise.resolve();
+        },
+        health: () => {
+          calls.order.push("health");
+          return Promise.resolve({ principal: "run:x" });
+        },
         permissions: () => {
           calls.permissions++;
           return Promise.resolve({ kinds: [{ kind: "task", patterns }] });
@@ -300,6 +372,7 @@ Deno.test("[team] the adapter fills a scope only after the space says it is requ
     assertEquals(attempts.length, 3, "the scope was rediscovered instead of remembered");
     assertEquals(attempts[2], { team: "alpha" });
     assertEquals(calls.permissions, 1, "the scope was looked up more than once");
+    assertEquals(calls.order, ["ensureCredential", "health"], "who am I was asked before the credential resolved");
   }
 
   // 3. AMBIGUITY IS ASKED ABOUT, NEVER GUESSED. A crosser holds two teams and nothing here knows
@@ -313,7 +386,29 @@ Deno.test("[team] the adapter fills a scope only after the space says it is requ
     assert(e?.includes("alpha") && e?.includes("beta"), `both teams must be named, got: ${e}`);
   }
 
-  // 4. Any OTHER failure is the caller's own and is not retried: a fill that swallowed an
+  // 4. CHOOSING is the other half, for an operation that must decide BEFORE it can be refused: a
+  // lookup by name, where the grant says what is reachable and not which one was meant.
+  {
+    // One scope narrows NOTHING. An unscoped grant contributes no entry to `patterns`, so one
+    // beside a scoped grant looks exactly like this, and narrowing here would hide records the
+    // caller may legitimately read.
+    const { client } = fake([{ team: "alpha" }]);
+    assertEquals(await new ScopeFiller(client).choose("task", undefined), undefined);
+    // …and none at all, which is every space that has no compartments.
+    assertEquals(await new ScopeFiller(fake([]).client).choose("task", undefined), undefined);
+
+    const two = () => new ScopeFiller(fake([{ team: "alpha" }, { team: "beta" }]).client);
+    const refused = async (f: () => Promise<unknown>) => await f().then(() => null, (e) => (e as Error).message);
+    const e = await refused(() => two().choose("task", undefined));
+    assert(e?.includes("alpha") && e?.includes("beta"), `both scopes must be named, got: ${e}`);
+    assert(e?.includes("scope"), "the refusal does not say how to answer it");
+    // A caller that says which gets it back, and a name it does not hold is refused rather than
+    // answered with a confident empty.
+    assertEquals(await two().choose("task", { team: "beta" }), { team: "beta" });
+    assert(await refused(() => two().choose("task", { team: "gamma" })), "an unheld scope was accepted");
+  }
+
+  // 5. Any OTHER failure is the caller's own and is not retried: a fill that swallowed an
   // unrelated error would turn one clear message into two attempts and a confusing one.
   {
     const { client, calls } = fake([{ team: "alpha" }]);

@@ -74,7 +74,12 @@ That converts most of the third column into the first.
 start a space on an isolated `RADIA_DIR` with a persistent `--db` so a run can be post-mortemed,
 `radia team add --rotate --json` per agent, write each agent's MCP config into its own working
 directory, launch each harness with the prompt on stdin, then dump flows, stats, events, a query per
-kind and each member's permissions into the run directory. The stale-binary problem was already
+kind and each member's permissions into the run directory. **Permissions are collected by the
+PRINCIPAL, `agent:<name>`, and were collected by the member name until 2026-08-29**: asking about a
+name nothing holds is not an error, so the space answered about a principal with no grants and every
+member of every run read as holding NOTHING while coordinating perfectly well. An empty answer to
+the wrong question, indistinguishable from an answer, in the one section of the evidence that says
+what each member was allowed to do. The stale-binary problem was already
 solved upstream: `src/surfaces/mcp/config.ts` names the binary that wrote the config, absolute, so
 recompiling before `team add` is the whole of it. The harnesses' own non-interactive flags live in
 the scenario file, because they change on somebody else's release schedule; the two shipped were
