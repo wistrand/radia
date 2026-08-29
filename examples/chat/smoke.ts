@@ -33,6 +33,7 @@ const SUITES = [
   { name: "runners", file: "smoke-runners.ts", about: "a second language as a capability: an unstartable jail is undiscoverable, and each name reaches its own runtime" },
   { name: "turnlink", file: "smoke-turnlink.ts", about: "the fenced turn link: a conversation call's answer IS the assistant message (the worker's ack), an inline call stays an RPC" },
   { name: "fleet", file: "smoke-fleet.ts", about: "model advertisements the router discovers: publish, restart, withdraw, revive" },
+  { name: "restart", file: "smoke-restart.ts", about: "what a fleet restart costs the authorization surface: one definition token minting per worker, however many times it has started" },
   { name: "capability", file: "smoke-capability.ts", about: "tool advertisements: replicas of one worker versus two tools wearing one name, and withdrawal" },
   { name: "input", file: "smoke-input.ts", about: "the REPL's stdin: the keystroke that went missing between a turn and the next prompt, type-ahead, and Escape" },
   { name: "edit", file: "smoke-edit.ts", about: "the line editor the prompt runs in raw mode: key decoding across split arrivals, word motion, history, scrolled redraw, and paste" },

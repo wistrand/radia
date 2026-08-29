@@ -13,6 +13,7 @@
 
 import { RadiaClient } from "../../../sdk/ts/client.ts";
 import { INSPECT_SCHEMAS, REMEDIATE_SCHEMAS } from "../../../extensions/ts/agent-tools.ts";
+import { readDefinition } from "../../../extensions/ts/team.ts";
 
 /** The tools the SESSION serves in its own process (client/session-tools.ts), derived from the
  *  same schemas that file serves so the grant and the server cannot disagree about the list. */
@@ -415,15 +416,40 @@ export async function mintSession(
   return (await mint(admin, principal, userGrants(scope, principal))).runToken;
 }
 
-/** Operator action: define an agent with its grants and mint a short-lived run token. */
+/**
+ * Operator action: define an agent with its grants and mint a short-lived run token.
+ *
+ * `rotate` REVOKES the definition this one replaces, and only the FLEET passes it. A definition
+ * token is shown once and stored as a hash, so a restarting fleet cannot recover the one it had and
+ * must create another; what it must not do is leave the old one minting. Measured before this: 25
+ * `agent_definition` records for each of six workers, 150 standing and all live, because
+ * `agent_definition` is in `NEVER_COMPACT` and nothing swept or revoked them
+ * (plan-startup-ergonomics.md item 8). The authorization surface grew one mintable credential per
+ * worker per `--serve`, and `radia revoke` reaches only the newest.
+ *
+ * A SESSION must never rotate, which is why this is a parameter rather than the behaviour: several
+ * sessions for one person are legitimately live at once, and revoking on each mint kills the ones
+ * before it. That is not hypothetical; it is what the turn-link suite failed with.
+ *
+ * Revoke first, so the old token stops minting even if the create below fails, and carry the id the
+ * decision rested on into the create, so two fleets starting together cannot both revoke and both
+ * create. That is `radia team add --rotate`'s dance, for the same reason.
+ */
 async function mint(
   admin: RadiaClient,
   agent: string,
   grants: Grant[],
+  opts: { rotate?: boolean } = {},
 ): Promise<{ definitionToken: string; runToken: string }> {
+  const prior = opts.rotate ? await readDefinition(admin, agent) : { state: "none" as const, id: null };
+  if (prior.state === "active") {
+    await admin.revokeDefinition(agent, { reason: "rotated by the chat fleet on start" });
+  }
+  const after = prior.state === "active" ? (await readDefinition(admin, agent)).id : prior.id;
   const { definitionToken } = await admin.createAgentDefinition(
     agent,
     grants.map((g) => ({ principal: agent, kind: g.kind, operations: g.operations, ...(g.pattern ? { pattern: g.pattern } : {}) })),
+    ...(opts.rotate ? [{ supersedes: after }] : []),
   );
   const { runToken } = await admin.createRun(definitionToken);
   return { definitionToken, runToken };
@@ -464,12 +490,17 @@ export async function bootstrap(
   admin: RadiaClient,
   scope?: Record<string, unknown>,
 ): Promise<Bootstrapped> {
-  const inferenceToken = (await mint(admin, "agent:chat-inference", INFERENCE_GRANTS)).definitionToken;
-  const routerToken = (await mint(admin, "agent:chat-router", ROUTER_GRANTS)).definitionToken;
-  const toolsToken = (await mint(admin, "agent:chat-tools", TOOLS_GRANTS)).definitionToken;
-  const imagesToken = (await mint(admin, "agent:chat-images", IMAGE_GRANTS)).definitionToken;
-  const execToken = (await mint(admin, "agent:chat-exec", EXEC_GRANTS)).definitionToken;
-  const turnToken = (await mint(admin, "agent:chat-turn", TURN_GRANTS)).definitionToken;
+  // ONCE PER PROCESS. A second call would rotate the tokens the first one handed to running
+  // workers, and they would then fail to mint with `invalid_credential`: `bootstrap` is called
+  // twice by more than one suite, so this memo is what makes rotation safe rather than a trap.
+  if (bootstrapped) return bootstrapped;
+  const rotate = { rotate: true };
+  const inferenceToken = (await mint(admin, "agent:chat-inference", INFERENCE_GRANTS, rotate)).definitionToken;
+  const routerToken = (await mint(admin, "agent:chat-router", ROUTER_GRANTS, rotate)).definitionToken;
+  const toolsToken = (await mint(admin, "agent:chat-tools", TOOLS_GRANTS, rotate)).definitionToken;
+  const imagesToken = (await mint(admin, "agent:chat-images", IMAGE_GRANTS, rotate)).definitionToken;
+  const execToken = (await mint(admin, "agent:chat-exec", EXEC_GRANTS, rotate)).definitionToken;
+  const turnToken = (await mint(admin, "agent:chat-turn", TURN_GRANTS, rotate)).definitionToken;
   // Assigned to a principal, not to a definition: `delegable:agent:chat-exec` has no definition and
   // never will, which is exactly why the worker cannot authenticate as it. Written directly, the
   // way any grant is.
@@ -479,5 +510,9 @@ export async function bootstrap(
       body: { principal: "delegable:agent:chat-exec", kind: g.kind, operations: g.operations },
     }, `chat-delegable:exec:${g.kind}`);
   }
-  return { inferenceToken, routerToken, toolsToken, imagesToken, execToken, turnToken };
+  bootstrapped = { inferenceToken, routerToken, toolsToken, imagesToken, execToken, turnToken };
+  return bootstrapped;
 }
+
+/** What `bootstrap` minted, so a second call in one process returns it instead of rotating it. */
+let bootstrapped: Bootstrapped | undefined;

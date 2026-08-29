@@ -26,7 +26,7 @@ compute identically. The runtime imports these definitions; the SDK imports noth
 | Ops queries | `queryEnvelopes` / `getEnvelope` (ONE record's claim state and, when leased, its fenced lease) / `diagnostics` / `erasures` / `getStats` / `getEvents` / `getEventsPage` | `query_envelopes` / `diagnostics` / `erasures` / `get_stats` / `get_events` / `get_events_page`; no per-record envelope |
 | Bootstrap   | `grant` / `createAgentDefinition` / `createRun` / `stopRun` | `grant` / `create_agent_definition` / `create_run` / `stop_run` |
 | Delegation  | `createDelegatedRun` / `delegatedClient`                    | `create_delegated_run` / `delegated_client`                     |
-| Credential  | `{definitionToken}` exchanges on expiry; `keepAlive(signal, onLost)` renews at half-life | `keep_alive(stop, on_lost)`, renewal only (see below) |
+| Credential  | `{definitionToken}` exchanges on expiry; `keepAlive(signal, onLost)` renews at half-life | `definition_token=` exchanges on expiry; `keep_alive(stop, on_lost)` renews at half-life |
 | Children    | `getChildren` / `getChildrenPage` (paged) | `get_children` / `get_children_page` (paged) |
 | Reads       | `readOne` (the OLDEST match) / `readNewest` | `read_one` (the OLDEST match) / `read_newest` |
 | Body typing | `RadiaRecord<T>`: `agentLoop<T>` / `registry<T>` / `readOne<T>` / `readNewest<T>` hand back a named body | none; bodies are dicts |
@@ -34,11 +34,18 @@ compute identically. The runtime imports these definitions; the SDK imports noth
 | Content key | `contentKey(tag, body)`, async (Web Crypto) | `content_key(tag, body)`, sync (hashlib) |
 | Dependencies| none beyond the runtime | none, standard library only (3.9+) |
 
-**Credential lifecycle.** `keepAlive` renews an active run before expiry. TypeScript clients may
-also hold a mint-only `definitionToken` and exchange it for a new run after expiry or the absolute
-run ceiling. Concurrent calls share one exchange, and forbidden operations are not retried. Python
-currently supports renewal but not definition-token exchange. `test/exchange.test.ts`
-covers the TypeScript behavior.
+**Credential lifecycle.** `keepAlive` renews an active run before expiry. A client may also hold a
+mint-only definition token and exchange it for a new run after expiry or the absolute run ceiling,
+which is what lets a session outlive the 12-hour ceiling and what renewal alone cannot do, since
+renewing needs a process awake inside the window. Concurrent callers produce ONE exchange, not one
+each, and a 403 is never retried: a grant is not a credential, so exchanging would spend a mint and
+hide the answer. **Both SDKs now do this** (Python since 2026-08-29, closing the last parity gap);
+`test/exchange.test.ts` and `test/py-exchange.test.ts` cover them, each against a real socket.
+
+Every path that does not share the ordinary request code must be covered separately, and in both
+SDKs those are the artifact calls and the SSE watch stream: the stream holds whatever token it
+opened with, so it mints before connecting and treats a 401 mid-stream as an exchange rather than a
+revocation.
 
 **Read ordering.** Every read names its direction, and there is no bare `query(pattern, limit)` in
 either SDK. It read the OLDEST matches while saying nothing about that at the call site, which is

@@ -13,8 +13,9 @@
 > things, and an audit on 2026-08-29 found the third outnumbering the first: OPEN (nobody decided),
 > GATED (decided, waiting on a first user or a measurement, and it says what would ungate it), or
 > ALREADY ANSWERED ELSEWHERE under another name. Genuinely open and ungated, in order of size:
-> schema versioning + migration, SSE backpressure, externally-anchored checkpoints, KMS wrapping,
-> and the Python SDK's missing credential exchange. [plan-validation.md](plan-validation.md) was the
+> schema versioning + migration, SSE backpressure, externally-anchored checkpoints, and KMS
+> wrapping. The Python SDK's credential exchange was on that list and shipped 2026-08-29, which
+> closes the last SDK parity gap. [plan-validation.md](plan-validation.md) was the
 > largest entry on that list and is now as complete as it can be: the fault matrix finished
 > 2026-08-29, and the baselines ran the same day for two of their three arms, the third blocked
 > until there is a scheduler to compare against.
@@ -124,9 +125,11 @@ two-terminal demo works.
   a client whose short token lapses mints another instead of ending the session, once per failure,
   never on a 403, shared across concurrent calls, and on the SSE stream). That is what makes a
   session outlive the 12-hour run ceiling, and renewal alone could not, since it serves only a
-  holder that is awake inside the window. **Python renews and does not
-  exchange**, so a Python `agent_loop` still ends at the ceiling: the one real parity gap, marked as
-  such in [sdk/README.md](../sdk/README.md).
+  holder that is awake inside the window. **Python gained the same thing on
+  2026-08-29** (`definition_token=`, `test/py-exchange.test.ts`, six cases against a real socket),
+  which closes the last parity gap: `keep_alive` now mints a fresh run at the ceiling instead of
+  reporting the session lost, and the artifact calls and the SSE stream recover too, since neither
+  shares the ordinary request path.
 - [x] watches (SSE, cursors, 410 semantics): `POST /v0/watches` + `GET /v0/watches/{id}/events` (SSE, `Last-Event-ID`/`?cursor=` resumption, 410 `cursor_expired` path); backed by the event log + an in-process `Notifier` (LISTEN/NOTIFY-equivalent wakeup); wakeup-by-kind (+ predicate) matching in `Space.matchesEvent`; **grant-gated** (`Space.authorizeWatch`: any grant on the kind, pattern AND-ed into the watch scope). SDK `client.watch()` async generator; `agentLoop` is event-driven (watch wakeups + poll fallback). The 410 check is live and sentinel-exempt (`Space.eventHorizon`, 2026-08-06); it fires once the M2 event sweep creates a horizon.
 - [x] artifact service: the `BlobStore` port (content-addressed; memory, filesystem and S3-compatible impls, plus a migrating layer so a space can change backend) + reserved `artifact` records + short-lived download capabilities + **optional encryption at rest** (per-blob AES-GCM DEK, AES-KW-wrapped under a space KEK). See [design-data-model.md](design-data-model.md) §2.4. Reference-aware blob GC BUILT (2026-08-11, [plan-gc.md](plan-gc.md) phase 4: artifacts join retention, a live `gc` reclaims unreferenced bytes). KEK rotation BUILT: every `SealedKey` names the key that wrapped it (`kid`), a store reads and sweeps under retired keys as well as the current one, and `radia rewrap` (`POST /v0/ops/rewrap`) re-seals referenced payloads under the current key, which is what lets the retired one be destroyed. Open: KMS wrapping, and rotation of the chat's per-conversation keys.
 - [x] orphan/starvation diagnostics: a derived report + remediation (`GET /v0/ops/diagnostics`; reclaim/dead-letter/requeue per record OR by envelope selector via `POST /v0/ops/remediate`, so draining a backlog is one call per page rather than one per record). `staleAvailable.split` now separates the two failures age alone conflates, by running the PATTERN match against the live interest registry: **orphaned** (no live interest matches, so waiting never helps) versus **starving** (a listener matches and is not claiming). The registry is read once per KIND, not per record. It refuses to answer when nothing was ever declared, since every record would then look orphaned, but it does answer when the declarations exist and their runs are gone: that is a dead fleet, not an absence of evidence. Guarded by `test/conformance/suites/starvation.ts`.

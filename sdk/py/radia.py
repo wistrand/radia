@@ -255,18 +255,112 @@ _UNSET: Any = object()
 class RadiaClient:
     """A client for one space. Thread-safe: it holds no per-request state."""
 
-    def __init__(self, base: Optional[str] = None, token: Optional[str] = None, timeout: float = 30.0):
+    def __init__(
+        self,
+        base: Optional[str] = None,
+        token: Optional[str] = None,
+        timeout: float = 30.0,
+        definition_token: Optional[str] = None,
+        reuse_run: bool = False,
+    ):
+        """``definition_token`` is the DURABLE half of the credential, and with one this client
+        never needs re-authenticating by hand: a run token lives ~15 minutes, renews to a 12-hour
+        ceiling, and then the session is over unless something can mint another.
+
+        It is never sent as the credential for an ordinary call. The space refuses it with "a
+        definition token does not authorize coordination; mint a run first", which is the property
+        that makes it safe to keep on disk: it can only mint.
+
+        ``reuse_run`` asks each exchange for the run this credential already holds. For a
+        SHORT-LIVED process that is the difference between inspecting a space and growing it, since
+        a run is a permanent record. Leave it off for a worker fleet, where two processes sharing a
+        run principal make their records indistinguishable by author.
+        """
         self.base = (base or default_base()).rstrip("/")
         # `token=""` explicitly means "send nothing"; None means "resolve one".
         self.token = resolve_token(self.base) if token is None else (token or None)
         self.timeout = timeout
+        self.definition_token = definition_token
+        self.reuse_run = reuse_run
+        self.run: Optional[str] = None
+        # One exchange at a time. Ten threads hitting an expired token must produce ONE new run,
+        # not ten: each mint writes a record, and a fleet waking together would append a burst of
+        # them and discard all but the last.
+        self._exchange_lock = threading.Lock()
 
     def with_token(self, token: str) -> "RadiaClient":
         return RadiaClient(self.base, token, self.timeout)
 
+    # -- the credential, kept alive without anybody re-authenticating --
+
+    def ensure_credential(self) -> None:
+        """Hold a usable run token, minting one if this client has only the durable half.
+
+        Called for its effect at startup by anything that would rather fail at boot than on its
+        first real request, and before opening a watch, whose SSE connect does not pass through
+        ``_req``.
+        """
+        if self.definition_token and not self.token:
+            self._exchange(self.token)
+
+    def _exchange(self, stale: Optional[str]) -> None:
+        """Swap the definition token for a fresh run token, in place.
+
+        ``stale`` is the token the caller OBSERVED before it failed, and it is required rather than
+        optional: if the client's token is no longer that one, another thread already exchanged it
+        out while this one waited for the lock, and minting again appends a second run record for
+        nothing. Defaulting it to ``None`` made that guard silently dead for the commonest case, ten
+        threads starting with NO token, which minted ten runs (`test/py-exchange.test.ts`).
+
+        Never through ``_req``: routing a FAILING exchange back through the retry would re-enter
+        the exchange it is already inside.
+        """
+        with self._exchange_lock:
+            if self.token != stale:
+                return
+            r = self._raw_req(
+                "POST",
+                "/v0/agent-runs",
+                {"reuse": bool(self.reuse_run)},
+                {"Authorization": f"Bearer {self.definition_token}"},
+            )
+            self.token = r["runToken"]
+            self.run = r.get("run")
+
+    @staticmethod
+    def _expired(e: "RadiaError") -> bool:
+        """Whether an error means THIS CREDENTIAL is finished, rather than that the principal may
+        not do this. A 403 is a GRANT problem: retrying it spends a mint and hides the answer."""
+        return e.status == 401 or e.code in ("token_expired", "run_stopped")
+
+    def _authorized(self, call: Callable[[], Any]) -> Any:
+        """Run ``call``; if the credential expired, mint a fresh run and try ONCE more.
+
+        REACTIVE, not scheduled, and that is the point. ``keep_alive`` renews ahead of expiry, which
+        only works for a process that is awake: a machine that sleeps through the window comes back
+        holding a token that cannot renew itself. Exchanging on the failure covers what a schedule
+        cannot. Once, because a second failure is a real one and looping turns an unauthorized
+        client into a request generator.
+        """
+        stale = self.token
+        try:
+            return call()
+        except RadiaError as e:
+            if not self.definition_token or not self._expired(e):
+                raise
+            self._exchange(stale)
+            return call()
+
     # -- transport --
 
     def _req(self, method: str, path: str, body: Any = None, headers: Optional[Dict[str, str]] = None) -> Any:
+        # The exchange itself goes through `_raw_req`, never here: routing a FAILING exchange back
+        # through the retry would re-enter the exchange it was already inside.
+        if headers and "Authorization" in headers:
+            return self._raw_req(method, path, body, headers)
+        return self._authorized(lambda: self._raw_req(method, path, body, headers))
+
+    def _raw_req(self, method: str, path: str, body: Any = None, headers: Optional[Dict[str, str]] = None) -> Any:
         data = None
         hdrs = dict(headers or {})
         if body is not None:
@@ -441,36 +535,46 @@ class RadiaClient:
             hdrs["Idempotency-Key"] = idempotency_key
         # A caller-supplied Authorization wins: minting a run authenticates with the DEFINITION
         # token, not this client's run token, so the client's credential must not overwrite it.
-        if self.token and "Authorization" not in hdrs:
-            hdrs["Authorization"] = f"Bearer {self.token}"
-        req = urllib.request.Request(self.base + "/v0/artifacts", data=data, headers=hdrs, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as res:
-                return json.loads(res.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            text = e.read().decode("utf-8")
+        # Built PER ATTEMPT, inside `_authorized`: a header dict captured before an exchange still
+        # carries the dead token, so a retry would fail the same way and look like a real 401.
+        def attempt() -> Any:
+            h = dict(hdrs)
+            if self.token and "Authorization" not in h:
+                h["Authorization"] = f"Bearer {self.token}"
+            req = urllib.request.Request(self.base + "/v0/artifacts", data=data, headers=h, method="POST")
             try:
-                problem = json.loads(text)
-            except ValueError:
-                problem = {}
-            raise RadiaError(e.code, problem.get("title", "error"), problem.get("detail", text)) from None
+                with urllib.request.urlopen(req, timeout=self.timeout) as res:
+                    return json.loads(res.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                text = e.read().decode("utf-8")
+                try:
+                    problem = json.loads(text)
+                except ValueError:
+                    problem = {}
+                raise RadiaError(e.code, problem.get("title", "error"), problem.get("detail", text)) from None
+
+        return self._authorized(attempt)
 
     def get_artifact(self, record_id: str) -> bytes:
         """An artifact's bytes by record id."""
-        hdrs = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-        req = urllib.request.Request(
-            self.base + "/v0/artifacts/" + urllib.parse.quote(record_id), headers=hdrs, method="GET"
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as res:
-                return res.read()
-        except urllib.error.HTTPError as e:
-            text = e.read().decode("utf-8")
+
+        def attempt() -> bytes:
+            hdrs = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            req = urllib.request.Request(
+                self.base + "/v0/artifacts/" + urllib.parse.quote(record_id), headers=hdrs, method="GET"
+            )
             try:
-                problem = json.loads(text)
-            except ValueError:
-                problem = {}
-            raise RadiaError(e.code, problem.get("title", "error"), problem.get("detail", text)) from None
+                with urllib.request.urlopen(req, timeout=self.timeout) as res:
+                    return res.read()
+            except urllib.error.HTTPError as e:
+                text = e.read().decode("utf-8")
+                try:
+                    problem = json.loads(text)
+                except ValueError:
+                    problem = {}
+                raise RadiaError(e.code, problem.get("title", "error"), problem.get("detail", text)) from None
+
+        return self._authorized(attempt)
 
     def artifact_capability(self, record_id: str) -> Dict[str, Any]:
         """A short-lived, single-artifact download capability, for a context that cannot send an
@@ -590,8 +694,11 @@ class RadiaClient:
         Run tokens are short (~15 min) so a leaked one stops working, which means any long-running
         process must renew or it simply stops claiming and says nothing. Renewing at half-life
         rather than on a 401 is the point: by the time a call fails the session is already gone.
-        ``on_lost`` fires when the run cannot be renewed (stopped, or past its ceiling) — neither is
-        retryable, so a caller should stop working rather than spin.
+        ``on_lost`` fires when the run cannot be renewed (stopped, or past its ceiling): neither is
+        retryable for THAT run, so a caller holding nothing else should stop working rather than
+        spin. A client holding a ``definition_token`` is not in that position and does not stop: it
+        mints a fresh run and carries on, which is the whole reason the durable half exists, since
+        renewing only ever helps a process that is awake inside its window.
         """
 
         def run_loop() -> None:
@@ -607,6 +714,11 @@ class RadiaClient:
                     delay = max(15.0, left / 2) if left else 60.0
                 except RadiaError as e:
                     if e.status == 409:  # stopped, or past its maximum lifetime: not retryable
+                        if self.definition_token:
+                            # The RUN is finished; the credential is not. Mint another and keep
+                            # renewing, so a Python worker no longer ends at the 12-hour ceiling.
+                            self._exchange(self.token)
+                            continue
                         if on_lost:
                             on_lost(e.detail or "run cannot be renewed")
                         return
@@ -964,8 +1076,14 @@ class RadiaClient:
         long as the stream runs, so both are terminal and retrying cannot fix either. Reconnecting
         would turn a revocation into a silent stall indistinguishable from an idle space.
         """
+        # The SSE connect below is a raw urlopen that never passes through `_req`, so it holds
+        # whatever token this client had when the stream opened. That is exactly where a credential
+        # fix gets forgotten: mint before connecting, and treat a 401 mid-stream as an exchange
+        # rather than as a revocation.
+        self.ensure_credential()
         watch_id = self._req("POST", "/v0/watches", pattern)["watchId"]
         cursor: Optional[str] = None
+        exchanged = False  # one exchange per authorization failure, not a loop
         while stop is None or not stop.is_set():
             if watch_id is None:  # re-create after the server forgot this watch (see the 404 below)
                 try:
@@ -993,10 +1111,19 @@ class RadiaClient:
                                 403, "forbidden", f"watch {watch_id} revoked: {frame.get('data', 'no reason given')}"
                             )
                         if frame.get("event") is None and frame.get("data"):
+                            exchanged = False  # the stream works again; the next lapse may exchange
                             yield json.loads(frame["data"])
             except urllib.error.HTTPError as e:
                 if e.code == 410:
                     cursor = "0"  # cursor_expired: a real client catches up with a query first
+                    continue
+                if e.code == 401 and self.definition_token and not exchanged:
+                    # A run that ENDED is not a missing grant. The watch is revoked either way, but
+                    # a client holding the durable half mints another run and watches again, so
+                    # this reconnects rather than ending the caller's session.
+                    exchanged = True
+                    self._exchange(self.token)
+                    watch_id = None
                     continue
                 if e.code in (401, 403):
                     raise RadiaError(e.code, "forbidden", f"watch {watch_id} refused ({e.code})") from None

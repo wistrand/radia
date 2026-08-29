@@ -147,14 +147,32 @@ which is the disagreement that started this. The dry compaction walk is bounded 
 (`MAX_WALK`, `src/core/gc.ts`) and diagnostics is on demand in both surfaces, never polled. Guard:
 `test/http.test.ts`, "diagnostics reports the compaction backlog".
 
-## 8. Every fleet restart mints six permanent credentials
+## 8. Every fleet restart mints six permanent credentials (FIXED 2026-08-29)
 
 Measured: 25 `agent_definition` records each for `agent:chat-inference`, `-router`, `-tools`,
-`-images`, `-exec`, `-turn`. `roles.ts`'s `mint` always calls `createAgentDefinition`, and
-`agent_definition` is in `NEVER_COMPACT` (`src/core/gc.ts`), so 150 records stand, 6 of them
-current, and the authorization surface grows one definition per worker per `--serve`. Nothing
-reports it, and `radia permissions <agent>` shows grants rather than how many definitions hold
-them.
+`-images`, `-exec`, `-turn`. `roles.ts`'s `mint` always called `createAgentDefinition`, and
+`agent_definition` is in `NEVER_COMPACT` (`src/core/gc.ts`), so 150 records stood, 6 of them
+current, and every one of the 150 could still MINT A RUN.
+
+**The fix is rotation, not deletion.** A definition token is shown once and stored as a hash, so a
+restarting fleet cannot recover the one it had and must create another; what it must not do is
+leave the old one minting. `bootstrap` now revokes the definition it replaces, carrying the record
+id its decision rested on into the create (`supersedes`), which is `radia team add --rotate`'s dance
+and is there for the same reason: two fleets starting together must not both revoke and both create.
+Measured after: three restarts, ONE token still minting, where before it was four of four
+(`examples/chat/smoke-restart.ts`, proved red against the unrotated code).
+
+**Two things this is deliberately not.** The record count still GROWS, because a revocation is a
+successor rather than a delete; what is bounded is how many credentials can act, which is the thing
+item 8 was about. And rotation is a parameter rather than the behaviour of `mint`, because a SESSION
+is not a fleet: several sessions for one person are legitimately live at once, and revoking on each
+mint kills every one before the newest. That is not hypothetical, it is what the turn-link suite
+failed with when rotation was applied to both. For the same reason `bootstrap` is memoized per
+process: a second call would revoke the tokens the first handed to running workers.
+
+Still open: nothing REPORTS the count, and `radia permissions <agent>` shows grants rather than how
+many definitions hold them. A second `--serve` against one space now rotates the first fleet's
+tokens out, so it fails loudly with `invalid_credential` rather than quietly double-claiming.
 
 ## 9. Smaller papercuts, each a contained fix (BUILT)
 
