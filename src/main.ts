@@ -23,10 +23,10 @@ import {
 } from "./credentials.ts";
 import { runCli } from "./surfaces/cli.ts";
 import { runMcp } from "./surfaces/mcp/server.ts";
-import { flag, optionalFlag } from "./flags.ts";
+import { flag, has, optionalFlag } from "./flags.ts";
 import { defaultBlobDir, defaultDbPath, defaultKekPath, defaultSealPath, ensureParent, radiaDir } from "./paths.ts";
 import { acquireDbLock, lockRefusal } from "./lock.ts";
-import { args as argv, env, exit, onShutdown, UsageError } from "./platform.ts";
+import { args as argv, env, exit, onShutdown, readTextFile, restrictToOwner, UsageError, writeTextFile } from "./platform.ts";
 import { configureLogging, getLogger, logLevel, parseLevel } from "./log.ts";
 import { RadiaError } from "./core/errors.ts";
 
@@ -36,6 +36,8 @@ import { RadiaError } from "./core/errors.ts";
 // storage, blobs and limits are logged, and the credential lines, the sign-in URL and the shutdown
 // notice are printed.
 const devLog = getLogger("dev");
+const serveLog = getLogger("serve");
+const bootLog = (p: Posture) => (p === "serve" ? serveLog : devLog);
 
 const USAGE = `radia <command>
 
@@ -47,6 +49,12 @@ const USAGE = `radia <command>
       [--oidc-issuer <url> --oidc-audience <client-id>]
       Run an embedded space + web console. Everything it writes goes under ./.radia
       (RADIA_DIR moves it); bare --db and --blob-kek take their defaults from there.
+  serve --db <path|url> [--config <file>] [--host <addr>] [--port <n>] [--console]
+        [--operator-token-file <path>] [everything \`dev\` takes]
+      The same space, a deployment's posture: no credential file, no token on stdout, no
+      web console unless asked, persistent storage required, \`--auth open\` refused. A
+      \`--config\` file is these same flag names without the dashes; a flag on the command
+      line wins over the file.
   mcp [--url <base>] [--session <name>] [--trace <file>]
       Serve the space to an MCP-capable harness over stdio. --trace appends one JSON line
       per tool call (what the model asked for, which the space never records).
@@ -58,13 +66,75 @@ const USAGE = `radia <command>
       file. This is what the PROCESS did; what the SPACE did is records, and \`radia
       events\` reads those.`;
 
+/**
+ * A config file folded into argv, so a deployment is a file under review rather than a
+ * twenty-flag command line inside a unit file.
+ *
+ * `{"port": 8080, "storage": "postgres", "db": "postgres://…", "console": true}` becomes
+ * `--port 8080 --storage postgres --db postgres://… --console`: the SAME flags, named without the
+ * dashes, with no second vocabulary to learn and nothing that can only be said one way. A `true`
+ * is the bare switch, a `false` is omitted, and everything else is stringified.
+ *
+ * APPENDED, never prepended, because `flag()` takes the FIRST occurrence: an explicit flag on the
+ * command line therefore beats the file, which is the way round an operator expects when they are
+ * overriding one value to debug something.
+ */
+function withConfig(args: string[]): string[] {
+  const path = flag(args, "--config");
+  if (!path) return args;
+  const text = readTextFile(path);
+  if (text === undefined) throw new UsageError(`--config ${path}: cannot read it`);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    throw new UsageError(`--config ${path}: not valid JSON (${(e as Error).message})`);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new UsageError(`--config ${path}: expected a JSON object of flag names to values`);
+  }
+  const out: string[] = [];
+  for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+    if (v === false || v === null || v === undefined) continue;
+    // A name is refused rather than silently ignored: a typo in a config file is otherwise a
+    // setting that reads as applied and is not, which is the misspelled-field class this codebase
+    // keeps meeting (plan-bounded-reads.md, "a field the code picks BY NAME").
+    if (!/^[a-z][a-z0-9-]*$/.test(k)) throw new UsageError(`--config ${path}: '${k}' is not a flag name (lower-case, dashes)`);
+    out.push(`--${k}`);
+    if (v !== true) out.push(String(v));
+  }
+  return [...args, ...out];
+}
+
+/**
+ * The two postures the same space runs in.
+ *
+ * `dev` is a laptop: it provisions an operator credential into the shared file the CLI and MCP
+ * adapter read, prints the token and a console sign-in link, and defaults to a throwaway in-memory
+ * database. Every one of those is right there and wrong on a server.
+ *
+ * `serve` is somebody else's deployment. It writes no credential file, prints no token (stdout on a
+ * unit file IS the journal, and a token in a log is a token in every backup of that log), refuses
+ * to start without persistent storage, refuses `--auth open`, and serves the console only when
+ * asked. The MACHINERY is identical; what differs is what a start leaves lying around.
+ */
+type Posture = "dev" | "serve";
+
 /** Run the embedded space until it is stopped. Returns the process exit code: a refusal to
  *  start (a database already open, a port already bound) is reported and returns 1. */
-async function dev(args: string[]): Promise<number> {
+async function runSpace(args: string[], posture: Posture): Promise<number> {
+  const serving = posture === "serve";
+  const log = bootLog(posture);
+  // `radia serve --help` used to reach the storage check and answer with a refusal to start, which
+  // is the least useful moment to withhold the flag list.
+  if (has(args, "--help") || has(args, "-h")) {
+    console.log(USAGE);
+    return 0;
+  }
   const port = Number(flag(args, "--port") ?? "7788");
   // Loopback by default: the no-header operator default is only safe locally. --host 0.0.0.0 exposes.
   const host = flag(args, "--host") ?? "127.0.0.1";
-  const backend = flag(args, "--storage") ?? "pglite";
+  const backend = flag(args, "--storage") ?? (serving ? "postgres" : "pglite");
   // --db persists to disk: a file for sqlite, a data directory for pglite. Omit = in-memory.
   // For --storage postgres, --db is the connection URL (or set RADIA_PG_URL).
   //
@@ -90,6 +160,12 @@ async function dev(args: string[]): Promise<number> {
   if (authMode !== "open" && authMode !== "required") {
     throw new UsageError(`unknown --auth: ${authMode} (expected open|required)`);
   }
+  // Not a default a server may override. Open mode resolves a request with NO Authorization header
+  // to the operator, so a `radia serve --auth open` on a reachable interface is an unauthenticated
+  // root API, and there is no deployment for which that is the answer.
+  if (serving && authMode === "open") {
+    throw new UsageError("radia serve does not accept --auth open: a request with no credential would be the operator. Use `radia dev` for a throwaway local space.");
+  }
   const authRequired = authMode === "required";
 
   // Make the parent exist before anything tries to write into it. Neither SQLite nor the KEK writer
@@ -108,6 +184,11 @@ async function dev(args: string[]): Promise<number> {
   } else {
     throw new UsageError(`unknown --storage: ${backend} (expected pglite|sqlite|postgres)`);
   }
+  // A server whose data vanishes on restart is nobody's intent, and the way to get one is to omit
+  // a flag. `dev` may be ephemeral because that is what a throwaway space is for.
+  if (serving && backend !== "postgres" && !dbPath) {
+    throw new UsageError("radia serve needs somewhere to keep its data: --db <path> (sqlite file or pglite directory), or --storage postgres --db <url>.");
+  }
 
   const base = `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`;
   // ONE writer per local database, taken before the adapter opens it (src/lock.ts). Postgres is
@@ -124,7 +205,7 @@ async function dev(args: string[]): Promise<number> {
 
   await storage.init();
   const where = backend === "postgres" ? "shared server" : (dbPath ? `persisted at ${dbPath}` : "in-memory (--db to persist)");
-  devLog.info(`storage=${storage.name} (${where})`);
+  log.info(`storage=${storage.name} (${where})`);
   // Artifact BYTES live beside the data they belong to: a directory next to --db (or wherever
   // --blobs says), and in memory otherwise, since an ephemeral space must not leave blobs behind on
   // disk. `--blobs` is what a postgres deployment uses, since its --db is a connection URL with no
@@ -147,9 +228,9 @@ async function dev(args: string[]): Promise<number> {
   // a sweep that cannot recognise the old names would delete what it cannot see.
   const cipher = kek ? await BlobCipher.fromKey(kek.key, kek.retired) : undefined;
   const blobs = openBlobs(blobSpec, cipher);
-  devLog.info(`blobs=${blobs.name}${blobSpec ? ` (${blobSpec})` : " (in-memory)"}${kek ? ` (encrypted, KEK from ${kek.source})` : ""}`);
+  log.info(`blobs=${blobs.name}${blobSpec ? ` (${blobSpec})` : " (in-memory)"}${kek ? ` (encrypted, KEK from ${kek.source})` : ""}`);
   // One line naming the whole on-disk footprint, so "where did this write?" never needs archaeology.
-  if (dbPath || blobSpec || kek) devLog.info(`runtime dir=${radiaDir()}`);
+  if (dbPath || blobSpec || kek) log.info(`runtime dir=${radiaDir()}`);
   // The one resource limit a deployment genuinely has to tune, and the first `SpaceContext` value
   // this entry point passes at all: it bounds the rows ONE read may push through the oracle when
   // the pre-filter could not decide the pattern (`storage/pushdown.ts`). Measured at 5.5M records,
@@ -205,13 +286,13 @@ async function dev(args: string[]): Promise<number> {
     ...(oidcIssuer && oidcAudience ? { oidc: { issuer: oidcIssuer, audience: oidcAudience } } : {}),
   }, blobs);
   if (oidcIssuer && oidcAudience) {
-    devLog.info(`OIDC sign-in enabled (issuer ${oidcIssuer}, audience ${oidcAudience})`);
+    log.info(`OIDC sign-in enabled (issuer ${oidcIssuer}, audience ${oidcAudience})`);
   }
   if (eventRetentionSeconds !== undefined) {
-    devLog.info(`event-log retention ${eventRetentionSeconds}s (gc truncates the sealed log to this window)`);
+    log.info(`event-log retention ${eventRetentionSeconds}s (gc truncates the sealed log to this window)`);
   }
   if (maxRecordBytes !== undefined) {
-    devLog.info(`record bodies capped at ${maxRecordBytes} bytes (artifacts unaffected)`);
+    log.info(`record bodies capped at ${maxRecordBytes} bytes (artifacts unaffected)`);
   }
   if (maxPutDelaySeconds !== undefined) {
     console.log(
@@ -231,7 +312,7 @@ async function dev(args: string[]): Promise<number> {
   const sealPath = sealFlag === "" ? defaultSealPath() : (sealFlag ?? (dbPath ? defaultSealPath() : undefined));
   if (sealPath) ensureParent(sealPath);
   space.sealKey = await loadSealKey({ env: env("RADIA_SEAL_KEY"), file: sealPath, retiredEnv: env("RADIA_SEAL_KEY_RETIRED") });
-  if (space.sealKey) devLog.info(`event chain signed (key from ${space.sealKey.source})`);
+  if (space.sealKey) log.info(`event chain signed (key from ${space.sealKey.source})`);
   await space.loadKinds(); // restore persisted kind declarations
   // What `GET /v0/health` reports about this process: which space it is, since when, and whether
   // anything survives a restart. Only the boot path knows the last one (`--db`, or a server).
@@ -248,7 +329,11 @@ async function dev(args: string[]): Promise<number> {
   try {
     let finished: Promise<void>;
     try {
-      ({ finished } = startServer({ port, space, host, authRequired, artifactPort, signal: stopping.signal }));
+      // The console is a dev UI, on by default there and off by default on a server: `GET /` is
+      // public so the page can bootstrap in required mode, and whether that route exists on a
+      // reachable interface is a deployment's decision rather than ours.
+      const withConsole = serving ? has(args, "--console") : true;
+      ({ finished } = startServer({ port, space, host, authRequired, artifactPort, console: withConsole, signal: stopping.signal }));
     } catch (e) {
       // A taken port is the most likely restart failure, so it gets the unreachable-space
       // message's shape: what happened, the likely cause, both ways out, exit 1.
@@ -267,9 +352,11 @@ async function dev(args: string[]): Promise<number> {
     // space's operator entry before losing the port race, then delete it in the finally below.
     // Auto-provision: write the token where the CLI and MCP adapter look, so local tools present a
     // real Bearer token like any production client instead of relying on the no-header shortcut.
-    const saved = saveCredential(base, { token: operatorToken, mintedAt: new Date().toISOString(), storage: storage.name });
-    if (saved.ok) console.log(`radia dev: operator credential provisioned at ${saved.path} (destructive radia verbs use it)`);
-    else console.log(`radia dev: could not write ${saved.path} (${saved.error}). Set RADIA_TOKEN to use the CLI`);
+    if (!serving) {
+      const saved = saveCredential(base, { token: operatorToken, mintedAt: new Date().toISOString(), storage: storage.name });
+      if (saved.ok) console.log(`radia dev: operator credential provisioned at ${saved.path} (destructive radia verbs use it)`);
+      else console.log(`radia dev: could not write ${saved.path} (${saved.error}). Set RADIA_TOKEN to use the CLI`);
+    }
     // The OBSERVER credential (architecture-ops-tiers.md phase 5): an `agent:local-observer` definition
     // holding the `observe` ops power. The MCP adapter and read-only CLI verbs prefer it, so a
     // model harness inspects the space without holding the operator bit; coordination through MCP
@@ -277,11 +364,16 @@ async function dev(args: string[]): Promise<number> {
     // revocable via `radia revoke agent:local-observer`), reused across restarts. The power is
     // assigned at mint and never re-put on reuse; see `provisionObserver` for why a re-put would
     // eventually resurrect a retired power.
-    try {
-      const r = await provisionObserver(space, base, storage.name);
-      console.log(`radia dev: observer credential ${r.created ? "provisioned" : "reused"} (${OBSERVER_PRINCIPAL}: ops reads only; radia mcp defaults to it)`);
-    } catch (e) {
-      console.log(`radia dev: could not provision the observer credential (${(e as Error).message}); radia mcp will fall back to the operator token`);
+    // Also dev-only: the observer is a convenience for THIS MACHINE's tools (the MCP adapter and
+    // the read-only CLI verbs read it from the shared credential file), and a server that writes no
+    // credential file has nowhere to put it. An operator can still mint one deliberately.
+    if (!serving) {
+      try {
+        const r = await provisionObserver(space, base, storage.name);
+        console.log(`radia dev: observer credential ${r.created ? "provisioned" : "reused"} (${OBSERVER_PRINCIPAL}: ops reads only; radia mcp defaults to it)`);
+      } catch (e) {
+        console.log(`radia dev: could not provision the observer credential (${(e as Error).message}); radia mcp will fall back to the operator token`);
+      }
     }
     // The console requires a credential in EVERY mode, not only `--auth required`, so print one
     // unconditionally. The console and `curl` both need this; the CLI and MCP adapter read the
@@ -289,14 +381,37 @@ async function dev(args: string[]): Promise<number> {
     // A nudge, not a sweep: this file is the USER's, an entry is only rewritten when a space
     // starts, and a month-old entry may belong to a space that has been up for a month. So the
     // count is reported here and `radia credentials --prune` checks each one before deleting it.
-    const dormant = listCredentials().filter((c) => c.stale).length;
-    if (dormant > 0) {
-      console.log(`radia dev: ${dormant} credential ${dormant === 1 ? "entry has" : "entries have"} not been rewritten in ${CREDENTIAL_STALE_DAYS} days (radia credentials --prune)`);
-    }
-    console.log(`radia dev: console sign-in ${base}/#token=${encodeURIComponent(operatorToken)}`);
-    console.log(`radia dev: operator token (curl, RADIA_TOKEN): ${operatorToken}`);
-    if (!authRequired) {
-      console.log(`radia dev: --auth open. A request with no Authorization header is the OPERATOR.`);
+    if (!serving) {
+      const dormant = listCredentials().filter((c) => c.stale).length;
+      if (dormant > 0) {
+        console.log(`radia dev: ${dormant} credential ${dormant === 1 ? "entry has" : "entries have"} not been rewritten in ${CREDENTIAL_STALE_DAYS} days (radia credentials --prune)`);
+      }
+      console.log(`radia dev: console sign-in ${base}/#token=${encodeURIComponent(operatorToken)}`);
+      console.log(`radia dev: operator token (curl, RADIA_TOKEN): ${operatorToken}`);
+      if (!authRequired) {
+        console.log(`radia dev: --auth open. A request with no Authorization header is the OPERATOR.`);
+      }
+    } else {
+      // The operator bit is for BOOTSTRAP: create the definitions, grants and OIDC mapping a
+      // deployment runs on, then never need it again. So it goes to a file the admin named, with
+      // owner-only permissions, and nowhere else. Not stdout, which under a unit file is the
+      // journal; not the shared credential file, which is this machine's rather than this space's.
+      // Without the flag the token stays in memory and dies with the process, which is the right
+      // default for a restart of an already-provisioned space.
+      const out = flag(args, "--operator-token-file");
+      if (out) {
+        try {
+          ensureParent(out);
+          writeTextFile(out, operatorToken + "\n");
+          restrictToOwner(out);
+          serveLog.info(`operator token written to ${out} (owner-only; delete it once you have provisioned)`);
+        } catch (e) {
+          console.error(`error: could not write --operator-token-file ${out}: ${(e as Error).message}`);
+          return 1;
+        }
+      } else {
+        serveLog.info("no --operator-token-file: this start's operator token is unreachable, which is correct once the space is provisioned");
+      }
     }
     await finished;
     return 0;
@@ -305,17 +420,18 @@ async function dev(args: string[]): Promise<number> {
     // The token dies with the process (operator tokens are never persisted as records), so leaving
     // it on disk would only mislead the next CLI invocation into a 401. Conditional on the entry
     // still being OURS: another dev on this base may have replaced it since.
-    clearCredential(base, operatorToken);
+    if (!serving) clearCredential(base, operatorToken);
     // An in-memory space is gone: its observer entry names a base URL nothing will answer on again,
     // and one per ephemeral port is how the credential file reached 43 dead spaces. A persisted
     // one keeps its entry, since the identity is still in the database the next start opens.
-    if (!dbPath) clearObserver(base);
+    if (!serving && !dbPath) clearObserver(base);
     await storage.close();
     unlock?.(); // after the adapter closed, so nothing else can open these files first
     // Ctrl-C printed nothing, so the one step that decides whether the next CLI call 401s was
     // invisible. Only for a start that served: the port-in-use path reaches here having written
     // nothing to clean up.
-    if (served) console.log(`radia dev: stopped (operator credential cleared${dbPath ? `, data kept at ${dbPath}` : ", in-memory data gone"})`);
+    if (served && serving) serveLog.info(`stopped (data kept at ${dbPath ?? "the configured server"})`);
+    else if (served) console.log(`radia dev: stopped (operator credential cleared${dbPath ? `, data kept at ${dbPath}` : ", in-memory data gone"})`);
   }
 }
 
@@ -339,7 +455,9 @@ async function main(argsIn: string[]): Promise<number> {
   try {
     switch (cmd) {
       case "dev":
-        return await dev(rest);
+        return await runSpace(rest, "dev");
+      case "serve":
+        return await runSpace(withConfig(rest), "serve");
       case "mcp":
         await runMcp(rest);
         return 0;

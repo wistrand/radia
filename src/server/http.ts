@@ -50,6 +50,11 @@ export interface ServerOptions {
   /** Port for the isolated artifact origin. Omit to serve artifact bytes only from the main
    *  origin, where scriptable types stay downloads. */
   artifactPort?: number;
+  /** Serve the web console at `GET /`. Default true. `radia serve` turns it off unless asked:
+   *  `GET /` is public so the page can bootstrap, and a deployment gets to decide whether an
+   *  unauthenticated route on a reachable interface is a surface it wants. Off does not remove a
+   *  vulnerability; it removes a surface nobody asked for. */
+  console?: boolean;
 }
 
 /** The dev UI, loaded once at startup. Single file (see src/ui/index.html); the only asset it
@@ -115,12 +120,17 @@ function bind(
 
 export function startServer(opts: ServerOptions): { finished: Promise<void> } {
   const hostname = opts.host ?? "127.0.0.1"; // loopback by default; --host 0.0.0.0 to expose
-  const handler = makeHandler(opts.space, loadUi(), opts.authRequired ?? false);
+  const withConsole = opts.console !== false;
+  const handler = makeHandler(
+    opts.space,
+    withConsole ? loadUi() : "<!doctype html><title>radia</title><p>The web console is not served here. Start with <code>--console</code> to enable it.</p>",
+    opts.authRequired ?? false,
+  );
   const { finished } = bind({ port: opts.port, hostname, signal: opts.signal }, handler, "the space");
   // The startup line names which side of every either/or you got, and that must not regress
   // (plan-startup-ergonomics.md). It is `info`, so a default run still prints it; what changed is
   // that it goes to stderr with a level, like everything else the process says about itself.
-  log.info(`listening on http://${hostname}:${opts.port} (web console at /)`, {
+  log.info(`listening on http://${hostname}:${opts.port}${withConsole ? " (web console at /)" : " (no web console)"}`, {
     auth: opts.authRequired ? "required" : "open (no-header → operator)",
   });
 

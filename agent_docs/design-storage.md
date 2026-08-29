@@ -23,9 +23,9 @@ settle transaction and checks parents in one query. The blob port gained its thi
 the same way: `src/storage/s3.ts` speaks SigV4 to any S3-compatible object store, `MigratingBlobStore`
 lets a space move between backends without rewriting records, and both join the conformance matrix
 (the S3 columns gated on `RADIA_S3_URL`). That is what a horizontal deployment needs, since a local
-blob directory is shared with nobody. **Not implemented:**
-`single-node`/`production` deployment modes, the multi-instance cache-coherence work (see
-Scaling), an external KMS (M2). Envelope encryption itself is BUILT and is not waiting on one:
+blob directory is shared with nobody. **Not implemented:** the
+`production` deployment mode, the multi-instance cache-coherence work (see
+Scaling), an external KMS (M2). `single-node` is BUILT (`radia serve`, below). Envelope encryption itself is BUILT and is not waiting on one:
 `src/storage/crypto.ts` seals each blob under a per-blob DEK wrapped by a space KEK, with a keyring
 so rotation is a config change (`radia rewrap` finishes it). `npm`/`pip` binary wrapping is BUILT but unpublished
 (`deno task release`; see [architecture-surfaces.md](architecture-surfaces.md)).
@@ -108,9 +108,47 @@ Three modes, one contract:
 
 | Mode          | Invocation                        | Storage                        | Auth                                                              | Integrity                                     |
 |---------------|-----------------------------------|--------------------------------|-------------------------------------------------------------------|-----------------------------------------------|
-| `dev`         | `npx radia dev` (also `pipx run`) | embedded (SQLite/PGlite), 1 proc | auto-provisioned local credentials, **same API shape, never "no tokens"** | event log, hash chain optional               |
-| `single-node` | binary + config                   | Postgres                       | admin-provisioned definitions                                     | hash-chained log                              |
+| `dev`         | `radia dev` (`npx`/`pipx` once published) | embedded (SQLite/PGlite), 1 proc | auto-provisioned local credentials, **same API shape, never "no tokens"** | event log, hash chain optional               |
+| `single-node` | `radia serve --config <file>`     | Postgres (or a persisted embedded db) | admin-provisioned definitions, or OIDC                      | hash-chained log                              |
 | `production`  | HA deployment                     | HA Postgres                    | full control plane, workload identity, KMS                        | anchored signed checkpoints, envelope encryption |
+
+**`single-node` is BUILT (2026-08-29) and it is a POSTURE, not a second implementation.** `radia
+serve` runs the same space `radia dev` does, over the same flags, and differs only in what a start
+leaves lying around. Every one of those differences was right on a laptop and wrong on somebody
+else's server:
+
+- **No credential reaches stdout.** `dev` prints the operator token and a console sign-in link there
+  deliberately, so that `--log-file` cannot collect them. Under a unit file stdout IS the journal,
+  so the same choice inverts: `serve` prints nothing at all. The operator bit is for BOOTSTRAP, so
+  `--operator-token-file <path>` writes it owner-only where an admin asked for it, and without that
+  flag the token dies with the process, which is correct for restarting an already-provisioned
+  space.
+- **No credential FILE.** `dev` writes the operator entry (and an observer definition) into the
+  shared file this machine's CLI and MCP adapter read. That file is the USER's, not the space's, and
+  a server has no business in it.
+- **`--auth open` is refused.** Open mode resolves a request with no `Authorization` header to the
+  operator, so on a reachable interface it is an unauthenticated root API.
+- **Persistent storage is required.** A server whose data vanishes on restart is nobody's intent,
+  and omitting one flag was how you got one.
+- **The console is off unless `--console`.** `GET /` is public so the page can bootstrap in required
+  mode; whether that route exists on a reachable interface is a deployment's decision. Off removes a
+  surface, not a vulnerability.
+
+**A config file is the same flag names without the dashes**, so there is no second vocabulary and
+nothing that can only be said one way: `{"port": 8080, "storage": "postgres", "db": "postgres://…",
+"console": true}`. A flag on the command line beats the file (`flag()` takes the first occurrence
+and the file is appended), which is the way round an operator expects when overriding one value to
+debug something. A key that is not a flag name is REFUSED rather than ignored, because a dropped
+setting reads as applied (plan-bounded-reads.md, "a field the code picks BY NAME").
+
+Guarded by `test/serve.test.ts`, which spawns the process: the posture is what it DOES, and half of
+those assertions are about its stdout and the files it touched.
+
+**What `serve` does not yet do, and a deployment must therefore do around it:** TLS (terminate at a
+proxy), backup and restore, and an upgrade procedure. Nothing here writes those down yet. The
+runtime directory (`.radia`, holding the seal key and the blob KEK by default) is resolved relative
+to the working directory, so a unit file should set `RADIA_DIR` or name both paths explicitly rather
+than inherit whatever it was started from.
 
 For local Postgres-backed dev, `docker/postgres/compose.yaml` brings up a persistent server
 (`docker compose -f docker/postgres/compose.yaml up -d --wait`) and `deno task dev:pg` runs

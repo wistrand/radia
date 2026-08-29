@@ -272,6 +272,33 @@ minutes thinking keeps its claim without ever seeing (or being able to leak) a t
 Kinds are discovered at runtime via `space_kinds`, so nothing about your space is baked into
 the tool list.
 
+### Running it for somebody else
+
+`radia dev` is a laptop. `radia serve` is the same space in a deployment's posture:
+
+```bash
+radia serve --config /etc/radia.json --operator-token-file /run/radia/op.token
+```
+
+The config file is these same flag names without the dashes, and a flag on the command line beats
+the file:
+
+```json
+{ "storage": "postgres", "db": "postgres://radia@db/radia", "host": "127.0.0.1", "port": 8080,
+  "blobs": "s3://radia/blobs", "event-retention": 2592000 }
+```
+
+What differs from `dev`, all of it about what a start leaves lying around: nothing is printed to
+stdout (a service's stdout is the journal, and the operator token is the only thing `dev` puts
+there); no credential is written to this machine's shared credential file; `--auth open` is refused;
+persistent storage is required; and the web console is served only with `--console`. The operator
+bit is for bootstrap, so `--operator-token-file` writes it owner-only where you asked, and without
+that flag it dies with the process.
+
+Not yet provided, and a deployment still owns them: TLS (terminate at a proxy), backup and restore,
+and an upgrade procedure. Set `RADIA_DIR` in the unit file, or the runtime directory holding the
+seal key and blob KEK follows the working directory.
+
 ### Distribution
 
 ```bash

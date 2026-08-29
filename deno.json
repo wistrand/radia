@@ -12,7 +12,7 @@
     "check": "deno check src/main.ts test/conformance/run.test.ts extensions/ts/*.ts extensions/conformance/*.ts examples/pipeline/demo.ts examples/stress/stress.ts examples/chat/*.ts examples/chat/*/*.ts examples/mud/*.ts examples/analysis/*.ts bench/*.ts test/*.test.ts",
     "test": "deno task check && deno task test:runtime && deno task test:extensions",
     "test:quick": "deno test --allow-read --allow-write --allow-env --allow-net test/layering.test.ts test/docs.test.ts test/agentdocs.test.ts test/openapi.test.ts test/console.test.ts test/defaults.test.ts test/registry.test.ts test/tasks.test.ts test/http.test.ts test/flows.test.ts test/tree.test.ts test/registrycost.test.ts",
-    "test:runtime": "deno test --allow-read --allow-write --allow-env --allow-net --allow-run=python3 test/",
+    "test:runtime": "deno test --allow-read --allow-write --allow-env --allow-net --allow-run=python3,deno test/",
     "test:conformance": "deno test --allow-read --allow-write --allow-env --allow-net test/conformance/",
     "test:conformance:pg": "deno test --allow-read --allow-write --allow-env --allow-net test/conformance/run.test.ts test/planner.test.ts test/concurrency.test.ts",
     "test:conformance:s3": "deno test --allow-read --allow-write --allow-env --allow-net --filter \"[blobs:s3\" test/conformance/run.test.ts",
