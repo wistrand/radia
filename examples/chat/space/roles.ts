@@ -493,7 +493,8 @@ export async function bootstrap(
   // ONCE PER PROCESS. A second call would rotate the tokens the first one handed to running
   // workers, and they would then fail to mint with `invalid_credential`: `bootstrap` is called
   // twice by more than one suite, so this memo is what makes rotation safe rather than a trap.
-  if (bootstrapped) return bootstrapped;
+  const cached = bootstrapped.get(admin.base);
+  if (cached) return cached;
   const rotate = { rotate: true };
   const inferenceToken = (await mint(admin, "agent:chat-inference", INFERENCE_GRANTS, rotate)).definitionToken;
   const routerToken = (await mint(admin, "agent:chat-router", ROUTER_GRANTS, rotate)).definitionToken;
@@ -510,9 +511,13 @@ export async function bootstrap(
       body: { principal: "delegable:agent:chat-exec", kind: g.kind, operations: g.operations },
     }, `chat-delegable:exec:${g.kind}`);
   }
-  bootstrapped = { inferenceToken, routerToken, toolsToken, imagesToken, execToken, turnToken };
-  return bootstrapped;
+  const minted = { inferenceToken, routerToken, toolsToken, imagesToken, execToken, turnToken };
+  bootstrapped.set(admin.base, minted);
+  return minted;
 }
 
-/** What `bootstrap` minted, so a second call in one process returns it instead of rotating it. */
-let bootstrapped: Bootstrapped | undefined;
+/** What `bootstrap` minted, so a second call in one process returns it instead of rotating it.
+ *  Keyed by SPACE: one process bootstrapping two spaces must not hand the second one the first's
+ *  tokens, which a single slot would do silently and which the smokes would not catch, since each
+ *  runs against one space. */
+const bootstrapped = new Map<string, Bootstrapped>();

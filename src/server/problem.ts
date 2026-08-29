@@ -87,6 +87,12 @@ const NEAR_MISS: Record<string, string> = {
   parent_ids: "parentIds",
   available_at: "availableAt",
   client_meta: "clientMeta",
+  // The two handlers that had no `rejectUnknown` at all until 2026-08-29, and their snake_case
+  // spellings: a watch's `match` NARROWS, and a definition's `supersedes` is the compare-and-set
+  // that stops an agent ending with two live minting tokens.
+  id_token: "id_token", // already snake_case on the wire; listed so the allow-list reads complete
+  supersedes_id: "supersedes",
+  agent_id: "agent",
 };
 
 export function rejectUnknown(

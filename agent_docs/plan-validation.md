@@ -83,7 +83,7 @@ exercise the guarantees in [design-api.md](design-api.md) (idempotency ordering,
 | stale ack after reassignment            | `test/conformance/suites/faults.ts`              |
 | conflicting idempotency payloads        | `test/conformance/suites/idempotency.ts`         |
 | revocation mid-lease                    | `test/conformance/suites/auth.ts`                |
-| schema migration with live patterns     | `test/backfill.test.ts` (schema only) |
+| schema migration with live patterns     | `test/backfill.test.ts` (STORAGE schema) + `test/conformance/suites/schemaversion.ts` (the kind-declaration half, 2026-08-29) |
 | claim inside another worker's backoff   | `test/concurrency.test.ts` (Postgres) |
 | claim over a shifting candidate window  | `test/concurrency.test.ts` (Postgres) |
 | partition during renewal, outbound      | `test/conformance/suites/faults.ts`              |

@@ -966,7 +966,16 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/Pattern" }
+            # NOT the whole `Pattern`. A watch has no order: events arrive in log order, and the
+            # handler has always hardcoded `orderBy: undefined`. Referencing `Pattern` promised a
+            # field no implementation ever honoured, which `test/openapi.test.ts` found the moment
+            # this operation started refusing unknown fields instead of dropping them.
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind: { type: string }
+                match: { type: object, additionalProperties: true }
       responses:
         "201":
           description: watch created
@@ -2082,7 +2091,13 @@ components:
             origin: { type: string, description: "the leased record this was delegated from" }
         parentIds: { type: array, items: { type: string } }
         taint: { type: array, items: { type: string }, description: "server-computed classification: the UNION of every data parent's labels plus the client's raise, plus `foreign` when a parent was written by another principal. Sorted and deduplicated. Cleared only by a privileged declassify, per label." }
-        schemaVersion: { type: integer }
+        schemaVersion:
+          type: integer
+          description: >
+            Which declaration of this record's kind was in force when it committed: the number of
+            kind_def records naming that kind. Server-assigned and materialized at commit, so a
+            later redeclaration changes only future records. A record of an undeclared kind carries
+            the space's own version instead.
         createdAt: { type: string }
 
     Envelope:

@@ -56,6 +56,40 @@ a wrong claim pattern and, separately, addressed mail to a run id; seven that ca
 right. The kind usage strings work when read, and nothing makes them read. This is the strongest
 correlation in the log and the reason so many fixes ended up in tool descriptions instead.
 
+**One claimant's wrong pattern stalls the whole run, twice over.** Measured 2026-08-29 on
+`team-exec`: codex claimed with `{assignee: {$exists: false}}`, treating an unassigned task as the
+only free one, while the task claude had written carried `assignee: "agent:lab-exec"`. It then
+watched that pattern for the full **120.5s** with the work sitting claimable the whole time. Claude
+meanwhile watched its own mailbox, a pattern that was RIGHT, for **120.0s**, because the reply it
+waited on could not be written by a worker that was blocked. Two agents, two full timeouts, on a
+three-minute run: the second is caused by the first, so a claimant's pattern error costs the
+REQUESTER's time too. After the timeout codex re-watched with no match at all and hit in **0.1s**.
+
+The `task` usage line already says it: "`assignee` is a PREFERENCE: nothing enforces it, anyone may
+claim a task addressed to someone else." Codex called `space_kinds` at 11s, so it read that line,
+and wrote the contradicting pattern at 18s. That is the TEMPORAL half of the hint rule in action
+rather than in the abstract: a usage string is read once during orientation and is no longer in view
+at the moment a claim pattern is chosen. So the fix went on the surface being used at that moment
+rather than into the kind: the scenario prompts now name TWO KINDS OF EMPTY with opposite responses,
+bound the first wait to 30 seconds, and say a second empty answer makes the PATTERN the likelier
+problem than the timing.
+
+**The paired run, same models, same scenario, one variable moved.** Total time PARKED in a watch
+fell from 250s to 82s, and the run from about three minutes to 93 seconds:
+
+| | codex | claude | parked |
+|---|---|---|---|
+| before | 120.5s + 0.1s | 120.0s + 9.9s | 250s |
+| after | 7.3s + 30.2s | 30.2s + 14.0s | 82s |
+
+**Only the BOUNDING is attributable, and the distinction matters more than the number.** Codex
+passed `timeoutSeconds: 30` and said in its own words that it was "doing the required single
+30-second watch", so the instruction is visible in the call it produced; the watch then returned in
+7.3s when the work actually arrived. Claude's requester-side hops (30.2s then 14.0s in place of one
+120s park) are the other half of the same edit. What is NOT attributable is the pattern: codex simply
+did not use an `assignee` filter this time, and the prompt says nothing about `assignee`, so one run
+cannot tell a fix from variance. Two runs are a pair, not a rate.
+
 **A claim that matched nothing looks exactly like an empty queue.** Codex claimed with
 `{tags: {$in: ["image"]}}` on an array path, got nothing, and recovered with `{tags: ["image"]}`,
 which matched only because the list had exactly one element, since that is whole-list equality.

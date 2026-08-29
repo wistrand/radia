@@ -325,6 +325,17 @@ export interface KindDef {
    * permanent for a month. See agent_docs/plan-gc.md.
    */
   defaultRetentionSeconds?: number;
+  /**
+   * The id of the `kind_def` record this declaration replaces, and an ACKNOWLEDGEMENT that the
+   * change is an incompatible one (agent_docs/plan-schema-versioning.md phase 2).
+   *
+   * Required only for a change that breaks something already stored: dropping an indexed or
+   * sortable path, changing `contentKey`, or flipping `claimable`. Adding a path needs nothing.
+   * PRESENCE is what acknowledges, `null` included, which is the convention
+   * `createAgentDefinition({supersedes})` uses and the only thing sayable about a reserved kind,
+   * whose declaration lives in code and has no record to name.
+   */
+  supersedes?: string | null;
 }
 
 /** The meta-kind. Defined here rather than in the runtime because a client writes one. */

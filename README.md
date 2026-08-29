@@ -295,6 +295,11 @@ persistent storage is required; and the web console is served only with `--conso
 bit is for bootstrap, so `--operator-token-file` writes it owner-only where you asked, and without
 that flag it dies with the process.
 
+Two ports, not one: artifact bytes get their own ORIGIN at `--artifact-port` (the main port plus one
+by default), because a second origin is what stops generated content reaching the console. A proxy
+that forwards only the main port leaves every capability URL pointing at nothing; `--artifact-port 0`
+turns it off and serves artifacts as downloads from the main origin instead.
+
 Not yet provided, and a deployment still owns them: TLS (terminate at a proxy), backup and restore,
 and an upgrade procedure. Set `RADIA_DIR` in the unit file, or the runtime directory holding the
 seal key and blob KEK follows the working directory.

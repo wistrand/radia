@@ -120,9 +120,11 @@ A hard API split. Server-controlled always: `created_by`, `delegation_context`,
 lease fields. `available_at` is the exception that proves the shape rather than a hole in it: a
 writer may SEED it (`PutRequest.availableAt`, above) the way it seeds `deadline_at` and
 `retention_until`, and the runtime owns it from that point on, clamping it, bounding it, and
-rewriting it on every nack and admin transition. (`schema_version` is server-assigned and currently a CONSTANT, `SpaceContext.schemaVersion`
-= 1: the split it belongs to is real, the versioning it implies is not, and kind schema versioning
-remains unbuilt in [plan-milestones.md](plan-milestones.md).) Clients submit only *claims* (`confidence`, `requested_priority`); the
+rewriting it on every nack and admin transition. (`schema_version` names WHICH DECLARATION of the record's kind was in force at commit, since
+2026-08-29: the count of `kind_def` records naming it, materialized at commit like
+`retention_until`, so a later redeclaration changes only future records. A record of an undeclared
+kind carries the space's own version. See
+[plan-schema-versioning.md](plan-schema-versioning.md).) Clients submit only *claims* (`confidence`, `requested_priority`); the
 runtime decides what they are worth. This is what stops an agent from, e.g., declaring
 its own priority or authorship. **`created_by` is the server-RESOLVED caller** (the handler's
 resolved principal: a run token → `run:*`, no header → `human:local`), threaded into

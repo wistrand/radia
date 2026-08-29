@@ -11,7 +11,7 @@ import type { Space, Watch } from "../../core/space.ts";
 import type { Pattern } from "../../core/matching.ts";
 import { AUTHORIZATION_KINDS } from "../../core/kinds.ts";
 import { RadiaError } from "../../core/errors.ts";
-import { problem, statusFor } from "../problem.ts";
+import { problem, rejectUnknown, statusFor } from "../problem.ts";
 
 /** Backstop re-check interval. The event-log trigger below is exact, so this only bounds the damage
  *  if a future authorization-bearing kind is added and left out of `AUTHORIZATION_KINDS`. A local
@@ -29,6 +29,13 @@ export async function handleCreateWatch(space: Space, req: Request, principal: s
   if (!j || typeof j.kind !== "string") {
     return problem(400, "invalid_pattern", "watch requires a pattern with a kind");
   }
+  // A field picked BY NAME is silently dropped when misspelled, and `match` is the field that
+  // NARROWS: a typo'd `macth` left a kind-wide watch that the caller believed was scoped, waking
+  // its stream on every record of the kind (plan-bounded-reads.md). `orderBy` is refused rather
+  // than ignored for the same reason: a watch has no order, and accepting the word without
+  // honouring it says otherwise.
+  const unknown = rejectUnknown(j, ["kind", "match"]);
+  if (unknown) return unknown;
   const pattern: Pattern = { kind: j.kind, match: j.match as Record<string, unknown> | undefined, orderBy: undefined };
   try {
     // Authorize like a read: the principal must hold a grant on the kind, and a pattern-scoped

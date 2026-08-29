@@ -38,6 +38,7 @@ import {
   SHRED,
   type ArtifactDef,
   assertKnownKindDefFields,
+  incompatibleChanges,
   assertReservedCompatible,
   AUTHORIZATION_KINDS,
   GRANT,
@@ -436,7 +437,21 @@ export class Space {
    *  declaration content, so re-declaring the same def across restarts does not grow records. */
   async persistKind(def: KindDef): Promise<void> {
     validateKindDef(def);
-    await this.put({ kind: KIND_DEF, body: def }, kindDefKey(def));
+    // ANCHORED on the declaration this one supersedes, the way `RadiaClient.grant` anchors a
+    // revival. `kindDefKey` is content-derived, which is right for "declare the same thing twice"
+    // and WRONG for restoring a declaration that was superseded: the key replays the earlier
+    // identical record, so the call reports success and writes nothing, the in-memory registry
+    // shows the restored def, and a restart reverts it. Measured before this: drop a path with an
+    // acknowledged redeclaration, put it back, and the kind had two paths until reload and one
+    // after. Phase 2 is what made drop-then-restore an ordinary thing to do
+    // (agent_docs/plan-schema-versioning.md).
+    //
+    // The two mechanisms compose: the anchor makes a RESTORE write, and the absorb in
+    // `checkKindDefBudget` still answers an identical live re-put without writing, so a fleet
+    // redeclaring its kinds on every start costs nothing.
+    const newest = await this.query({ kind: KIND_DEF, match: { kind: def.kind } }, 1, { dir: "desc" });
+    const anchor = newest.length ? `:after:${newest[0].id}` : "";
+    await this.put({ kind: KIND_DEF, body: def }, `${kindDefKey(def)}${anchor}`);
   }
 
   /**
@@ -473,7 +488,27 @@ export class Space {
     const { records, complete, scanned } = await readExhaustively(
       (page) => this.query({ kind, match }, page.limit, page, scope),
     );
-    return { entries: activeByKey<T>(records, keyOf), newest: newestByKey<T>(records, keyOf), complete, scanned };
+    // LAZY, and that is not a micro-optimization. This function is the AUTHORIZATION HOT PATH:
+    // `access` reads a principal's grants through it on every authorized request, unmemoized, and
+    // that read is the one measured at 93ms against 5,000 grant records
+    // (agent_docs/plan-registry-cost.md). Counting eagerly added a third pass with a `keyOf` call
+    // per record to every one of those, to serve one caller (`loadKinds`) that wants a version.
+    let memo: Map<string, number> | undefined;
+    return {
+      entries: activeByKey<T>(records, keyOf),
+      newest: newestByKey<T>(records, keyOf),
+      get counts() {
+        if (memo) return memo;
+        memo = new Map<string, number>();
+        for (const r of records) {
+          const k = keyOf(r.body as T, r);
+          if (k !== undefined) memo.set(k, (memo.get(k) ?? 0) + 1);
+        }
+        return memo;
+      },
+      complete,
+      scanned,
+    };
   }
 
   /**
@@ -534,7 +569,7 @@ export class Space {
         // skip a malformed or reserved-incompatible persisted declaration rather than fail startup
         continue;
       }
-      this.kinds.register(def);
+      this.kinds.register(def, view.counts.get(def.kind) ?? 1);
       await this.prepareStorageFor(def);
     }
   }
@@ -809,8 +844,14 @@ export class Space {
    *  defaults to the space's own identity for in-process/operator callers. */
   async put(req: PutRequest, idempotencyKey?: string, principal?: string): Promise<{ id: string }> {
     const declared = this.validateReservedBody(req); // throws RadiaError before anything commits
+    // Refused before anything commits, and what an ACKNOWLEDGED break costs is carried onto the
+    // event, since a break nobody refused is one only the log can still report.
+    const broke = declared ? await this.checkRedeclaration(req.body, declared) : [];
     if (req.kind === INTEREST) await this.checkInterestBudget(req, principal);
-    const id = await this.putRaw(req, idempotencyKey, { principal });
+    const id = await this.putRaw(req, idempotencyKey, {
+      principal,
+      ...(broke.length ? { event: { detail: { brokePatterns: broke } } } : {}),
+    });
     if (declared) await this.adoptKind(declared); // also on idempotent replay
     return id;
   }
@@ -835,7 +876,18 @@ export class Space {
     // ANOTHER INSTANCE would never register on this one.
     if (req.kind === KIND_DEF) {
       assertKnownKindDefFields(req.body);
-      return this.kindDefFromBody(req.body);
+      const def = this.kindDefFromBody(req.body);
+      // Phase 2 (agent_docs/plan-schema-versioning.md): a redeclaration that breaks something
+      // already stored is refused unless it says it meant to. Checked HERE, on the write, and
+      // deliberately not in `kindDefFromBody`: both readers of that function swallow a validation
+      // failure and keep what they have, so a stored declaration that predates this rule still
+      // loads at startup rather than becoming an unloadable kind. The rule bounds what is written
+      // from now on; it does not retroactively refuse the log.
+      // A RETIREMENT is not a redeclaration: `{retired: true}` withdraws the kind and carries no
+      // contract, so it drops every indexed path by construction and would fail the check below on
+      // every kind that ever had one. Exempt, and the exemption is safe because a retirement stops
+      // the kind being registered at all rather than replacing what it declares.
+      return def;
     }
     // A grant record IS an authorization grant: validate its body before commit. Write-protection
     // (that only a privileged principal may put one) is enforced at the API boundary.
@@ -906,7 +958,7 @@ export class Space {
    * keeps the restart working AND stops the growth, and it is the same answer idempotency gives
    * inside the window. Below the ceiling nothing changes: every write lands, as before.
    */
-  private async checkGrantBudget(req: PutRequest): Promise<{ satisfiedBy: string } | undefined> {
+  private async checkGrantBudget(req: PutRequest, o: { absorb?: boolean } = {}): Promise<{ satisfiedBy: string } | undefined> {
     const b = (req.body ?? {}) as { principal?: unknown; kind?: unknown };
     if (typeof b.principal !== "string" || typeof b.kind !== "string") return;
     return await this.checkRegistryBudget(req, {
@@ -920,6 +972,7 @@ export class Space {
       subject: `'${b.principal}' on kind '${b.kind}'`,
       reader: "every authorized request",
       cause: "something is assigning NEW grant identities in a loop (a changing pattern, most likely)",
+      absorb: o.absorb,
     });
   }
 
@@ -940,7 +993,7 @@ export class Space {
    * so a principal has at most 31 of them and cannot blow the ceiling by inventing new ones. Reaching
    * it therefore means history, always.
    */
-  private async checkOpsGrantBudget(req: PutRequest): Promise<{ satisfiedBy: string } | undefined> {
+  private async checkOpsGrantBudget(req: PutRequest, o: { absorb?: boolean } = {}): Promise<{ satisfiedBy: string } | undefined> {
     const b = (req.body ?? {}) as { principal?: unknown };
     if (typeof b.principal !== "string") return;
     return await this.checkRegistryBudget(req, {
@@ -952,6 +1005,7 @@ export class Space {
       subject: `'${b.principal}'`,
       reader: "every ops-plane request",
       cause: "something is assigning powers on a schedule rather than at identity creation",
+      absorb: o.absorb,
     });
   }
 
@@ -988,6 +1042,9 @@ export class Space {
       subject: string;
       reader: string;
       cause: string;
+      /** False to run the CEILING only. The absorb answers with the record that already carries
+       *  this entry, which a settle cannot use: it must name its own result. */
+      absorb?: boolean;
     },
   ): Promise<{ satisfiedBy: string } | undefined> {
     if ((req.body as { retired?: unknown })?.retired === true) return;
@@ -1012,7 +1069,7 @@ export class Space {
     // on identity alone dropped a grant that added `scope: {createdBy: "self"}` while reporting
     // success, leaving the wider grant standing. The hash is over the same serialization
     // `buildRecord` stores, so any difference at all writes.
-    if (live && live.bodySha256 === await sha256Hex(JSON.stringify(req.body ?? null))) {
+    if (o.absorb !== false && live && live.bodySha256 === await sha256Hex(JSON.stringify(req.body ?? null))) {
       return { satisfiedBy: live.id };
     }
 
@@ -1080,9 +1137,144 @@ export class Space {
 
   /** Reflect a committed declaration in THIS process's registry (other instances re-read it
    *  through `compileFresh`). */
+  /**
+   * Which LIVE patterns a proposed declaration would stop compiling
+   * (agent_docs/plan-schema-versioning.md phase 3).
+   *
+   * Phase 2 classifies a redeclaration STRUCTURALLY: it knows a path was dropped. This answers the
+   * question that follows, and it is the one an operator actually has: dropped for whom. A grant
+   * whose pattern no longer compiles stops matching, an interest stops routing, and a watch stops
+   * waking, all of them silently and all of them fail-closed, which is the combination that makes
+   * this worth naming at the write rather than discovering later.
+   *
+   * BOUNDED and read at the moment of the declaration: grants and interests for this one kind,
+   * plus this instance's own watches. Watches are process-local by design, so on several instances
+   * this reports the ones HERE and says so rather than implying it saw them all.
+   */
+  async patternsBrokenBy(def: KindDef): Promise<{ what: string; who: string; why: string }[]> {
+    const broken: { what: string; who: string; why: string }[] = [];
+    const check = (what: string, who: string, pattern: Pattern) => {
+      try {
+        compilePattern(pattern, def);
+      } catch (e) {
+        // Only a pattern the DECLARATION breaks. Anything else (a malformed stored pattern, a
+        // limit) is not this declaration's doing and reporting it here would blame the wrong write.
+        if (e instanceof RadiaError && (e.code === "undeclared_path" || e.code === "unsortable_path")) {
+          broken.push({ what, who, why: e.message });
+        }
+      }
+    };
+    const grants = await this.registry<GrantDef>(GRANT, grantKey, { kind: def.kind });
+    for (const rec of grants.entries.values()) {
+      const g = rec.body as GrantDef;
+      if (g.kind !== def.kind || !g.pattern) continue;
+      check("grant", `${g.principal} (${g.operations.join(",")})`, { kind: def.kind, match: g.pattern });
+    }
+    const { interests } = await this.liveInterests(def.kind);
+    for (const i of interests) {
+      if (i.match) check("interest", i.agent ?? i.run, { kind: def.kind, match: i.match });
+    }
+    for (const w of this.watches.values()) {
+      if (w.request.kind === def.kind) check("watch", w.owner, w.request);
+    }
+    return broken;
+  }
+
+  /**
+   * Refuse a redeclaration that breaks something already stored, and name what it breaks
+   * (agent_docs/plan-schema-versioning.md phases 2 and 3).
+   *
+   * Phase 2 is structural and free: it compares the two declarations. Phase 3 costs two bounded
+   * reads and answers the question that follows, which is the one an operator has: broken FOR WHOM.
+   * Both run on BOTH write paths, because `validateReservedBody` learned that lesson already: an
+   * `ack` emitting a `kind_def` must not be a way around a rule a `put` obeys.
+   *
+   * Returns the live patterns this declaration breaks, for the caller to record on the event. An
+   * ACKNOWLEDGED break is not refused, so the log is the only place the consequence survives.
+   *
+   * NOT a compare-and-set. Naming the record makes the caller read the state it is deciding on,
+   * which is most of the value, but the write is not keyed to it, so two callers with DIFFERENT
+   * views both land. That half is the remainder of phase 2.
+   */
+  private async checkRedeclaration(body: unknown, def: KindDef): Promise<{ what: string; who: string; why: string }[]> {
+    // A retirement carries no contract and drops every path by construction (see `isRetired`).
+    if (isRetired(body)) return [];
+    // PRESENCE acknowledges, `null` included: a reserved kind is declared in code and has no
+    // record to name, so requiring an id would make its (legal) extension unreachable.
+    const acknowledged = typeof body === "object" && body !== null && "supersedes" in body;
+    // FROM THE LOG, never from the in-memory registry, and the difference is a correctness hole
+    // rather than a refinement: with several instances over one database, this process's registry
+    // holds whatever it last loaded. A declaration written through instance A leaves B comparing
+    // against a stale definition, so a redeclaration through B that drops a path A added reads as
+    // "no change" and lands, breaking every pattern that used it. That is audit package O's class
+    // (multi-instance freshness), and the read is the same bounded shape `refreshKind` uses.
+    const prev = await this.newestDeclaration(def.kind);
+    const structural = prev ? incompatibleChanges(prev, def) : [];
+    // The live read is paid for only when something structural already says a pattern COULD break,
+    // or when the declaration is going through unacknowledged. A declaration that only adds paths
+    // pays nothing.
+    const broken = structural.length > 0 ? await this.patternsBrokenBy(def) : [];
+    if (structural.length > 0 && !acknowledged) {
+      const named = broken.slice(0, 5).map((b) => `${b.what} ${b.who}`);
+      const rest = broken.length > named.length ? `, and ${broken.length - named.length} more` : "";
+      throw new RadiaError(
+        "incompatible_redeclaration",
+        `this redeclaration of '${def.kind}' ${structural.join("; and ")}. ` +
+          (broken.length
+            ? `Live now and stopping: ${named.join(", ")}${rest}. `
+            : `Nothing live uses the dropped paths on this instance, which is not the same as nothing anywhere: a watch is process-local. `) +
+          `If that is what you mean, declare it again with 'supersedes' naming the kind_def record ` +
+          `it replaces (null if there is none); a redeclaration that only ADDS paths needs nothing.`,
+      );
+    }
+    return broken;
+  }
+
   private async adoptKind(def: KindDef): Promise<void> {
-    this.kinds.register(def);
+    this.kinds.register(def, await this.declarationCount(def.kind));
     await this.prepareStorageFor(def);
+  }
+
+  /**
+   * The declaration in force for a kind, read from the LOG rather than from this process's
+   * registry. Returns undefined when there is none or the newest is a RETIREMENT, which matches
+   * what the registry does with one: a withdrawn kind has no contract to break.
+   *
+   * Exact and bounded (`limit 1, dir desc` on an indexed field), the SAFE shape of a registry read.
+   */
+  private async newestDeclaration(kind: string): Promise<KindDef | undefined> {
+    if (kind === KIND_DEF) return this.kinds.get(KIND_DEF); // the meta-kind lives in code
+    let rows: RadiaRecord[];
+    try {
+      rows = await this.query({ kind: KIND_DEF, match: { kind } }, 1, { dir: "desc" });
+    } catch {
+      return this.kinds.get(kind); // a storage error must not turn the check into a refusal
+    }
+    if (rows.length === 0 || isRetired(rows[0].body)) return undefined;
+    try {
+      return this.kindDefFromBody(rows[0].body);
+    } catch {
+      return undefined; // a stored declaration this build cannot read is not a contract to compare
+    }
+  }
+
+  /**
+   * How many `kind_def` records name this kind: the kind's version
+   * (agent_docs/plan-schema-versioning.md phase 1).
+   *
+   * COUNTED FROM THE LOG, never by incrementing what is in memory. `put` calls `adoptKind` on an
+   * absorbed re-put as well, which wrote no record, so incrementing would drift one version per
+   * redeclaration that changed nothing. Bounded and rare: a declaration is written only on a real
+   * change, and this runs only when one is adopted.
+   */
+  private async declarationCount(kind: string): Promise<number> {
+    const { records, complete } = await readExhaustively(
+      (page) => this.query({ kind: KIND_DEF, match: { kind } }, page.limit, page),
+    );
+    // A partial read would UNDERCOUNT, and a version that goes backwards is worse than one that
+    // stands still: keep what is registered rather than stamp a number that is wrong downwards.
+    if (!complete) return this.kinds.versionOf(kind) ?? 1;
+    return Math.max(1, records.length);
   }
 
   /**
@@ -1143,6 +1335,21 @@ export class Space {
   }
 
   /**
+   * The refusing half of the budgets, for a write path that cannot use the absorbing half.
+   *
+   * An `ack` result is a record like any other and reached none of these, because they live in
+   * `putRaw` and a result is written by the adapter's settle. Only the CEILINGS run here: the
+   * absorb's answer ("here is the record that already carries this") has no meaning for a settle
+   * that must name its own result.
+   */
+  private async checkCeilings(req: PutRequest, principal?: string): Promise<void> {
+    if (req.kind === INTEREST) return await this.checkInterestBudget(req, principal);
+    // `kind_def` has no ceiling by design (see `checkKindDefBudget`), so nothing to run for it.
+    if (req.kind === GRANT) await this.checkGrantBudget(req, { absorb: false });
+    if (req.kind === OPS_GRANT) await this.checkOpsGrantBudget(req, { absorb: false });
+  }
+
+  /**
    * Absorb an identical re-declaration, and DO NOT cap.
    *
    * `kind_def` is uncompactable like the two above, but neither ceiling shape fits it. A cap per
@@ -1182,10 +1389,16 @@ export class Space {
     idempotencyKey?: string,
     opts: { taint?: string[]; principal?: string; event?: { operation?: string; detail?: Record<string, unknown> } } = {},
   ): Promise<{ id: string }> {
-    // Before anything is written, and on every write path. A budget may answer that this write is
-    // redundant with a record that already exists, in which case the postcondition the caller cares
-    // about ("the grant is in force") already holds and writing would only grow the history the
-    // ceiling exists to bound.
+    // Before anything is written on THIS path. A budget may answer that this write is redundant
+    // with a record that already exists, in which case the postcondition the caller cares about
+    // ("the grant is in force") already holds and writing would only grow the history the ceiling
+    // exists to bound.
+    //
+    // This comment used to say "on every write path" and was wrong: an `ack` result is built by
+    // `buildRecord` in `settle` and written by the adapter, so it reached none of these, and a
+    // worker could evade `maxInterestsPerPrincipal` entirely by emitting interests as results.
+    // `Space.checkCeilings` is that path's half; the two are separate because only this one can
+    // absorb.
     const satisfied = await this.checkBudgets(req);
     if (satisfied) return { id: satisfied.satisfiedBy };
     const now = await this.storage.now(); // INVARIANT: timestamps come from the DB clock
@@ -1206,7 +1419,11 @@ export class Space {
     }
     const { record, bodyJson } = await buildRecord({ ...req, retentionUntil }, {
       principal: opts.principal ?? this.ctx.principal, // created_by = the resolved caller
-      schemaVersion: this.ctx.schemaVersion,
+      // WHICH DECLARATION this record was written under, materialized at commit exactly as
+      // `retention_until` is above: a later redeclaration then changes only FUTURE records and
+      // never rewrites what history says a record was written against. An undeclared kind has no
+      // declaration to name, so it falls back to the space's own version.
+      schemaVersion: this.kinds.versionOf(req.kind) ?? this.ctx.schemaVersion,
       maxRecordBytes: this.ctx.maxRecordBytes,
       now,
       taint,
@@ -1622,6 +1839,24 @@ export class Space {
       // A result body the runtime reads back is validated exactly as a `put` body is, before
       // anything is consumed: emitting a record through a lease is not a way around the rule.
       declared = this.validateReservedBody(result);
+      // Same rule on this path, for the reason `validateReservedBody` states: a second write path
+      // that grew after the first one learned a rule is how the rule stops holding. The REFUSAL is
+      // identical; what this path cannot do is record an acknowledged break on the event, because
+      // a result record is written by the adapter's settle rather than through `putRaw`. Declaring
+      // a kind by acking one is exotic enough that the refusal is the part worth having.
+      if (declared) await this.checkRedeclaration(result.body, declared);
+      // THE REGISTRY CEILINGS, for the same reason and found the same way. They live inside
+      // `putRaw`, whose comment claimed they run "on every write path"; an ack result is built by
+      // `buildRecord` here and written by the adapter's settle, so it reached none of them.
+      // Measured before this: `maxInterestsPerPrincipal` of 3, six interests emitted as ack
+      // results, ZERO refused and nine entries standing. Any worker holding `interest: put` and a
+      // claim could evade a cap that exists because somebody else pays to read that registry.
+      //
+      // CEILINGS ONLY, never the absorb: the absorb answers "this write is redundant, here is the
+      // record that already carries it", and an ack must still settle its lease and name a result.
+      // The ceiling is the guarantee; the absorb is a growth optimization whose absence on an
+      // exotic path costs records rather than correctness.
+      await this.checkCeilings(result, principal);
       const now = await this.storage.now();
       const parentIds = [
         lease.recordId,
@@ -1661,7 +1896,7 @@ export class Space {
       }
       const { record, bodyJson } = await buildRecord({ ...result, parentIds, retentionUntil }, {
         principal: principal ?? this.ctx.principal, // created_by = the acking caller
-        schemaVersion: this.ctx.schemaVersion,
+        schemaVersion: this.kinds.versionOf(result.kind) ?? this.ctx.schemaVersion,
         maxRecordBytes: this.ctx.maxRecordBytes,
         now,
         delegationContext,
@@ -2580,7 +2815,9 @@ export class Space {
     }
     const current = this.kinds.get(def.kind);
     if (current && JSON.stringify(current) === JSON.stringify(def)) return false;
-    this.kinds.register(def);
+    // A version too, since this is how a declaration written on ANOTHER INSTANCE reaches this one:
+    // registering without it would leave records stamped with the version this process last saw.
+    this.kinds.register(def, await this.declarationCount(def.kind));
     await this.prepareStorageFor(def);
     return true;
   }

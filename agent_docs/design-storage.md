@@ -144,6 +144,11 @@ setting reads as applied (plan-bounded-reads.md, "a field the code picks BY NAME
 Guarded by `test/serve.test.ts`, which spawns the process: the posture is what it DOES, and half of
 those assertions are about its stdout and the files it touched.
 
+**Two ports.** Artifact bytes get their own origin at `--artifact-port` (main port plus one by
+default), which is what stops generated content reaching the console. A proxy forwarding only the
+main port leaves every capability URL unreachable; `--artifact-port 0` disables the second origin
+and serves artifacts as downloads from the first.
+
 **What `serve` does not yet do, and a deployment must therefore do around it:** TLS (terminate at a
 proxy), backup and restore, and an upgrade procedure. Nothing here writes those down yet. The
 runtime directory (`.radia`, holding the seal key and the blob KEK by default) is resolved relative

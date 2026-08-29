@@ -28,6 +28,10 @@ export interface RegistryView {
    *  reviving a retired entry requires a key that differs from the record being revived, so it
    *  has to be able to see that the newest record is a retirement, and which record that is. */
   newest: Map<string, RadiaRecord>;
+  /** How many records exist per key, retirements included. The kind's own version history: a
+   *  registry kind that is never compacted (`kind_def`) and absorbs an identical re-put grows this
+   *  only on a REAL change, which is what makes it usable as a version ordinal. */
+  counts: Map<string, number>;
   /** False when the scan hit its cap before exhausting the kind. The view may be missing entries,
    *  and a caller that treats it as authoritative would be guessing. */
   complete: boolean;

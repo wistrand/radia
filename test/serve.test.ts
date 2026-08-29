@@ -70,6 +70,16 @@ Deno.test("serve: refuses to start with nowhere to keep its data", async () => {
   assertStringIncludes(r.err, "needs somewhere to keep its data");
 });
 
+Deno.test("serve: a file path where a connection URL belongs is NAMED, not a driver stack trace", async () => {
+  // `serve` defaults to postgres, so `--db /var/lib/radia/space.db` is a plausible thing to type,
+  // and it used to answer with the driver's connect trace (plan-startup-ergonomics.md item 2 is the
+  // same fix for a taken port).
+  const r = await run(["serve", "--db", `${tmp()}/space.db`]);
+  assertEquals(r.code, 2);
+  assertStringIncludes(r.err, "is not a connection URL");
+  assertStringIncludes(r.err, "--storage sqlite");
+});
+
 Deno.test("serve: prints no token, writes no credential file, and serves no console", async () => {
   const dir = tmp();
   const creds = `${dir}/credentials.json`;
@@ -115,6 +125,16 @@ Deno.test("serve: --operator-token-file is the only way to the operator bit, and
     assertEquals(r.value.mode! & 0o077, 0, "the token file must not be readable by anyone else");
   }
   assertEquals(r.out.trim(), "", "still nothing on stdout");
+});
+
+Deno.test("serve: an unwritable --operator-token-file stops the space rather than serving on", async () => {
+  // The one state this flag exists to prevent: a reachable space holding an operator token nobody
+  // can read. Returning while the server ran left exactly that.
+  const dir = tmp();
+  const r = await run(["serve", "--storage", "sqlite", "--db", `${dir}/s.db`, "--port", "7875", "--operator-token-file", "/proc/nope/x"]);
+  assertEquals(r.code, 1);
+  assertStringIncludes(r.err, "could not write --operator-token-file");
+  assertStringIncludes(r.err, "stopped");
 });
 
 Deno.test("serve: a config file is the same flag names, and a flag on the command line wins", async () => {

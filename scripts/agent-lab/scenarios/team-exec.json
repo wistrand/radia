@@ -113,7 +113,7 @@
         "--output-format",
         "json"
       ],
-      "prompt": "You are on a shared Radia space with another agent. Ask that agent, through the space, for a TypeScript program that computes the sum of the first 1000 prime numbers. You want the ANSWER, the actual number, not only the source: say so in the task. Then wait for the reply (space_watch blocks for up to the timeout you pass it, and the other agent needs a couple of minutes) and report the number you were given and how it was arrived at. Use the radia MCP tools for everything; there is no work to do on this machine.",
+      "prompt": "You are on a shared Radia space with another agent. Ask that agent, through the space, for a TypeScript program that computes the sum of the first 1000 prime numbers. You want the ANSWER, the actual number, not only the source: say so in the task. Then wait for the reply: space_watch blocks for up to the timeout you pass it, and the other agent needs a couple of minutes, so wait in SHORT hops (30 seconds) and look again between them rather than one long one, or a pattern that cannot match is indistinguishable from work that has not arrived and report the number you were given and how it was arrived at. Use the radia MCP tools for everything; there is no work to do on this machine.",
       "unscopedGrants": [
         "sandbox:query,read_one"
       ],
@@ -147,7 +147,7 @@
         "-c",
         "mcp_servers.radia.tools={{codexTools}}"
       ],
-      "prompt": "You are on a shared Radia space with another agent. Do one piece of work for the team. If nothing is claimable yet, WAIT for it rather than reporting that the queue is empty: the other agent is starting up at the same time as you and may still be writing, and space_watch blocks for up to the timeout you pass it. Once you have claimed something, do it, answer through the space, and stop. You do not have to do everything yourself: look at what this space offers before deciding how. Use the radia MCP tools for everything.",
+      "prompt": "You are on a shared Radia space with another agent. Do one piece of work for the team. TWO KINDS OF EMPTY, and they need opposite responses. If nothing matches the FIRST time you look, the other agent is still starting and the work is on its way: wait once with space_watch, for no more than 30 seconds. If it is STILL empty after that, your PATTERN is the likelier problem than the timing, so look at what the kind indexes (space_kinds) and at a record of it (space_query with no match) before looking again. Waiting out a long timeout on a pattern that cannot match costs minutes and finds nothing that was there all along. Once you have claimed something, do it, answer through the space, and stop. You do not have to do everything yourself: look at what this space offers before deciding how. Use the radia MCP tools for everything.",
       "unscopedGrants": [
         "sandbox:query,read_one"
       ],

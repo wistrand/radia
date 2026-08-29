@@ -479,6 +479,13 @@ Deno.test("oidc: the identity registry compacts under the RUNTIME's key, and a h
     // contentKey is an extension (assertReservedCompatible pins only paths and claimable). The
     // runtime key must win (`RUNTIME_KEYS[kind] ?? contentKey`), or this grant re-keys an
     // authorization-adjacent registry.
+    //
+    // `supersedes` because adding a contentKey is now an INCOMPATIBLE change
+    // (plan-schema-versioning.md phase 2: it makes a kind compactable for the first time, which
+    // retroactively makes stored records deletable). That is a speed bump, not a defence, and
+    // saying so is the point of keeping this test hostile: a caller holding `put: kind_def` reads
+    // the newest declaration and names it, exactly as this does.
+    const prior = (await space.query({ kind: "kind_def", match: { kind: "oidc_identity" } }, 1, { dir: "desc" }))[0];
     await space.put({
       kind: "kind_def",
       body: {
@@ -486,6 +493,7 @@ Deno.test("oidc: the identity registry compacts under the RUNTIME's key, and a h
         indexedPaths: [{ path: "iss", type: "keyword" }, { path: "sub", type: "keyword" }],
         claimable: false,
         contentKey: ["principal"],
+        supersedes: prior?.id ?? null, // `null` is the "there was none" acknowledgement; a reserved kind is declared in code
       },
     });
     const r = await space.gc();

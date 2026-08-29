@@ -418,4 +418,28 @@ export const limitSuites: Suite[] = [
       assertEquals(sorted.length, 2500);
     },
   },
+  {
+    name: "an ack result is a write, so it meets the registry ceilings a put does",
+    run: async (adapter) => {
+      // A SECOND WRITE PATH that grew after the first learned a rule, which is the class
+      // `validateReservedBody` names. The budgets live in `putRaw`; an ack result is built in
+      // `settle` and written by the adapter, so it reached none of them. Measured before the fix:
+      // a cap of 3, six interests emitted as ack results, ZERO refused and nine entries standing.
+      const space = new Space(adapter, { maxInterestsPerPrincipal: 3 });
+      space.registerKind({ kind: "job", indexedPaths: [{ path: "n", type: "integer" }] });
+      let refused = 0;
+      for (let i = 0; i < 6; i++) {
+        await space.put({ kind: "job", body: { n: i } });
+        const t = await space.take({ pattern: { kind: "job", match: { n: i } } });
+        assert(t);
+        try {
+          await space.ack(t!.lease, { kind: "interest", body: { kind: "job", match: { n: i } } });
+        } catch {
+          refused++;
+        }
+      }
+      assertEquals(refused, 3, "the cap must bind on the ack path too");
+      assertEquals((await space.query({ kind: "interest" }, 100)).length, 3);
+    },
+  },
 ];

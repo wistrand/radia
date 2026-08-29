@@ -537,6 +537,75 @@ export function assertReservedCompatible(def: KindDef): void {
   }
 }
 
+/**
+ * What a redeclaration of an APP kind may change without acknowledgement
+ * (agent_docs/plan-schema-versioning.md phase 2). `assertReservedCompatible` above is the same idea
+ * for the kinds the runtime itself compiles against; this is the general case, and it was missing:
+ * `KindRegistry.register` copies the new definition over the old with no comparison, so every one
+ * of the breakages below happened silently.
+ *
+ * COMPATIBLE, and always allowed: adding an indexed path, adding a sortable path that is already
+ * indexed, changing `usage`, changing `defaultRetentionSeconds` (materialized at commit, so it
+ * reaches only future records), changing an indexed path's TYPE. The type is documentation: nothing
+ * reads it but this file, since `matching.ts` asks only whether a path is declared, `prepareKind`
+ * takes no types, and the pushdown guards on the STORED JSON type per row.
+ *
+ * INCOMPATIBLE, and refused unless the declaration names the record it supersedes:
+ *   - removing an indexed path, which stops every stored grant, interest and watch pattern naming
+ *     it from compiling (`undeclared_path`). Fail-closed, and silent for routing.
+ *   - removing a sortable path, which turns a live `order_by` into `unsortable_path`.
+ *   - changing `contentKey`, which changes compaction identity RETROACTIVELY: records that were
+ *     distinct entries collapse under one key and the sweep deletes the losers. The only one here
+ *     that loses data.
+ *   - flipping `claimable`, in EITHER direction. It does not gate `take`, which is the thing
+ *     everyone assumes and which cost this rule a wrong first draft: what it decides is which
+ *     records the RETENTION SWEEP may delete (`sweepSelector` in `gc.ts` sweeps a claimable-false
+ *     kind from ANY state, and never touches unclaimed claimable work) and whether the kind is in
+ *     the starvation check. True to false therefore makes stored records newly SWEEPABLE, which is
+ *     the direction that loses data; false to true makes them permanently unsweepable litter.
+ *
+ * Never a refusal outright: the acknowledgement is the fix. Refusing would make the only way to
+ * change a kind a new kind name plus a fork of every pattern that reads it.
+ */
+export function incompatibleChanges(prev: KindDef, next: KindDef): string[] {
+  const out: string[] = [];
+  const before = new Set((prev.indexedPaths ?? []).map((p) => p.path));
+  const after = new Set((next.indexedPaths ?? []).map((p) => p.path));
+  const dropped = [...before].filter((p) => !after.has(p)).sort();
+  if (dropped.length) {
+    out.push(
+      `drops the indexed path${dropped.length > 1 ? "s" : ""} ${dropped.map((p) => `'${p}'`).join(", ")}, so any stored ` +
+        `grant, interest or watch pattern naming ${dropped.length > 1 ? "them" : "it"} stops compiling`,
+    );
+  }
+  const sortBefore = new Set(prev.sortablePaths ?? []);
+  const sortAfter = new Set(next.sortablePaths ?? []);
+  const unsorted = [...sortBefore].filter((p) => !sortAfter.has(p)).sort();
+  if (unsorted.length) {
+    out.push(`drops the sortable path${unsorted.length > 1 ? "s" : ""} ${unsorted.map((p) => `'${p}'`).join(", ")}, so a live order_by on ${unsorted.length > 1 ? "them" : "it"} starts failing`);
+  }
+  // Compared as a SET: `contentKey` is an identity, and the order it is written in does not change
+  // which records share one.
+  const key = (d: KindDef) => [...(d.contentKey ?? [])].sort().join(",");
+  if (key(prev) !== key(next)) {
+    out.push(
+      `changes contentKey from ${prev.contentKey?.length ? `[${prev.contentKey.join(", ")}]` : "none"} to ` +
+        `${next.contentKey?.length ? `[${next.contentKey.join(", ")}]` : "none"}, which changes compaction identity ` +
+        `RETROACTIVELY: records that were distinct entries collapse under one key and the sweep deletes the losers`,
+    );
+  }
+  // Absent means claimable (the documented default), so an omitted field is not a change.
+  const claimable = (d: KindDef) => d.claimable !== false;
+  if (claimable(prev) !== claimable(next)) {
+    out.push(
+      claimable(next)
+        ? "makes the kind claimable, so the retention sweep stops being able to reach its unclaimed records at all"
+        : "makes the kind reference data, so the retention sweep may now delete its stored records from ANY state",
+    );
+  }
+  return out;
+}
+
 function validPath(path: string): boolean {
   // Dotted segments only; no empty segment (rejects "", "a.", ".a", "a..b"). Literal dots
   // in a key are impossible by construction: dots are the path separator.
@@ -553,6 +622,7 @@ const KIND_DEF_FIELDS = [
   "defaultRetentionSeconds",
   "usage",
   "retired",
+  "supersedes",
 ];
 /** …and an entry inside `indexedPaths`. */
 const INDEXED_PATH_FIELDS = ["path", "type"];
@@ -671,9 +741,16 @@ export function validateKindDef(def: KindDef): void {
 
 export class KindRegistry {
   #defs = new Map<string, KindDef>();
+  /** Which DECLARATION each kind is on, stamped onto every record written under it
+   *  (agent_docs/plan-schema-versioning.md phase 1). The ordinal is the number of `kind_def`
+   *  records naming the kind, which grows only on a real change: `kind_def` is in `NEVER_COMPACT`
+   *  and `checkKindDefBudget` absorbs an identical re-put, so the count is monotone and two
+   *  instances reading one log compute the same number. */
+  #versions = new Map<string, number>();
 
-  register(def: KindDef): void {
+  register(def: KindDef, version = 1): void {
     validateKindDef(def);
+    this.#versions.set(def.kind, version);
     this.#defs.set(def.kind, {
       kind: def.kind,
       indexedPaths: [...def.indexedPaths],
@@ -689,6 +766,13 @@ export class KindRegistry {
 
   get(kind: string): KindDef | undefined {
     return this.#defs.get(kind);
+  }
+
+  /** The declaration in force for `kind`, or undefined for a kind nobody declared. A put of an
+   *  undeclared kind is legal (a write must not race a fleet's declaration), and such a record
+   *  falls back to the space's own version rather than claiming a declaration it had none of. */
+  versionOf(kind: string): number | undefined {
+    return this.#versions.get(kind);
   }
 
   has(kind: string): boolean {

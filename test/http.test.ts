@@ -1644,3 +1644,34 @@ Deno.test("http: a misspelled pattern field is refused, never silently dropped",
     await close();
   }
 });
+
+Deno.test("http: the two handlers that had no field check refuse a typo too", async () => {
+  // `watches` and `agent-definitions` read a body and picked their fields BY NAME with no
+  // `rejectUnknown`, which is the one guard against the class. Both had a field where the typo
+  // removes a constraint rather than a convenience:
+  //   - a watch's `match` NARROWS, so `macth` leaves a KIND-WIDE watch the caller believes is
+  //     scoped, waking its stream on every record of the kind;
+  //   - a definition's `supersedes` is the compare-and-set that stops two racers leaving an agent
+  //     with TWO live minting tokens, and dropping it puts that race back in silence.
+  const { space, handler, close } = await newHandler();
+  try {
+    space.registerKind({ kind: "w", indexedPaths: [{ path: "team", type: "keyword" }] });
+    const q = async (path: string, body: unknown) => {
+      const res = await handler(post(path, body));
+      return { status: res.status, json: await res.json() };
+    };
+
+    assertEquals((await q("/v0/watches", { kind: "w", match: { team: "blue" } })).status, 201);
+    const typo = await q("/v0/watches", { kind: "w", macth: { team: "blue" } });
+    assertEquals(typo.status, 400, "a dropped watch `match` widens the stream to the whole kind");
+    assert(String(typo.json.detail).includes("match"), typo.json.detail);
+
+    assertEquals((await q("/v0/agent-definitions", { agent: "agent:a", grants: [] })).status, 201);
+    const bad = await q("/v0/agent-definitions", { agent: "agent:b", grants: [], superceeds: null });
+    assertEquals(bad.status, 400, "a dropped `supersedes` removes the compare-and-set");
+    assert(String(bad.json.detail).includes("supersedes"), bad.json.detail);
+  } finally {
+    await close();
+  }
+});
+

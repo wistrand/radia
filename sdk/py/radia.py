@@ -717,12 +717,24 @@ class RadiaClient:
                         if self.definition_token:
                             # The RUN is finished; the credential is not. Mint another and keep
                             # renewing, so a Python worker no longer ends at the 12-hour ceiling.
-                            self._exchange(self.token)
-                            continue
-                        if on_lost:
-                            on_lost(e.detail or "run cannot be renewed")
-                        return
-                    delay = 30.0
+                            #
+                            # GUARDED, and a bare `self._exchange(); continue` was wrong twice: a
+                            # revoked definition raises here, and raising inside this handler kills
+                            # the daemon thread without ever calling `on_lost`; and continuing with
+                            # no wait spins if the fresh run is refused too.
+                            try:
+                                self._exchange(self.token)
+                                delay = 1.0
+                            except RadiaError as mint:
+                                if on_lost:
+                                    on_lost(mint.detail or "the definition can no longer mint a run")
+                                return
+                        else:
+                            if on_lost:
+                                on_lost(e.detail or "run cannot be renewed")
+                            return
+                    else:
+                        delay = 30.0
                 stop.wait(delay)
 
         t = threading.Thread(target=run_loop, daemon=True)

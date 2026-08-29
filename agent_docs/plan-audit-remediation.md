@@ -63,6 +63,48 @@ Packages A–S and U–W are closed; **T is open**. Closed lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
 
+## Package Y: the fourth audit (2026-08-29), CLOSED 2026-08-29
+
+Run by CLASS rather than by file, using the classes this file and
+[plan-bounded-reads.md](plan-bounded-reads.md) already name. Three findings, each verified against
+source and each guarded; the two that matter are both the SAME class, a second write path that grew
+after the first learned a rule.
+
+### Y1. An `ack` result reached none of the registry ceilings (P2), FIXED
+
+`checkBudgets` and `checkInterestBudget` live in `Space.putRaw`, whose comment claimed they run "on
+every write path". An `ack` result is built by `buildRecord` in `settle` and written by the
+adapter's settle, so it reached neither. MEASURED: `maxInterestsPerPrincipal` of 3, six interests
+emitted as ack results, **zero refused and nine entries standing**. Any worker holding
+`interest: put` and a claim could evade a cap that exists because somebody else pays to read that
+registry (the dry-run matcher and the starvation split).
+
+**Rule.** A rule that bounds a write runs on BOTH write paths, which is what
+`validateReservedBody`'s own comment says and what its neighbours did not do.
+**Fix.** `Space.checkCeilings`, called from `settle`. CEILINGS ONLY: the absorb answers "here is the
+record that already carries this", which a settle cannot use, since it must name its own result.
+**Guard.** `test/conformance/suites/limits.ts`, proved red.
+
+### Y2. Two handlers picked request fields BY NAME with no `rejectUnknown` (P2), FIXED
+
+`POST /watches` and `POST /agent-definitions` read a body and picked fields by spelling. Both had a
+field where the typo removes a CONSTRAINT rather than a convenience: a watch's `match` NARROWS, so
+`macth` left a kind-wide watch the caller believed was scoped; and a definition's `supersedes` is
+the compare-and-set that stops two racers leaving an agent with two live minting tokens.
+**Guard.** `test/http.test.ts`; both now 400 and name the field.
+
+### Y3. The contract promised a field no implementation ever honoured (P3), FIXED
+
+Adding the check above made `test/openapi.test.ts` fire: `POST /watches` `$ref`s the whole `Pattern`
+schema, so the contract has always promised `orderBy` while the handler hardcoded
+`orderBy: undefined`. A watch has no order. The spec now describes what the handler does.
+
+Fixing it also found the GUARD itself wrong in two ways that cancelled out: it flattened a `$ref`
+nested under `properties` into the top-level field set (reporting `GrantDef`'s own fields as
+`/agent-definitions` request fields), and it unioned a handler's body-level and NESTED-object
+guards. Each was wrong; together they agreed, which is why no mapped row ever failed. Both fixed,
+and the corrected guard was proved to still catch a planted mismatch.
+
 ## Package U: idempotency keys were scoped to one run token (P2) — CLOSED 2026-08-09
 
 VERIFIED 2026-08-09 by reading the scope; CLOSED the same day.

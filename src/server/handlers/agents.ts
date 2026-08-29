@@ -6,7 +6,7 @@
 import type { Space } from "../../core/space.ts";
 import type { GrantDef } from "../../core/kinds.ts";
 import { RadiaError } from "../../core/errors.ts";
-import { problem, statusFor } from "../problem.ts";
+import { problem, rejectUnknown, statusFor } from "../problem.ts";
 
 async function readJson(req: Request): Promise<Record<string, unknown> | null> {
   try {
@@ -31,6 +31,12 @@ export async function handleCreateDefinition(space: Space, req: Request, princip
   if (!j || typeof j.agent !== "string") {
     return problem(400, "invalid_body", "expected {agent: string, grants?: GrantDef[]}");
   }
+  // Both fields here are picked BY NAME, and both fail badly on a typo: a misspelled `grants`
+  // mints a principal holding nothing, and a misspelled `supersedes` drops the compare-and-set
+  // that stops two racers leaving an agent with TWO live minting tokens. The second is the shape
+  // plan-bounded-reads.md names, a safety constraint removed in silence.
+  const unknown = rejectUnknown(j, ["agent", "grants", "supersedes"]);
+  if (unknown) return unknown;
   const grants = Array.isArray(j.grants) ? j.grants as GrantDef[] : [];
   // Present-but-null is meaningful ("there was no prior definition"), so the ABSENCE of the key is
   // what selects the unconditional write, never its value.

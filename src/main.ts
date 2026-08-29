@@ -180,6 +180,16 @@ async function runSpace(args: string[], posture: Posture): Promise<number> {
     if (!url) {
       throw new UsageError("--storage postgres needs a connection URL: --db postgres://… or RADIA_PG_URL");
     }
+    // `serve` defaults to postgres, so `--db /var/lib/radia/space.db` is a plausible thing to type
+    // and used to answer with the driver's connect stack trace. Named here rather than left to the
+    // adapter, which is the same fix a taken port got (plan-startup-ergonomics.md item 2).
+    if (!/^[a-z+]+:\/\//i.test(url)) {
+      throw new UsageError(
+        `--db '${url}' is not a connection URL, and --storage is postgres${
+          flag(args, "--storage") ? "" : " (the default for serve)"
+        }. For a file or directory pass --storage sqlite or --storage pglite; for a server pass postgres://…`,
+      );
+    }
     storage = new PostgresAdapter(url);
   } else {
     throw new UsageError(`unknown --storage: ${backend} (expected pglite|sqlite|postgres)`);
@@ -407,6 +417,11 @@ async function runSpace(args: string[], posture: Posture): Promise<number> {
           serveLog.info(`operator token written to ${out} (owner-only; delete it once you have provisioned)`);
         } catch (e) {
           console.error(`error: could not write --operator-token-file ${out}: ${(e as Error).message}`);
+          // Stop the server we just started. Returning while it serves leaves the space up and
+          // reachable with an operator token nobody can read, which is the one state this flag
+          // exists to prevent.
+          stopping.abort();
+          await finished;
           return 1;
         }
       } else {
@@ -455,9 +470,10 @@ async function main(argsIn: string[]): Promise<number> {
   try {
     switch (cmd) {
       case "dev":
-        return await runSpace(rest, "dev");
       case "serve":
-        return await runSpace(withConfig(rest), "serve");
+        // BOTH take `--config`. Only `serve` did, so `radia dev --config x.json` ignored the file
+        // in silence, which is the dropped-setting class the config's own key check refuses.
+        return await runSpace(withConfig(rest), cmd);
       case "mcp":
         await runMcp(rest);
         return 0;

@@ -156,11 +156,14 @@ function handlerFields(src: string): Map<string, string[]> {
   for (const line of src.split("\n")) {
     const f = line.match(/^export async function (handle\w+)/);
     if (f) fn = f[1];
-    const r = line.match(/rejectUnknown\(\w+,\s*\[([^\]]*)\]/);
-    if (r && fn) {
+    // THE REQUEST BODY only, which is what an operation's `requestBody` documents. A handler may
+    // also guard a NESTED object (`handleTake` guards the pattern inside the body), and those calls
+    // name themselves through `rejectUnknown`'s third argument. Unioning the two put the pattern's
+    // own `kind`/`match` in the body's field set, which then only matched the contract because the
+    // extraction flattened a nested `$ref` back out of it: two wrongs agreeing.
+    const r = line.match(/rejectUnknown\(\w+,\s*\[([^\]]*)\]\s*(,\s*"[^"]*")?\s*\)/);
+    if (r && fn && !r[2]) {
       const fields = [...r[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-      // A handler may guard more than one body shape; union them, since the spec documents the
-      // operation and not the branch.
       out.set(fn, [...new Set([...(out.get(fn) ?? []), ...fields])]);
     }
   }
@@ -217,14 +220,24 @@ function specRequestFields(yaml: string, path: string, method: string): string[]
   // at the next key at the operation's own level (`responses:`).
   const props = new Set<string>();
   let sawSchema = false;
+  // A `$ref` COMPOSING the request schema (`allOf`, or the schema itself) contributes request
+  // fields; one nested under `properties` describes a field's VALUE and does not. Flattening the
+  // second reported `GrantDef`'s own `principal` and `kind` as fields `POST /agent-definitions`
+  // promises, which is why a handler with a nested ref could never be mapped here, and so was
+  // never checked. Tracked by indentation: inside a `properties:` block until something at or
+  // above its own indent closes it.
+  let propsIndent = -1;
   for (i++; i < lines.length && !(lines[i].trim() !== "" && lines[i].search(/\S/) <= 6); i++) {
+    const at = lines[i].search(/\S/);
+    if (lines[i].trim() !== "" && propsIndent >= 0 && at <= propsIndent) propsIndent = -1;
     const ref = lines[i].match(/\$ref:\s*"#\/components\/schemas\/(\w+)"/);
-    if (ref) {
+    if (ref && propsIndent < 0) {
       sawSchema = true;
       for (const f of componentFields(yaml, ref[1])) props.add(f);
     }
     if (/^\s+properties:\s*$/.test(lines[i])) {
       sawSchema = true;
+      if (propsIndent < 0) propsIndent = lines[i].search(/\S/);
       const indent = lines[i].search(/\S/) + 2;
       for (let j = i + 1; j < lines.length; j++) {
         const cur = lines[j].search(/\S/);
@@ -258,6 +271,8 @@ Deno.test("openapi: every request field a handler accepts is in the contract", a
     handleReadOne: { path: "/records/read-one", method: "post" },
     handleTake: { path: "/takes", method: "post" },
     handleRemediate: { path: "/ops/remediate", method: "post" },
+    handleCreateWatch: { path: "/watches", method: "post" },
+    handleCreateDefinition: { path: "/agent-definitions", method: "post" },
   };
 
   const problems: string[] = [];
