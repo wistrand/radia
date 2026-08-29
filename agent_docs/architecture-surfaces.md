@@ -234,6 +234,19 @@ the verb is about under twenty that it is not (`--all` is the escape). It report
 isolation ends, worst first: members whose grants carry no team pattern and therefore read every
 team, crossers, and members holding `observe`.
 
+`runs --for <principal> [--stop]` and `team remove` are the OFFBOARDING cascade, and both cover
+the two run classes a person acts through: their own sessions (`agent_run{agent: X}`) and runs
+workers hold on their behalf (`agent_run{actingFor: X}`). `team remove` also retires the member's
+grants and ops powers, because a revoked definition cannot authenticate while `mintDelegatedRun`
+still intersects that principal's live grants. Both decide "is this run live" on the DATABASE
+clock: `expiresAt` is stamped by the space, so a fast local clock would read a live run as expired,
+skip the stop, and leave it renewing itself to the 12h ceiling (`renewRun` checks the run's own
+status, never the definition behind it). `revoke` is deliberately narrower: it stops a definition
+MINTING, leaves live runs alone so a rotation does not kill workers mid-call, and is a no-op for an
+SSO identity, which holds no definition. History and guard:
+[gotchas.md](gotchas.md#grants-scopes-and-narrowed-answers), "A principal acts through TWO run
+classes".
+
 The claim lifecycle is composable rather than stateful: `take --json` prints the record together
 with its lease, and `ack`/`nack`/`release` accept that object back, either as an argument or as
 `-` to read stdin. So a shell pipeline drives a full claim without the CLI holding session state.

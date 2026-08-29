@@ -75,11 +75,9 @@ start a space on an isolated `RADIA_DIR` with a persistent `--db` so a run can b
 `radia team add --rotate --json` per agent, write each agent's MCP config into its own working
 directory, launch each harness with the prompt on stdin, then dump flows, stats, events, a query per
 kind and each member's permissions into the run directory. **Permissions are collected by the
-PRINCIPAL, `agent:<name>`, and were collected by the member name until 2026-08-29**: asking about a
-name nothing holds is not an error, so the space answered about a principal with no grants and every
-member of every run read as holding NOTHING while coordinating perfectly well. An empty answer to
-the wrong question, indistinguishable from an answer, in the one section of the evidence that says
-what each member was allowed to do. The stale-binary problem was already
+PRINCIPAL, `agent:<name>`, never the member name**: asking about a name nothing holds is not an
+error, so the bare name answers `kinds: []` and reads as a member holding nothing (which is how
+every run's permissions section was empty until 2026-08-29). The stale-binary problem was already
 solved upstream: `src/surfaces/mcp/config.ts` names the binary that wrote the config, absolute, so
 recompiling before `team add` is the whole of it. The harnesses' own non-interactive flags live in
 the scenario file, because they change on somebody else's release schedule; the two shipped were
@@ -166,40 +164,27 @@ against the artifact it descends from.
 <run-dir>… [--source]`, and `scripts/agent-lab/replay.test.ts` for the CI half (`deno task test:lab`, kept OUT of `test:runtime` because a case here spawns a space and an adapter and costs a dozen seconds): a recorded trace with the
 model stripped, re-issued through a real `radia mcp` against a space built from the same
 `scenario.json`. Real runs DISCOVER; replays REGRESS, and a replay can never find new model
-behaviour. Not `fake-agent.ts` reading a trace, as this section first proposed: a replay has to
-INTERLEAVE several agents by timestamp and rebuild arguments, which is a driver's job rather than a
-participant's, and `fake-agent.ts` stays what it was.
+behaviour. A DRIVER rather than `fake-agent.ts` reading a trace, because a replay interleaves
+several agents by timestamp and rebuilds arguments, which no single participant can do. The
+verdict, the argument rebuilding and the coverage reporting are stated once, in `replay.ts`'s
+header; the rule they serve is that only "was answered, now refuses or errors" fails, and anything
+skipped or diverged is counted and named.
 
-Three things decide whether it is honest. THE VERDICT IS ASYMMETRIC, because a replay cannot
-reproduce a race and does not re-run the untraced participants: only "was answered, now refuses or
-errors" fails, a changed population is `diverged` and reported. ARGUMENTS ARE REBUILT from the run's
-own evidence, since `trace.ts` trims a value at 512 characters and a workspace's files live in the
-blob store rather than in any record: without indexing `space-blobs/` every `space_save_workspace`
-in the corpus is unreplayable, which is most of what a workspace run is. And COVERAGE IS STATED,
-never implied: participants not re-run and calls that could not be rebuilt are counted and named,
-because a replay that silently skipped half a trace while printing "no regressions" is worse than no
-replay.
+WHAT THE CORPUS CANNOT SEE: every recorded run passes `--session`, so the adapter resolves its
+credential at startup and a bug that only bites an unsessioned process is outside replay's reach
+(verified by planting the `health() → anonymous` defect: the replay stayed green). What it does
+catch was proven the same way: a planted off-by-one in `ScopeFiller.choose` refuses a single-team
+caller, and `space_save_workspace` came back REGRESSED with the refusal quoted.
 
-WHAT THE CORPUS CANNOT SEE, measured rather than assumed: every recorded run passes `--session`, so
-the adapter resolves its credential at startup and any bug that only bites an unsessioned process is
-outside replay's reach. The `health() → anonymous` defect fixed the same day was planted back and
-the replay stayed green. What it does catch was proven the same way: an off-by-one in
-`ScopeFiller.choose` (`< 1` for `< 2`) refuses a single-team caller, and `space_save_workspace` came
-back REGRESSED with the refusal quoted.
+**A settle names things no recorded id describes.** `claimId` carries a record the OPERATOR
+seeded and a claim the adapter minted, so seeded records are mapped by BODY as they are written and
+each take's claimId is remembered against the record it holds. An id the recording never held is a
+LITERAL and travels untouched, since scenarios plant `01ZZZ…` for an agent to look up and a model
+writes ids into its own prose. An ARTIFACT is paired by its content address, `space_put_artifact`
+being the one write whose arguments carry no body. Measured across the three queue runs: mapping
+settles took 20 skipped calls to 4, all four races the asymmetric verdict declines to fail on.
 
-**A settle is the call that needed the most work, and the one worth having.** `claimId` names a
-record the OPERATOR seeded and a claim the adapter minted, neither of which the recorded ids
-describe, so the first version skipped every `space_ack` in every queue run. Seeded records are now
-mapped by BODY as they are written, each take's claimId is remembered against the record it holds,
-and an id the recording never held is treated as a LITERAL rather than an unmapped reference, since
-the scenarios plant `01ZZZ…` for an agent to look up and a model writes ids into its own prose.
-Measured across the three queue runs: 20 skipped calls became 4, and those four are races
-(`its take won a different record`), which the asymmetric verdict declines to fail on. An ARTIFACT
-is paired by its content address instead, since `space_put_artifact` is the one write whose
-arguments carry no body: without that, one unmapped artifact cascaded into four skips (the ack
-naming it, the fetch reading it, the tool_call dispatching it, the children walk after its result).
-
-**A LOCAL FILE IS NOT EVIDENCE, and this is the tool's worst failure mode made into a case.** The
+**A LOCAL FILE IS NOT EVIDENCE.** The
 image scenario puts its artifact by PATH, naming a PNG the harness generated beside its own config;
 that file does not travel with a run directory, so replayed anywhere else the call fails, and since
 the recording answered `ok` it would be reported as a REGRESSION. A false finding from a missing

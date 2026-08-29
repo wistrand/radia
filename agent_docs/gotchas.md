@@ -1214,7 +1214,10 @@ fleet appends one record per entry forever. Measured: 40 re-puts sailed past a c
   following the documented runbook left the person chatting for up to the 12h ceiling — proved by
   test, not by reading. And `revoke` closes neither: it stops a definition MINTING (deliberately,
   so a rotation does not kill every worker mid-call) and is a no-op for an SSO identity, which by
-  design holds no definition. Offboarding is stop-both-classes, then remove what re-mints.
+  design holds no definition. `team remove` shipped with the MIRROR half missing (own sessions
+  only), and also had to learn to retire the member's grants and ops powers, since a revoked
+  definition cannot authenticate while `mintDelegatedRun` still intersects its live grants.
+  Offboarding is stop-both-classes, then remove what re-mints.
   Guard: test/delegation.test.ts "offboarding needs BOTH run classes".
 - **A one-off manual grant to a long-lived principal hides gaps in the standard set**
   (`userGrants`, examples/chat/space/roles.ts). `kind_def:query` was hand-granted to one person
