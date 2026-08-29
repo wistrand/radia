@@ -13,7 +13,8 @@
 - [Inspection](inspection.html)
 - [Agent findings](agent-findings.html) - what real MCP harnesses did on a shared space: two agents
   contending over one queue, three models authoring, editing, deploying and verifying one workspace,
-  how the runs are recorded, and what changed in the runtime because of them
+  how the runs are recorded and replayed without a model, and what changed in the runtime because
+  of them
 - [Why not X](why.html)
 - [FAQ](faq.html)
 - [Examples](examples.html)

@@ -325,9 +325,8 @@ a reply          <span class="cmt">// carrying the provider's own token and doll
     <p>
       Characters also act when nobody is watching, and no process holds a timer to make that happen.
       Each one answers its cue with the next cue, marked to become claimable half a minute later, so
-      a wandering guard is a chain of records. That matters beyond tidiness: code that Radia runs in
-      a jail is handed one record and then exits, so a timer is not available to it at all, while a
-      deferred record is.
+      a wandering guard is a chain of records. Code that Radia runs in a jail is handed one record
+      and then exits, so a timer is not available to it at all, while a deferred record is.
     </p>
     <div class="callout">
       <strong>Stopping a character is an ordinary operation</strong>, because it is an ordinary

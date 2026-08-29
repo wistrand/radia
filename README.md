@@ -73,6 +73,7 @@ deno task test              # check + every test below
 deno task test:runtime      # everything under test/, incl. the port contract suites
 deno task test:conformance  # the port contract alone (storage adapters + the blob store)
 deno task test:extensions   # the extension contract (workspace manifests, tree digests, path safety)
+deno task test:lab          # recorded agent-harness runs replayed against this build; no model, no key
 deno task bench             # throughput, latency percentiles, scaling curves; see bench/README.md
 ```
 
@@ -214,8 +215,8 @@ radia workspace-git site --dir /tmp/site.git   # a bare repo; `git clone` it
 radia git-serve                                # …or serve every tree for `git clone` over HTTP
 ```
 
-Export only, in both directions of that sentence: git is a projection of the records rather than
-their storage, and `git push` is refused with the reason. What that buys over git is per-file
+Export only: git is a projection of the records rather than their storage, and `git push` is
+refused with the reason. What that buys over git is per-file
 erasure without a rewritten history, every version attributable to a run, and grants that scope
 which tree an agent may touch at all. See
 [agent_docs/design-workspaces.md](agent_docs/design-workspaces.md).
@@ -265,6 +266,11 @@ is asked which one, because guessing would file the work in the wrong team.
 The cost is the ops plane: `space_get`, `space_lineage`, `space_children`, `space_stats` and
 `space_events` need the `observe` power, which is unscoped and so reads every team. `--observe`
 grants it and says what it costs. See [extensions/ts/team.ts](extensions/ts/team.ts).
+
+This surface has been exercised by real harnesses: Claude Code, Codex and Antigravity have run
+against it across 44 recorded sessions, and the recorded runs replay as regression tests
+(`scripts/agent-lab/`). [docs/agent-findings.html](docs/agent-findings.html) reports what the
+agents did and what changed because of it.
 
 The adapter holds the credential and the fenced lease itself: `space_take` hands the model an
 opaque `claimId`, and the lease is renewed at lease/3 in the background, so a model that spends

@@ -54,8 +54,9 @@
     <h1>Agents on one shared space</h1>
     <p class="subtitle">
       Claude Code, Codex, and Google Antigravity joined the same Radia space through MCP. Across
-      recorded runs they passed tasks, competed safely for one queue, shared files, and changed one
-      program together. The runtime has no harness-specific coordination path.
+      recorded runs they passed tasks to each other, drained one queue without duplicating any of
+      it, exchanged files, and edited one program in turns. The runtime has no harness-specific
+      coordination path.
     </p>
     <div class="callout">
       <strong>One representative run:</strong> Claude asked for a program, Codex claimed the task
@@ -168,16 +169,16 @@ exec_request@operator &#8594; note@agent:runner &#8594; note@agent:claude-verify
       host stamped that from the deployment, so code did not need to know which compartment it was
       running for.
     </p>
-    <div class="callout"><strong>Describing the sandbox mattered more than describing the task.</strong> Before the space published what code inside the sandbox may call, one model wrote 2,690 characters containing five candidate ways to query and five candidate ways to read the reply, trying each until one worked. After, the same task produced 1,618 characters, one query, correct first time, with the contract copied into a comment.</div>
+    <div class="callout"><strong>Publishing the sandbox contract changed the generated code.</strong> Before the space published what code inside the sandbox may call, one model wrote 2,690 characters containing five candidate ways to query and five candidate ways to read the reply, trying each until one worked. After, the same task produced 1,618 characters, one query, correct first time, with the contract copied into a comment.</div>
   </div>
 </section>
 
 <section id="evidence">
   <div class="container">
     <h2>What was recorded</h2>
-    <p class="section-claim">The space proves what succeeded. A separate trace records what the agents attempted.</p>
-    <p>Records, leases, authorship, lineage, and the event chain show what actually happened. They do not show failed reads or claims that matched nothing. That distinction matters: an empty queue and a malformed match both produce no claimed record.</p>
-    <p>The findings below cover 34 sessions recorded from 26 to 29 August 2026: four hand-run sessions and thirty runs through the lab. The corpus is large enough to report repeated behaviours as rates, while still being too small and model-dependent for universal claims.</p>
+    <p class="section-claim">The space proves what succeeded, and a separate trace records what the agents attempted.</p>
+    <p>Records, leases, authorship, lineage, and the event chain show what actually happened. They do not show failed reads or claims that matched nothing, and an empty queue and a malformed match both produce no claimed record, so the trace is the only place the two can be told apart.</p>
+    <p>The findings below cover 44 sessions recorded from 26 to 29 August 2026: four hand-run sessions and forty runs through the lab. Repeated behaviours are reported as rates; a single occurrence is reported as one occurrence.</p>
     <table>
       <thead><tr><th>Evidence</th><th>What it answers</th><th>Example</th></tr></thead>
       <tbody>
@@ -205,6 +206,13 @@ exec_request@operator &#8594; note@agent:runner &#8594; note@agent:claude-verify
       code dispatched to the worker. Their digests matched, proving that the requester ran the
       bytes it received instead of silently replacing them with its own solution.
     </p>
+    <div class="callout">
+      <strong>Recorded runs replay.</strong> The calls the models made can be re-issued through the
+      MCP adapter against a space rebuilt from the run's own scenario, with no model and no API key.
+      Six recorded runs ship in the repository and replay in the test suite, so a call that was
+      answered in the recording and refuses after a code change fails the build. A difference caused
+      by a race between agents is reported but does not fail.
+    </div>
   </div>
 </section>
 
@@ -214,11 +222,11 @@ exec_request@operator &#8594; note@agent:runner &#8594; note@agent:claude-verify
     <p>The runs are usability probes, not a contest between models. Their value is finding an interface that returns a technically valid answer which an autonomous reader interprets incorrectly.</p>
     <div class="cards">
       <div class="card"><h3>Orientation must happen first</h3><p>Agents that inspected the space's vocabulary and permissions before acting made fewer field, identity, and scope mistakes. <code>space_digest</code> now provides that orientation in one call.</p></div>
-      <div class="card"><h3>Data fields are not query fields</h3><p>In five paired queue runs, 3 of 5 produced a refusal from the same mistake: an agent copied a plausible field from a record instead of using the kind's declared match and sort paths. Errors now name the valid alternatives, and common record-id spellings are accepted.</p></div>
+      <div class="card"><h3>Data fields are not query fields</h3><p>In five paired queue runs, 3 of 5 produced a refusal from the same mistake: an agent copied a plausible field from a record instead of using the kind's declared match and sort paths. Errors now name the valid alternatives. Two later runs made the same wrong sort and recovered on the next call both times: the improved message shortens the recovery but does not prevent the attempt.</p></div>
       <div class="card"><h3>Empty needs context</h3><p>A scoped empty result is not an empty space. MCP responses now carry scope, query notes, and visible page bounds instead of returning an unexplained empty list.</p></div>
       <div class="card"><h3>Records are not queue state</h3><p>A completed task remains a record. Query results now warn that claimable records may already be settled and point the reader toward their result records.</p></div>
       <div class="card"><h3>Identity must be actionable</h3><p>A run ID changes each session and cannot receive a grant. Health and permission errors now name the durable <code>agent:</code> identity an agent should use.</p></div>
-      <div class="card"><h3>Advice belongs at the decision</h3><p>A hint works only where the model is already looking when it chooses, and only if it is still looking then. A record type's description is read once while orienting; advice needed twenty calls later has to live on the tool used at that moment.</p></div>
+      <div class="card"><h3>Advice belongs at the decision</h3><p>A hint is read only if it sits in the text in front of the model at the moment it chooses. A record type's description is read once while orienting; advice needed twenty calls later has to live on the tool used at that moment.</p></div>
       <div class="card"><h3>Success can hide a bypass</h3><p>When tool dispatch was refused, an agent calculated the answer itself and exited zero. Calls refused inside a sandbox can disappear the same way. A correct answer does not prove the intended path ran.</p></div>
       <div class="card"><h3>Retry needs a reason</h3><p>One agent nacked permanently impossible work three times before answering it. A retry is useful only when another attempt could change the outcome; permanent failure needs an explicit answer.</p></div>
     </div>
@@ -241,9 +249,9 @@ exec_request@operator &#8594; note@agent:runner &#8594; note@agent:claude-verify
       <li><strong>An inactive harness is not awakened.</strong> Work waits safely in the space, but something still has to start the agent. Always-on work belongs in an SDK worker loop.</li>
       <li><strong>A team credential is real authority.</strong> Team grants limit its blast radius; they do not prevent a prompt-injected agent from using permissions it legitimately holds.</li>
       <li><strong>One-shot agents have startup races.</strong> A worker may check before the requester writes. Handoff scenarios use a bounded <code>space_watch</code>; contention scenarios can hold their seeded work until every harness has made its first tool call.</li>
-      <li><strong>Workspace names are not isolated for a multi-team member.</strong> A member with access to several teams can see colliding workspace names across those teams before the intended team label is known. Single-team members remain scoped by their grants; the multi-team collision is open.</li>
-      <li><strong>One run is an anecdote.</strong> Identical scenarios produce different choices. Findings are useful as rates across runs, not universal claims about a model.</li>
-      <li><strong>This is not chat transport.</strong> Every handoff costs tool calls and model turns. Radia suits fewer, larger units of work better than rapid conversation.</li>
+      <li><strong>A replay observes no model.</strong> Re-issuing a recorded run against a fresh build regression-tests the interface, and that is all it tests: no new finding about agent behaviour can come out of it.</li>
+      <li><strong>Identical scenarios produce different choices.</strong> The same prompt on the same model claims different tasks, waits differently, and sometimes makes different mistakes. Findings are therefore reported as rates across runs.</li>
+      <li><strong>Every handoff costs tool calls and model turns.</strong> Radia suits fewer, larger units of work better than rapid conversation.</li>
     </ul>
   </div>
 </section>
@@ -261,8 +269,9 @@ $ deno task lab -- --scenario scripts/agent-lab/scenarios/team-tree.json</code><
       scenarios check the space, MCP adapter, execution worker, and workspace host without spending
       model tokens.
     </p>
-    <div class="code-block"><div class="code-title">turn a run directory into findings</div><pre class="terminal"><code>$ deno task lab-report ~/.radia-lab/team-tree-*</code></pre></div>
-    <div class="callout"><strong>This is not a benchmark.</strong> The assistants are not scored or compared. They are test users whose mistakes reveal where the interface is easy to misread.</div>
+    <div class="code-block"><div class="code-title">turn a run directory into findings, or replay it for nothing</div><pre class="terminal"><code>$ deno task lab-report ~/.radia-lab/team-tree-*
+$ deno task lab-replay --source ~/.radia-lab/team-tree-*   # no model, no API key</code></pre></div>
+    <div class="callout"><strong>The assistants are not scored or compared.</strong> They are test users, and their mistakes show where the interface is easy to misread.</div>
     <p><a href="how-it-works.html">How content routing works &#8594;</a><br><a href="inspection.html">How to inspect the resulting records &#8594;</a></p>
   </div>
 </section>
