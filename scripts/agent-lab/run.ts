@@ -388,6 +388,43 @@ async function toolNames(a: typeof agents[number]): Promise<string[]> {
 }
 let tools: string[] = [];
 
+/**
+ * A private `CODEX_HOME` per codex agent, because one home cannot hold two of them.
+ *
+ * MEASURED, in the operator's own file: `--ignore-user-config` governs READS, so every codex run
+ * still wrote `[projects."<run dir>"] trust_level = "trusted"` into the real `~/.codex/config.toml`,
+ * and twenty lab directories had accumulated there. Two codex agents in one run also share that
+ * file, the history, the caches and the sqlite state, so they are not independent participants:
+ * they are one installation used twice, which is the same mistake as two harnesses on one Radia
+ * credential.
+ *
+ * THE CREDENTIAL STAYS SHARED, deliberately, and it is the one thing not isolated. `auth.json` is
+ * SYMLINKED rather than copied: a login is a login, all codex processes on this machine already
+ * write that one file today, and a copy would break the sharing rather than preserve it, so a token
+ * refreshed inside a lab run would leave the operator's own copy stale. The failure mode of the
+ * symlink is degradation, never corruption: if codex replaces the file rather than writing in place,
+ * the run continues against a stale copy and the operator's file is untouched.
+ *
+ * Everything else is per agent and per run, which is what makes the trust entry, the history and
+ * the caches land in the run directory where they can be read afterwards and thrown away with it.
+ */
+async function codexHome(a: AgentSpec & { dir: string }): Promise<string | undefined> {
+  if (a.harness !== "codex") return undefined;
+  const source = Deno.env.get("CODEX_HOME") ?? `${home}/.codex`;
+  const target = `${a.dir}/codex-home`;
+  await Deno.mkdir(target, { recursive: true });
+  try {
+    await Deno.symlink(`${source}/auth.json`, `${target}/auth.json`);
+  } catch (e) {
+    // A missing or unreadable credential is NOT fatal: a scenario may authenticate by environment
+    // variable instead, and failing here would turn a working setup into a broken one.
+    if (!(e instanceof Deno.errors.AlreadyExists)) {
+      say(a.name, `no codex credential linked (${e instanceof Error ? e.message : e}); it may still authenticate by environment`);
+    }
+  }
+  return target;
+}
+
 // The config the harness reads. Written HERE rather than pasted, and it adds the two flags the
 // printed block cannot know about: a named `--session`, so a restart keeps the same principal and
 // can settle claims it left behind, and `--trace`, which is the only record of what the model
@@ -414,7 +451,10 @@ for (const a of agents) {
   };
   await Deno.mkdir(configPath.replace(/\/[^/]*$/, ""), { recursive: true });
   await Deno.writeTextFile(configPath, JSON.stringify(config, null, 2));
-  console.log(`member ${a.name}  config ${configPath}`);
+  // Not `home`: that name is the operator's HOME at module scope, and shadowing it here would put
+  // two very different directories one letter apart in a function that copies a credential.
+  const codexDir = await codexHome(a);
+  console.log(`member ${a.name}  config ${configPath}${codexDir ? `  CODEX_HOME ${codexDir}` : ""}`);
 }
 
 // A HARNESS MAY NEVER HOLD THE OPERATOR. The lab's whole posture is that each agent acts as itself
@@ -570,9 +610,13 @@ async function runAgent(a: typeof agents[number]): Promise<{ name: string; code:
     // would sit in `ps` for every process on the machine. An `operator` step gets neither and
     // resolves the run's operator from `RADIA_CREDENTIALS`, which is what `promote` and `bind`
     // need and what no model is ever given.
-    env: childEnv(
-      a.harness || a.credential === "operator" ? a.env : { ...a.env, RADIA_DEFINITION_TOKEN: a.token, RADIA_URL: base },
-    ),
+    // CODEX_HOME per agent, so two codex agents are two installations rather than one used twice,
+    // and so the trust entry a run writes lands in the run directory instead of the operator's
+    // `~/.codex/config.toml` (measured: twenty lab directories had accumulated there).
+    env: childEnv({
+      ...(a.harness === "codex" ? { CODEX_HOME: `${a.dir}/codex-home` } : {}),
+      ...(a.harness || a.credential === "operator" ? a.env : { ...a.env, RADIA_DEFINITION_TOKEN: a.token, RADIA_URL: base }),
+    }),
     stdin: "piped",
     stdout: "piped",
     stderr: "piped",
@@ -623,7 +667,12 @@ async function startWorker(a: typeof agents[number]): Promise<void> {
   const child = new Deno.Command(command[0], {
     args: command.slice(1),
     cwd: a.dir,
-    env: childEnv({ ...a.env, RADIA_DEFINITION_TOKEN: a.token, RADIA_URL: base }),
+    env: childEnv({
+      ...(a.harness === "codex" ? { CODEX_HOME: `${a.dir}/codex-home` } : {}),
+      ...a.env,
+      RADIA_DEFINITION_TOKEN: a.token,
+      RADIA_URL: base,
+    }),
     stdin: "null",
     stdout: "piped",
     stderr: "piped",

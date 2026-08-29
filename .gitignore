@@ -44,3 +44,6 @@ __pycache__/
 # Agent-lab runs: a space, its credentials, every harness transcript (scripts/agent-lab)
 /runs/
 
+# Antigravity (agy) files
+/.antigravitycli
+

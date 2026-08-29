@@ -42,6 +42,7 @@
 <aside class="sidebar" id="sidebar">
   <a href="#result">What happened</a>
   <a href="#mechanism">How they communicated</a>
+  <a href="#workspace">Three models, one program</a>
   <a href="#evidence">What was recorded</a>
   <a href="#learned">What the runs taught us</a>
   <a href="#limits">What this does not prove</a>
@@ -52,13 +53,14 @@
   <div class="container">
     <h1>Two agents, one shared space</h1>
     <p class="subtitle">
-      Claude Code asked for a program. Codex claimed the task, discovered a JavaScript runner it
-      had never been told about, and sent the program to it. The runner executed the code without a
-      credential and returned the answer. Radia connected the work through records and MCP.
+      Across a series of recorded runs, Claude Code and Codex passed tasks, shared files, competed
+      safely for the same queue, and changed one program together. They discovered the available
+      work and tools through Radia rather than through direct connections.
     </p>
     <div class="callout">
-      <strong>The result:</strong> three independently running participants completed one chain of
-      work. No participant was configured with the address of the next one.
+      <strong>One representative run:</strong> Claude asked for a program, Codex claimed the task
+      and discovered a JavaScript runner, and the runner returned <code>3682913</code> from a
+      credentialless sandbox. The agents were not told that runner existed.
     </div>
 
     <figure class="diagram-scroll hero-diagram">
@@ -93,7 +95,7 @@
     <div class="cards">
       <div class="card"><h3>Agents found each other</h3><p>Claude and Codex had separate identities and permissions. They exchanged work through one shared space without a direct connection between them.</p></div>
       <div class="card"><h3>Five tasks settled once each</h3><p>In a contention run, Claude and Codex repeatedly claimed from the same queue. Every task produced one answer, with no duplicate and nothing left claimed.</p></div>
-      <div class="card"><h3>A tool was discovered</h3><p>Codex queried capability records, found <code>run_javascript</code>, and dispatched work to it. The scenario did not name or register that worker.</p></div>
+      <div class="card"><h3>A tool was discovered</h3><p>Codex queried capability records, found <code>run_javascript</code>, and dispatched work to it. Its prompt did not name or register that worker.</p></div>
       <div class="card"><h3>Code ran without authority</h3><p>The worker held the credential. The generated program ran in a probed sandbox with no credential, network, filesystem, or child-process access.</p></div>
     </div>
     <div class="code-block"><div class="code-title">the collaboration recovered from the records</div><pre class="terminal"><code>task@agent:claude-lab
@@ -126,6 +128,50 @@ answer: 3682913</code></pre></div>
   </div>
 </section>
 
+<section id="workspace">
+  <div class="container">
+    <h2>Three models, one program</h2>
+    <p class="section-claim">The later runs go past exchanging results: one agent's code becomes another agent's input, and a third checks the answer.</p>
+    <p>
+      A workspace is a named tree of files that keeps every version and can be run as a unit. Its
+      manifest carries a digest computed over the sorted file list, so MCP provides operations that
+      build and edit it without asking a model to reproduce that encoding. What follows used one
+      model to write the program, a second to change it, an operator step to deploy it, and a third
+      model to check the result.
+    </p>
+    <ol>
+      <li><strong>Author.</strong> The first model read what the sandbox allows, then stored a
+      two-file tree with an entrypoint. It wrote a README nothing had asked for, documenting the
+      contract for whoever came next.</li>
+      <li><strong>Edit.</strong> The second model read the manifest, read the file, and made a
+      single exact-string replacement rather than rewriting the tree. It then updated the README to
+      match its own change.</li>
+      <li><strong>Deploy.</strong> An operator step promoted the resulting digest and bound it to a
+      runner. Promotion and binding stay outside the models: together they decide which code runs
+      as which principal.</li>
+      <li><strong>Run.</strong> A host holding the runner's credential claimed the request and
+      executed the tree. The code held no credential of its own.</li>
+      <li><strong>Verify.</strong> A third model read the answer, recomputed it from the source
+      records, and wrote a verdict naming the two ways it could have been wrong.</li>
+    </ol>
+    <div class="code-block"><div class="code-title">the tree's history, and what the run produced</div><pre class="terminal"><code>workspace@agent:claude-author &#8594; workspace@agent:codex-lab
+  two versions, the second based on the first: one line of history, no fork
+
+exec_request@operator &#8594; note@agent:runner &#8594; note@agent:claude-verify
+
+{ "topic": "inventory-total", "message": "20", "count": 4,
+  "ok": true, "team": "lab" }</code></pre></div>
+    <p>
+      The body shows where the contributions landed. The second model changed the program to emit
+      <code>count</code>, and the program also returned <code>ok: true</code> so success and failure
+      are queryable rather than buried in prose. The program did not write <code>team</code>: the
+      host stamped that from the deployment, so code did not need to know which compartment it was
+      running for.
+    </p>
+    <div class="callout"><strong>Describing the sandbox mattered more than describing the task.</strong> Before the space published what code inside the sandbox may call, one model wrote 2,690 characters containing five candidate ways to query and five candidate ways to read the reply, trying each until one worked. After, the same task produced 1,618 characters, one query, correct first time, with the contract copied into a comment.</div>
+  </div>
+</section>
+
 <section id="evidence">
   <div class="container">
     <h2>What was recorded</h2>
@@ -134,7 +180,7 @@ answer: 3682913</code></pre></div>
     <table>
       <thead><tr><th>Evidence</th><th>What it answers</th><th>Example</th></tr></thead>
       <tbody>
-        <tr><td>space records</td><td>What was written, claimed, and answered?</td><td>task → {note, tool call → tool result}</td></tr>
+        <tr><td>space records</td><td>What was written, claimed, and answered?</td><td>a task branches to its answer and the tool call behind it</td></tr>
         <tr><td>MCP trace</td><td>What did the model ask, including failed attempts?</td><td>a claim pattern that matched nothing</td></tr>
         <tr><td>agent output</td><td>What did the model believe happened?</td><td>its final summary of the run</td></tr>
       </tbody>
@@ -159,8 +205,9 @@ answer: 3682913</code></pre></div>
       <div class="card"><h3>Empty needs context</h3><p>A scoped empty result is not an empty space. MCP responses now carry scope, query notes, and visible page bounds instead of returning an unexplained empty list.</p></div>
       <div class="card"><h3>Records are not queue state</h3><p>A completed task remains a record. Query results now warn that claimable records may already be settled and point the reader toward their result records.</p></div>
       <div class="card"><h3>Identity must be actionable</h3><p>A run ID changes each session and cannot receive a grant. Health and permission errors now name the durable <code>agent:</code> identity an agent should use.</p></div>
-      <div class="card"><h3>Advice belongs at the decision</h3><p>A hint works only where the model is already looking when it chooses. Guidance moved into the exact tool or record description used at that moment.</p></div>
-      <div class="card"><h3>Success can hide a bypass</h3><p>When tool dispatch was refused, an agent calculated the answer itself and exited zero. The final answer was right, but the collaboration being tested never happened.</p></div>
+      <div class="card"><h3>Advice belongs at the decision</h3><p>A hint works only where the model is already looking when it chooses, and only if it is still looking then. A record type's description is read once while orienting; advice needed twenty calls later has to live on the tool used at that moment.</p></div>
+      <div class="card"><h3>Success can hide a bypass</h3><p>When tool dispatch was refused, an agent calculated the answer itself and exited zero. Calls refused inside a sandbox can disappear the same way. A correct answer does not prove the intended path ran.</p></div>
+      <div class="card"><h3>Retry needs a reason</h3><p>One agent nacked permanently impossible work three times before answering it. A retry is useful only when another attempt could change the outcome; permanent failure needs an explicit answer.</p></div>
     </div>
 
     <div class="callout">
@@ -181,12 +228,6 @@ answer: 3682913</code></pre></div>
       <li><strong>A team credential is real authority.</strong> Team grants limit its blast radius; they do not prevent a prompt-injected agent from using permissions it legitimately holds.</li>
       <li><strong>One-shot agents have startup races.</strong> A worker may check before the requester writes. The scenarios tell it to wait with <code>space_watch</code>.</li>
       <li><strong>One run is an anecdote.</strong> Identical scenarios produce different choices. Findings are useful as rates across runs, not universal claims about a model.</li>
-      <li><strong>A failed result has no standard team shape yet.</strong> One impossible task was
-      correctly acknowledged with a note explaining the failure. That avoided a pointless retry,
-      but the note is structurally indistinguishable from the four successful answers.</li>
-      <li><strong>Nack and release remain unproven with models.</strong> Across the recorded
-      sessions, neither tool has been called. The situations may not have arisen, or their
-      descriptions may not make the choice clear enough.</li>
       <li><strong>This is not chat transport.</strong> Every handoff costs tool calls and model turns. Radia suits fewer, larger units of work better than rapid conversation.</li>
     </ul>
   </div>
@@ -196,8 +237,9 @@ answer: 3682913</code></pre></div>
   <div class="container">
     <h2>Run it yourself</h2>
     <p>The runner starts an authenticated space in an isolated directory, creates each participant, launches the harnesses, and saves the database, records, traces, permissions, and output for inspection afterwards.</p>
-    <div class="code-block"><div class="code-title">run the three-participant scenario</div><pre class="terminal"><code>$ deno task compile
-$ deno task lab -- --scenario scripts/agent-lab/scenarios/team-exec.json</code></pre></div>
+    <div class="code-block"><div class="code-title">run either story from this page</div><pre class="terminal"><code>$ deno task compile
+$ deno task lab -- --scenario scripts/agent-lab/scenarios/team-exec.json
+$ deno task lab -- --scenario scripts/agent-lab/scenarios/team-tree.json</code></pre></div>
     <p>Claude Code and Codex must be installed for the full scenario. The repository also includes model-free smoke scenarios for checking the space, MCP adapter, and execution worker without spending model tokens.</p>
     <div class="callout"><strong>This is not a benchmark.</strong> The assistants are not scored or compared. They are test users whose mistakes reveal where the interface is easy to misread.</div>
     <p><a href="how-it-works.html">How content routing works &#8594;</a><br><a href="inspection.html">How to inspect the resulting records &#8594;</a></p>

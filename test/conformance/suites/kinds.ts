@@ -115,14 +115,20 @@ export const kindSuites: Suite[] = [
       // declared path is fine
       assertEquals(await space.readOne({ kind: "task", match: { tag: "x" } }), null);
 
-      // undeclared path rejected
+      // undeclared path rejected, AND the refusal names what IS matchable. An agent matched on
+      // `title`, a field every record in front of it carried and none of them indexed, then tried
+      // three more titles: the message described the problem and not the remedy
+      // (agent_docs/research-agent-sessions.md).
       let code: string | undefined;
+      let detail = "";
       try {
         await space.readOne({ kind: "task", match: { nope: "x" } });
       } catch (e) {
         code = (e as { code?: string }).code;
+        detail = String((e as { message?: string }).message ?? "");
       }
       assertEquals(code, "undeclared_path");
+      assert(/matchable paths on 'task' are 'tag'/.test(detail), `the refusal must list them: ${detail}`);
     },
   },
   {
@@ -147,14 +153,34 @@ export const kindSuites: Suite[] = [
       }
       assertEquals(unknown, "unknown_kind");
 
-      // order_by on a non-sortable declared path is rejected
+      // order_by on a non-sortable declared path is rejected, AND the refusal names what would
+      // work. A model saw `topic` among a kind's indexed paths, assumed it could sort by it, and
+      // got a message that described the problem and not the remedy; `space_kinds` could not help
+      // either, since a kind declaring nothing sortable omits the field and an absence reads as an
+      // omission (agent_docs/research-agent-sessions.md).
       let unsortable: string | undefined;
+      let detail = "";
       try {
         await space.readOne({ kind: "task", orderBy: [{ path: "tag" }] });
       } catch (e) {
         unsortable = (e as { code?: string }).code;
+        detail = String((e as { message?: string }).message ?? "");
       }
       assertEquals(unsortable, "unsortable_path");
+      assert(/declares NO sortable paths/.test(detail), `the refusal must say the kind has none: ${detail}`);
+
+      space.registerKind({
+        kind: "ranked",
+        indexedPaths: [{ path: "score", type: "integer" }, { path: "name", type: "keyword" }],
+        sortablePaths: ["score"],
+      });
+      let named = "";
+      try {
+        await space.readOne({ kind: "ranked", orderBy: [{ path: "name" }] });
+      } catch (e) {
+        named = String((e as { message?: string }).message ?? "");
+      }
+      assert(/sortable paths on 'ranked' are 'score'/.test(named), `the refusal must list them: ${named}`);
     },
   },
   {

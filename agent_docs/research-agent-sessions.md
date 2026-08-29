@@ -5,7 +5,7 @@ the fixes are linked to where they landed.** The subject is CLAUDE CODE and CODE
 space through `radia mcp`, first by hand and then through the lab
 ([plan-agent-lab.md](plan-agent-lab.md), which is the harness rather than the findings).
 
-Twenty-two sessions so far, 2026-08-26 to 2026-08-29: four hand-run and pasted into a review, eighteen
+Twenty-nine sessions so far, 2026-08-26 to 2026-08-29: four hand-run and pasted into a review, twenty-five
 through `deno task lab`. Each cost roughly $0.30 to $1.00 and 45 to 120 seconds; a three-model scenario is about $0.90.
 
 This doc does not restate. The traps live in [gotchas.md](gotchas.md), the team convention in
@@ -168,10 +168,11 @@ the `note` usage carries the mechanism, trimmed to fit rather than raising `MAX_
 hold one string. Still not a nack: it reaches dead-letter only after `maxAttempts`, and a
 dead-lettered record emits no result, so the member that asked would learn nothing at all.
 
-**`space_release` and `space_nack` have never been called.** Fourteen sessions, including one whose
+**`space_release` and `space_nack` went uncalled for fourteen sessions**, including one whose
 work contained something that could not be done. Both tools are advertised and described on every
-call. Nothing yet shows whether the descriptions are wrong or the situation that needs them has not
-occurred.
+call. Both have been seen since, and neither reading held: `space_nack` was used three times in a
+row on work a retry could never fix, and has not recurred in five later runs of the same scenario.
+The rate, not the absence, is the finding.
 
 **Nobody reasons about lease length.** Codex passed `leaseSeconds: 120` for work that takes a
 second, on every claim; Claude passed none at all and took the default. The number is the model's to
@@ -373,6 +374,79 @@ delivers the task on its own; the announcement is a model not yet trusting the m
 
 Three runs that day, no findings from the report, and the two-step's bytes verbatim again (299
 this time), 3 for 3.
+
+**Two codex agents could not be run at once, and the reason was in the operator's own file.**
+`--ignore-user-config` governs READS, so every run wrote a `trust_level` entry for its directory into
+the real `~/.codex/config.toml`: twenty lab directories had accumulated there. Two codex agents also
+shared that file, the history, the caches and the sqlite state, so they were one installation used
+twice rather than two participants, which is the same mistake as two harnesses on one Radia
+credential. FIXED 2026-08-29 with a private `CODEX_HOME` per agent, and verified the only way that
+counts: the operator's config was byte-identical before and after a two-codex run, and the trust
+entry landed in the run directory.
+
+The credential is the one thing left shared, on purpose. `auth.json` is symlinked rather than
+copied, because every codex process on the machine already writes that one file; a copy would break
+the sharing instead of preserving it and leave the operator's token stale after a refresh inside a
+run. It costs about 45 MB per agent per run, mostly a plugin cache fetched per home.
+
+`team-queue-codex` is the scenario that was impossible: two codex agents on one queue of five, split
+3 and 2, each task settled exactly once. It also produced a finding of its own. One of them called
+`space_get {"id": …}` and was refused: the tool declares `recordId`, and a model that has just read a
+record knows the field as `id`. The adapter now accepts either, which is the rule `order_by` beside
+`orderBy` already followed in the same file, and the declared spelling still wins.
+
+**A refusal named the problem and not the remedy, for the third time.** Second two-codex run: an
+agent read `note`'s indexed paths from `space_kinds`, saw `topic`, and ordered by it. `note` declares
+nothing sortable, so `space_kinds` omits the field entirely and an ABSENCE reads as an omission
+rather than as "none". The refusal said "'topic' is not a declared sortable path" and stopped there.
+It now names what would work, or says the kind has none, which is the rule `noGrant` and
+`space_read_workspace` already follow (`src/core/matching.ts`, contract in
+`test/conformance/suites/kinds.ts`).
+
+**The nack loop is about one run in two, not a fixed bug.** The same impossible task, the same model,
+the same tool descriptions: the earlier run nacked three times with zero backoff before acking, this
+one claimed it, fetched the missing record, and acked a failure answer straight away. Nothing changed
+between them, which is what a rate looks like and why the `space_nack` wording is still the first
+thing to pair-run rather than to edit again.
+
+**Both codex agents worked the queue and one checked itself.** Five seeded tasks split 3 and 2, each
+settled exactly once, no duplicates and nothing left claimed. One of them ended by walking
+`space_children` on all five to confirm each carried an answer, which is the settled-versus-open
+check the `task` usage asks for, done unprompted.
+
+**Five runs of one scenario, and every refusal in all five is the same mistake.** `team-queue-codex`
+with `gpt-5.6-luna` twice, then one arm moved to `gpt-5.4-mini`, then both, twice. Every correctness
+check came back zero across all five: no task settled twice, nothing left claimed, no retry loop, no
+silent participant, no claim that answered empty while work stood available, nobody acting before
+reading the vocabulary. That holds under an uneven division too, the last run splitting 4 and 1 with
+all five tasks answered exactly once. The one check that fires is REFUSALS, at 3 of 5, and the three
+are one class:
+
+| what it sent | what was true |
+|---|---|
+| `space_get {"id": …}` | the tool declares `recordId` |
+| `orderBy: [{path: "topic"}]` on `note` | `topic` is indexed, and nothing on `note` is sortable |
+| `match: {title: "Count vowels"}` on `task` | every task carries `title`; none indexes it |
+
+**A model names a field from the data in front of it, not from the declaration.** That is the whole
+class, and each refusal named the problem and not the remedy, so the third one was retried with
+three different titles before the agent gave up. All three are now answered the way `noGrant` and
+`space_read_workspace` already were: `unsortable_path` and `undeclared_path` list what would work (or
+say the kind declares none), and the adapter accepts `recordId`, `id` or `record_id` with the
+declared spelling winning. Contracts in `test/conformance/suites/kinds.ts`, so both storage adapters
+hold to it.
+
+**A model restated one of these warnings as its own reasoning.** Fifth run, mid-work: "The queue
+still shows five `lab` tasks, but that view doesn't reflect settlement state", and it went back to
+`space_take` rather than trusting the list. That is finding three from this log ("settled work is
+reported as available") arriving as the model's own sentence, from the warning now carried by
+`space_query`'s description and the `task` usage. The first time a hint here has been observed being
+reasoned WITH rather than inferred from behaviour.
+
+**`space_permissions` is a mini habit, not an adoption.** The tool added the day before was called in
+2 of these 5 runs, both `gpt-5.4-mini` arms; neither luna run touched it, and the fifth run's two mini agents did not either. The mini arms
+were also more thorough and more expensive: 25 and 13 calls against luna's 12, with one of them
+walking `space_get` and `space_children` over every task to confirm each carried an answer.
 
 ## The broker, measured rather than assumed
 

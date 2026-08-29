@@ -149,9 +149,18 @@ function requireIndexed(ctx: Ctx, path: string): void {
     throw new RadiaError("unknown_kind", `kind '${ctx.kind}' is not registered`);
   }
   if (!ctx.indexed.has(path)) {
+    // NAME WHAT WOULD WORK, the fourth place this rule has been needed. An agent matched on
+    // `title`, a field every task in front of it carried and none of them indexed, and got a
+    // message that described the problem: it tried three more titles before giving up
+    // (agent_docs/research-agent-sessions.md). Body fields are not matchable unless declared, and
+    // the declaration is the only place that says which.
+    const declared = [...ctx.indexed.keys()].sort();
+    const alternatives = declared.length
+      ? `; matchable paths on '${ctx.kind}' are ${declared.map((p) => `'${p}'`).join(", ")}`
+      : `; kind '${ctx.kind}' declares NO indexed paths, so no body field can be matched`;
     throw new RadiaError(
       "undeclared_path",
-      `path '${path}' is not a declared indexed path of kind '${ctx.kind}'`,
+      `path '${path}' is not a declared indexed path of kind '${ctx.kind}'${alternatives}`,
     );
   }
 }
@@ -253,9 +262,18 @@ function compileOrderBy(orderBy: OrderKey[] | undefined, ctx: Ctx): OrderBy[] | 
       throw new RadiaError("unknown_kind", `kind '${ctx.kind}' is not registered`);
     }
     if (!ctx.sortable.has(k.path)) {
+      // NAME WHAT WOULD WORK, the same rule `noGrant` follows for an undeclared kind. A model saw
+      // `topic` in this kind's indexed paths, assumed it could sort by it, and got a refusal that
+      // described the problem and not the remedy; `space_kinds` cannot help either, since a kind
+      // declaring nothing sortable omits the field entirely and an absence reads as an omission
+      // (agent_docs/research-agent-sessions.md).
+      const sortable = [...ctx.sortable].sort();
+      const alternatives = sortable.length
+        ? `; sortable paths on '${ctx.kind}' are ${sortable.map((p) => `'${p}'`).join(", ")}`
+        : `; kind '${ctx.kind}' declares NO sortable paths, so it cannot be ordered at all`;
       throw new RadiaError(
         "unsortable_path",
-        `order_by path '${k.path}' is not a declared sortable path of kind '${ctx.kind}'`,
+        `order_by path '${k.path}' is not a declared sortable path of kind '${ctx.kind}'${alternatives}`,
       );
     }
     return { path: k.path, dir: k.dir === "desc" ? "desc" : "asc" };

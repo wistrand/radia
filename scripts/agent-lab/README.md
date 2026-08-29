@@ -25,6 +25,7 @@ deno task lab -- --scenario scripts/agent-lab/scenarios/smoke.json   # no model,
 | `team-exec` | a few cents | the same request with a THIRD party present: a model-free worker advertising `run_javascript`, so the answer can be computed rather than reasoned |
 | `team-exec-twostep` | a few cents | the same cast, with the execution moved to the REQUESTER: the worker is asked for source only, and the agent that wrote the task fetches the artifact and dispatches the `tool_call` itself |
 | `team-queue` | a few cents | CONTENTION: five seeded tasks, no requester, both agents claiming the same queue at once. One of the five cannot be done |
+| `team-queue-codex` | a few cents | the same queue worked by TWO codex agents, which is what a private `CODEX_HOME` per agent made possible |
 | `workspace-smoke` | nothing | the workspace chain with no model: author a tree, promote, bind, run it brokered |
 | `team-workspace` | a few cents | the same chain with a MODEL authoring the tree: does it produce something a host can actually run |
 | `team-tree` | ~$1 | THREE models on one tree: one writes it, one changes it, one checks the answer after it ran |
@@ -218,9 +219,23 @@ binary for its tool list over stdio and expands it into
 anybody editing a scenario. An interactive Codex accumulates the same entries in
 `~/.codex/config.toml` as you click through them, which is why this only bites automation.
 
-Known side effect: Codex writes a `[projects."<run dir>"] trust_level = "trusted"` entry into your
-real `~/.codex/config.toml` per run, since `--ignore-user-config` governs reads. Harmless, and it
-accumulates; isolating it needs `CODEX_HOME` per agent with `auth.json` linked in.
+**Every codex agent gets its own `CODEX_HOME`**, because one home cannot hold two of them.
+`--ignore-user-config` governs READS, so each run still wrote a
+`[projects."<run dir>"] trust_level = "trusted"` entry into the operator's real
+`~/.codex/config.toml`; twenty lab directories had accumulated there before this was fixed. Two
+codex agents in one run also shared that file, the history, the caches and the sqlite state, so they
+were one installation used twice rather than two participants, which is the same mistake as two
+harnesses on one Radia credential.
+
+The credential is the one thing NOT isolated. `auth.json` is SYMLINKED into each private home rather
+than copied: a login is a login, every codex process on the machine already writes that one file, and
+a copy would break the sharing instead of preserving it, leaving the operator's own token stale after
+a refresh inside a run. If codex ever replaces the file rather than writing in place, the symlink is
+replaced and the run continues against a stale copy while the operator's file stays untouched:
+degradation, never corruption.
+
+Cost: about 45 MB per codex agent per run, most of it a plugin cache fetched per home, and it is
+thrown away with the run directory.
 
 `configPath` is where a file-configured harness reads its config, relative to the agent's directory
 (default `.mcp.json`). Codex needs none, since its config rides in the argv.

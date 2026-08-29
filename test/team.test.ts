@@ -10,7 +10,7 @@
 // A real socket, because the thing under test includes the client's own definition-for-run
 // exchange, and a stubbed fetch would test a mock's idea of a mint.
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { makeHandler } from "../src/server/http.ts";
 import { Space } from "../src/core/space.ts";
 import { SqliteAdapter } from "../src/storage/sqlite.ts";
@@ -1369,4 +1369,21 @@ Deno.test("[mcp] an agent can author a workspace, and a re-save supersedes rathe
   } finally {
     await s.close();
   }
+});
+
+Deno.test("[mcp] a record id is accepted under the name a model reaches for", async () => {
+  // A model that has just read a record knows its id as `id`, and one called
+  // `space_get {"id": "01ZZ…"}` and was refused (a real run, agent_docs/research-agent-sessions.md).
+  // Same rule the sort key already follows: the key is the MODEL's, the wire never sees it, and a
+  // near-miss the adapter can resolve is not worth a refusal.
+  const src = await Deno.readTextFile(new URL("../src/surfaces/mcp/server.ts", import.meta.url));
+  assert(!/str\(a, "recordId"\)/.test(src), "a tool still demands the declared spelling and nothing else");
+  const fn = src.match(/function recordId\(a: Record<string, unknown>\)[\s\S]*?\n}/)?.[0] ?? "";
+  for (const spelling of ["a.recordId", "a.id", "a.record_id"]) {
+    assert(fn.includes(spelling), `recordId() does not accept ${spelling}`);
+  }
+  // The DECLARED name still wins, so a caller passing both gets what it asked for.
+  assert(/a\.recordId \?\? a\.id/.test(fn), "the declared spelling must be preferred, not merely accepted");
+  // And it still refuses when there is nothing usable, rather than passing an empty id down.
+  assertStringIncludes(fn, "'recordId' is required");
 });

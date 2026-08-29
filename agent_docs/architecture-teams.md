@@ -75,7 +75,7 @@ reading as the worked example: almost nothing here is runtime.
 | Tier | What teams put there | Why there |
 |--------------------------|----------------------------------------------|--------------------------------|
 | **Core** (`src/core`, `server`, `storage`) | the ops-plane PATTERN tier, and nothing else | authorization is enforcement; a convention cannot add a read tier |
-| **Extension** (`extensions/ts/team.ts`) | `task`/`note`, the `artifact` and `capability` redeclarations, the grant sets, the roster projection | two apps would want the same shape; the runtime has no business knowing what a "task" is |
+| **Extension** (`extensions/ts/team.ts`) | `task`/`note`, the `artifact`, `capability` and `workspace` redeclarations, the grant sets, the roster projection | two apps would want the same shape; the runtime has no business knowing what a "task" is |
 | **Surface** (`src/surfaces/`) | `radia team`, the harness config, the write fill | ways to reach a space that are not raw HTTP |
 
 **The runtime gained one thing, and only because authorization cannot live above it.** Teams need

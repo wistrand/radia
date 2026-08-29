@@ -1,6 +1,6 @@
 # Plan: an agent lab, so real harnesses can be run and mined without a human in the loop
 
-**Status: PHASES 0 AND 1 BUILT 2026-08-28.** Phases 2 to 4 planned. Written after four hand-run
+**Status: PHASES 0, 1 AND 2 BUILT (0 and 1 on 2026-08-28, 2 on 2026-08-29).** Phases 3 and 4 planned. Written after four hand-run
 sessions with Claude Code and Codex on one team space, which produced three code changes in two
 days: the `$in`-on-array claim that answered nothing, settled tasks reported as available, and an
 answer written as a separate put instead of riding the ack. Each was found by reading a pasted
@@ -147,7 +147,7 @@ against the artifact it descends from.
 
 **Phase 3: replay in CI.** A recorded trace with the model stripped, replayed against a fresh
 binary, no API key, the same move `examples/chat/smoke-turnlink.ts` already makes for the chat.
-Real runs DISCOVER; replays REGRESS. A replay can never find new model behaviour. Its seed is built:
+Real runs DISCOVER; replays REGRESS, and a replay can never find new model behaviour. Its seed is built:
 `scripts/agent-lab/fake-agent.ts` is a harness with no model, speaking JSON-RPC to the adapter with
 a fixed call sequence; phase 3 is that file reading its script from a recorded trace instead of
 carrying one. The `smoke` scenario runs two of them and is what answers "is the lab wired up"

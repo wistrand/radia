@@ -453,18 +453,18 @@ async function call(
     }
 
     case "space_get":
-      return pretty(await client.getRecord(str(a, "recordId")));
+      return pretty(await client.getRecord(recordId(a)));
 
     case "space_lineage": {
       // The walk up is not paged: it ends at the roots, so there is no `more` to report.
-      const r = await client.getLineageReport(str(a, "recordId"));
+      const r = await client.getLineageReport(recordId(a));
       return answer("lineage", r.lineage, { scope: r.scope });
     }
 
     case "space_children": {
       // Fan-out IS unbounded, so this one is a page and says so from the cursor the endpoint
       // already returns. A record with 300 children reported 100 and looked complete.
-      const r = await client.getChildrenPage(str(a, "recordId"));
+      const r = await client.getChildrenPage(recordId(a));
       return answer("children", r.children, {
         more: !!r.nextAfter,
         limit: r.children.length,
@@ -732,12 +732,12 @@ async function call(
     }
 
     case "space_artifact_meta": {
-      const m = await client.artifactMeta(str(a, "recordId"));
+      const m = await client.artifactMeta(recordId(a));
       return m ? pretty(m) : "no artifact with that record id (or no grant to read it)";
     }
 
     case "space_get_artifact": {
-      const id = str(a, "recordId");
+      const id = recordId(a);
       const m = await client.artifactMeta(id);
       if (!m) return "no artifact with that record id (or no grant to read it)";
       // A CAPABILITY URL is the answer for anything that cannot be inlined, and it exists because
@@ -966,6 +966,22 @@ async function headOf(client: RadiaClient, name: string): Promise<{ basedOn?: st
 }
 
 // ---- argument coercion ----
+
+/**
+ * The record id, under either name a model reaches for.
+ *
+ * The tools declare `recordId`; every record a model has just read carries its id as `id`, and one
+ * did exactly that (`space_get {"id": "01ZZ…"}`, refused). Same rule as `order_by` beside `orderBy`
+ * below: the key is the MODEL's, the wire never sees it, and a near-miss the adapter can resolve is
+ * not worth a refusal. The declared spelling still wins, so a caller passing both gets what it
+ * asked for.
+ */
+function recordId(a: Record<string, unknown>): string {
+  const v = a.recordId ?? a.id ?? a.record_id;
+  if (typeof v !== "string" || !v) throw new Error("'recordId' is required and must be a string");
+  return v;
+}
+
 
 function str(a: Record<string, unknown>, k: string): string {
   const v = a[k];

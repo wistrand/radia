@@ -11,8 +11,9 @@
 - [Adoption guide](adoption.html) - choosing when and how to move credentials out of callers and into narrow capability workers
 - [Workspaces](workspaces.html)
 - [Inspection](inspection.html)
-- [Agent findings](agent-findings.html) - what real MCP harnesses did on a shared space, how the
-  runs are recorded, and what changed in the runtime because of them
+- [Agent findings](agent-findings.html) - what real MCP harnesses did on a shared space: two agents
+  contending over one queue, three models authoring, editing, deploying and verifying one workspace,
+  how the runs are recorded, and what changed in the runtime because of them
 - [Why not X](why.html)
 - [FAQ](faq.html)
 - [Examples](examples.html)
