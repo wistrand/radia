@@ -1,0 +1,122 @@
+{
+  "name": "workspace-smoke",
+  "team": "lab",
+  "sequential": true,
+  "seed": [
+    {
+      "kind": "note",
+      "body": {
+        "to": "all",
+        "topic": "inventory",
+        "message": "widget A: 3 in stock"
+      }
+    },
+    {
+      "kind": "note",
+      "body": {
+        "to": "all",
+        "topic": "inventory",
+        "message": "widget B: 11 in stock"
+      }
+    },
+    {
+      "kind": "note",
+      "body": {
+        "to": "all",
+        "topic": "inventory",
+        "message": "widget C: 0 in stock"
+      }
+    }
+  ],
+  "agents": [
+    {
+      "name": "runner",
+      "background": true,
+      "command": [
+        "{{binary}}",
+        "host",
+        "--url",
+        "{{url}}",
+        "--agent",
+        "agent:runner={{token}}"
+      ],
+      "prompt": "unused: this host holds no model",
+      "unscopedGrants": [
+        "sandbox:put,query,read_one"
+      ]
+    },
+    {
+      "name": "author",
+      "timeoutSeconds": 120,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/scripts/agent-lab/author-workspace.ts",
+        "--url",
+        "{{url}}",
+        "--workspace",
+        "inventory",
+        "--team",
+        "lab"
+      ],
+      "prompt": "unused: this author holds no model",
+      "unscopedGrants": [
+        "sandbox:query,read_one"
+      ]
+    },
+    {
+      "name": "deploy",
+      "timeoutSeconds": 240,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/scripts/agent-lab/deploy-workspace.ts",
+        "--binary",
+        "{{binary}}",
+        "--url",
+        "{{url}}",
+        "--workspace",
+        "inventory",
+        "--agent",
+        "agent:runner",
+        "--tier",
+        "prod",
+        "--team",
+        "lab"
+      ],
+      "prompt": "unused: this step holds no model",
+      "credential": "operator"
+    }
+  ],
+  "kinds": [
+    {
+      "kind": "sandbox",
+      "indexedPaths": [
+        {
+          "path": "name",
+          "type": "keyword"
+        },
+        {
+          "path": "language",
+          "type": "keyword"
+        },
+        {
+          "path": "isolation",
+          "type": "keyword"
+        },
+        {
+          "path": "network",
+          "type": "keyword"
+        },
+        {
+          "path": "processes",
+          "type": "keyword"
+        }
+      ],
+      "claimable": false,
+      "usage": "An execution environment and what it GUARANTEES, declared by whatever built it. `api` is what code running there may CALL, with the exact call shapes: read it before writing code meant to run here, or you are guessing at an interface a refusal cannot teach you. Everything else on the record says what the jail STOPS."
+    }
+  ]
+}

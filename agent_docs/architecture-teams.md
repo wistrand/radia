@@ -30,6 +30,30 @@ because retention GC never sweeps unclaimed claimable work. `tags` is the routin
 claimant states what it is, and `removeMember` withdraws the departing member's advertisements so
 the routing goes with it.
 
+**`workspace` is a team kind, so a member can author CODE rather than only bytes.** Four MCP tools
+(`space_save_workspace`, `space_edit_workspace`, `space_read_workspace`, `space_list_workspaces`)
+cover `extensions/ts/workspace.ts`, and they exist because a manifest carries a `treeDigest`, a
+normative sha256 over sorted `path\0mode\0digest` lines that no prose lets a model compute. Two
+consequences. The kind is redeclared with `team` for the same reason `artifact` is, and it is the
+SAME DOOR: a tree is this team's code plus the artifact ids to fetch the rest, so an unscoped
+`workspace` grant carries a compartment's payload out and `auditCompartment` reports it beside the
+artifact case. And a tree could not be authored in a compartment at all until `WriteInput.meta`
+existed: every file lands as an artifact, each one was refused for carrying no label, which is the
+`capability` hole in a second place. The adapter LEARNS that label from a refusal (nested
+`ScopeFiller.fill` over both kinds), never by pre-stamping, since pre-stamping narrows a tree
+written under an unscoped grant. Nothing joins a content key, unlike `capability`, because
+`workspace` declares none: dedup is a read-before-write plus a per-agent idempotency key.
+
+**A workspace lookup is scoped by the GRANT, which is enough for one team and not for two.**
+`readWorkspace` matches by name and is bounded by the caller's pattern-scoped grant, so a member of
+one team sees only its own trees and every save supersedes the right head. A member of SEVERAL teams
+sees across them: saving a tree whose name another of its teams already uses finds that head, and an
+identical tree deduplicates into the other team's record rather than creating one. OPEN, and narrow
+(it needs a multi-team member and a colliding name), and the obvious fix is circular: the compartment
+label is learned from a refusal, so it is not known at the moment the head is read. Named here rather
+than patched, because the patch that suggests itself (folding the label into the manifest's
+idempotency key) fixes a collision the dedup already short-circuits.
+
 **Work that cannot be done is ANSWERED, never nacked, and the answer says so.** `note.ok` is the
 marker (optional, indexed, absent means the note is mail rather than an answer). Two reasons it is
 not a nack. The state machine cannot express permanent failure: `nack` reaches dead-letter only

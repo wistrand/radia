@@ -252,6 +252,57 @@ side never learns which language asked. The jail comes from the `sandbox` RECORD
 PRESENCE of them and runs any interpreter. Conflating the two is how "python means bubblewrap"
 becomes a rule nobody wrote down.
 
+**Code reaches the space only when its BINDING asked to.** `Binding.brokered` is off by default, so
+an entrypoint takes `(record)` and can reach nothing until a deployment says otherwise
+(`radia bind --brokered`). It was on for every hosted agent, bounded only by that agent's grants,
+which is the same shape as an unscoped artifact grant being a door out of a compartment. The
+measurement that decided it: the only production consumer of the brokered host, the analysis
+pipeline's three stages, never called `space` at all, so it was paying for the channel and the
+`mkfifo` permission behind it; it now dispatches per binding like `radia host` and asks for
+neither. `--broker` forces the channel on for a fleet whose bindings predate the field; `--no-broker`
+is the default and stays accepted. A binding that predates the field and calls `space` gets a
+STAND-IN rather than `undefined`: every property throws "this binding is not brokered … add
+`radia bind <agent> --brokered`", because a silent default change whose symptom is "Cannot read
+properties of undefined" names neither the cause nor the fix.
+
+**A run has three ways out and ONE rule for all of them.** `Binding.outputMeta` names body fields
+copied from the claimed record, and the host stamps them on captured artifacts, on records the code
+proposes through a broker, and on the value the entrypoint RETURNS. That third destination was
+unstamped and is the one everything uses: two programs returned a body with no compartment label,
+every ack was refused as outside the put grant's pattern, the host retried to a dead-letter, and no
+model saw the error because it happens after the code has finished. `radia bind --output-meta` is
+how a deployment declares it, and `radia host` no longer needs a stamp passed in: the broker derives
+the same one from the same binding.
+
+**An authorization refusal is not retried.** A body and a grant are both fixed at the moment of the
+refusal, so redelivery changes neither. The host reports `permanent: true`, releases the record
+instead of re-running it, and leaves it `available` for `radia doctor` to report as work sitting far
+longer than usual. Everything else keeps the retry at-least-once exists for.
+
+**The compiled binary can jail code.** `Deno.execPath()` is the running binary, and in a compiled
+build that is `radia` itself, so the shipped artifact could run no model-written code in any mode.
+`denoRuntime()` resolves a Deno from PATH when standalone and refuses by name when there is none,
+and `--allow-run` is in both compile paths.
+
+**The broker's API is a RECORD, because it was the one interface an author could not discover.**
+`BROKER_API` (`extensions/ts/broker.ts`) states the entrypoint signature, the three calls with their
+exact shapes, what a return value becomes, and what is deliberately absent; `SandboxSpec.api`
+carries it, and `radia host` declares one at startup (fail-soft: a host that cannot write it still
+runs code). The `sandbox` kind was already the answer to "what can running code reach", and every
+field on it said what the jail STOPS; nothing said what the code may CALL.
+
+Measured, which is why it exists: a model asked to write a brokered entrypoint knew the space's
+records, having queried them, and did not know the call shape, so it shipped five candidate query
+patterns and five candidate result shapes and tried each until one worked. A prompt saying
+`space.query(pattern, limit)` was not enough, because the MCP `space_query` tool takes `kind` and
+`match` as SEPARATE arguments while the broker takes one pattern object, so the surface the model
+already knew taught it the wrong shape. Two of its five attempts were refused, and those refusals
+are invisible: a broker call rejected inside the jail appears in neither the trace nor the space
+(agent_docs/research-agent-sessions.md).
+
+The guard is that the advertised names are the names the shim binds, in the JS shim and the Python
+one (`extensions/conformance/broker.test.ts`), so the record cannot drift into a lie.
+
 ## The operator surface
 
 Seven CLI verbs, all of them CLIENTS composing `/v0` the way `workspace-git` does, so the runtime

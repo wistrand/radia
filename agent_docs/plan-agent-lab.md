@@ -126,6 +126,12 @@ the team label stamped so an unlabelled seed cannot become an invisible queue). 
 CONTENTION scenario needs: `team-queue` puts five claimable tasks in front of both agents at once,
 which is the only shape that measures leases rather than a handoff.
 
+**Scenario shape, credentials.** An agent may declare `credential: "operator"`, and exactly one kind
+of step needs it: `promote` writes grants and `bind` is the escalation root, so deploying a workspace
+is not a member's to do. It is REFUSED on a harness, which is the lab's isolation rule stated as a
+check rather than a convention. Everything else runs as its own member; a script gets its definition
+token in the environment rather than on the command line, where `ps` would carry it.
+
 **Phase 2: the assertion pass. BUILT 2026-08-28.** `scripts/agent-lab/report.ts`,
 `deno task lab-report <run-dir>…`: eight checks joining the trace against the space, ranked, with no
 new instrumentation, because the event log already carries claim history per record and the traces

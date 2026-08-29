@@ -39,9 +39,9 @@
 // and each was proved against a planted regression.
 
 import type { RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
-import { bwrapArgs, jailArgs, type RunOptions, type SandboxSpec } from "./sandbox.ts";
-import { listSandboxes } from "./sandbox-registry.ts";
-import { INPUT_DIR, type InvokeContext, type Invoker, treeCache, type TreeCache } from "./host.ts";
+import { bwrapArgs, denoRuntime, denoSandbox, jailArgs, type ProbeResult, type RunOptions, type SandboxApi, type SandboxSpec } from "./sandbox.ts";
+import { declareSandbox, listSandboxes, verifySandbox } from "./sandbox-registry.ts";
+import { INPUT_DIR, type InvokeContext, type Invoker, outputStamp, treeCache, type TreeCache } from "./host.ts";
 import { validatePath } from "./workspace.ts";
 
 /**
@@ -218,6 +218,42 @@ export interface Runtime {
 /** The program the jail actually runs. Generated, never materialised into the tree: the tree is
  *  content-addressed and adding a file to it would change the digest that identifies the code,
  *  and since phase 6 that directory is shared between claims. */
+/**
+ * What a brokered entrypoint may call, as data, so it can be DECLARED rather than described.
+ *
+ * Kept beside `jsBoot` because that function is the only thing that makes it true: the `space`
+ * object it builds is this list, and `extensions/conformance/broker.test.ts` asserts the two agree.
+ * The Python shim binds the same three names.
+ *
+ * THE PATTERN SHAPE IS THE PART WORTH STATING. A model that has been driving the MCP surface knows
+ * `space_query` as `{kind, match}` passed as separate arguments, and guesses a flat object here;
+ * the wire refuses it. That guess cost one real run five candidate patterns and five candidate
+ * result shapes, tried in order (agent_docs/research-agent-sessions.md).
+ */
+export const BROKER_API: SandboxApi = {
+  entrypoint: "export default async function (record, space) { … }",
+  calls: [
+    {
+      call: "space.query(pattern, limit) -> record[]",
+      description:
+        "Read records. `pattern` is ONE object, {kind, match}, e.g. {kind: 'note', match: {topic: 'x'}}; " +
+        "`match` is nested, not spread. Returns the records themselves, an array.",
+    },
+    {
+      call: "space.readOne(pattern) -> record | null",
+      description: "The single best match, same pattern shape.",
+    },
+    {
+      call: "space.put({kind, body}) -> {id}",
+      description:
+        "Write a record. The host stamps the labels, the compartment and the claimed record as a " +
+        "parent, so those are not yours to set and cannot be forged here.",
+    },
+  ],
+  returns: "Whatever the entrypoint returns becomes the RESULT record: {kind, body}. Return it rather than putting it, or the answer is not fenced.",
+  absent: ["fetch and any network", "the filesystem beyond the run's own directory", "process spawning", "environment variables", "console output anybody reads"],
+};
+
 function jsBoot(entrypoint: string, record: RadiaRecord, chan: Channel): string {
   return `
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -347,6 +383,49 @@ function assertHostCanRun(spec: SandboxSpec | null): void {
  * Replaces `sandboxInvoker` from phase 4: same isolation, plus a way for the code to participate
  * without a credential.
  */
+/**
+ * Declare what a brokered host runs and what its code may call, as a `sandbox` record.
+ *
+ * WRITTEN BY THE HOST rather than by an operator, which is the same shape `declareExecJail` already
+ * takes: the process that builds the jail is the one that knows what it built. `verifySandbox`
+ * stays the check on that claim, and the split in `sandbox-registry.ts` still holds for anything a
+ * host cannot prove about itself.
+ *
+ * It exists so the API is DISCOVERABLE. Everything else about a jail was already a record a caller
+ * could query; the three calls its code may make were in no record, no kind usage and no tool
+ * description, so the only way to learn them was to guess.
+ */
+export async function declareBrokerSandbox(
+  client: RadiaClient,
+  opts: { name?: string; timeoutMs?: number; networkTarget?: string } = {},
+): Promise<{ id: string; refusedBecause: ProbeResult[] }> {
+  const spec: SandboxSpec = {
+    ...denoSandbox({ ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}), name: opts.name ?? "brokered-host" }),
+    // The roots are PER CLAIM (a boot dir, a control dir, the tree, maybe an output dir), so the
+    // declaration states the ones a caller can reason about rather than inventing a fixed list.
+    readonlyPaths: [],
+    writablePaths: [],
+    api: BROKER_API,
+  };
+  // PROBED BEFORE IT IS PUBLISHED, which is the rule this registry exists for: "a declaration
+  // nobody tested is a more convincing version of an unenforced sentence" (sandbox-registry.ts).
+  // The first version of this function published `network: false` and `processes: false` on a jail
+  // nothing had tried, in the one subsystem whose whole doctrine is verify-before-serve.
+  //
+  // The space's own address is the network probe's target, because a probe with nothing to dial
+  // cannot tell an isolated jail from an offline machine. Failures are RETURNED rather than thrown:
+  // the caller decides whether an unproven jail is worth serving, exactly as `selectJavascriptJail`
+  // hands `refusedBecause` back to its launcher.
+  const refusedBecause = opts.networkTarget
+    ? await verifySandbox(spec, {
+      networkTarget: opts.networkTarget,
+      ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
+    })
+    : [];
+  const { id } = await declareSandbox(client, spec);
+  return { id, refusedBecause };
+}
+
 export function brokeredInvoker(reader: RadiaClient, opts: BrokerOptions = {}): Invoker {
   const cache = opts.cache ?? treeCache(reader);
   return async (ctx: InvokeContext) => {
@@ -355,7 +434,16 @@ export function brokeredInvoker(reader: RadiaClient, opts: BrokerOptions = {}): 
     const spec = await resolveSandbox(reader, ctx.binding.sandboxPattern);
     assertHostCanRun(spec);
     const root = await cache.root(ctx.binding.workspaceDigest);
-    return await runBrokered(root, ctx.binding.entrypoint, spec, ctx, opts);
+    // ONE STAMP, DERIVED FROM THE BINDING, so a proposal and the returned result carry the same
+    // fields. It used to be the caller's to supply and `radia host` supplied none, so the
+    // compartment label the host is supposed to guarantee reached neither path
+    // (agent_docs/research-agent-sessions.md). A caller-supplied stamp still wins, which is what
+    // lets a test build one by hand.
+    const stamp = { ...outputStamp(ctx.binding, ctx.record), ...(opts.stamp ?? {}) };
+    return await runBrokered(root, ctx.binding.entrypoint, spec, ctx, {
+      ...opts,
+      ...(Object.keys(stamp).length ? { stamp } : {}),
+    });
   };
 }
 
@@ -461,8 +549,8 @@ async function runBrokered(
         // model-written entrypoints against real data.
         ? new Deno.Command("bwrap", {
           args: bwrapArgs({
-            command: [Deno.execPath(), ...jailArgs({ ...opts.run, readRoots, writeRoots }, opts.run?.memoryMb ?? 256, bootPath)],
-            readRoots: [...readRoots, Deno.execPath().slice(0, Deno.execPath().lastIndexOf("/")) || "/usr/bin"],
+            command: [denoRuntime(), ...jailArgs({ ...opts.run, readRoots, writeRoots }, opts.run?.memoryMb ?? 256, bootPath)],
+            readRoots: [...readRoots, denoRuntime().slice(0, denoRuntime().lastIndexOf("/")) || "/usr/bin"],
             ...(writeRoots.length ? { writeRoots } : {}),
             cwd,
             unshare: ["--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup"],
@@ -473,7 +561,7 @@ async function runBrokered(
           clearEnv: true,
           env: { HOME: "/tmp", PATH: "/usr/bin:/bin" },
         }).spawn()
-        : new Deno.Command(Deno.execPath(), {
+        : new Deno.Command(denoRuntime(), {
           cwd,
           args: jailArgs({ ...opts.run, readRoots, writeRoots }, opts.run?.memoryMb ?? 256, bootPath),
           stdin: "piped",

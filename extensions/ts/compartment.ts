@@ -11,9 +11,11 @@
 // It reports three things, because the boundary has three doors and only the first is obvious:
 //
 //   1. CROSSERS: read inside, write outside.
-//   2. UNSCOPED ARTIFACT GRANTS: `artifact` is reserved, so a compartment cannot have its own
+//   2. UNSCOPED PAYLOAD GRANTS: `artifact` is reserved, so a compartment cannot have its own
 //      artifact kind and must scope by pattern instead. A grant that forgot the field reads
-//      compartment bytes. This is the plan's most likely real-world leak.
+//      compartment bytes. This is the plan's most likely real-world leak. `workspace` is the same
+//      door with a longer handle: a tree is a manifest naming artifacts, so an unscoped grant on it
+//      hands over this compartment's CODE and, through the ids it lists, the bytes.
 //   3. OPS POWERS: `observe` reads every record BODY regardless of any grant, and `declassify`
 //      clears the labels a policy bars on. Neither shows up as a grant.
 //
@@ -23,6 +25,10 @@
 
 import type { RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
 import { activeSet, grantKey, opsGrantKey } from "../../sdk/ts/registry.ts";
+
+/** Kinds that carry a compartment's payload out of it. `artifact` IS the bytes; a `workspace` is a
+ *  manifest naming them, so reading one is reading the code and the ids to fetch the rest. */
+const PAYLOAD_KINDS = ["artifact", "workspace"];
 
 const READ_OPS = ["query", "read_one", "take"];
 
@@ -36,8 +42,9 @@ export interface Crosser {
 
 export interface CompartmentAudit {
   crossers: Crosser[];
-  /** Principals whose `artifact` grants are not scoped to the compartment field. */
-  unscopedArtifact: { principal: string; operations: string[] }[];
+  /** Principals whose `artifact` or `workspace` grants are not scoped to the compartment field.
+   *  Both carry payloads out: an artifact IS the bytes, a workspace names them. */
+  unscopedArtifact: { principal: string; kind: string; operations: string[] }[];
   /** Ops powers held as `ops_grant` records. `observe` and `declassify` are boundary-relevant. */
   opsPowers: { principal: string; powers: string[] }[];
   /** Always populated: what this answer does not cover, in the words an operator needs. */
@@ -72,6 +79,8 @@ export async function auditCompartment(
   const inside = new Set(opts.inside);
   const reads = new Map<string, Set<string>>();
   const writes = new Map<string, Set<string>>();
+  // Keyed by `principal\u0000kind`, so one principal holding two unscoped payload grants is two
+  // rows rather than a merged one an operator has to take apart.
   const unscopedArtifact = new Map<string, Set<string>>();
 
   for (const rec of await liveGrants(client)) {
@@ -85,8 +94,8 @@ export async function auditCompartment(
     // An artifact grant carrying no compartment field reaches every artifact record in the space,
     // and through it the bytes. Reported whatever its operations: a read is the leak, a write is
     // how unlabelled bytes get in.
-    if (g.kind === "artifact" && (g.pattern === undefined || !(field in g.pattern))) {
-      for (const o of ops) add(unscopedArtifact, g.principal, o);
+    if (PAYLOAD_KINDS.includes(g.kind) && (g.pattern === undefined || !(field in g.pattern))) {
+      for (const o of ops) add(unscopedArtifact, `${g.principal}\u0000${g.kind}`, o);
     }
   }
 
@@ -128,15 +137,18 @@ export async function auditCompartment(
   }
   if (unscopedArtifact.size) {
     caveats.push(
-      `artifact grants without a '${field}' pattern reach every artifact in the space; ` +
-        "`artifact` is reserved, so a compartment can only scope it by pattern",
+      `artifact or workspace grants without a '${field}' pattern reach every payload in the ` +
+        "space; both kinds are shared, so a compartment can only scope them by pattern",
     );
   }
   return {
     crossers,
     unscopedArtifact: [...unscopedArtifact.entries()]
-      .map(([principal, s]) => ({ principal, operations: [...s].sort() }))
-      .sort((a, b) => (a.principal < b.principal ? -1 : 1)),
+      .map(([key, s]) => {
+        const [principal, kind] = key.split("\u0000");
+        return { principal, kind, operations: [...s].sort() };
+      })
+      .sort((a, b) => (a.principal + a.kind < b.principal + b.kind ? -1 : 1)),
     opsPowers,
     caveats,
   };

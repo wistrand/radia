@@ -15,7 +15,7 @@
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { reactorLoop } from "../../sdk/ts/loop.ts";
-import { WorkspaceHost } from "../../extensions/ts/host.ts";
+import { sandboxInvoker, WorkspaceHost } from "../../extensions/ts/host.ts";
 import { brokeredInvoker } from "../../extensions/ts/broker.ts";
 import { stageAgent } from "./roles.ts";
 import type { StageName } from "./kinds.ts";
@@ -50,7 +50,11 @@ const host = new WorkspaceHost({
   credentials,
   reader,
   requestKind: "stage_request",
-  invoke: brokeredInvoker(reader),
+  // PER BINDING, the same rule `radia host` follows. Every stage here is a pure function of its
+  // claimed record and the input files the host fetched: none of them calls `space`, so none asks
+  // to be brokered, and the pipeline stops paying for a channel (and a `mkfifo` permission) it
+  // never used. A stage that later needs a read declares `brokered` on its own binding.
+  invoke: (ctx) => (ctx.binding.brokered ? brokeredInvoker(reader) : sandboxInvoker(reader))(ctx),
   leaseSeconds: 60,
 });
 

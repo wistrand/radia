@@ -61,7 +61,7 @@ const worker = new Deno.Command(Deno.execPath(), {
     "run",
     `--allow-net=127.0.0.1:${PORT}`,
     "--allow-run=deno",
-    "--allow-env=HOME",
+    "--allow-env=HOME,PATH",
     // A procedure is a WORKSPACE now, so every call materialises a tree and the worker needs
     // somewhere to put it. fleet.ts has always done this; these launchers predate the change.
     `--allow-write=${wsRoot}`,

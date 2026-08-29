@@ -47,8 +47,24 @@ export interface Binding {
   /** The tree digest to materialise. Cutover is per claim; work already leased finishes under the
    *  digest it was claimed with. */
   workspaceDigest: string;
-  /** Module path inside the tree, default-exporting `(record) => result`. */
+  /** Module path inside the tree, default-exporting `(record) => result`, or `(record, space)`
+   *  when `brokered` asks for the channel. */
   entrypoint: string;
+  /**
+   * Whether this code may reach the space at all, through the broker.
+   *
+   * DEFAULT FALSE, which is least privilege applied to model-written code: an entrypoint that only
+   * computes gets `(record)` and no way to read or write anything, and a run that needs the space
+   * says so where the operator deploying it can see the request. It used to be on for everyone,
+   * bounded only by the agent's grants, which is the same shape as an unscoped artifact grant
+   * being a door out of a compartment.
+   *
+   * Measured before inverting it: the only production consumer of the brokered host (the analysis
+   * pipeline's three stages) never touches `space` — its inputs arrive as files the host fetched
+   * and its output is the returned value — so it was paying for a channel it never used, including
+   * the `mkfifo` run permission behind it (agent_docs/research-agent-sessions.md).
+   */
+  brokered?: boolean;
   /**
    * The PROPERTIES this code needs from its jail, matched against `sandbox` records:
    * `{language: "python", network: false}`. Never an interpreter name, per
@@ -233,7 +249,10 @@ export type Outcome =
   | { agent: string; status: "refused"; reason: string }
   | { agent: string; status: "digest_mismatch"; wanted: string; bound: string; recordId: string }
   | { agent: string; status: "acked"; recordId: string; resultId?: string; outputId?: string }
-  | { agent: string; status: "failed"; recordId: string; error: string };
+  /** `permanent` means a retry cannot change the answer (an authorization refusal), so this host
+   *  will not claim that record again. The distinction an operator acts on is "it will never work"
+   *  against "try it again", and both used to print the same line. */
+  | { agent: string; status: "failed"; recordId: string; error: string; permanent?: true };
 
 /**
  * Store what the run wrote, as the next version of the binding's output workspace.
@@ -271,8 +290,20 @@ async function captureOutput(
   return committed?.id;
 }
 
-/** The `outputMeta` stamp: the named body fields of the claimed record, scalars only. */
-function outputStamp(binding: Binding, record: RadiaRecord): Record<string, string | number | boolean | null> | undefined {
+/**
+ * The `outputMeta` stamp: the named body fields of the claimed record, scalars only.
+ *
+ * EVERYTHING A RUN EMITS, not only its output artifacts. It reaches three destinations because a
+ * run has three ways out and they must not have three different rules: the captured artifacts, the
+ * records the code proposes through a broker, and the value the entrypoint RETURNS. That last one
+ * was unstamped, which is the one path everything actually uses: two programs returned a body with
+ * no compartment label, every ack was refused as outside the put grant's pattern, the host retried
+ * to a dead-letter, and no model ever saw the error because it happens after the code has finished
+ * (agent_docs/research-agent-sessions.md).
+ *
+ * Exported so a broker derives the same stamp from the same binding rather than being handed one.
+ */
+export function outputStamp(binding: Binding, record: RadiaRecord): Record<string, string | number | boolean | null> | undefined {
   if (!binding.outputMeta?.length) return undefined;
   const body = record.body as Record<string, unknown>;
   const stamp: Record<string, string | number | boolean | null> = {};
@@ -283,6 +314,39 @@ function outputStamp(binding: Binding, record: RadiaRecord): Record<string, stri
     }
   }
   return Object.keys(stamp).length ? stamp : undefined;
+}
+
+/**
+ * Whether a failure will still be a failure on redelivery.
+ *
+ * AUTHORIZATION ONLY, deliberately narrow: a body refused for scope and a grant are both fixed at
+ * the moment of the refusal, so the retry the runtime offers cannot change either. Everything else
+ * (a crash, a timeout, a network blip) keeps the retry it was designed for, because over-reporting
+ * "permanent" turns a transient fault into work that silently stops.
+ *
+ * THE STATUS IS THE WHOLE TEST, and the two attempts before it are worth stating so nobody adds a
+ * third. Every refusal that reaches here is a `RadiaClientError` from the SDK, which carries
+ * `status`; a fallback on `.title` was written first and could never fire, because the wire's
+ * RFC 9457 `title` is stored as `code`, and a fallback on the message could not fire either. A
+ * branch that cannot fire is worse than no branch: it reads as a safety net and is a comment.
+ *
+ * Unrecognised means RETRYABLE, which is the safe direction: over-reporting "permanent" turns a
+ * transient fault into work that silently stops.
+ */
+function permanent(e: unknown): boolean {
+  const status = (e as { status?: number })?.status;
+  return status === 401 || status === 403;
+}
+
+/** Merge the stamp into a result's BODY, leaving `kind` and everything else alone. A result with no
+ *  body is left as it is: there is nothing to label, and inventing one would put a record into the
+ *  space that the entrypoint did not ask for. */
+function stampResult<T extends { kind: string; body?: unknown }>(
+  result: T,
+  stamp: Record<string, string | number | boolean | null> | undefined,
+): T {
+  if (!stamp || !result?.body || typeof result.body !== "object" || Array.isArray(result.body)) return result;
+  return { ...result, body: { ...(result.body as Record<string, unknown>), ...stamp } };
 }
 
 /**
@@ -344,11 +408,20 @@ export function sandboxInvoker(reader: RadiaClient, opts: { timeoutMs?: number; 
   return async (ctx) => {
     const root = await cache.root(ctx.binding.workspaceDigest);
     {
+      // A SECOND ARGUMENT THAT EXPLAINS ITSELF. Space access is opt-in (`Binding.brokered`), and
+      // code written before that inversion calls `space.query(...)` on `undefined`, which fails as
+      // "Cannot read properties of undefined" and names neither the cause nor the fix. Every
+      // property answers with the instruction instead, so the first line of the failure is the
+      // sentence somebody needs.
+      const denied = `new Proxy({}, { get(_t, prop) { throw new Error(` +
+        `"this binding is not brokered, so the entrypoint has no space access: tried space." + String(prop) + ` +
+        `". Add it with \`radia bind <agent> --brokered\` if this code needs to read or write the space."); } })`;
       const boot = `const record = ${JSON.stringify(ctx.record)};\n` +
+        `const space = ${denied};\n` +
         // ABSOLUTE, not `./`: a program fed on stdin resolves a relative import against the CWD,
         // and the cwd is the output tree whenever there is one.
         `const mod = await import(${JSON.stringify(`file://${root}/${ctx.binding.entrypoint}`)});\n` +
-        `const out = await mod.default(record);\n` +
+        `const out = await mod.default(record, space);\n` +
         `console.log(${JSON.stringify(RESULT_MARK)} + JSON.stringify(out ?? null));\n`;
       const run = await runCode(boot, {
         // The OUTPUT tree is the working directory when there is one, so `writeFile("chart.png")`
@@ -382,6 +455,23 @@ export function sandboxInvoker(reader: RadiaClient, opts: { timeoutMs?: number; 
  */
 export class WorkspaceHost {
   #clients = new Map<string, RadiaClient>();
+  /**
+   * Records this host has proved it cannot settle. Per PROCESS and never persisted: a restart is
+   * the operator's way of saying "try again", and a grant may have changed by then.
+   *
+   * BOUNDED, because a host runs for weeks and an unbounded set keyed by caller-supplied ids is a
+   * leak with a slow fuse. Oldest first: the recent refusals are the ones a retry would hit again,
+   * and forgetting an old one costs one wasted attempt rather than a loop.
+   */
+  #unclaimable = new Set<string>();
+  #remember(id: string): void {
+    this.#unclaimable.add(id);
+    while (this.#unclaimable.size > 1000) {
+      const oldest = this.#unclaimable.values().next().value;
+      if (oldest === undefined) break;
+      this.#unclaimable.delete(oldest);
+    }
+  }
   #opts: HostOptions;
 
   constructor(opts: HostOptions) {
@@ -411,6 +501,14 @@ export class WorkspaceHost {
       let claimed: { record: RadiaRecord; lease: Lease } | null;
       try {
         claimed = await client.take({ pattern: { kind: requestKind } }, { leaseSeconds: this.#opts.leaseSeconds ?? 60 });
+        // A record this host has already proved it cannot settle is released rather than re-run:
+        // claiming it again would cost another attempt for the same refusal. Released, never
+        // nacked, so the attempt count stays where it was and another host with different grants
+        // still gets its turn.
+        if (claimed && this.#unclaimable.has(claimed.record.id)) {
+          await client.release(claimed.lease).catch(() => {});
+          continue;
+        }
       } catch (e) {
         // A binding whose agent holds no matching grant claims NOTHING, and says so rather than
         // dying: one lock without the other is inert by design, not an error in the fleet.
@@ -454,7 +552,12 @@ export class WorkspaceHost {
           : undefined;
         // The inputs become DATA PARENTS of the result, so their classification flows into it and
         // "what produced this" is a lineage answer rather than a body field to trust.
-        const acked = await client.ack(claimed.lease, inputIds.length ? { ...result, parentIds: inputIds } : result);
+        // THE HOST WINS OVER THE CODE, on this path as on the brokered one. A returned body that
+        // omits the compartment gets it; one that names another team is overwritten rather than
+        // refused, which is the same rule the broker states and the reason the code cannot lie
+        // about what it touched.
+        const stamped = stampResult(result, outputStamp(binding, claimed.record));
+        const acked = await client.ack(claimed.lease, inputIds.length ? { ...stamped, parentIds: inputIds } : stamped);
         out.push({
           agent: binding.agent,
           status: "acked",
@@ -466,11 +569,25 @@ export class WorkspaceHost {
         // The work goes back with an attempt against it rather than being lost or held to lease
         // expiry: at-least-once is the contract, and a crashed entrypoint is exactly the retry
         // case it exists for.
-        await client.nack(claimed.lease, { backoffSeconds: 5 }).catch(() => {});
+        //
+        // EXCEPT WHEN A RETRY CANNOT HELP. An authorization refusal is a property of the body and
+        // the grant, and neither changes on redelivery: measured, one refused ack was re-claimed
+        // six times over thirty seconds and then dead-lettered, with the reason only ever in this
+        // process's stderr. So this host stops claiming that record and says so once. The request
+        // stays `available`, which `radia doctor` reports as work sitting far longer than usual,
+        // rather than consuming the attempt budget on the way to a dead-letter nobody can explain.
+        if (permanent(e)) this.#remember(claimed.record.id);
+        await client.nack(claimed.lease, { backoffSeconds: permanent(e) ? 0 : 5 }).catch(() => {});
         // Roomy enough to carry a diagnosis the invoker already bounded. At 300 it silently ate
         // the stderr tail the broker had gone to the trouble of keeping: two caps, opposite ends,
         // and the cause lost between them.
-        out.push({ agent: binding.agent, status: "failed", recordId: claimed.record.id, error: String(e).slice(0, 1200) });
+        out.push({
+          agent: binding.agent,
+          status: "failed",
+          recordId: claimed.record.id,
+          error: String(e).slice(0, 1200),
+          ...(permanent(e) ? { permanent: true as const } : {}),
+        });
       } finally {
         if (outDir) await Deno.remove(outDir, { recursive: true }).catch(() => {});
         if (inputDir) await Deno.remove(inputDir, { recursive: true }).catch(() => {});

@@ -1,6 +1,6 @@
 // A TEAM: several agent harnesses (Claude Code, Codex, anything that speaks MCP) sharing one
 // space so they can pass work between them. The convention is two kinds of its own (`task`, `note`),
-// two it extends with the team field (`artifact`, `capability`), and one grant set;
+// three it extends with the team field (`artifact`, `capability`, `workspace`), and one grant set;
 // everything that makes it work (claiming, fencing, at-least-once delivery, lineage) is the
 // runtime's own coordination and is not restated here.
 //
@@ -16,10 +16,12 @@
 import type { RadiaClient } from "../../sdk/ts/client.ts";
 import { AGENT_DEFINITION, ARTIFACT, KIND_DEF, type KindDef } from "../../sdk/ts/wire.ts";
 import { CAPABILITY, CAPABILITY_KIND, retireProviderCapabilities } from "./capability.ts";
+import { WORKSPACE_KIND } from "./workspace.ts";
 import { activeByKey, grantKey, isRetired, newestByKey, opsGrantKey } from "../../sdk/ts/registry.ts";
 
 export const TASK = "task";
 export const NOTE = "note";
+export const WORKSPACE = WORKSPACE_KIND.kind;
 
 /** The body field that says which team a record belongs to, and the whole isolation mechanism.
  *  Named once here because it appears in three places that must agree: the kinds' indexed paths,
@@ -128,6 +130,21 @@ export const TEAM_KINDS: KindDef[] = [
       "Publish one per thing you can do; re-publishing an unchanged one is free. Read the team's " +
       "with {kind: 'capability'} before deciding a task is yours or nobody's.",
   },
+  {
+    // The unit a HOST runs and a promotion PINS. Extended with `team` for the same reason
+    // `artifact` is, and it is the same door: a workspace holds this team's code, so an unscoped
+    // grant here lets it out exactly as an unscoped artifact grant does. Nothing joins a content
+    // key, unlike `capability`, because this kind declares none (see `WORKSPACE_KIND`).
+    ...WORKSPACE_KIND,
+    indexedPaths: [...WORKSPACE_KIND.indexedPaths, { path: TEAM_FIELD, type: "keyword" }],
+    usage: "A named tree of files that keeps every version: {name, owner, treeDigest, entrypoint?, " +
+      "files:[{path, mode, digest, artifactId}]}. Latest-wins by name, and a successor names its " +
+      "predecessor in `basedOn`, so two manifests naming one predecessor are a FORK. The bytes are " +
+      "artifacts; this manifest is what makes them a tree. Write and read it with " +
+      "space_save_workspace, space_edit_workspace, space_read_workspace and space_list_workspaces: " +
+      "`treeDigest` is a sha256 over the sorted file list, so a hand-written manifest is wrong, and " +
+      "a plain query returns every VERSION rather than every tree.",
+  },
 ];
 
 /** The operations a member holds per kind. The TEAM is what bounds them, and it is applied as a
@@ -143,6 +160,10 @@ export const MEMBER_GRANTS: { kind: string; operations: string[] }[] = [
   { kind: NOTE, operations: ["put", "query", "read_one"] },
   { kind: ARTIFACT, operations: ["put", "query", "read_one"] },
   { kind: CAPABILITY, operations: ["put", "query", "read_one"] },
+  // `query` is not optional beside the `put`: saving an existing name reads the head first to
+  // supersede it, and a writer that cannot read leaves a second head every time, which is a FORK
+  // reported to a member that did nothing wrong.
+  { kind: WORKSPACE, operations: ["put", "query", "read_one"] },
 ];
 
 /**

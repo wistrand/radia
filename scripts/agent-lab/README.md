@@ -25,6 +25,9 @@ deno task lab -- --scenario scripts/agent-lab/scenarios/smoke.json   # no model,
 | `team-exec` | a few cents | the same request with a THIRD party present: a model-free worker advertising `run_javascript`, so the answer can be computed rather than reasoned |
 | `team-exec-twostep` | a few cents | the same cast, with the execution moved to the REQUESTER: the worker is asked for source only, and the agent that wrote the task fetches the artifact and dispatches the `tool_call` itself |
 | `team-queue` | a few cents | CONTENTION: five seeded tasks, no requester, both agents claiming the same queue at once. One of the five cannot be done |
+| `workspace-smoke` | nothing | the workspace chain with no model: author a tree, promote, bind, run it brokered |
+| `team-workspace` | a few cents | the same chain with a MODEL authoring the tree: does it produce something a host can actually run |
+| `team-tree` | ~$1 | THREE models on one tree: one writes it, one changes it, one checks the answer after it ran |
 
 **Every producer/consumer scenario has a startup race, and the prompt is where it is settled.** A
 harness spends between 10 seconds and a minute orienting itself before its first tool call, and the
@@ -63,6 +66,49 @@ The seed's `team` label is stamped by the runner. A member's grants are pattern-
 and there is no unlabelled lane, so an unlabelled seed is invisible to everyone and reads as an
 empty queue; a body naming its own `team` still wins, which is how an isolation scenario would seed
 work nobody in the run can see.
+
+**`team-workspace` is the workspace-agent arc with a model in the authoring seat.** Three roles, run
+in sequence: a model authors a tree with `space_save_workspace` (it could not hand-write one, since
+a manifest carries a normative `treeDigest`), an OPERATOR step promotes that digest and binds it to
+`agent:runner`, and a background host claims the request and runs the tree brokered. The jailed code
+gets `(record, space)` and no credential; what it returns becomes the result record, acked under the
+agent's own run with the labels stamped host-side.
+
+The split is the point and must not move: `promote` writes grants and `bind` is the escalation root,
+so a model that held both could run anything as anyone. That is what `credential: "operator"` on the
+deploy step marks, and the runner REFUSES it on a harness.
+
+`workspace-smoke` is the same scenario with `author-workspace.ts` in place of the model, so the four
+moving parts can be checked in three seconds for nothing. Run it first: if it passes and the model
+run does not, the finding is about the model or the tool descriptions rather than about the
+plumbing.
+
+**`team-tree` is three models taking turns on ONE workspace**, which is the first scenario where an
+agent inherits another's code rather than its output. The roles run in sequence: an author writes
+the tree, a second agent is told to CHANGE it so the answer also carries a count, the operator step
+deploys and runs it, and a third agent checks the result against the records the program read and
+writes a verdict note.
+
+The middle role is the one under observation. `space_save_workspace` replaces a tree wholesale and
+`space_edit_workspace` changes it in place, both descriptions say so, and the failure is silent
+either way: a file left out of a whole-tree write is a file deleted, and the run still produces an
+answer. `forked: true` in the reply is the other half, since two agents writing the same name
+without naming a predecessor leave two heads. Neither prompt names a tool.
+
+The verifier exists because an agent's own account is the weakest evidence the lab has. Asking it to
+write its conclusion as a `note` with `ok` on it turns that account into a record that can be
+compared with the space, and it exercises the failure marker on the kind that gained one.
+
+**The host runs the compiled binary, and getting there was a defect these scenarios found.** A
+compiled `radia` could not jail anything at all: the jail spawns `Deno.execPath()`, which in a
+compiled build is `radia` itself rather than a Deno runtime, and the binary carried no
+`--allow-run` besides. Fixed 2026-08-29 (`denoRuntime` in `extensions/ts/sandbox.ts` resolves a
+Deno from PATH when standalone and refuses by name when there is none), and the workspace smoke is
+what proves it: it hosts a brokered run from `{{binary}}` end to end.
+
+**A binding must ASK for space access.** `deploy-workspace.ts` passes `--brokered`, because these
+scenarios' programs read the space; without it an entrypoint takes `(record)` and the second
+argument it never asked for answers every property with the instruction to add the flag.
 
 **A `background: true` agent is a worker, not a harness.** It starts before the others, is never
 waited for, and is killed when the run ends. Readiness is a RECORD (`readyWhen`) rather than a

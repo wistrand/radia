@@ -39,6 +39,11 @@ import { classify, fileTracer, type Tracer } from "./trace.ts";
 import { answer, one } from "./render.ts";
 import { getLogger } from "../../log.ts";
 import { mediaTypeForPath } from "../media.ts";
+// A SURFACE MAY IMPORT AN EXTENSION, and this is the reason the rule exists: a workspace is a
+// convention built on `/v0`, so the adapter offers the same functions the chat and `radia
+// workspaces` call rather than a second spelling of the tree format. The digest is normative
+// (`extensions/conformance/`), which is also why a model cannot hand-write a manifest.
+import { editWorkspace, readWorkspace, summarizeWorkspaces, writeWorkspace } from "../../../extensions/ts/workspace.ts";
 import { newer } from "../../../sdk/ts/registry.ts";
 import { ARTIFACT } from "../../../sdk/ts/wire.ts";
 import { flag } from "../../flags.ts";
@@ -633,6 +638,99 @@ async function call(
       });
     }
 
+    // ---- workspaces ----------------------------------------------------------
+    //
+    // OWNER IS THE DURABLE NAME, never the run: a tree outlives the session that wrote it, and an
+    // owner nothing can resolve tomorrow is the identity failure this surface already fixed once
+    // for `note.to` (agent_docs/research-agent-sessions.md).
+    case "space_save_workspace": {
+      const files = obj(a, "files") as Record<string, string>;
+      for (const [path, text] of Object.entries(files)) {
+        if (typeof text !== "string") throw new Error(`files['${path}'] must be a string`);
+      }
+      const head = await headOf(client, str(a, "name"));
+      // NESTED FILLS, because a tree write touches TWO kinds: every file lands as an `artifact` and
+      // the manifest as a `workspace`. On a compartmented space the artifact puts are refused first
+      // and the manifest second, each needing the label its own grants are scoped to, so learning
+      // one is not enough. Same learn-from-a-refusal rule as `space_put`: nothing is stamped on a
+      // write that would have succeeded, since pre-stamping narrows a record written under an
+      // UNSCOPED grant (agent_docs/architecture-teams.md).
+      const r = await scope.fill("artifact", (art) =>
+        scope.fill("workspace", async (ws) =>
+          await writeWorkspace(client, {
+            name: str(a, "name"),
+            owner: await ownerName(client),
+            files,
+            ...(typeof a.entrypoint === "string" ? { entrypoint: a.entrypoint } : {}),
+            // The predecessor, so a re-save is a SUCCESSOR rather than a second head. Without it
+            // every save of an existing name forks the tree, and a fork is what this surface then
+            // has to report to a model that did nothing wrong.
+            ...head,
+            meta: { ...art, ...ws },
+          })));
+      return pretty({
+        workspace: str(a, "name"),
+        id: r.id,
+        treeDigest: r.treeDigest,
+        entrypoint: r.entrypoint,
+        files: r.files.map((f) => f.path),
+        unchanged: r.deduped,
+        forked: r.forked,
+      });
+    }
+
+    case "space_edit_workspace": {
+      const r = await scope.fill("artifact", (art) =>
+        scope.fill("workspace", (ws) =>
+          editWorkspace(client, {
+            name: str(a, "name"),
+            edits: (a.edits ?? []) as Parameters<typeof editWorkspace>[1]["edits"],
+            ...(a.add ? { add: a.add as Record<string, string> } : {}),
+            ...(Array.isArray(a.remove) ? { remove: a.remove as string[] } : {}),
+            ...(typeof a.entrypoint === "string" ? { entrypoint: a.entrypoint } : {}),
+            meta: { ...art, ...ws },
+          })));
+      return pretty({
+        workspace: str(a, "name"),
+        id: r.id,
+        treeDigest: r.treeDigest,
+        changed: r.changed,
+        added: r.added,
+        removed: r.removed,
+        forked: r.forked,
+        preview: r.preview,
+      });
+    }
+
+    case "space_read_workspace": {
+      const m = await readWorkspace(client, str(a, "name"));
+      if (!m) return `no workspace named '${str(a, "name")}' (or no grant to read it)`;
+      const path = typeof a.path === "string" ? a.path : undefined;
+      if (!path) {
+        return pretty({
+          workspace: m.name,
+          id: m.id,
+          owner: m.owner,
+          treeDigest: m.treeDigest,
+          entrypoint: m.entrypoint,
+          files: m.files.map((f) => ({ path: f.path, digest: f.digest })),
+        });
+      }
+      const file = m.files.find((f) => f.path === path);
+      // NAMES THE PATHS IT HAS. A model that guessed a path once will guess again unless the
+      // refusal carries the answer.
+      if (!file) return `'${path}' is not in this workspace. It holds: ${m.files.map((f) => f.path).join(", ")}`;
+      const bytes = await client.getArtifact(file.artifactId);
+      return new TextDecoder().decode(bytes);
+    }
+
+    case "space_list_workspaces": {
+      const r = await summarizeWorkspaces(client);
+      // `complete` travels, for the same reason every other list here carries `more`: a partial
+      // listing presented as a population is the most repeated bug in this codebase.
+      return answer("workspaces", r.workspaces, { more: !r.complete, limit: r.workspaces.length });
+    }
+
     case "space_artifact_meta": {
       const m = await client.artifactMeta(str(a, "recordId"));
       return m ? pretty(m) : "no artifact with that record id (or no grant to read it)";
@@ -842,6 +940,29 @@ async function takeClaim(claims: Map<string, Claim>, a: Record<string, unknown>,
     );
   }
   return c;
+}
+
+/** The caller's DURABLE name, which is what a tree is owned by. Memoized per process: it costs an
+ *  exchange plus a health call, and it cannot change within a session. */
+let ownerMemo: string | undefined;
+async function ownerName(client: RadiaClient): Promise<string> {
+  if (ownerMemo) return ownerMemo;
+  await client.ensureCredential();
+  const h = await client.health();
+  return ownerMemo = h.agent ?? h.principal;
+}
+
+/** The manifest a re-save supersedes, or nothing for a first write.
+ *
+ *  Read here rather than left to the caller: a model asked to "save this workspace again" has no
+ *  way to know the id it must name, and omitting it makes every second save a FORK. */
+async function headOf(client: RadiaClient, name: string): Promise<{ basedOn?: string }> {
+  // NOT caught. `readWorkspace` answers null for "no such workspace" and THROWS for a refusal, and
+  // swallowing the second turns a caller with `put` but no `query` into one that silently forks the
+  // tree on every save: it cannot read the head, so it never names a predecessor. A refusal is the
+  // caller's to see.
+  const head = await readWorkspace(client, name);
+  return head ? { basedOn: head.id } : {};
 }
 
 // ---- argument coercion ----

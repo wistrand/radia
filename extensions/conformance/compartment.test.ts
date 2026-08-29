@@ -89,20 +89,26 @@ Deno.test("[compartment] a RETIRED grant stops making a principal a crosser", as
   });
 });
 
-Deno.test("[compartment] an artifact grant with no compartment pattern is reported: the kind cannot be partitioned", async () => {
+Deno.test("[compartment] a payload grant with no compartment pattern is reported: the kind cannot be partitioned", async () => {
   await withSpace(async (c) => {
     const finding = await insideKind(c);
-    const analyst = uniq("agent:analyst"), careful = uniq("agent:careful");
+    const analyst = uniq("agent:analyst"), careful = uniq("agent:careful"), coder = uniq("agent:coder");
     // `artifact` is reserved, so a compartment cannot get its own artifact kind and must scope by
     // pattern. This grant forgot, and it reaches every artifact record in the space, and through
     // them the bytes. The plan calls it the most likely real-world leak.
     await c.grant(analyst, "artifact", ["query"]);
     await c.grant(careful, "artifact", ["query", "put"], { compartment: "alpha" });
+    // `workspace` is the same door with a longer handle, and it was missed when trees arrived: a
+    // manifest is this compartment's CODE plus the artifact ids to fetch the rest of it.
+    await c.grant(coder, "workspace", ["query"]);
 
     const audit = await auditCompartment(c, { inside: [finding] });
-    assertEquals(audit.unscopedArtifact.map((x) => x.principal), [analyst]);
+    assertEquals(audit.unscopedArtifact.map((x) => `${x.principal}/${x.kind}`), [`${analyst}/artifact`, `${coder}/workspace`]);
     assertEquals(audit.unscopedArtifact[0].operations, ["query"]);
-    assert(audit.caveats.some((s) => s.includes("artifact grants without")), "the answer must say what an unscoped grant reaches");
+    assert(
+      audit.caveats.some((s) => s.includes("artifact or workspace grants without")),
+      "the answer must say what an unscoped payload grant reaches",
+    );
   });
 });
 

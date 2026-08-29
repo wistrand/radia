@@ -33,7 +33,7 @@
     "chat": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run examples/chat/chat.ts",
     "chat-web": "deno run --allow-net --allow-read=examples/chat/web examples/chat/web/serve.ts",
     "workspace-git": "deno run --allow-net --allow-read --allow-write --allow-env extensions/ts/export-git.ts",
-    "compile": "deno compile --allow-net --allow-read --allow-write --allow-env --include src/ui/index.html --include src/ui/vendor/blitzoom.bundle.js --output radia src/main.ts",
+    "compile": "deno compile --allow-net --allow-read --allow-write --allow-env --allow-run --include src/ui/index.html --include src/ui/vendor/blitzoom.bundle.js --output radia src/main.ts",
     "release": "./scripts/build-release.sh",
     "bundle-browser": "./scripts/build-browser.sh",
     "bundle-chat-web": "deno bundle --minify -o examples/chat/web/app.js examples/chat/web/app.ts",

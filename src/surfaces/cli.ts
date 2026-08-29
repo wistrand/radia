@@ -20,7 +20,7 @@ import { basicPassword, gitHandler } from "../../extensions/ts/git-http.ts";
 import { summarizeWorkspaces } from "../../extensions/ts/workspace.ts";
 import { declareExecRequest, pinnedDigests, promote } from "../../extensions/ts/promotion.ts";
 import { BINDING, type Binding, declareBinding, type Outcome, readBindings, sandboxInvoker, WorkspaceHost } from "../../extensions/ts/host.ts";
-import { brokeredInvoker } from "../../extensions/ts/broker.ts";
+import { brokeredInvoker, declareBrokerSandbox } from "../../extensions/ts/broker.ts";
 import { auditCompartment } from "../../extensions/ts/compartment.ts";
 import { addMember, DEFAULT_TEAM, declareTeamKinds, type MemberRemoval, type ObserveChange, readDefinition, removeMember, TEAM_FIELD, teamRoster } from "../../extensions/ts/team.ts";
 import { configLocation, type Harness, mcpInvocation, renderMcpConfig, renderMcpInstall } from "./mcp/config.ts";
@@ -143,16 +143,17 @@ Workspace agents (a workspace digest as a principal's code; also a convention, s
   rollback <digest> --tier <t> --pin <principal>:<op,op>…  promotion pointed backwards
   pins <principal> --tier <t>         what that principal is pinned to, read from the grants
                                       that enforce it: "what is prod running"
-  bind <agent> --digest <d> --entrypoint <p> [--sandbox <json>]
+  bind <agent> --digest <d> --entrypoint <p> [--sandbox <json>] [--output-meta <f,…>]
+       [--brokered]                   --brokered is what lets the code reach the space at all
   bind <agent> --retire               which code an agent runs. THE ESCALATION ROOT, and inert
                                       without a matching pin: both locks must agree
   bindings                            every live binding
   host --agent <principal>=<token>… [--agents -] [--once] [--interval <ms>]
-       [--no-broker] [--timeout <ms>] [--lease <s>] [--request-kind <k>]
+       [--broker] [--timeout <ms>] [--lease <s>] [--request-kind <k>]
                                       run bound agents' code AS them: holds each definition
-                                      token, mints each run, claims under it. Brokered by
-                                      default, so the jailed code reaches the space only
-                                      through the host. \`--agents -\` takes a JSON map on
+                                      token, mints each run, claims under it. Code reaches the
+                                      space only if its BINDING asked to be brokered, and then
+                                      only through the host. \`--agents -\` takes a JSON map on
                                       stdin, which keeps tokens out of \`ps\`
   compartment --inside <kind,kind> [--field <f>] [--expect <p,p>]
                                       who can get data OUT: crossers granted both sides, plus
@@ -2018,7 +2019,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       // identity's authority, which is why the kind is operator-only and why this prints what it
       // just decided rather than "ok".
       const [agent] = positional(argv, 1);
-      if (!agent) return usage("bind <agent> --digest <tree-digest> --entrypoint <path> [--sandbox <json>] | bind <agent> --retire");
+      if (!agent) return usage("bind <agent> --digest <tree-digest> --entrypoint <path> [--sandbox <json>] [--output-meta <field,…>] [--brokered] | bind <agent> --retire");
       await declareBinding(client);
       if (has(argv, "--retire")) {
         const current = (await readBindings(client)).find((b) => b.agent === agent);
@@ -2027,15 +2028,33 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         return out(ctx, { agent, retired: true, was: current }, () => `${agent}: binding retired. It claims nothing until bound again (the grant is untouched; retire that too to close both locks)`);
       }
       const digest = flag(argv, "--digest"), entrypoint = flag(argv, "--entrypoint");
-      if (!digest || !entrypoint) return usage("bind <agent> --digest <tree-digest> --entrypoint <path> [--sandbox <json>]");
+      if (!digest || !entrypoint) return usage("bind <agent> --digest <tree-digest> --entrypoint <path> [--sandbox <json>] [--output-meta <field,…>] [--brokered]");
       const sandboxPattern = flag(argv, "--sandbox") ? json(flag(argv, "--sandbox")!, "sandbox") : undefined;
-      const body: Binding = { agent, workspaceDigest: digest, entrypoint, ...(sandboxPattern ? { sandboxPattern } : {}) };
+      // The fields the HOST stamps on everything this agent's runs emit, copied from the claimed
+      // record. Reachable from the CLI because without it a tree deployed by hand runs on a scoped
+      // space and every result is refused: the code would have to know the compartment, which is
+      // the one thing the host exists to keep out of it.
+      const outputMeta = flag(argv, "--output-meta")?.split(",").map((f) => f.trim()).filter(Boolean);
+      // `--brokered` is the request for space access, made where an operator deploying the code can
+      // see it. Without it the entrypoint takes `(record)` and can reach nothing.
+      const brokered = has(argv, "--brokered");
+      const body: Binding = {
+        agent,
+        workspaceDigest: digest,
+        entrypoint,
+        ...(sandboxPattern ? { sandboxPattern } : {}),
+        ...(outputMeta?.length ? { outputMeta } : {}),
+        ...(brokered ? { brokered } : {}),
+      };
       const rec = await client.put({ kind: BINDING, body: body as unknown as Record<string, unknown> });
       // The second lock is a different record, and a binding alone is inert. Saying so here is
       // cheaper than the silence a reader would otherwise read as "deployed".
       const pinned = await pinnedDigests(client, { principal: agent, tier: flag(argv, "--tier") ?? "prod" }).catch(() => [] as string[]);
       return out(ctx, { id: rec.id, ...body, pinnedDigests: pinned }, () => {
-        const lines = [`${agent} now runs ${entrypoint} from ${digest.slice(0, 20)}…`];
+        const lines = [
+          `${agent} now runs ${entrypoint} from ${digest.slice(0, 20)}…` +
+          (brokered ? ", brokered (it may read and write the space)" : ", with no space access"),
+        ];
         if (pinned.includes(digest)) lines.push(`  grant agrees: pinned to this digest, so a host will run it`);
         else if (pinned.length === 0) lines.push(`  INERT: ${agent} holds no pin, so it can claim nothing. radia promote ${digest} --tier <t> --pin ${agent}:take`);
         else lines.push(`  MISMATCH: the grant pins ${pinned.map((d) => d.slice(0, 20) + "…").join(", ")}. A host refuses this pairing (digest_mismatch) rather than running it`);
@@ -2066,7 +2085,47 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       const timeoutMs = Number(flag(argv, "--timeout") ?? 15_000);
       // Brokered by default: it is the invoker that leaves the entrypoint no way to reach the API,
       // which is what makes containment structural rather than this process's discipline.
-      const invoke = has(argv, "--no-broker") ? sandboxInvoker(client, { timeoutMs }) : brokeredInvoker(client, { timeoutMs });
+      // PER BINDING, not per host. Code gets no space access unless its own binding asked for it,
+      // which is least privilege for model-written code: an entrypoint that only computes takes
+      // `(record)` and can reach nothing. `--broker` forces the channel on for every binding, for a
+      // fleet whose bindings predate the field; `--no-broker` is now the default and stays accepted
+      // so nothing that passes it breaks.
+      const forceBroker = has(argv, "--broker");
+      const plain = sandboxInvoker(client, { timeoutMs });
+      const brokered = brokeredInvoker(client, { timeoutMs });
+      const invoke = (ctx: Parameters<typeof plain>[0]) =>
+        (forceBroker || ctx.binding.brokered) && !has(argv, "--no-broker") ? brokered(ctx) : plain(ctx);
+      // WHAT THE CODE MAY CALL, as a record, before anything is claimed. The jail's guarantees were
+      // always queryable; the three calls a brokered entrypoint may make were in no record at all,
+      // so an author had to guess them, and one measured run guessed five times
+      // (agent_docs/research-agent-sessions.md). FAIL-SOFT: a host that cannot write this still
+      // runs code, because the declaration is documentation and refusing to work without it would
+      // make a missing grant an outage.
+      if (!has(argv, "--no-broker")) {
+        // Declared because this host CAN broker, whether or not a binding currently asks: the
+        // record is what an author reads before writing code, and it has to exist before the code
+        // does. PROBED first, against the space's own address, because a declaration nobody tested
+        // is a more convincing version of an unenforced sentence.
+        //
+        // A failed CLAIM is loud and does not stop the host: an operator whose jail is weaker than
+        // advertised needs to know now, and a host that refuses to start leaves the work unclaimed
+        // by anything. A failed WRITE is a warning only, since the record is documentation.
+        await declareBrokerSandbox(client, { timeoutMs, networkTarget: new URL(client.base).host })
+          .then(({ refusedBecause }) => {
+            for (const f of refusedBecause) {
+              console.error(`host: SANDBOX CLAIM NOT HELD: ${f.claim}${f.detail ? ` (${f.detail})` : ""}`);
+            }
+            if (refusedBecause.length && !ctx.json) {
+              console.error(`  the jail is weaker than the record says. Brokered runs still proceed; fix the host or stop brokering`);
+            }
+          })
+          .catch((e) => {
+            console.error(
+              `host: could not declare the broker's sandbox record, so its API stays undiscoverable: ` +
+                `${e instanceof Error ? e.message : e}`,
+            );
+          });
+      }
       const host = new WorkspaceHost({
         base: client.base,
         credentials,
@@ -2079,7 +2138,14 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       const interval = Number(flag(argv, "--interval") ?? 1000);
       const agents = Object.keys(credentials);
       if (!ctx.json) {
-        console.log(`host: ${agents.length} agent${agents.length === 1 ? "" : "s"} (${agents.join(", ")}), ${has(argv, "--no-broker") ? "plain jail, no space access" : "brokered"}`);
+        console.log(
+          `host: ${agents.length} agent${agents.length === 1 ? "" : "s"} (${agents.join(", ")}), ` +
+            (has(argv, "--no-broker")
+              ? "plain jail, no space access"
+              : forceBroker
+              ? "brokered for every binding (--broker)"
+              : "plain jail unless a binding asks to be brokered"),
+        );
         console.log(`  reading ${client.base}. A bound agent with no matching pin claims nothing; radia bindings, radia pins <a> --tier <t>`);
       }
       let stopping = false;
@@ -2124,7 +2190,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         }
         // The two doors that are not grants on the compartment's kinds, which is exactly why an
         // audit that only read those would report a clean boundary.
-        for (const a of audit.unscopedArtifact) lines.push(`  artifact ${a.principal}: ${a.operations.join(",")} with NO ${flag(argv, "--field") ?? "compartment"} pattern (artifact is reserved: scoped by pattern or not at all)`);
+        for (const a of audit.unscopedArtifact) lines.push(`  ${a.kind} ${a.principal}: ${a.operations.join(",")} with NO ${flag(argv, "--field") ?? "compartment"} pattern (a payload kind is shared: scoped by pattern or not at all)`);
         for (const p of audit.opsPowers) lines.push(`  ops     ${p.principal}: ${p.powers.join(",")}${p.powers.includes("observe") ? "  (observe reads every body, and is no grant)" : ""}`);
         for (const c of audit.caveats) lines.push(`  caveat: ${c}`);
         if (expected.size > 0) lines.push(unexpected.length === 0 ? `  OK: no crosser outside --expect` : `  FINDING: ${unexpected.length} crosser(s) outside --expect`);
@@ -2186,7 +2252,12 @@ function describeOutcome(o: Outcome): string {
     case "acked":
       return `${o.agent} acked ${o.recordId.slice(-8)}${o.resultId ? ` -> ${o.resultId.slice(-8)}` : ""}`;
     case "failed":
-      return `${o.agent} FAILED ${o.recordId.slice(-8)}: ${o.error}`;
+      // A PERMANENT failure says so and says what to do, because the two read identically and the
+      // operator's next move is opposite: a retry fixes one and can never fix the other.
+      return o.permanent
+        ? `${o.agent} REFUSED ${o.recordId.slice(-8)}, permanently: ${o.error}. Not retried; ` +
+          `the request stays available. Fix the grant or the result body, then restart this host`
+        : `${o.agent} FAILED ${o.recordId.slice(-8)}: ${o.error}`;
     case "refused":
       // Not an error: an agent with no grant is the design working. Named so it is not mistaken
       // for a crash, and so the missing half is obvious.

@@ -17,6 +17,8 @@
  */
 export const VALUELESS = new Set([
   "--json",
+  "--brokered",
+  "--broker",
   "--untainted",
   "--help",
   "-h",

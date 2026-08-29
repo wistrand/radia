@@ -26,8 +26,12 @@ TARGETS=(
 
 # `--include` must list every runtime asset: the console is read from disk at startup, and the
 # vendored bundle on first request. Missing one produces a binary that boots and then 404s.
+# `--allow-run` is what lets `radia host` spawn a JAIL at all. Without it the shipped binary could
+# run no model-written code in any mode, and the first symptom was the broker's `mkfifo` refusal
+# hiding the larger one: the jail also has to spawn a Deno runtime, which a compiled build resolves
+# from PATH rather than from its own executable (extensions/ts/sandbox.ts, `denoRuntime`).
 COMPILE_FLAGS=(
-  --allow-net --allow-read --allow-write --allow-env
+  --allow-net --allow-read --allow-write --allow-env --allow-run
   --include src/ui/index.html
   --include src/ui/vendor/blitzoom.bundle.js
 )

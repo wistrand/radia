@@ -272,6 +272,39 @@ function jailCacheDir(given?: string): string | undefined {
   return processCacheDir ?? undefined;
 }
 
+/**
+ * The Deno runtime to jail with, which is NOT always the process's own executable.
+ *
+ * `Deno.execPath()` is the running binary, and in a COMPILED build that is `radia` itself: passing
+ * it `--allow-read=… /tmp/boot.js` makes it parse those as CLI verbs and fail. So the shipped
+ * binary could run no jailed code at all, in any mode, and the first symptom was the broker's
+ * `mkfifo` permission error hiding the larger one behind it
+ * (agent_docs/research-agent-sessions.md).
+ *
+ * Standalone builds therefore look for `deno` on PATH, and REFUSE BY NAME when it is absent rather
+ * than failing somewhere inside a jail. The search is still an absolute path in the end: it is
+ * resolved once, here, and the child is spawned by that path, so the rule below still holds and a
+ * jail never resolves its own interpreter through the search path it was given.
+ */
+let runtimeMemo: string | undefined;
+export function denoRuntime(): string {
+  if (runtimeMemo) return runtimeMemo;
+  if (!(Deno.build as unknown as { standalone?: boolean }).standalone) return runtimeMemo = Deno.execPath();
+  const sep = Deno.build.os === "windows" ? ";" : ":";
+  const name = Deno.build.os === "windows" ? "deno.exe" : "deno";
+  for (const dir of (Deno.env.get("PATH") ?? "").split(sep).filter(Boolean)) {
+    const candidate = `${dir}/${name}`;
+    try {
+      if (Deno.statSync(candidate).isFile) return runtimeMemo = candidate;
+    } catch { /* not there */ }
+  }
+  throw new Error(
+    "this is a compiled radia and no `deno` was found on PATH, so there is no runtime to jail with. " +
+      "Install Deno, or run from source (deno run -A src/main.ts …). The compiled binary embeds a " +
+      "runtime for itself and cannot lend it to a sandboxed child.",
+  );
+}
+
 function spawnDeno(entry: string, opts: RunOptions, memoryMb: number): Deno.ChildProcess {
   // The RUNNING runtime, by absolute path, not the name `deno` resolved against the PATH this
   // command itself invents (`/usr/bin:/bin` below). Two reasons, and CI found the first: on a
@@ -281,7 +314,8 @@ function spawnDeno(entry: string, opts: RunOptions, memoryMb: number): Deno.Chil
   // resolve its own interpreter through a search path, or the flags below are enforced by
   // whichever binary that path happens to find.
   const args = jailArgs(opts, memoryMb, entry);
-  const denoDir = Deno.execPath().slice(0, Deno.execPath().lastIndexOf("/")) || "/usr/bin";
+  const deno = denoRuntime();
+  const denoDir = deno.slice(0, deno.lastIndexOf("/")) || "/usr/bin";
   const cacheDir = opts.confine ? jailCacheDir(opts.cacheDir) : undefined;
   if (opts.confine === "sandbox-exec") {
     // The jail, unchanged, under a Seatbelt profile. `-p` takes the profile as one argument, so
@@ -298,7 +332,7 @@ function spawnDeno(entry: string, opts: RunOptions, memoryMb: number): Deno.Chil
       args: [
         "-p",
         sandboxExecProfile({ readRoots: opts.readRoots, denoDir, cwd: opts.cwd, cacheDir }),
-        Deno.execPath(),
+        deno,
         ...args,
       ],
       stdin: "piped",
@@ -318,7 +352,7 @@ function spawnDeno(entry: string, opts: RunOptions, memoryMb: number): Deno.Chil
     // `readRoots`, and anything not bound simply does not exist.
     return new Deno.Command("bwrap", {
       args: bwrapArgs({
-        command: [Deno.execPath(), ...args],
+        command: [deno, ...args],
         readRoots: [...(opts.readRoots ?? []), denoDir],
         ...(opts.writeRoots?.length ? { writeRoots: opts.writeRoots } : {}),
         ...(opts.cwd ? { cwd: opts.cwd } : {}),
@@ -335,7 +369,7 @@ function spawnDeno(entry: string, opts: RunOptions, memoryMb: number): Deno.Chil
       env: { HOME: "/tmp", PATH: "/usr/bin:/bin", DENO_DIR: "/tmp/deno-cache" },
     }).spawn();
   }
-  return new Deno.Command(Deno.execPath(), {
+  return new Deno.Command(deno, {
     ...(opts.cwd ? { cwd: opts.cwd } : {}),
     args,
 
@@ -517,6 +551,36 @@ export interface SandboxSpec {
   memoryMb: number;
   timeoutMsMax: number;
   runtime: string;
+  /**
+   * What the code inside may CALL, when something supplies it an API. A different axis from every
+   * field above, which say what the jail STOPS.
+   *
+   * ABSENT means the code gets nothing: a plain jail runs a program that computes and returns, with
+   * no way to reach the space. That is the honest default and must not read as "unknown", the same
+   * way `importsConfined` reads.
+   *
+   * It exists because it was the one interface an agent could not discover. A model asked to write
+   * a brokered entrypoint knew the space's records (it had queried them) and not the shape of the
+   * call it had to make, so it shipped five candidate patterns and five candidate result shapes and
+   * tried each until one worked (agent_docs/research-agent-sessions.md). A description in a prompt
+   * is not enough: the MCP `space_query` tool takes `kind` and `match` as separate arguments while
+   * the broker takes one pattern object, so the surface a model already knows teaches it the wrong
+   * shape.
+   */
+  api?: SandboxApi;
+}
+
+/** The calls available inside a jail, named where the caller looking at a `sandbox` record will
+ *  find them. Structured rather than prose so a policy could bind it, like every other field. */
+export interface SandboxApi {
+  /** How the program is entered, in its own language. */
+  entrypoint: string;
+  /** One line per call: the signature and what it does. */
+  calls: { call: string; description: string }[];
+  /** What the entrypoint's return value becomes. */
+  returns?: string;
+  /** What is deliberately NOT reachable, so its absence is a statement rather than an omission. */
+  absent?: string[];
 }
 
 /**

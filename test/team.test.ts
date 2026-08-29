@@ -21,6 +21,7 @@ import { ScopeFiller } from "../src/surfaces/mcp/scope.ts";
 import { newer, newestByKey } from "../sdk/ts/registry.ts";
 import { kindDefKey } from "../sdk/ts/wire.ts";
 import { extensionFor, mediaTypeForPath } from "../src/surfaces/media.ts";
+import { readWorkspace, writeWorkspace } from "../extensions/ts/workspace.ts";
 
 async function newSpace() {
   const adapter = new SqliteAdapter(":memory:");
@@ -122,7 +123,7 @@ Deno.test("[team] the roster reads from enforcement, not from what was assigned"
     assert(claude.opsPowers.includes("observe"));
     assert(!codex.opsPowers.includes("observe"), "--no-observe must actually withhold the power");
     // `kind_def` is the DISCOVERY grant and is deliberately unscoped; the rest carry the team.
-    assertEquals(claude.kinds.map((k) => k.kind).sort(), ["artifact", "capability", "kind_def", "note", "task"]);
+    assertEquals(claude.kinds.map((k) => k.kind).sort(), ["artifact", "capability", "kind_def", "note", "task", "workspace"]);
     assertEquals(claude.teams, [DEFAULT_TEAM]);
     assert(claude.active);
   } finally {
@@ -383,7 +384,7 @@ Deno.test("[team] the aggregates say what they do NOT cover rather than reportin
     const r = await c.getStatsReport();
     assert(r.scope, "a scoped caller must be told it was scoped");
     assertEquals(r.scope!.kinds, [], "a pattern-scoped kind must not be counted; the count would over-report");
-    assertEquals(r.scope!.patternScoped, ["artifact", "capability", "note", "task"]);
+    assertEquals(r.scope!.patternScoped, ["artifact", "capability", "note", "task", "workspace"]);
     assert(/grant PATTERN/.test(r.scope!.note), r.scope!.note);
   } finally {
     await s.close();
@@ -434,7 +435,7 @@ Deno.test("[team] a member can DISCOVER kinds, and that grant is not team-scoped
     // taught it. Without `kind_def: query` a member's opening move is a 403, which is how this was
     // found — on a real harness, against a real space.
     const kinds = (await c.listKinds()).map((k) => k.kind).sort();
-    assertEquals(kinds, ["artifact", "capability", "note", "task"]);
+    assertEquals(kinds, ["artifact", "capability", "note", "task", "workspace"]);
 
     // AND IT MUST NOT CARRY THE TEAM PATTERN. A `kind_def` body has no `team` field, so a scoped
     // grant here matches nothing and refuses every declaration: the same 403, arrived at from the
@@ -1290,6 +1291,81 @@ Deno.test("[mcp] a refused member can ask what it may do, holding no ops power",
     // The pattern is the half a refusal cannot explain: the member is scoped to its team, and
     // nothing else on this surface says so.
     assert(p.kinds.some((k) => k.patterns.length > 0), "the narrowing pattern is what makes this answer worth having");
+  } finally {
+    await s.close();
+  }
+});
+
+Deno.test("[mcp] an agent can author a workspace, and a re-save supersedes rather than forks", async () => {
+  // A tree is what a HOST runs and a promotion PINS, so an agent that can only write loose
+  // artifacts can produce code and never something runnable by anything but itself. It could not
+  // hand-write one either: a manifest carries a `treeDigest`, a normative sha256 over sorted
+  // `path\0mode\0digest` lines, which no amount of prose lets a model compute.
+  const src = await Deno.readTextFile(new URL("../src/surfaces/mcp/server.ts", import.meta.url));
+  for (const tool of ["space_save_workspace", "space_edit_workspace", "space_read_workspace", "space_list_workspaces"]) {
+    assert(src.includes(`case "${tool}"`), `the adapter does not dispatch ${tool}`);
+  }
+  // ONE convention, not a second spelling of it: the adapter calls the same functions the chat and
+  // `radia workspaces` do, which is what a surface importing an extension is for.
+  assert(src.includes('from "../../../extensions/ts/workspace.ts"'), "the adapter re-implements the tree format");
+
+  const s = await newSpace();
+  try {
+    // NOTHING EXTRA IS DECLARED OR GRANTED HERE: `workspace` is a team kind, so `radia team add`
+    // sets it up like `task` and `note`. Before it was one, a team space could hold code only as
+    // loose artifacts, and every scenario had to declare and grant the kind for itself.
+    await declareTeamKinds(s.admin);
+    const m = await addMember(s.admin, "agent:a1", { teams: [DEFAULT_TEAM] });
+    const c = new RadiaClient(s.base, { definitionToken: m.definitionToken });
+    await c.ensureCredential();
+    const owner = (await c.health()).agent!;
+    assertEquals(owner, "agent:a1", "a tree outlives the session that wrote it, so it is owned by the DURABLE name");
+
+    // A MEMBER'S `artifact` GRANT IS TEAM-SCOPED, so an unlabelled tree cannot be authored at all:
+    // every file lands as an artifact and each one is refused. This is the same hole that made
+    // `capability` unpublishable on a team space, and it is why `WriteInput.meta` exists.
+    await assertRejects(
+      () => writeWorkspace(c, { name: "unlabelled", owner, files: { "main.js": "1\n" } }),
+      Error,
+      "pattern scope",
+    );
+
+    const label = { [TEAM_FIELD]: DEFAULT_TEAM };
+    const first = await writeWorkspace(c, {
+      name: "p",
+      owner,
+      files: { "main.js": "console.log(1)\n" },
+      entrypoint: "main.js",
+      meta: label,
+    });
+    assert(first.treeDigest, "no tree digest");
+    // Stamped on the FILES too, not only the manifest: the artifacts are what the grant refused.
+    const arts = await c.queryAll({ kind: "artifact", match: { [TEAM_FIELD]: DEFAULT_TEAM } });
+    assertEquals(arts.length, 1, "the tree's file did not land inside the compartment");
+    // And the adapter learns that label from a refusal rather than pre-stamping it, which is what
+    // stops it narrowing a tree written under an unscoped grant.
+    assert(src.includes(`scope.fill("artifact"`), "the adapter no longer fills the artifact scope");
+    assert(src.includes(`scope.fill("workspace"`), "the adapter no longer fills the manifest scope");
+
+    // THE BUG `headOf` EXISTS FOR. A model asked to save the same name again has no way to know the
+    // id it must supersede, so a save that omits `basedOn` leaves two heads and the surface then
+    // reports a fork to a caller that did nothing wrong.
+    const forked = await writeWorkspace(c, { name: "p", owner, files: { "main.js": "console.log(2)\n" }, meta: label });
+    assertEquals(forked.forked, true, "without basedOn a re-save must fork; if it no longer does, headOf is dead weight");
+
+    // A FRESH NAME for the clean case: once a tree has two heads, naming one of them supersedes
+    // that one and leaves the other standing, so `p` stays forked and correctly says so.
+    await writeWorkspace(c, { name: "q", owner, files: { "main.js": "console.log(1)\n" }, meta: label });
+    const head = await readWorkspace(c, "q");
+    const joined = await writeWorkspace(c, {
+      name: "q",
+      owner,
+      files: { "main.js": "console.log(3)\n" },
+      basedOn: head!.id,
+      meta: label,
+    });
+    assertEquals(joined.forked, false, "naming the predecessor is what keeps one line of history");
+    assert(src.includes("headOf(client"), "the adapter no longer reads the head, so every second save forks");
   } finally {
     await s.close();
   }

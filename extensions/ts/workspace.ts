@@ -20,6 +20,7 @@
 // six thousand entries) and, unlike a body, an artifact can be erased.
 
 import type { Cursor, RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
+import type { KindDef } from "../../sdk/ts/wire.ts";
 import { activeByKey, newer, type Population, unsafeAsPopulation } from "../../sdk/ts/registry.ts";
 
 /**
@@ -67,6 +68,28 @@ export function mediaTypeFor(path: string): string {
 
 /** One file in a tree. `digest` is the artifact's content address, so two workspaces sharing a file
  *  share the blob and erasing it erases the payload for both. */
+/**
+ * The kind a manifest is written as, in one place so a space declaring it and a convention
+ * extending it cannot disagree about which paths exist.
+ *
+ * `treeDigest` is indexed because it is the tree's IDENTITY: it is how an identical re-write is
+ * recognised and skipped, and what a promotion pins. `basedOn` is indexed so a FORK is a query,
+ * two manifests naming one predecessor. No `contentKey`: dedup here is `writeWorkspace`'s own
+ * read-before-write plus a per-agent idempotency key, so unlike `capability` there is no registry
+ * key for a compartment label to have to join.
+ */
+export const WORKSPACE_KIND: KindDef = {
+  kind: "workspace",
+  indexedPaths: [
+    { path: "name", type: "keyword" },
+    { path: "owner", type: "keyword" },
+    { path: "conversationId", type: "keyword" },
+    { path: "treeDigest", type: "keyword" },
+    { path: "basedOn", type: "keyword" },
+  ],
+  claimable: false,
+};
+
 export interface WorkspaceFile {
   path: string;
   /** `100644` or `100755`, git's spelling. Nothing else: a device node or a setuid bit is not a
@@ -220,6 +243,17 @@ export interface WriteInput {
    * hole as omitting a parent edge on a direct put.
    */
   taint?: string[];
+  /**
+   * App fields stamped on EVERY file's artifact and on the manifest, so a tree can be written into
+   * a compartment a grant pattern bounds.
+   *
+   * Without it a workspace cannot be authored on a space whose `artifact` grants are pattern-scoped
+   * at all: the file puts carry no label and are refused, which is the same hole that made
+   * `capability` unpublishable on a team space. Outside the tree digest, since the digest is over
+   * files and a label is not content; merged UNDER the fields computed here, so it can add a
+   * compartment and never rewrite `name`, `owner` or `treeDigest`.
+   */
+  meta?: Record<string, string | number | boolean>;
 }
 
 /**
@@ -262,7 +296,7 @@ export async function writeWorkspace(
         mediaType: mediaTypeFor(path),
         filename: path.split("/").pop(),
         // What a grant pattern binds, exactly as the chat's other writers stamp it.
-        meta: { conversationId: input.conversationId ?? "", owner: input.owner, workspace: input.name },
+        meta: { ...(input.meta ?? {}), conversationId: input.conversationId ?? "", owner: input.owner, workspace: input.name },
         ...(input.taint?.length ? { taint: input.taint } : {}),
       });
       return { path, mode: input.modes?.[path] ?? "100644", digest: art.digest, artifactId: art.id } as WorkspaceFile;
@@ -300,6 +334,7 @@ export async function writeWorkspace(
   }
 
   const body: WorkspaceManifest = {
+    ...(input.meta ?? {}),
     name: input.name,
     owner: input.owner,
     ...(input.conversationId ? { conversationId: input.conversationId } : {}),
@@ -594,6 +629,9 @@ export interface EditInput {
   remove?: string[];
   /** Set or change the file this tree runs as. Omit to keep whatever the head declared. */
   entrypoint?: string;
+  /** App fields stamped on the artifacts this edit writes and on the successor manifest. See
+   *  `WriteInput.meta`: without it an edit cannot land in a pattern-scoped compartment. */
+  meta?: Record<string, string | number | boolean>;
 }
 
 /**
@@ -992,7 +1030,12 @@ export async function editWorkspace(
     const art = await client.putArtifact(bytes, {
       mediaType: mediaTypeFor(path),
       filename: path.split("/").pop(),
-      meta: { conversationId: input.conversationId ?? head.conversationId ?? "", owner: head.owner, workspace: input.name },
+      meta: {
+        ...(input.meta ?? {}),
+        conversationId: input.conversationId ?? head.conversationId ?? "",
+        owner: head.owner,
+        workspace: input.name,
+      },
     });
     written.set(path, {
       path,
@@ -1017,7 +1060,16 @@ export async function editWorkspace(
   // leave a manifest pointing at nothing: `...head` would carry the stale name forward silently.
   const entrypoint = input.entrypoint ?? head.entrypoint;
   if (entrypoint) validateEntrypoint(entrypoint, files);
-  const body: WorkspaceManifest = { ...head, treeDigest, basedOn: head.id, files, ...(entrypoint ? { entrypoint } : {}) };
+  // `head` first, so the predecessor's app fields (a compartment label, for one) are INHERITED
+  // rather than dropped by an edit that did not restate them; `input.meta` still wins where given.
+  const body: WorkspaceManifest = {
+    ...head,
+    ...(input.meta ?? {}),
+    treeDigest,
+    basedOn: head.id,
+    files,
+    ...(entrypoint ? { entrypoint } : {}),
+  };
   delete (body as { id?: string }).id;
   const { id } = await client.put(
     {

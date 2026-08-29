@@ -1,0 +1,188 @@
+{
+  "name": "team-tree",
+  "team": "lab",
+  "sequential": true,
+  "kinds": [
+    {
+      "kind": "sandbox",
+      "indexedPaths": [
+        {
+          "path": "name",
+          "type": "keyword"
+        },
+        {
+          "path": "language",
+          "type": "keyword"
+        },
+        {
+          "path": "isolation",
+          "type": "keyword"
+        },
+        {
+          "path": "network",
+          "type": "keyword"
+        },
+        {
+          "path": "processes",
+          "type": "keyword"
+        }
+      ],
+      "claimable": false,
+      "usage": "An execution environment and what it GUARANTEES, declared by whatever built it. `api` is what code running there may CALL, with the exact call shapes: read it before writing code meant to run here, or you are guessing at an interface a refusal cannot teach you. Everything else on the record says what the jail STOPS."
+    }
+  ],
+  "seed": [
+    {
+      "kind": "note",
+      "body": {
+        "to": "all",
+        "topic": "inventory",
+        "message": "widget A: 3 in stock"
+      }
+    },
+    {
+      "kind": "note",
+      "body": {
+        "to": "all",
+        "topic": "inventory",
+        "message": "widget B: 11 in stock"
+      }
+    },
+    {
+      "kind": "note",
+      "body": {
+        "to": "all",
+        "topic": "inventory",
+        "message": "widget C: 0 in stock"
+      }
+    },
+    {
+      "kind": "note",
+      "body": {
+        "to": "all",
+        "topic": "inventory",
+        "message": "widget D: 6 in stock"
+      }
+    }
+  ],
+  "agents": [
+    {
+      "name": "runner",
+      "background": true,
+      "command": [
+        "{{binary}}",
+        "host",
+        "--url",
+        "{{url}}",
+        "--agent",
+        "agent:runner={{token}}"
+      ],
+      "prompt": "unused: this host holds no model",
+      "unscopedGrants": [
+        "sandbox:put,query,read_one"
+      ]
+    },
+    {
+      "name": "claude-author",
+      "harness": "claude",
+      "configPath": ".mcp.json",
+      "model": "opus",
+      "timeoutSeconds": 420,
+      "command": [
+        "claude",
+        "-p",
+        "--model",
+        "{{model}}",
+        "--mcp-config",
+        "{{config}}",
+        "--strict-mcp-config",
+        "--allowedTools",
+        "mcp__radia",
+        "--output-format",
+        "json"
+      ],
+      "unscopedGrants": [
+        "sandbox:query,read_one"
+      ],
+      "prompt": "You are the first of three agents working on one shared program. Your job is to WRITE it; somebody else will extend it and somebody else will check the answer.\n\nStore it as a workspace named 'inventory'. It must read the notes on the topic 'inventory', total the stock counts in their messages, and answer with a note on the topic 'inventory-total' whose message is the total.\n\nThe program will be run by a host inside a sandbox. This space DESCRIBES that sandbox, including the exact calls your code may make and what its return value becomes: find that description and follow it rather than guessing, because a wrong call inside a sandbox fails silently and you will not be there to see it. Look at the records the program will read, too.\n\nLeave the tree easy for the next agent to change: a clear entrypoint and no cleverness it has to unpick. Report the workspace name and its tree digest when you are done. Use the radia MCP tools for everything."
+    },
+    {
+      "name": "codex-lab",
+      "harness": "codex",
+      "model": "gpt-5.6-luna",
+      "timeoutSeconds": 420,
+      "command": [
+        "codex",
+        "exec",
+        "-",
+        "--json",
+        "-m",
+        "{{model}}",
+        "--skip-git-repo-check",
+        "--ignore-user-config",
+        "-s",
+        "workspace-write",
+        "-c",
+        "mcp_servers.radia.command={{binary}}",
+        "-c",
+        "mcp_servers.radia.args={{mcpArgs}}",
+        "-c",
+        "mcp_servers.radia.env={ RADIA_DEFINITION_TOKEN = \"{{token}}\" }",
+        "-c",
+        "mcp_servers.radia.tools={{codexTools}}"
+      ],
+      "unscopedGrants": [
+        "sandbox:query,read_one"
+      ],
+      "prompt": "You are the second of three agents working on one shared program. Another agent has already written it and stored it as a workspace; a third will check the answer afterwards.\n\nFind that workspace, read what is actually in it, and CHANGE it so its answer also carries how many notes it counted, as a `count` field on the result body. Keep everything else working: the other agent's code is not yours to replace, and a file you leave out of a write is a file you have deleted.\n\nThe program runs inside a sandbox this space describes, including the exact calls it may make. Read that description before changing code that has to keep working. When you are done, report what you changed and the new tree digest. Use the radia MCP tools for everything."
+    },
+    {
+      "name": "deploy",
+      "timeoutSeconds": 240,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/scripts/agent-lab/deploy-workspace.ts",
+        "--binary",
+        "{{binary}}",
+        "--url",
+        "{{url}}",
+        "--workspace",
+        "inventory",
+        "--agent",
+        "agent:runner",
+        "--tier",
+        "prod",
+        "--team",
+        "lab"
+      ],
+      "prompt": "unused: this step holds no model",
+      "credential": "operator"
+    },
+    {
+      "name": "claude-verify",
+      "harness": "claude",
+      "configPath": ".mcp.json",
+      "model": "opus",
+      "timeoutSeconds": 300,
+      "command": [
+        "claude",
+        "-p",
+        "--model",
+        "{{model}}",
+        "--mcp-config",
+        "{{config}}",
+        "--strict-mcp-config",
+        "--allowedTools",
+        "mcp__radia",
+        "--output-format",
+        "json"
+      ],
+      "unscopedGrants": [
+        "sandbox:query,read_one"
+      ],
+      "prompt": "You are the third of three agents. The other two wrote a program together and it has now been run; its answer is a note on the topic 'inventory-total'.\n\nCheck it. Read the inventory notes the program was supposed to total, work out what the answer and the count SHOULD be, and compare. Then write one note, topic 'verdict', addressed to all, saying whether it is right and why. If it is wrong, say so plainly rather than explaining it away: a wrong answer reported as correct is worse than no check at all. Use the radia MCP tools for everything."
+    }
+  ]
+}

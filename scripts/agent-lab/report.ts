@@ -70,6 +70,9 @@ interface Run {
   traces: Map<string, TraceLine[]>;
   /** Every agent the scenario started, traced or not, named by `tally.json`. */
   participants: Set<string>;
+  /** Participants that ran as the OPERATOR. Their writes are authored by `local:dev`, so an
+   *  authorship check must not look for records under their own name. */
+  operators: Set<string>;
   /** Whether this run collected `agent_run`, without which an untraced worker's records cannot be
    *  attributed to it. Runs recorded before that was collected answer "cannot tell", never "no". */
   mapped: boolean;
@@ -118,6 +121,7 @@ async function load(dir: string): Promise<Run | undefined> {
   // whatever the space itself created beside it (`.radia`, a blob directory), and reporting those
   // as silent participants is the over-reporting that puts false findings in front of a reader.
   const participants = new Set(Object.keys((tally.tally as Record<string, unknown>) ?? {}));
+  const operators = new Set((tally.operators as string[]) ?? []);
   for (const name of participants) {
     const text = await Deno.readTextFile(`${dir}/${name}/trace.jsonl`).catch(() => "");
     const lines = text.split("\n").filter(Boolean).map((l) => JSON.parse(l) as TraceLine);
@@ -158,6 +162,7 @@ async function load(dir: string): Promise<Run | undefined> {
     flows: ((space.flows as { flows: Flow[] })?.flows) ?? [],
     traces,
     participants,
+    operators,
     mapped,
     carried,
     actor,
@@ -322,9 +327,11 @@ const CHECKS: Check[] = [
       // nothing. Without `agent_run` an untraced worker's records carry a run id nothing here can
       // name, and reporting that as silence is a false high finding on the check most likely to be
       // believed.
-      const decidable = [...r.participants].filter((a) => r.mapped || r.traces.has(a));
+      const decidable = [...r.participants]
+        .filter((a) => !r.operators.has(a))
+        .filter((a) => r.mapped || r.traces.has(a));
       const silent = decidable.filter((a) => !authors.has(a));
-      const undecided = [...r.participants].filter((a) => !decidable.includes(a));
+      const undecided = [...r.participants].filter((a) => !decidable.includes(a) && !r.operators.has(a));
       if (decidable.length === 0) {
         return { findings: [], applicable: false, note: `cannot attribute authorship (this run collected no agent_run)` };
       }

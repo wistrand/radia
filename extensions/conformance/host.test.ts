@@ -16,9 +16,10 @@
 // identity it runs under and a real jail per case would buy nothing. The last test uses the real
 // one, so the default is not a promise.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { RadiaClient } from "../../sdk/ts/client.ts";
-import { BINDING, declareBinding, sandboxInvoker, WorkspaceHost } from "../ts/host.ts";
+import { BINDING, declareBinding, type Outcome, sandboxInvoker, WorkspaceHost } from "../ts/host.ts";
+import { brokeredInvoker } from "../ts/broker.ts";
 import { declareExecRequest, EXEC_REQUEST, promote } from "../ts/promotion.ts";
 import { materialize, readWorkspace, writeWorkspace } from "../ts/workspace.ts";
 import { bootSpace, uniq } from "./space.ts";
@@ -495,5 +496,174 @@ Deno.test("[host] each version is THAT run's outputs, and a run that writes noth
     const third = await run("none");
     assertEquals(third.outputId, undefined, "no files written, so no version and no empty record");
     assertEquals((await readWorkspace(operator, "stepper-out"))!.id, second.outputId);
+  });
+});
+
+Deno.test("[host] a refusal a retry cannot fix is reported as permanent and not claimed again", async () => {
+  await withSpace(async ({ operator, credential }) => {
+    // MEASURED, and the reason this exists: a result body outside the agent's put grant was
+    // re-claimed six times over thirty seconds and then dead-lettered, with the cause only ever in
+    // the host's stderr, so the deploy step that submitted it timed out with nothing to show
+    // (agent_docs/research-agent-sessions.md). A body and a grant are both fixed at the moment of
+    // the refusal; the retry the runtime offers cannot change either.
+    // A kind and an agent NOBODY ELSE HERE touches: the space is shared between these cases and
+    // grants are additive, so a sibling granting `exec_result: put` to `agent:runner` would hand
+    // this test the success it exists to rule out.
+    const kind = uniq("refused_result").replace(/[^a-z_0-9]/g, "_");
+    const agent = uniq("agent:refuser");
+    await operator.registerKind({ kind, indexedPaths: [{ path: "tag", type: "keyword" }] });
+    const digest = (await writeWorkspace(operator, {
+      name: uniq("refused"),
+      owner: "human:alice",
+      files: { "main.ts": `export default () => ({ kind: ${JSON.stringify(kind)}, body: { tag: 'x' } });\n` },
+    })).treeDigest;
+    const credentials = { [agent]: await credential(agent) };
+    const tier = uniq("prod");
+    await promote(operator, { digest, tier, pins: [{ principal: agent, operations: ["take"] }] });
+    // Deliberately NO put grant on that kind: the entrypoint runs and the ack is refused.
+    await bind(operator, agent, digest);
+    const req = await operator.put({ kind: EXEC_REQUEST, body: { workspace: digest, tier } });
+
+    const host = new WorkspaceHost({ base: url, credentials, reader: operator, invoke: sandboxInvoker(operator) });
+    // BY RECORD ID, because the space is shared with the other cases here and a tick claims
+    // whatever `exec_request` is available: an assertion over the whole outcome list would pass or
+    // fail on somebody else's leftovers.
+    const mine = (os: Outcome[]) => os.filter((o) => (o as { recordId?: string }).recordId === req.id);
+    let first: Outcome[] = [];
+    for (let i = 0; i < 5 && first.length === 0; i++) first = mine(await host.tick());
+    assertEquals(first.map((o) => o.status), ["failed"], JSON.stringify(first));
+    assertEquals((first[0] as { permanent?: true }).permanent, true, "an authorization refusal is permanent");
+
+    // The SECOND tick is the point: the record is claimable again, and this host releases it rather
+    // than spending another of its attempts on the same answer.
+    const second = mine(await host.tick());
+    assertEquals(second, [], `a permanently refused record must not be re-run: ${JSON.stringify(second)}`);
+    const state = await operator.getRecord(req.id);
+    assert(state, "the request must still exist rather than having been dead-lettered by the retries");
+  });
+});
+
+Deno.test("[host] code reaches the space only when its BINDING asked to be brokered", async () => {
+  await withSpace(async ({ operator, credential }) => {
+    // LEAST PRIVILEGE FOR MODEL-WRITTEN CODE, and the inversion of what used to happen: the
+    // channel was on for every hosted agent, bounded only by that agent's grants, which is the
+    // same shape as an unscoped artifact grant being a door out of a compartment. Measured before
+    // inverting it: the only production consumer never called `space` at all.
+    //
+    // The entrypoint REPORTS what it was handed rather than trying to use it, so the assertion is
+    // about the second argument existing and not about any particular call succeeding.
+    const kind = uniq("reach_result").replace(/[^a-z_0-9]/g, "_");
+    await operator.registerKind({ kind, indexedPaths: [{ path: "tag", type: "keyword" }] });
+    const digest = (await writeWorkspace(operator, {
+      name: uniq("reach"),
+      owner: "human:alice",
+      files: {
+        // TOUCHES a property rather than testing the shape: the stand-in an unasked binding gets is
+        // an object too, and answers every property with the instruction. Presence is not the
+        // question; usability is.
+        "main.ts": `export default (record, space) => { let tag = "no-space"; ` +
+          `try { if (typeof space.query === "function") tag = "has-space"; } catch { tag = "no-space"; } ` +
+          `return { kind: ${JSON.stringify(kind)}, body: { tag } }; };\n`,
+      },
+    })).treeDigest;
+
+    const run = async (agent: string, brokered: boolean) => {
+      const tier = uniq("prod");
+      await promote(operator, { digest, tier, pins: [{ principal: agent, operations: ["take"] }] });
+      await operator.grant(agent, kind, ["put"]);
+      await operator.put({ kind: BINDING, body: { agent, workspaceDigest: digest, entrypoint: "main.ts", ...(brokered ? { brokered } : {}) } });
+      const req = await operator.put({ kind: EXEC_REQUEST, body: { workspace: digest, tier } });
+      // The dispatch `radia host` performs, stated here so the contract is the BEHAVIOUR rather
+      // than one surface's flag parsing.
+      const plain = sandboxInvoker(operator), broker = brokeredInvoker(operator);
+      const host = new WorkspaceHost({
+        base: url,
+        credentials: { [agent]: await credential(agent) },
+        reader: operator,
+        invoke: (ctx) => (ctx.binding.brokered ? broker : plain)(ctx),
+      });
+      for (let i = 0; i < 5; i++) {
+        const mine = (await host.tick()).filter((o) => (o as { recordId?: string }).recordId === req.id);
+        if (mine.length) {
+          assertEquals(mine[0].status, "acked", JSON.stringify(mine));
+          break;
+        }
+      }
+      return (await operator.queryNewest<{ tag: string }>({ kind }, 1))[0].body.tag;
+    };
+
+    assertEquals(await run(uniq("agent:plain"), false), "no-space", "an unasked binding must get no channel");
+    // …and the thing it gets instead SAYS SO. Code written before space access became opt-in calls
+    // `space.query(...)`, and "Cannot read properties of undefined" names neither the cause nor the
+    // fix, which is the whole failure mode of a silent default change.
+    const explainer = uniq("agent:explainer");
+    const tier = uniq("prod");
+    const bad = (await writeWorkspace(operator, {
+      name: uniq("legacy"),
+      owner: "human:alice",
+      files: { "main.ts": `export default async (record, space) => ({ kind: ${JSON.stringify(kind)}, body: { tag: String(await space.query({})) } });\n` },
+    })).treeDigest;
+    await promote(operator, { digest: bad, tier, pins: [{ principal: explainer, operations: ["take"] }] });
+    await operator.grant(explainer, kind, ["put"]);
+    await operator.put({ kind: BINDING, body: { agent: explainer, workspaceDigest: bad, entrypoint: "main.ts" } });
+    const req = await operator.put({ kind: EXEC_REQUEST, body: { workspace: bad, tier } });
+    const host = new WorkspaceHost({
+      base: url,
+      credentials: { [explainer]: await credential(explainer) },
+      reader: operator,
+      invoke: sandboxInvoker(operator),
+    });
+    let failure = "";
+    for (let i = 0; i < 5 && !failure; i++) {
+      const mine = (await host.tick()).filter((o) => (o as { recordId?: string }).recordId === req.id);
+      if (mine.length) failure = (mine[0] as { error?: string }).error ?? "";
+    }
+    assertStringIncludes(failure, "not brokered");
+    assertStringIncludes(failure, "--brokered");
+    assertEquals(await run(uniq("agent:asked"), true), "has-space", "asking is what opens it");
+  });
+});
+
+Deno.test("[host] the RESULT body carries the binding's stamp, so a compartment is not the code's to remember", async () => {
+  await withSpace(async ({ operator, credential }) => {
+    // The path everything uses, and the one that was unstamped: a brokered `space.put` got the
+    // host's fields and the RETURNED value did not, so a program that omitted the compartment had
+    // every ack refused as outside the put grant's pattern, retried, and dead-lettered after the
+    // code had finished, where no author could see it (agent_docs/research-agent-sessions.md).
+    const kind = uniq("stamped_result").replace(/[^a-z_0-9]/g, "_");
+    await operator.registerKind({
+      kind,
+      indexedPaths: [{ path: "tag", type: "keyword" }, { path: "team", type: "keyword" }],
+    });
+    const agent = uniq("agent:stamper"), tier = uniq("prod");
+    const digest = (await writeWorkspace(operator, {
+      name: uniq("stamping"),
+      owner: "human:alice",
+      // Returns NO `team`: the whole point is that the code does not know its compartment.
+      files: { "main.ts": `export default () => ({ kind: ${JSON.stringify(kind)}, body: { tag: "x" } });\n` },
+    })).treeDigest;
+    await promote(operator, { digest, tier, pins: [{ principal: agent, operations: ["take"] }] });
+    // The grant is PATTERN-SCOPED, so an unstamped body is genuinely refused rather than merely
+    // missing a field: without the stamp this case fails as the real one did.
+    await operator.grant(agent, kind, ["put"], { team: "alpha" });
+    await operator.put({
+      kind: BINDING,
+      body: { agent, workspaceDigest: digest, entrypoint: "main.ts", outputMeta: ["team"] },
+    });
+    const req = await operator.put({ kind: EXEC_REQUEST, body: { workspace: digest, tier, team: "alpha" } });
+
+    const host = new WorkspaceHost({
+      base: url,
+      credentials: { [agent]: await credential(agent) },
+      reader: operator,
+      invoke: sandboxInvoker(operator),
+    });
+    let done: Outcome[] = [];
+    for (let i = 0; i < 5 && done.length === 0; i++) {
+      done = (await host.tick()).filter((o) => (o as { recordId?: string }).recordId === req.id);
+    }
+    assertEquals(done.map((o) => o.status), ["acked"], JSON.stringify(done));
+    const result = (await operator.queryNewest<{ tag: string; team?: string }>({ kind }, 1))[0];
+    assertEquals(result.body.team, "alpha", "the host stamps what the binding declared, from the claimed record");
   });
 });

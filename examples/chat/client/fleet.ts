@@ -217,9 +217,12 @@ export function launchFleet(tokens: Bootstrapped, fleetKey?: FleetKeyPair): Deno
     `--allow-net=127.0.0.1:${port}`,
     "--allow-run=deno,bwrap,mkfifo",
     // HOME gives the sandboxed child a module-cache home; the fleet key is how this worker opens the
-    // arguments it runs and seals the verdict it writes (plan-encryption.md phase 4). Named
-    // individually rather than `--allow-env`, because this is the worker that spawns a jail.
-    "--allow-env=HOME,RADIA_CHAT_FLEET_KEY",
+    // arguments it runs and seals the verdict it writes (plan-encryption.md phase 4). PATH is read
+    // only by a COMPILED build, where `Deno.execPath()` is the binary itself and the jail's runtime
+    // has to be found (`denoRuntime`, extensions/ts/sandbox.ts); from source the lookup never runs,
+    // and the guard is a static scan that cannot know that. Named individually rather than
+    // `--allow-env`, because this is the worker that spawns a jail.
+    "--allow-env=HOME,PATH,RADIA_CHAT_FLEET_KEY",
     `--allow-write=${workspaceRoot}`,
     `--allow-read=${workspaceRoot}`, // to read back what it just wrote, and nothing else
     "examples/chat/workers/exec.ts",

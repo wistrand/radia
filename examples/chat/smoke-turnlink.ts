@@ -188,7 +188,7 @@ try {
   const { execToken } = await bootstrap(admin);
   const exec = new Deno.Command(Deno.execPath(), {
     args: [
-      "run", `--allow-net=127.0.0.1:${PORT}`, "--allow-run=deno,mkfifo", "--allow-env=HOME",
+      "run", `--allow-net=127.0.0.1:${PORT}`, "--allow-run=deno,mkfifo", "--allow-env=HOME,PATH",
       `--allow-read=${wsRoot}`, `--allow-write=${wsRoot}`,
       "examples/chat/workers/exec.ts", "--url", url, "--token", execToken, "--workspace-root", wsRoot,
     ],

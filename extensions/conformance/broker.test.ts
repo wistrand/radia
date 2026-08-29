@@ -13,7 +13,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { RadiaClient, type RadiaRecord } from "../../sdk/ts/client.ts";
-import { brokeredInvoker, dryRunEntrypoint, labelsForJail } from "../ts/broker.ts";
+import { BROKER_API, brokeredInvoker, declareBrokerSandbox, dryRunEntrypoint, labelsForJail } from "../ts/broker.ts";
 import { BINDING, declareBinding, treeCache, type TreeCache, WorkspaceHost } from "../ts/host.ts";
 import { declareExecRequest, EXEC_REQUEST, promote } from "../ts/promotion.ts";
 import { materialize, readWorkspace, writeWorkspace } from "../ts/workspace.ts";
@@ -727,4 +727,46 @@ Deno.test("[broker] a query proposal honours the pattern's own order_by", async 
     assertEquals(body.top, [3, 2], "the jail's own order_by must decide the order");
     assertEquals(body.plain, 2, "…and a pattern without one still reads normally");
   });
+});
+
+Deno.test("[broker] the declared API is the API the shim binds, in both languages", async () => {
+  // The one interface inside the jail that an author cannot discover by trying: a refused broker
+  // call is invisible to the trace and to the space, so a wrong guess is silent. One measured run
+  // shipped five candidate patterns and five candidate result shapes and tried each until one
+  // worked (agent_docs/research-agent-sessions.md). `BROKER_API` is the answer as DATA, and this is
+  // what stops it becoming a lie: the names it advertises must be the names the shim actually
+  // binds, in the JS shim and in the Python one.
+  const src = await Deno.readTextFile(new URL("../ts/broker.ts", import.meta.url));
+  const advertised = BROKER_API.calls.map((c) => c.call.replace(/^space\.(\w+).*/, "$1"));
+  assertEquals(advertised, ["query", "readOne", "put"], "the advertised call list changed shape");
+  for (const name of advertised) {
+    // The JS shim builds `space` as an object literal; the Python one binds the same names.
+    assert(new RegExp(`\\b${name}:\\s*\\(`).test(src), `the JS shim does not bind space.${name}`);
+    const py = name === "readOne" ? "read_one|readOne" : name;
+    assert(new RegExp(`(${py})`).test(src), `the Python shim does not bind ${name}`);
+  }
+  // The PATTERN SHAPE is the part that was guessed wrong, so it is stated rather than implied.
+  assertStringIncludes(BROKER_API.calls[0].description, "{kind, match}");
+  assert(BROKER_API.returns?.includes("RESULT record"), "nothing says what a return value becomes");
+  assert((BROKER_API.absent ?? []).length > 0, "what is NOT reachable must be stated, not omitted");
+});
+
+Deno.test("[broker] a host DECLARES what its code may call, so the API is a record like the jail", async () => {
+  // WITH A NETWORK TARGET, which is what makes the declaration probed rather than asserted: the
+  // space's own address, because a probe with nothing to dial cannot tell an isolated jail from an
+  // offline machine. `sandbox.ts`'s own suite proves the probe CATCHES a false claim; this proves
+  // the host runs it, and an empty list is the only result that may be published without a warning.
+  const { id, refusedBecause } = await declareBrokerSandbox(operator, {
+    name: uniq("brokered"),
+    networkTarget: new URL(operator.base).host,
+  });
+  assertEquals(refusedBecause, [], `the jail does not hold what the record claims: ${JSON.stringify(refusedBecause)}`);
+  const rec = await operator.getRecord(id);
+  const body = rec!.body as { api?: typeof BROKER_API; network?: boolean; processes?: boolean };
+  assertEquals(body.network, false);
+  assertEquals(body.processes, false);
+  // The whole point: the calls are IN the record a caller already queries to learn what running
+  // code can reach, rather than in prose only a model reading this file would find.
+  assertEquals(body.api?.calls.length, BROKER_API.calls.length);
+  assertStringIncludes(JSON.stringify(body.api), "{kind, match}");
 });

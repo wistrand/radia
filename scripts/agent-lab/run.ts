@@ -52,6 +52,18 @@ interface AgentSpec {
   /** Extra environment for this harness only (an API key, a CODEX_HOME). */
   env?: Record<string, string>;
   /**
+   * Which credential this agent acts under. `member` (the default) is its own definition token;
+   * `operator` is the run's operator, and is REFUSED for a harness.
+   *
+   * The exception exists because two verbs are deliberately not a member's to call: `promote`
+   * writes grants and `bind` is the escalation root, so together they decide which code runs as
+   * which principal (agent_docs/architecture-workspace-agents.md). A scenario that deploys needs a
+   * step that holds the operator, and naming it here is what keeps that visible instead of a
+   * script quietly resolving one. A MODEL never gets it: that is the whole isolation rule the lab
+   * runs under, and a harness asking for it is a scenario bug rather than a choice.
+   */
+  credential?: "member" | "operator";
+  /**
    * The model this harness runs, substituted as `{{model}}` into its own `command`.
    *
    * NOT a flag the runner appends, because the flag differs per harness (`--model` for Claude
@@ -405,6 +417,16 @@ for (const a of agents) {
   console.log(`member ${a.name}  config ${configPath}`);
 }
 
+// A HARNESS MAY NEVER HOLD THE OPERATOR. The lab's whole posture is that each agent acts as itself
+// under real grants, and one model with the operator credential deletes the scoping under
+// observation without failing anything.
+for (const a of agents) {
+  if (a.credential === "operator" && a.harness) {
+    console.error(`${a.name}: a harness may not run as the operator. Move the privileged step to a script.`);
+    Deno.exit(1);
+  }
+}
+
 // A `--model` naming an agent that is not in this scenario is a TYPO, and a silent one: the run
 // proceeds on the harness default and the evidence says a model was asked for that never was.
 for (const name of modelOverrides.keys()) {
@@ -543,7 +565,14 @@ async function runAgent(a: typeof agents[number]): Promise<{ name: string; code:
   const child = new Deno.Command(command[0], {
     args: command.slice(1),
     cwd: a.dir,
-    env: childEnv(a.env),
+    // A HARNESS reads its token from the MCP config this runner wrote; a SCRIPT has no config to
+    // read, so it gets the same token in its environment rather than on the command line, where it
+    // would sit in `ps` for every process on the machine. An `operator` step gets neither and
+    // resolves the run's operator from `RADIA_CREDENTIALS`, which is what `promote` and `bind`
+    // need and what no model is ever given.
+    env: childEnv(
+      a.harness || a.credential === "operator" ? a.env : { ...a.env, RADIA_DEFINITION_TOKEN: a.token, RADIA_URL: base },
+    ),
     stdin: "piped",
     stdout: "piped",
     stderr: "piped",
@@ -759,7 +788,16 @@ for (const a of harnesses) {
 }
 await Deno.writeTextFile(
   `${runDir}/tally.json`,
-  JSON.stringify({ scenario: scenario.name, models: { asked: models, reported }, results, tally }, null, 2),
+  JSON.stringify({
+    scenario: scenario.name,
+    models: { asked: models, reported },
+    // WHO RAN AS THE OPERATOR, so a reader does not look for their records under their own name:
+    // an operator step's writes are authored by `local:dev`, and a check counting authorship would
+    // otherwise report a working deploy as a participant that did nothing.
+    operators: agents.filter((a) => a.credential === "operator").map((a) => a.name),
+    results,
+    tally,
+  }, null, 2),
 );
 
 console.log(`\ntool calls`);

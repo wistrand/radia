@@ -319,4 +319,101 @@ export const TOOLS: McpTool[] = [
       required: ["recordId"],
     },
   },
+  // ---- workspaces -------------------------------------------------------------
+  //
+  // A tree is the unit a HOST runs and a promotion pins, so an agent that can only write loose
+  // artifacts can produce code and can never produce something runnable by anything but itself.
+  // These four are a thin cover over `extensions/ts/workspace.ts`, the same functions the chat and
+  // `radia workspaces` use, so there is one convention rather than a second spelling of it.
+  //
+  // WHY THE MODEL CANNOT DO THIS BY HAND, which is why these exist rather than a doc: a manifest
+  // carries a `treeDigest`, a normative sha256 over sorted `path\0mode\0digest` lines, and no
+  // amount of prose lets a model compute one.
+  {
+    name: "space_save_workspace",
+    description:
+      "Store CODE as a workspace: a named tree of files that keeps every version and can be RUN " +
+      "as a unit. Reach for this instead of space_put_artifact whenever the code is meant to be " +
+      "run or kept, whether it is one file or twenty: an artifact is bytes somebody reads, a " +
+      "workspace is a program something can execute, pin and roll back. Saving an existing name " +
+      "REPLACES the whole tree, so a file you leave out is dropped; to change one line, use " +
+      "space_edit_workspace. Paths are relative ('src/main.ts'); absolute paths, '..' and '.git' " +
+      "are refused. Returns {workspace, treeDigest, files, unchanged, forked}: `unchanged` means " +
+      "the tree was byte-identical and nothing was written, and `forked` means somebody else " +
+      "changed this workspace while you worked, so both versions exist and you are no longer " +
+      "building on the newest. Say so rather than continuing silently.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Short name for the tree, reused to replace it." },
+        files: { type: "object", description: "Path to file contents, e.g. {\"src/main.js\": \"…\"}. Relative paths only." },
+        entrypoint: {
+          type: "string",
+          description: "The file this tree RUNS as, e.g. 'src/main.js'. Set it for anything meant to be run: " +
+            "it is what a runner executes with no code passed, and what a host bound to this tree runs. " +
+            "Must be one of the paths in `files`.",
+        },
+      },
+      required: ["name", "files"],
+    },
+  },
+  {
+    name: "space_edit_workspace",
+    description:
+      "Change a tree in place: exact-string replacements, new files and removals, applied as ONE " +
+      "new version. Use this rather than saving the whole tree again, which drops any file you " +
+      "forget and rewrites bytes that did not change. `oldString` must match EXACTLY and must be " +
+      "unique unless you pass replaceAll, because silently editing the wrong occurrence is worse " +
+      "than refusing. Everything is validated before anything is written, so a rejected edit " +
+      "leaves no half-made version, and every problem is reported at once. Adding a path that " +
+      "exists, or removing one that does not, is a refusal rather than a no-op.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "The workspace, as space_list_workspaces reports it." },
+        edits: {
+          type: "array",
+          description: "Replacements to apply.",
+          items: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "A path inside the tree." },
+              oldString: { type: "string", description: "Exact text to replace." },
+              newString: { type: "string", description: "What to put there. Empty string deletes it." },
+              replaceAll: { type: "boolean", description: "Required when oldString occurs more than once." },
+            },
+            required: ["path", "oldString", "newString"],
+          },
+        },
+        add: { type: "object", description: "New files, path to contents. A path that exists is refused." },
+        remove: { type: "array", description: "Paths to drop.", items: { type: "string" } },
+        entrypoint: { type: "string", description: "Set or change the file this tree runs as." },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "space_read_workspace",
+    description:
+      "Read a workspace: its manifest, or one file's text when you pass `path`. The manifest names " +
+      "every path, the tree digest and the entrypoint, so read it before editing to see what is " +
+      "there rather than assuming.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "The workspace, as space_list_workspaces reports it." },
+        path: { type: "string", description: "A path inside the tree. Omit for the manifest." },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "space_list_workspaces",
+    description:
+      "Every workspace on this space: name, tree digest, paths, how many versions, and whether it " +
+      "has FORKED (more than one version nothing supersedes, which means two writers diverged). A " +
+      "plain query of the workspace kind cannot answer this, since it returns every version, so " +
+      "three versions of one tree read as three trees.",
+    inputSchema: { type: "object", properties: {} },
+  },
 ];
