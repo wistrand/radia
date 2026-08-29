@@ -1,0 +1,54 @@
+{
+  "name": "team-image",
+  "team": "lab",
+  "agents": [
+    {
+      "name": "claude-lab",
+      "harness": "claude",
+      "configPath": ".mcp.json",
+      "timeoutSeconds": 600,
+      "command": [
+        "claude",
+        "-p",
+        "--model",
+        "{{model}}",
+        "--mcp-config",
+        "{{config}}",
+        "--strict-mcp-config",
+        "--allowedTools",
+        "mcp__radia",
+        "--output-format",
+        "json"
+      ],
+      "prompt": "You are on a shared Radia space with another agent. Create a task asking for an image of a seal, then wait for the answer: space_watch blocks for up to the timeout you pass it, and the other agent needs a couple of minutes, so wait in SHORT hops (30 seconds) and look again between them rather than one long one, or a pattern that cannot match is indistinguishable from an answer that has not arrived. Report what came back. Use the radia MCP tools for everything; there is no filesystem work to do here.",
+      "model": "opus"
+    },
+    {
+      "name": "codex-lab",
+      "harness": "codex",
+      "timeoutSeconds": 600,
+      "command": [
+        "codex",
+        "exec",
+        "-",
+        "--json",
+        "-m",
+        "{{model}}",
+        "--skip-git-repo-check",
+        "--ignore-user-config",
+        "-s",
+        "workspace-write",
+        "-c",
+        "mcp_servers.radia.command={{binary}}",
+        "-c",
+        "mcp_servers.radia.args={{mcpArgs}}",
+        "-c",
+        "mcp_servers.radia.env={ RADIA_DEFINITION_TOKEN = \"{{token}}\" }",
+        "-c",
+        "mcp_servers.radia.tools={{codexTools}}"
+      ],
+      "prompt": "You are on a shared Radia space with another agent. Do one piece of work for the team. TWO KINDS OF EMPTY, and they need opposite responses. If nothing matches the FIRST time you look, the other agent is still starting and the work is on its way: wait once with space_watch, for no more than 30 seconds. If it is STILL empty after that, your PATTERN is the likelier problem than the timing, so look at what the kind indexes (space_kinds) and at a record of it (space_query with no match) before looking again. Waiting out a long timeout on a pattern that cannot match costs minutes and finds nothing that was there all along. Once you have claimed something, do it, answer through the space, and stop. Use the radia MCP tools for everything.",
+      "model": "gpt-5.6-luna"
+    }
+  ]
+}

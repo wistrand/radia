@@ -1,0 +1,41 @@
+// Totals the stock counts in notes on topic 'inventory' and answers with a
+// note on topic 'inventory-total'.
+//
+// Runs in the 'brokered-host' sandbox (deno, no network, no fs, no console):
+//   space.query(pattern, limit) -> record[]   pattern is ONE object {kind, match}
+// The returned value becomes the result record, so we return it rather than
+// putting it.
+
+// Real messages look like "widget A: 3 in stock". Take the number in front of
+// "in stock" when there is one, else the first integer in the message.
+function countIn(message) {
+  if (typeof message !== "string") return 0;
+  const inStock = message.match(/(-?\d+(?:\.\d+)?)\s*(?:units?\s*)?in stock/i);
+  const any = inStock || message.match(/(-?\d+(?:\.\d+)?)/);
+  if (!any) return 0;
+  const n = Number(any[1]);
+  return Number.isFinite(n) ? n : 0;
+}
+
+export default async function (record, space) {
+  const notes = await space.query(
+    { kind: "note", match: { topic: "inventory" } },
+    1000,
+  );
+
+  let total = 0;
+  for (const note of notes ?? []) {
+    const body = note && note.body ? note.body : note;
+    total += countIn(body && body.message);
+  }
+
+  return {
+    kind: "note",
+    body: {
+      to: "all",
+      topic: "inventory-total",
+      message: String(total),
+      ok: true,
+    },
+  };
+}

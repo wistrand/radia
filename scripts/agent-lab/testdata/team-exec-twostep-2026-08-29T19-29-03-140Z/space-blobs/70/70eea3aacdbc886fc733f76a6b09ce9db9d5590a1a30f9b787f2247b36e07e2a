@@ -1,0 +1,24 @@
+const primes = [];
+let candidate = 2;
+let sum = 0;
+
+while (primes.length < 1000) {
+  let isPrime = true;
+
+  for (const prime of primes) {
+    if (prime * prime > candidate) break;
+    if (candidate % prime === 0) {
+      isPrime = false;
+      break;
+    }
+  }
+
+  if (isPrime) {
+    primes.push(candidate);
+    sum += candidate;
+  }
+
+  candidate++;
+}
+
+console.log(sum);

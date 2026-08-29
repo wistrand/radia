@@ -1,0 +1,41 @@
+// Totals the stock counts in the notes on topic 'inventory' and answers with a
+// note on topic 'inventory-total'.
+//
+// Runs in the 'brokered-host' sandbox. Only three calls exist there:
+//   space.query(pattern, limit) -> record[]   pattern is {kind, match}
+//   space.readOne(pattern) -> record | null
+//   space.put({kind, body}) -> {id}
+// Whatever this function RETURNS becomes the result record, so the answer is
+// returned rather than put -- only the returned one is fenced.
+
+const SOURCE_TOPIC = 'inventory';
+const ANSWER_TOPIC = 'inventory-total';
+const MAX_NOTES = 500;
+
+// Messages look like 'widget A: 3 in stock'. The count is the first integer in
+// the message; a message with no integer contributes nothing.
+function stockFromMessage(message) {
+  const match = String(message ?? '').match(/-?\d+/);
+  return match ? Number(match[0]) : 0;
+}
+
+export default async function (record, space) {
+  const notes = await space.query(
+    { kind: 'note', match: { topic: SOURCE_TOPIC } },
+    MAX_NOTES,
+  );
+
+  let total = 0;
+  for (const note of notes ?? []) {
+    total += stockFromMessage(note?.body?.message);
+  }
+
+  return {
+    kind: 'note',
+    body: {
+      to: 'all',
+      topic: ANSWER_TOPIC,
+      message: String(total),
+    },
+  };
+}

@@ -279,6 +279,64 @@ deno task lab-report ~/.radia-lab/team-tree-* --html       # a page per run, bes
 deno task lab-report ~/.radia-lab/*/ --index               # one page over all of them
 ```
 
+## Replaying a run, for nothing
+
+```
+deno task lab-replay ~/.radia-lab/team-workspace-2026-08-29T18-28-27-115Z   # against ./radia
+deno task lab-replay --source scripts/agent-lab/testdata/team-*            # against src/, no build
+deno task lab-replay --source --wait 2 ~/.radia-lab/team-exec-*            # shorter waits, faster
+```
+
+It prints as it goes, in the same columns a real run does, because a replay with waits in it is slow
+enough to look wedged:
+
+```
+   2s claude-lab → space_kinds ok 6ms
+   2s claude-lab → space_query empty  was ok (1 records then) 5ms
+   4s codex-lab  → space_watch ok 2070ms
+   8s codex-lab  → space_ack skipped: names 01M177WN…, a record this replay never created
+```
+
+A call carries what it ANSWERED LAST TIME whenever that differs, which is the only column a replay
+adds: `empty` alone reads as a finding, and `empty, and it was empty then too` reads as the
+non-event it is. `--quiet` drops the live lines and prints every non-ok call in the closing block
+instead; otherwise the block repeats only regressions, since the rest already scrolled past.
+
+**A recorded trace is a corpus no one would have written by hand**, so `replay.ts` re-issues it
+through a real `radia mcp` against a space built from the same `scenario.json`. No model, no key,
+about two seconds, and `scripts/agent-lab/replay.test.ts` runs it in CI over the frozen evidence in
+`testdata/`. It observes no model, so it produces no finding about an agent: this is a regression
+suite for the adapter, built out of what the lab left behind.
+
+ONE VERDICT FAILS: a call that was answered and now refuses or errors. A replay cannot reproduce a
+race and does not re-run the untraced participants, so a changed population is `diverged` and merely
+reported, and the participants left out are NAMED. Arguments are rebuilt from the run's own
+evidence, `space-blobs/` included, since a workspace's files live there and not in any record.
+
+A SETTLE NAMES A CLAIM THIS PROCESS MINTED, not the recording's, so the replay maps the seeded
+records by BODY as it writes them, remembers the claimId each `space_take` returns, and rewrites the
+`space_ack` that follows. Without it every ack in every queue run was skipped, which is the one call
+a contention scenario exists to exercise: the three queue runs went from 20 skipped calls to 4, and
+the four that remain are races the verdict refuses to fail on (`its take won a different record`).
+An id the RECORDING never held is a literal and travels untouched, since the queue scenarios plant
+`01ZZZ…` for an agent to look up and a model writes ids into the prose of its own result bodies.
+
+AN ARTIFACT IS RE-PAIRED BY CONTENT ADDRESS, since `space_put_artifact` is the one write whose
+arguments carry no body: identical bytes hash the same today as they did then. And a call naming a
+LOCAL FILE (`space_put_artifact --path`, a PNG a harness generated beside its own config) is skipped
+when that file is not on this machine, because the file does not travel with a run directory and a
+false regression from a missing file is the one output that would make this worse than no replay.
+
+A WAIT IS CAPPED, `--wait <n>`, default 5 seconds. `space_watch` asks for what has not happened yet
+and in a replay it never will, so a trace with five watches at `timeoutSeconds: 120` would sit for
+ten minutes looking hung. Capped, that run finishes in 23 seconds and says which populations were
+not there.
+
+Two limits worth knowing before trusting a green run: every recorded run passes `--session`, so a
+bug that only bites an unsessioned adapter is invisible here (measured: the `health() → anonymous`
+defect was planted back and the replay stayed green); and a run older than `scenario.json` cannot be
+replayed at all, only reported on.
+
 **Every run writes its own page as it finishes.** `run.ts` calls the renderer directly, so
 `run.html` is in the evidence directory the moment the run ends and the closing summary points at
 it. Rendering reads only files the run already wrote, so a failure there costs the page and never

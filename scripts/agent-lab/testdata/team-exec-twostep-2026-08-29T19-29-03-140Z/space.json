@@ -1,0 +1,1587 @@
+{
+  "flows": {
+    "granularity": "kind+agent",
+    "counts": "bucketed",
+    "flows": [
+      {
+        "signature": "artifact@agent:codex-lab \u2192 tool_call@agent:claude-lab \u2192 tool_result@agent:lab-exec",
+        "occurrences": 1,
+        "outcomes": {
+          "complete": 1,
+          "open": 0,
+          "failed": 0
+        },
+        "successRate": 1,
+        "medianDurationMs": 10529,
+        "totalDurationMs": 10529,
+        "medianRecords": 3,
+        "exemplars": [
+          "01M17FZP3MRYTB9CRQNKEDTSZG"
+        ]
+      },
+      {
+        "signature": "task@agent:claude-lab \u2192 note@agent:codex-lab",
+        "occurrences": 1,
+        "outcomes": {
+          "complete": 1,
+          "open": 0,
+          "failed": 0
+        },
+        "successRate": 1,
+        "medianDurationMs": 13189,
+        "totalDurationMs": 13189,
+        "medianRecords": 2,
+        "exemplars": [
+          "01M17FZD0KSX04F775MQDW4NM5"
+        ]
+      }
+    ],
+    "scanned": {
+      "records": 7,
+      "kinds": [
+        "artifact",
+        "capability",
+        "note",
+        "sandbox",
+        "task",
+        "tool_call",
+        "tool_result",
+        "workspace"
+      ],
+      "subgraphs": 4
+    },
+    "fragments": 0,
+    "singletons": 2,
+    "hubs": 0,
+    "complete": true
+  },
+  "stats": [
+    {
+      "kind": "agent_definition",
+      "state": "available",
+      "count": 4
+    },
+    {
+      "kind": "agent_run",
+      "state": "available",
+      "count": 6
+    },
+    {
+      "kind": "artifact",
+      "state": "available",
+      "count": 1
+    },
+    {
+      "kind": "capability",
+      "state": "available",
+      "count": 1
+    },
+    {
+      "kind": "grant",
+      "state": "available",
+      "count": 30
+    },
+    {
+      "kind": "interest",
+      "state": "available",
+      "count": 1
+    },
+    {
+      "kind": "kind_def",
+      "state": "available",
+      "count": 8
+    },
+    {
+      "kind": "note",
+      "state": "available",
+      "count": 1
+    },
+    {
+      "kind": "ops_grant",
+      "state": "available",
+      "count": 1
+    },
+    {
+      "kind": "sandbox",
+      "state": "available",
+      "count": 1
+    },
+    {
+      "kind": "task",
+      "state": "consumed",
+      "count": 1
+    },
+    {
+      "kind": "tool_call",
+      "state": "consumed",
+      "count": 1
+    },
+    {
+      "kind": "tool_result",
+      "state": "available",
+      "count": 1
+    }
+  ],
+  "events": {
+    "events": [
+      {
+        "seq": 1,
+        "cursor": "733",
+        "id": "01M17FYF3B10VR5MJK03FQPWR8",
+        "ts": "2026-08-29T19:29:05.125Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYF360VAX4BT4QQQZN48D",
+        "kind": "agent_definition",
+        "state": "available"
+      },
+      {
+        "seq": 2,
+        "cursor": "734",
+        "id": "01M17FYF3N32J8G0RPY9GYS9H3",
+        "ts": "2026-08-29T19:29:05.138Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYF3KB8QTAADD7ZQEWFD5",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 3,
+        "cursor": "735",
+        "id": "01M17FYF3XDDPRF2J4XDR61JB7",
+        "ts": "2026-08-29T19:29:05.146Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYF3TKEF0C28QAGE8228Q",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 4,
+        "cursor": "736",
+        "id": "01M17FYF45K6GW5JGNKAMVA4KA",
+        "ts": "2026-08-29T19:29:05.153Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYF4298DJRFWA81G5GFC4",
+        "kind": "ops_grant",
+        "state": "available"
+      },
+      {
+        "seq": 5,
+        "cursor": "737",
+        "id": "01M17FYF8K32J0M7HF4V5720EY",
+        "ts": "2026-08-29T19:29:05.296Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYF8H9K34KQX315HSH4VE",
+        "kind": "kind_def",
+        "state": "available"
+      },
+      {
+        "seq": 6,
+        "cursor": "742",
+        "id": "01M17FYFCXENH35RHCZ51T1SZ7",
+        "ts": "2026-08-29T19:29:05.435Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYFCVPD94WSWMK3HBGH1E",
+        "kind": "kind_def",
+        "state": "available"
+      },
+      {
+        "seq": 7,
+        "cursor": "746",
+        "id": "01M17FYFFCRJSEPMGC6F25GWJW",
+        "ts": "2026-08-29T19:29:05.514Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYFFA3ED5PK00VCGWRM2C",
+        "kind": "kind_def",
+        "state": "available"
+      },
+      {
+        "seq": 8,
+        "cursor": "754",
+        "id": "01M17FYFK4B0GYMVEJP2GZ2415",
+        "ts": "2026-08-29T19:29:05.633Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYFK1NW41RE9SAJXY8WZN",
+        "kind": "kind_def",
+        "state": "available"
+      },
+      {
+        "seq": 9,
+        "cursor": "759",
+        "id": "01M17FYFKVEQQX2VNQJRKCY48T",
+        "ts": "2026-08-29T19:29:05.655Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYFKRCNCJ0K5PAEC8QQHZ",
+        "kind": "kind_def",
+        "state": "available"
+      },
+      {
+        "seq": 10,
+        "cursor": "765",
+        "id": "01M17FYFMH2STYPZ8NYC10CZAP",
+        "ts": "2026-08-29T19:29:05.678Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYFMFJWF59YW6ZNBZPW3J",
+        "kind": "kind_def",
+        "state": "available"
+      },
+      {
+        "seq": 11,
+        "cursor": "770",
+        "id": "01M17FYFN86JDWAVB27FDBJD54",
+        "ts": "2026-08-29T19:29:05.701Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYFN5S5ZND47TDZXCA38X",
+        "kind": "kind_def",
+        "state": "available"
+      },
+      {
+        "seq": 12,
+        "cursor": "774",
+        "id": "01M17FYFNTBMQEX6W8RD9SCFBS",
+        "ts": "2026-08-29T19:29:05.719Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYFNQSE35YF8NA5FWBV7N",
+        "kind": "kind_def",
+        "state": "available"
+      },
+      {
+        "seq": 13,
+        "cursor": "781",
+        "id": "01M17FYFPM2ENT9ZKWSX5RK9EM",
+        "ts": "2026-08-29T19:29:05.745Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYFPJHT0CRWMACV5AKDVS",
+        "kind": "agent_definition",
+        "state": "available"
+      },
+      {
+        "seq": 14,
+        "cursor": "782",
+        "id": "01M17FYFPWA9WYRHXTT3FCXTYR",
+        "ts": "2026-08-29T19:29:05.753Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYFPSSGV2T6CP65HXBXZ3",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 15,
+        "cursor": "783",
+        "id": "01M17FYFQ24HCQKS9EJZF5B37V",
+        "ts": "2026-08-29T19:29:05.759Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYFQ0CE1QN5JTK0E9GRQ9",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 16,
+        "cursor": "784",
+        "id": "01M17FYFQ94VYG37W6F0QTEZHG",
+        "ts": "2026-08-29T19:29:05.766Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYFQ7BZ09DR46FR0QXK8J",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 17,
+        "cursor": "785",
+        "id": "01M17FYFQFRSDX9PMWW9CJ2S9X",
+        "ts": "2026-08-29T19:29:05.773Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYFQDJP23ZT7DHCE88K02",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 18,
+        "cursor": "786",
+        "id": "01M17FYFQPYSP12QW67QB0SPQ4",
+        "ts": "2026-08-29T19:29:05.779Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYFQK9RD3NSVQRS72JCP3",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 19,
+        "cursor": "787",
+        "id": "01M17FYFQVVFEESVNEKVV9PE6B",
+        "ts": "2026-08-29T19:29:05.785Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYFQS74Z2YBY10ZT2PFK9",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 20,
+        "cursor": "788",
+        "id": "01M17FYFR18N1R4N8YRP6GP7ZK",
+        "ts": "2026-08-29T19:29:05.791Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYFQZPC00TRKYFEVKCD3G",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 21,
+        "cursor": "789",
+        "id": "01M17FYFR7N223Q4KZ7PNXWDBW",
+        "ts": "2026-08-29T19:29:05.797Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYFR5QCJMVT010VYXW5HN",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 22,
+        "cursor": "790",
+        "id": "01M17FYFV00VG4Q8S36E9NR7V2",
+        "ts": "2026-08-29T19:29:05.886Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYFTYPD01JADECT7AJYRZ",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 23,
+        "cursor": "791",
+        "id": "01M17FYFXCQBE849SA7KVW9SVJ",
+        "ts": "2026-08-29T19:29:05.962Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYFXA0P1KV0DCZYAKJAW5",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 24,
+        "cursor": "792",
+        "id": "01M17FYG14YJQAZJ4VR8KBYY1B",
+        "ts": "2026-08-29T19:29:06.081Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYG12NVDWBZEFT65WEGB5",
+        "kind": "agent_definition",
+        "state": "available"
+      },
+      {
+        "seq": 25,
+        "cursor": "793",
+        "id": "01M17FYG1Q3K0F82TC955XV9NW",
+        "ts": "2026-08-29T19:29:06.100Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYG1NBHDHZB9NM3JWP4G3",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 26,
+        "cursor": "794",
+        "id": "01M17FYG1W77RBV2FT79CWZ2PM",
+        "ts": "2026-08-29T19:29:06.106Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYG1TGD6S4T06P76ENNRW",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 27,
+        "cursor": "795",
+        "id": "01M17FYG25VKZCMSNGQ352EC7H",
+        "ts": "2026-08-29T19:29:06.113Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYG2170TH5996Q5QDZJT8",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 28,
+        "cursor": "796",
+        "id": "01M17FYG2EQJM0QSXFFMECT5SQ",
+        "ts": "2026-08-29T19:29:06.123Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYG2C6K0MP2R2T1A0VYFB",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 29,
+        "cursor": "797",
+        "id": "01M17FYG2MPDPFY6YTKZS4WTZK",
+        "ts": "2026-08-29T19:29:06.129Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYG2JTAW8BE3GBM171GAT",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 30,
+        "cursor": "798",
+        "id": "01M17FYG2TVG74CTPDW52JGE8C",
+        "ts": "2026-08-29T19:29:06.135Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYG2RPB6KEVAM0640P6TM",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 31,
+        "cursor": "799",
+        "id": "01M17FYG30R0EMX9SR1R42Z5B4",
+        "ts": "2026-08-29T19:29:06.141Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYG2YVABNRW86PZ4HQ9SF",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 32,
+        "cursor": "800",
+        "id": "01M17FYG37ANS4S125DHZYY4S9",
+        "ts": "2026-08-29T19:29:06.148Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYG346VTFES4WGSXJF3W9",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 33,
+        "cursor": "801",
+        "id": "01M17FYG5ZYAFHVWD9S8ZTRAPM",
+        "ts": "2026-08-29T19:29:06.237Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYG5YP3QQJY9P3Z5J9J2P",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 34,
+        "cursor": "802",
+        "id": "01M17FYG9XKNRDR364RBHJF8XN",
+        "ts": "2026-08-29T19:29:06.363Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYG9VYKR99B68N0GB08EZ",
+        "kind": "agent_definition",
+        "state": "available"
+      },
+      {
+        "seq": 35,
+        "cursor": "803",
+        "id": "01M17FYGAHPDC0Z3BD2A9PRY5P",
+        "ts": "2026-08-29T19:29:06.382Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYGAEKK6WPZ9TNE63A5MC",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 36,
+        "cursor": "804",
+        "id": "01M17FYGAY2FR929X0K7G2WE6F",
+        "ts": "2026-08-29T19:29:06.392Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYGATMGZK99RXBZ0FK94B",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 37,
+        "cursor": "805",
+        "id": "01M17FYGB947FQX7E7HS7ZTX6V",
+        "ts": "2026-08-29T19:29:06.405Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYGB6K99AFF5DTVA6QHAX",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 38,
+        "cursor": "806",
+        "id": "01M17FYGBFRDZRGR2411BHERTN",
+        "ts": "2026-08-29T19:29:06.413Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYGBD3P84BDR4HR9WCKWD",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 39,
+        "cursor": "807",
+        "id": "01M17FYGBPBY46KD4VNY0Q159N",
+        "ts": "2026-08-29T19:29:06.419Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYGBMM3FW5YK5S7J5FT8R",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 40,
+        "cursor": "808",
+        "id": "01M17FYGBY8ART9AWDNNF7TG6T",
+        "ts": "2026-08-29T19:29:06.426Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYGBVP6KC9F1J2PCHY8CS",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 41,
+        "cursor": "809",
+        "id": "01M17FYGCBQ060D3MVPW89XX4G",
+        "ts": "2026-08-29T19:29:06.436Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYGC6KAAYJ18S59PBFS66",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 42,
+        "cursor": "810",
+        "id": "01M17FYGCN8H7P9SS3KS2QG4VK",
+        "ts": "2026-08-29T19:29:06.449Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYGCJX5Q2XK7R7QH4EVD4",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 43,
+        "cursor": "811",
+        "id": "01M17FYGFJZ67ZS8ZYTCQNP9V0",
+        "ts": "2026-08-29T19:29:06.544Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYGFG9S7XESAPDRBNPW2S",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 44,
+        "cursor": "812",
+        "id": "01M17FYGJAJ5R56H186N8FNMRT",
+        "ts": "2026-08-29T19:29:06.632Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYGJ8WTF5W7PSW79PE75D",
+        "kind": "agent_run",
+        "state": "available"
+      },
+      {
+        "seq": 45,
+        "cursor": "813",
+        "id": "01M17FYGR8EWSQAJ1PD21SAE6S",
+        "ts": "2026-08-29T19:29:06.818Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYGR4F37V2FSNKYPZPS7B",
+        "kind": "agent_run",
+        "state": "available"
+      },
+      {
+        "seq": 46,
+        "cursor": "814",
+        "id": "01M17FYGSNF2NS4Q0C543DZZNN",
+        "ts": "2026-08-29T19:29:06.857Z",
+        "runId": "run:01M17FYGR2E3J2WYZCARGXAG2B",
+        "operation": "put",
+        "recordId": "01M17FYGSBS3Z9F6VRZGZ5E8CD",
+        "kind": "sandbox",
+        "state": "available"
+      },
+      {
+        "seq": 47,
+        "cursor": "815",
+        "id": "01M17FYGTNKY88CX6T6GE07GDP",
+        "ts": "2026-08-29T19:29:06.896Z",
+        "runId": "run:01M17FYGR2E3J2WYZCARGXAG2B",
+        "operation": "put",
+        "recordId": "01M17FYGTH3Z9BVEE9J34Y2C6Y",
+        "kind": "capability",
+        "state": "available"
+      },
+      {
+        "seq": 48,
+        "cursor": "816",
+        "id": "01M17FYGW0M8E7FAEDDVT6DKQM",
+        "ts": "2026-08-29T19:29:06.938Z",
+        "runId": "run:01M17FYGR2E3J2WYZCARGXAG2B",
+        "operation": "put",
+        "recordId": "01M17FYGVVY7C6WPQEPQN0SFMW",
+        "kind": "interest",
+        "state": "available"
+      },
+      {
+        "seq": 49,
+        "cursor": "817",
+        "id": "01M17FYGWMZ9B8DDB1VVDPFZVM",
+        "ts": "2026-08-29T19:29:06.961Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYGWJP6N9C46VBHVM68V3",
+        "kind": "agent_run",
+        "state": "available"
+      },
+      {
+        "seq": 50,
+        "cursor": "818",
+        "id": "01M17FYHN1EP660Y082V9XZNMA",
+        "ts": "2026-08-29T19:29:07.742Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYHMZW414Y6RXQ0V3EZK0",
+        "kind": "agent_run",
+        "state": "available"
+      },
+      {
+        "seq": 51,
+        "cursor": "819",
+        "id": "01M17FYJ0FBKN3MARQXZ7F9NWM",
+        "ts": "2026-08-29T19:29:08.108Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17FYJ0DVH85KRSXRGZHB0F3",
+        "kind": "agent_run",
+        "state": "available"
+      },
+      {
+        "seq": 52,
+        "cursor": "820",
+        "id": "01M17FZD0VQ7TZZSE07JTSBW89",
+        "ts": "2026-08-29T19:29:35.761Z",
+        "runId": "run:01M17FYHMYC73912W3E15M0630",
+        "operation": "put",
+        "recordId": "01M17FZD0KSX04F775MQDW4NM5",
+        "kind": "task",
+        "state": "available"
+      },
+      {
+        "seq": 53,
+        "cursor": "821",
+        "id": "01M17FZFDDV5H8P62K39VKHQ9G",
+        "ts": "2026-08-29T19:29:38.203Z",
+        "runId": "run:01M17FYJ0CAEPRSP7J4HBMREMV",
+        "operation": "take",
+        "recordId": "01M17FZD0KSX04F775MQDW4NM5",
+        "kind": "task",
+        "state": "leased",
+        "detail": {
+          "leaseId": "01M17FZFCT4A88CBZKK91PTRM2",
+          "epoch": 1,
+          "reclaimed": false
+        }
+      },
+      {
+        "seq": 54,
+        "cursor": "822",
+        "id": "01M17FZP3Y13XKC8FQMGT68NHG",
+        "ts": "2026-08-29T19:29:45.074Z",
+        "runId": "run:01M17FYJ0CAEPRSP7J4HBMREMV",
+        "operation": "put",
+        "recordId": "01M17FZP3MRYTB9CRQNKEDTSZG",
+        "kind": "artifact",
+        "state": "available"
+      },
+      {
+        "seq": 55,
+        "cursor": "823",
+        "id": "01M17FZSXN9KG2ABY45NNEKF5N",
+        "ts": "2026-08-29T19:29:48.950Z",
+        "runId": "run:01M17FYJ0CAEPRSP7J4HBMREMV",
+        "operation": "put",
+        "recordId": "01M17FZSWX5DFEDMPY1EWXX8GA",
+        "kind": "note",
+        "state": "available",
+        "detail": {
+          "ackOf": "01M17FZD0KSX04F775MQDW4NM5"
+        }
+      },
+      {
+        "seq": 56,
+        "cursor": "823",
+        "id": "01M17FZSXQ818A4SX4DF0PG3BB",
+        "ts": "2026-08-29T19:29:48.963Z",
+        "runId": "run:01M17FYJ0CAEPRSP7J4HBMREMV",
+        "operation": "ack",
+        "recordId": "01M17FZD0KSX04F775MQDW4NM5",
+        "kind": "task",
+        "state": "consumed",
+        "detail": {
+          "resultId": "01M17FZSWX5DFEDMPY1EWXX8GA"
+        }
+      },
+      {
+        "seq": 57,
+        "cursor": "824",
+        "id": "01M17G0089GZR7XN4XNVHZG8XV",
+        "ts": "2026-08-29T19:29:55.447Z",
+        "runId": "run:01M17FYHMYC73912W3E15M0630",
+        "operation": "put",
+        "recordId": "01M17G007XQGTP29AZEF0A9T8K",
+        "kind": "tool_call",
+        "state": "available"
+      },
+      {
+        "seq": 58,
+        "cursor": "825",
+        "id": "01M17G009XVWHTBYM045KCBYZX",
+        "ts": "2026-08-29T19:29:55.503Z",
+        "runId": "run:01M17FYGR2E3J2WYZCARGXAG2B",
+        "operation": "take",
+        "recordId": "01M17G007XQGTP29AZEF0A9T8K",
+        "kind": "tool_call",
+        "state": "leased",
+        "detail": {
+          "leaseId": "01M17G009EENZJ45F00FNXJHW8",
+          "epoch": 1,
+          "reclaimed": false
+        }
+      },
+      {
+        "seq": 59,
+        "cursor": "826",
+        "id": "01M17G00DP5AHCBTGHWQ2MRYF5",
+        "ts": "2026-08-29T19:29:55.603Z",
+        "runId": "run:01M17FYGR2E3J2WYZCARGXAG2B",
+        "operation": "put",
+        "recordId": "01M17G00CVS94Z6TRQ8T1WN0XJ",
+        "kind": "tool_result",
+        "state": "available",
+        "detail": {
+          "ackOf": "01M17G007XQGTP29AZEF0A9T8K"
+        }
+      },
+      {
+        "seq": 60,
+        "cursor": "826",
+        "id": "01M17G00DRX56RCQY113DQ5MKZ",
+        "ts": "2026-08-29T19:29:55.618Z",
+        "runId": "run:01M17FYGR2E3J2WYZCARGXAG2B",
+        "operation": "ack",
+        "recordId": "01M17G007XQGTP29AZEF0A9T8K",
+        "kind": "tool_call",
+        "state": "consumed",
+        "detail": {
+          "resultId": "01M17G00CVS94Z6TRQ8T1WN0XJ"
+        }
+      },
+      {
+        "seq": 61,
+        "cursor": "827",
+        "id": "01M17G0F2KHSBJM8H0TBGKC62Y",
+        "ts": "2026-08-29T19:30:10.640Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M17G0F2HQBXZX7C0S3DVSZNW",
+        "kind": "agent_run",
+        "state": "available"
+      }
+    ],
+    "nextAfter": "827"
+  },
+  "records.workspace": {
+    "records": [],
+    "explain": [
+      "kind 'workspace' is claimable:false (reference data), so records sitting 'available' forever is normal rather than stuck work."
+    ]
+  },
+  "records.capability": {
+    "records": [
+      {
+        "id": "01M17FYGTH3Z9BVEE9J34Y2C6Y",
+        "kind": "capability",
+        "body": {
+          "team": "lab",
+          "tool": "run_javascript",
+          "def": {
+            "type": "function",
+            "function": {
+              "name": "run_javascript",
+              "description": "Run JavaScript in a sandbox and get its output back. Print results with console.log; stdout is what you get back. The sandbox has NO network, NO environment variables and cannot start processes, so fetch and Deno.env fail. It has NO filesystem access. It cannot see the space: pass any data you need INSIDE the code as literals. Runs for at most 5s. Output over 4000 characters is stored as an artifact and you get its id instead. The result is CLASSIFIED as untrusted, so an agent reading it may refuse it. Returns {ok, stdout, stderr, exitCode, timedOut, ms}.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "description": "The JavaScript program. Print with console.log."
+                  },
+                  "save_as": {
+                    "type": "string",
+                    "description": "Store stdout as an artifact with this filename."
+                  }
+                },
+                "required": [
+                  "code"
+                ]
+              }
+            }
+          },
+          "provider": "agent:lab-exec"
+        },
+        "bodySha256": "eecb4c5d8570cbb1ddb022e95a52b2f57484187eef0bd3475747eafc3e0b40b2",
+        "runtimeMeta": {
+          "createdBy": "run:01M17FYGR2E3J2WYZCARGXAG2B",
+          "parentIds": [],
+          "taint": [],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-29T19:29:06.896Z"
+        }
+      }
+    ],
+    "explain": [
+      "kind 'capability' is claimable:false (reference data), so records sitting 'available' forever is normal rather than stuck work."
+    ]
+  },
+  "records.artifact": {
+    "records": [
+      {
+        "id": "01M17FZP3MRYTB9CRQNKEDTSZG",
+        "kind": "artifact",
+        "body": {
+          "team": "lab",
+          "digest": "70eea3aacdbc886fc733f76a6b09ce9db9d5590a1a30f9b787f2247b36e07e2a",
+          "mediaType": "text/javascript",
+          "size": 370,
+          "filename": "primes.js"
+        },
+        "bodySha256": "e3d7624e382526a61759843960d1c0cf4284a04b1d2e8531a7745acd012f7bd2",
+        "runtimeMeta": {
+          "createdBy": "run:01M17FYJ0CAEPRSP7J4HBMREMV",
+          "parentIds": [],
+          "taint": [],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-29T19:29:45.074Z"
+        }
+      }
+    ],
+    "explain": [
+      "kind 'artifact' is claimable:false (reference data), so records sitting 'available' forever is normal rather than stuck work."
+    ]
+  },
+  "records.note": {
+    "records": [
+      {
+        "id": "01M17FZSWX5DFEDMPY1EWXX8GA",
+        "kind": "note",
+        "body": {
+          "team": "lab",
+          "to": "agent:claude-lab",
+          "message": "Artifact record id: 01M17FZP3MRYTB9CRQNKEDTSZG",
+          "ok": true
+        },
+        "bodySha256": "14fb8618106828675a557f6ba1241e56dc68199e3eb66ecd191d1a543a1ee0a8",
+        "runtimeMeta": {
+          "createdBy": "run:01M17FYJ0CAEPRSP7J4HBMREMV",
+          "delegationContext": {
+            "chain": [
+              "agent:codex-lab"
+            ],
+            "origin": "01M17FZD0KSX04F775MQDW4NM5"
+          },
+          "parentIds": [
+            "01M17FZD0KSX04F775MQDW4NM5"
+          ],
+          "taint": [
+            "foreign"
+          ],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-29T19:29:48.950Z"
+        }
+      }
+    ],
+    "explain": [
+      "kind 'note' is claimable:false (reference data), so records sitting 'available' forever is normal rather than stuck work."
+    ]
+  },
+  "records.task": {
+    "records": [
+      {
+        "id": "01M17FZD0KSX04F775MQDW4NM5",
+        "kind": "task",
+        "body": {
+          "title": "Write (do NOT run) a JavaScript program that sums the first 1000 primes",
+          "team": "lab",
+          "assignee": "agent:lab-exec",
+          "tags": [
+            "code",
+            "javascript",
+            "write",
+            "artifact"
+          ],
+          "detail": "Requester: agent:claude-lab. I will execute the program myself via the run_javascript capability, so please DO NOT run it and DO NOT tell me the answer \u2014 send source only.\n\nWhat I need: a self-contained JavaScript program that computes the sum of the first 1000 prime numbers and prints that single number with console.log.\n\nTarget runtime (this is what the space can actually execute, so write for it): sandbox 'deno-confined', deno 2.9.2, run via the run_javascript tool. Constraints: no network, no environment variables, no filesystem, no subprocesses (so no imports/fetch/Deno.env/Deno.readFile), 128 MB, 5 second wall clock. Plain self-contained JS, everything as literals in the source, output via console.log.\n\nDelivery: store the source with space_put_artifact (mediaType text/javascript, filename primes.js) \u2014 the artifact must hold the source and NOTHING ELSE: no prose, no markdown fences, no result value in a comment. Then settle this task with space_ack (resultKind 'note') whose message gives me the artifact record id. Prose goes in the note, code goes in the artifact.\n\nAgain: do not execute it, and do not include or state the computed sum anywhere. Running it is my half of the job."
+        },
+        "bodySha256": "b5d1e19fcad1bfe23c412fb89a5d161915df25ac62d0513d40c048ed62267dd8",
+        "runtimeMeta": {
+          "createdBy": "run:01M17FYHMYC73912W3E15M0630",
+          "parentIds": [],
+          "taint": [],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-29T19:29:35.761Z"
+        }
+      }
+    ]
+  },
+  "records.sandbox": {
+    "records": [
+      {
+        "id": "01M17FYGSBS3Z9F6VRZGZ5E8CD",
+        "kind": "sandbox",
+        "body": {
+          "name": "deno-confined",
+          "importsConfined": true,
+          "confiner": "bubblewrap",
+          "language": "javascript",
+          "isolation": "deno-permissions",
+          "network": false,
+          "readonlyPaths": [],
+          "writablePaths": [],
+          "processes": false,
+          "env": false,
+          "memoryMb": 128,
+          "timeoutMsMax": 5000,
+          "runtime": "deno 2.9.2"
+        },
+        "bodySha256": "81cbf0145edd93cb21a8b3bccde2dcd5bc557a6c9afef1d7c28e7f3ef426da2e",
+        "runtimeMeta": {
+          "createdBy": "run:01M17FYGR2E3J2WYZCARGXAG2B",
+          "parentIds": [],
+          "taint": [],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-29T19:29:06.857Z"
+        }
+      }
+    ],
+    "explain": [
+      "kind 'sandbox' is claimable:false (reference data), so records sitting 'available' forever is normal rather than stuck work."
+    ]
+  },
+  "records.tool_result": {
+    "records": [
+      {
+        "id": "01M17G00CVS94Z6TRQ8T1WN0XJ",
+        "kind": "tool_result",
+        "body": {
+          "callId": "01M17G007XQGTP29AZEF0A9T8K",
+          "team": "lab",
+          "ok": true,
+          "output": {
+            "ok": true,
+            "stdout": "3682913\n",
+            "stderr": "",
+            "exitCode": 0,
+            "timedOut": false,
+            "ms": 55,
+            "sandbox": "deno-confined"
+          }
+        },
+        "bodySha256": "4022ccb402f82572209ca63b437cbee0f4712bc57aa4f6cd4b28b7e750fae446",
+        "runtimeMeta": {
+          "createdBy": "run:01M17FYGR2E3J2WYZCARGXAG2B",
+          "delegationContext": {
+            "chain": [
+              "agent:lab-exec"
+            ],
+            "origin": "01M17G007XQGTP29AZEF0A9T8K"
+          },
+          "parentIds": [
+            "01M17G007XQGTP29AZEF0A9T8K"
+          ],
+          "taint": [
+            "foreign"
+          ],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-29T19:29:55.603Z"
+        }
+      }
+    ],
+    "explain": [
+      "kind 'tool_result' is claimable:false (reference data), so records sitting 'available' forever is normal rather than stuck work."
+    ]
+  },
+  "records.tool_call": {
+    "records": [
+      {
+        "id": "01M17G007XQGTP29AZEF0A9T8K",
+        "kind": "tool_call",
+        "body": {
+          "tool": "run_javascript",
+          "team": "lab",
+          "args": {
+            "code": "const primes = [];\nlet candidate = 2;\nlet sum = 0;\n\nwhile (primes.length < 1000) {\n  let isPrime = true;\n\n  for (const prime of primes) {\n    if (prime * prime > candidate) break;\n    if (candidate % prime === 0) {\n      isPrime = false;\n      break;\n    }\n  }\n\n  if (isPrime) {\n    primes.push(candidate);\n    sum += candidate;\n  }\n\n  candidate++;\n}\n\nconsole.log(sum);\n"
+          }
+        },
+        "bodySha256": "2f3e1c938f4dec50d529249520a95924a52e5f072f710dbd24baad6ca2acf4e4",
+        "runtimeMeta": {
+          "createdBy": "run:01M17FYHMYC73912W3E15M0630",
+          "parentIds": [
+            "01M17FZP3MRYTB9CRQNKEDTSZG"
+          ],
+          "taint": [
+            "foreign"
+          ],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-29T19:29:55.447Z"
+        }
+      }
+    ]
+  },
+  "records.agent_run": {
+    "records": [
+      {
+        "id": "01M17G0F2HQBXZX7C0S3DVSZNW",
+        "kind": "agent_run",
+        "body": {
+          "run": "run:01M17G0F2G8NW9TZ52KBT6QFAY",
+          "agent": "agent:local-observer",
+          "tokenHash": "<redacted for the fixture>",
+          "status": "active",
+          "expiresAt": "2026-08-29T19:45:10.634Z",
+          "mintedAt": "2026-08-29T19:30:10.634Z"
+        },
+        "bodySha256": "c75e9a6c87b51c2406ee1a059db5c81f6ec3c05e56c3f47b04fa21ef125ba0b3",
+        "runtimeMeta": {
+          "createdBy": "local:dev",
+          "parentIds": [],
+          "taint": [],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-29T19:30:10.640Z"
+        }
+      },
+      {
+        "id": "01M17FYJ0DVH85KRSXRGZHB0F3",
+        "kind": "agent_run",
+        "body": {
+          "run": "run:01M17FYJ0CAEPRSP7J4HBMREMV",
+          "agent": "agent:codex-lab",
+          "tokenHash": "<redacted for the fixture>",
+          "status": "active",
+          "expiresAt": "2026-08-29T19:44:08.104Z",
+          "mintedAt": "2026-08-29T19:29:08.104Z"
+        },
+        "bodySha256": "9c553d46ea020f4626b8c6e873104324ed4f696488b58494e42195e43a405144",
+        "runtimeMeta": {
+          "createdBy": "local:dev",
+          "parentIds": [],
+          "taint": [],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-29T19:29:08.108Z"
+        }
+      },
+      {
+        "id": "01M17FYHMZW414Y6RXQ0V3EZK0",
+        "kind": "agent_run",
+        "body": {
+          "run": "run:01M17FYHMYC73912W3E15M0630",
+          "agent": "agent:claude-lab",
+          "tokenHash": "<redacted for the fixture>",
+          "status": "active",
+          "expiresAt": "2026-08-29T19:44:07.738Z",
+          "mintedAt": "2026-08-29T19:29:07.738Z"
+        },
+        "bodySha256": "cab51af3654e6c25ae916b01bd15ccbe2fa3e76b9e49be1103a2578c0663c30b",
+        "runtimeMeta": {
+          "createdBy": "local:dev",
+          "parentIds": [],
+          "taint": [],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-29T19:29:07.742Z"
+        }
+      },
+      {
+        "id": "01M17FYGWJP6N9C46VBHVM68V3",
+        "kind": "agent_run",
+        "body": {
+          "run": "run:01M17FYGR2E3J2WYZCARGXAG2B",
+          "agent": "agent:lab-exec",
+          "tokenHash": "<redacted for the fixture>",
+          "status": "active",
+          "expiresAt": "2026-08-29T19:44:06.959Z",
+          "mintedAt": "2026-08-29T19:29:06.813Z"
+        },
+        "bodySha256": "85887e3da769a02cbcb95290cbc2625f15ba2c7db80ca4e37a471777eea33ccc",
+        "runtimeMeta": {
+          "createdBy": "local:dev",
+          "parentIds": [],
+          "taint": [],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-29T19:29:06.961Z"
+        }
+      },
+      {
+        "id": "01M17FYGR4F37V2FSNKYPZPS7B",
+        "kind": "agent_run",
+        "body": {
+          "run": "run:01M17FYGR2E3J2WYZCARGXAG2B",
+          "agent": "agent:lab-exec",
+          "tokenHash": "<redacted for the fixture>",
+          "status": "active",
+          "expiresAt": "2026-08-29T19:44:06.813Z",
+          "mintedAt": "2026-08-29T19:29:06.813Z"
+        },
+        "bodySha256": "1131a3a961d972ec5fd304e71ea39844d5af11c2cc8b136e371b85cead2ba15e",
+        "runtimeMeta": {
+          "createdBy": "local:dev",
+          "parentIds": [],
+          "taint": [],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-29T19:29:06.818Z"
+        }
+      },
+      {
+        "id": "01M17FYGJ8WTF5W7PSW79PE75D",
+        "kind": "agent_run",
+        "body": {
+          "run": "run:01M17FYGJ8WTF5W7PSW79PE75C",
+          "agent": "agent:lab-exec",
+          "tokenHash": "<redacted for the fixture>",
+          "status": "active",
+          "expiresAt": "2026-08-29T19:44:06.629Z",
+          "mintedAt": "2026-08-29T19:29:06.629Z"
+        },
+        "bodySha256": "f500ab1b172d6dc63000551a8b748be8f86d9c59f323435eec028f55d0de1c4b",
+        "runtimeMeta": {
+          "createdBy": "local:dev",
+          "parentIds": [],
+          "taint": [],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-29T19:29:06.632Z"
+        }
+      }
+    ],
+    "explain": [
+      "kind 'agent_run' is claimable:false (reference data), so records sitting 'available' forever is normal rather than stuck work."
+    ]
+  },
+  "permissions.lab-exec": {
+    "principal": "agent:lab-exec",
+    "subject": "agent:lab-exec",
+    "privileged": false,
+    "kinds": [
+      {
+        "kind": "artifact",
+        "operations": [
+          "put",
+          "query",
+          "read_one"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": [
+          {
+            "team": "lab"
+          }
+        ]
+      },
+      {
+        "kind": "capability",
+        "operations": [
+          "put",
+          "query",
+          "read_one"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": [
+          {
+            "team": "lab"
+          }
+        ]
+      },
+      {
+        "kind": "interest",
+        "operations": [
+          "put",
+          "query"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": []
+      },
+      {
+        "kind": "kind_def",
+        "operations": [
+          "query"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": []
+      },
+      {
+        "kind": "note",
+        "operations": [
+          "put",
+          "query",
+          "read_one"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": [
+          {
+            "team": "lab"
+          }
+        ]
+      },
+      {
+        "kind": "sandbox",
+        "operations": [
+          "put",
+          "query",
+          "read_one"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": []
+      },
+      {
+        "kind": "task",
+        "operations": [
+          "put",
+          "query",
+          "read_one",
+          "take"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": [
+          {
+            "team": "lab"
+          }
+        ]
+      },
+      {
+        "kind": "tool_call",
+        "operations": [
+          "take"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": [
+          {
+            "team": "lab"
+          }
+        ]
+      },
+      {
+        "kind": "tool_result",
+        "operations": [
+          "put"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": [
+          {
+            "team": "lab"
+          }
+        ]
+      },
+      {
+        "kind": "workspace",
+        "operations": [
+          "put",
+          "query",
+          "read_one"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": [
+          {
+            "team": "lab"
+          }
+        ]
+      }
+    ],
+    "ops": {
+      "reachable": false,
+      "kinds": []
+    },
+    "opsPowers": [],
+    "complete": true
+  },
+  "permissions.claude-lab": {
+    "principal": "agent:claude-lab",
+    "subject": "agent:claude-lab",
+    "privileged": false,
+    "kinds": [
+      {
+        "kind": "artifact",
+        "operations": [
+          "put",
+          "query",
+          "read_one"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": [
+          {
+            "team": "lab"
+          }
+        ]
+      },
+      {
+        "kind": "capability",
+        "operations": [
+          "put",
+          "query",
+          "read_one"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": [
+          {
+            "team": "lab"
+          }
+        ]
+      },
+      {
+        "kind": "kind_def",
+        "operations": [
+          "query"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": []
+      },
+      {
+        "kind": "note",
+        "operations": [
+          "put",
+          "query",
+          "read_one"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": [
+          {
+            "team": "lab"
+          }
+        ]
+      },
+      {
+        "kind": "sandbox",
+        "operations": [
+          "query",
+          "read_one"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": []
+      },
+      {
+        "kind": "task",
+        "operations": [
+          "put",
+          "query",
+          "read_one",
+          "take"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": [
+          {
+            "team": "lab"
+          }
+        ]
+      },
+      {
+        "kind": "tool_call",
+        "operations": [
+          "put",
+          "query",
+          "read_one"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": [
+          {
+            "team": "lab"
+          }
+        ]
+      },
+      {
+        "kind": "tool_result",
+        "operations": [
+          "query",
+          "read_one"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": [
+          {
+            "team": "lab"
+          }
+        ]
+      },
+      {
+        "kind": "workspace",
+        "operations": [
+          "put",
+          "query",
+          "read_one"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": [
+          {
+            "team": "lab"
+          }
+        ]
+      }
+    ],
+    "ops": {
+      "reachable": false,
+      "kinds": []
+    },
+    "opsPowers": [],
+    "complete": true
+  },
+  "permissions.codex-lab": {
+    "principal": "agent:codex-lab",
+    "subject": "agent:codex-lab",
+    "privileged": false,
+    "kinds": [
+      {
+        "kind": "artifact",
+        "operations": [
+          "put",
+          "query",
+          "read_one"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": [
+          {
+            "team": "lab"
+          }
+        ]
+      },
+      {
+        "kind": "capability",
+        "operations": [
+          "put",
+          "query",
+          "read_one"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": [
+          {
+            "team": "lab"
+          }
+        ]
+      },
+      {
+        "kind": "kind_def",
+        "operations": [
+          "query"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": []
+      },
+      {
+        "kind": "note",
+        "operations": [
+          "put",
+          "query",
+          "read_one"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": [
+          {
+            "team": "lab"
+          }
+        ]
+      },
+      {
+        "kind": "sandbox",
+        "operations": [
+          "query",
+          "read_one"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": []
+      },
+      {
+        "kind": "task",
+        "operations": [
+          "put",
+          "query",
+          "read_one",
+          "take"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": [
+          {
+            "team": "lab"
+          }
+        ]
+      },
+      {
+        "kind": "tool_call",
+        "operations": [
+          "put",
+          "query",
+          "read_one"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": [
+          {
+            "team": "lab"
+          }
+        ]
+      },
+      {
+        "kind": "tool_result",
+        "operations": [
+          "query",
+          "read_one"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": [
+          {
+            "team": "lab"
+          }
+        ]
+      },
+      {
+        "kind": "workspace",
+        "operations": [
+          "put",
+          "query",
+          "read_one"
+        ],
+        "readsScopedToSelf": false,
+        "patterns": [
+          {
+            "team": "lab"
+          }
+        ]
+      }
+    ],
+    "ops": {
+      "reachable": false,
+      "kinds": []
+    },
+    "opsPowers": [],
+    "complete": true
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "scenario": "team-exec-twostep",
+  "models": {
+    "asked": {
+      "claude-lab": "opus",
+      "codex-lab": "gpt-5.6-luna"
+    },
+    "reported": {
+      "claude-lab": "claude-opus-5"
+    }
+  },
+  "operators": [],
+  "results": [
+    {
+      "name": "claude-lab",
+      "code": 0,
+      "calls": 12
+    },
+    {
+      "name": "codex-lab",
+      "code": 0,
+      "calls": 8
+    }
+  ],
+  "tally": {
+    "lab-exec": {
+      "calls": 0,
+      "empty": 0,
+      "errors": {},
+      "traced": false
+    },
+    "claude-lab": {
+      "calls": 12,
+      "empty": 2,
+      "errors": {
+        "unsortable_path": 1
+      }
+    },
+    "codex-lab": {
+      "calls": 8,
+      "empty": 1,
+      "errors": {}
+    }
+  }
+}

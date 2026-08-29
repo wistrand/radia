@@ -1,0 +1,126 @@
+{
+  "name": "team-workspace",
+  "team": "lab",
+  "sequential": true,
+  "seed": [
+    {
+      "kind": "note",
+      "body": {
+        "to": "all",
+        "topic": "inventory",
+        "message": "widget A: 3 in stock"
+      }
+    },
+    {
+      "kind": "note",
+      "body": {
+        "to": "all",
+        "topic": "inventory",
+        "message": "widget B: 11 in stock"
+      }
+    },
+    {
+      "kind": "note",
+      "body": {
+        "to": "all",
+        "topic": "inventory",
+        "message": "widget C: 0 in stock"
+      }
+    }
+  ],
+  "agents": [
+    {
+      "name": "runner",
+      "background": true,
+      "command": [
+        "{{binary}}",
+        "host",
+        "--url",
+        "{{url}}",
+        "--agent",
+        "agent:runner={{token}}"
+      ],
+      "prompt": "unused: this host holds no model",
+      "unscopedGrants": [
+        "sandbox:put,query,read_one"
+      ]
+    },
+    {
+      "name": "claude-lab",
+      "harness": "claude",
+      "configPath": ".mcp.json",
+      "model": "opus",
+      "timeoutSeconds": 420,
+      "command": [
+        "claude",
+        "-p",
+        "--model",
+        "{{model}}",
+        "--mcp-config",
+        "{{config}}",
+        "--strict-mcp-config",
+        "--allowedTools",
+        "mcp__radia",
+        "--output-format",
+        "json"
+      ],
+      "prompt": "You are on a shared Radia space. Write a small program and store it as a workspace named 'inventory' so that something else can run it.\n\nWhat it must do: read the notes on the topic 'inventory', total the stock counts in their messages, and answer with a note on the topic 'inventory-total' whose message is the total.\n\nThe program will be run by a host inside a sandbox. This space DESCRIBES that sandbox, including the exact calls your code may make and what its return value becomes: find that description and follow it rather than guessing, because a wrong call inside a sandbox fails silently and you will not be there to see it. Look at the records the program will read, too, so your pattern matches real ones.\n\nSet the workspace's entrypoint to the file you want run. When you are done, report the workspace name and its tree digest. Use the radia MCP tools for everything; there is no work to do on this machine.",
+      "unscopedGrants": [
+        "sandbox:query,read_one"
+      ]
+    },
+    {
+      "name": "deploy",
+      "timeoutSeconds": 240,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/scripts/agent-lab/deploy-workspace.ts",
+        "--binary",
+        "{{binary}}",
+        "--url",
+        "{{url}}",
+        "--workspace",
+        "inventory",
+        "--agent",
+        "agent:runner",
+        "--tier",
+        "prod",
+        "--team",
+        "lab"
+      ],
+      "prompt": "unused: this step holds no model",
+      "credential": "operator"
+    }
+  ],
+  "kinds": [
+    {
+      "kind": "sandbox",
+      "indexedPaths": [
+        {
+          "path": "name",
+          "type": "keyword"
+        },
+        {
+          "path": "language",
+          "type": "keyword"
+        },
+        {
+          "path": "isolation",
+          "type": "keyword"
+        },
+        {
+          "path": "network",
+          "type": "keyword"
+        },
+        {
+          "path": "processes",
+          "type": "keyword"
+        }
+      ],
+      "claimable": false,
+      "usage": "An execution environment and what it GUARANTEES, declared by whatever built it. `api` is what code running there may CALL, with the exact call shapes: read it before writing code meant to run here, or you are guessing at an interface a refusal cannot teach you. Everything else on the record says what the jail STOPS."
+    }
+  ]
+}

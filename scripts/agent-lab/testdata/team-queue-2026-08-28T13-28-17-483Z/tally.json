@@ -1,0 +1,36 @@
+{
+  "scenario": "team-queue",
+  "models": {
+    "asked": {
+      "claude-lab": "opus",
+      "codex-lab": "gpt-5.6-luna"
+    },
+    "reported": {
+      "claude-lab": "claude-opus-5"
+    }
+  },
+  "results": [
+    {
+      "name": "claude-lab",
+      "code": 0,
+      "calls": 21
+    },
+    {
+      "name": "codex-lab",
+      "code": 0,
+      "calls": 19
+    }
+  ],
+  "tally": {
+    "claude-lab": {
+      "calls": 21,
+      "empty": 7,
+      "errors": {}
+    },
+    "codex-lab": {
+      "calls": 19,
+      "empty": 5,
+      "errors": {}
+    }
+  }
+}

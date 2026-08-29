@@ -1,0 +1,67 @@
+{
+  "scenario": "team-tree",
+  "models": {
+    "asked": {
+      "claude-author": "opus",
+      "codex-lab": "gpt-5.6-luna",
+      "claude-verify": "opus"
+    },
+    "reported": {
+      "claude-author": "claude-opus-5",
+      "claude-verify": "claude-opus-5"
+    }
+  },
+  "operators": [
+    "deploy"
+  ],
+  "results": [
+    {
+      "name": "claude-author",
+      "code": 0,
+      "calls": 5
+    },
+    {
+      "name": "codex-lab",
+      "code": 0,
+      "calls": 10
+    },
+    {
+      "name": "deploy",
+      "code": 0,
+      "calls": 0
+    },
+    {
+      "name": "claude-verify",
+      "code": 0,
+      "calls": 6
+    }
+  ],
+  "tally": {
+    "runner": {
+      "calls": 0,
+      "empty": 0,
+      "errors": {},
+      "traced": false
+    },
+    "claude-author": {
+      "calls": 5,
+      "empty": 0,
+      "errors": {}
+    },
+    "codex-lab": {
+      "calls": 10,
+      "empty": 0,
+      "errors": {}
+    },
+    "deploy": {
+      "calls": 0,
+      "empty": 0,
+      "errors": {}
+    },
+    "claude-verify": {
+      "calls": 6,
+      "empty": 0,
+      "errors": {}
+    }
+  }
+}

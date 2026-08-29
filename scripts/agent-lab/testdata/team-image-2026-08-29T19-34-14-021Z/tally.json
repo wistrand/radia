@@ -1,0 +1,37 @@
+{
+  "scenario": "team-image",
+  "models": {
+    "asked": {
+      "claude-lab": "opus",
+      "codex-lab": "gpt-5.6-luna"
+    },
+    "reported": {
+      "claude-lab": "claude-opus-5"
+    }
+  },
+  "operators": [],
+  "results": [
+    {
+      "name": "claude-lab",
+      "code": 0,
+      "calls": 9
+    },
+    {
+      "name": "codex-lab",
+      "code": 0,
+      "calls": 7
+    }
+  ],
+  "tally": {
+    "claude-lab": {
+      "calls": 9,
+      "empty": 2,
+      "errors": {}
+    },
+    "codex-lab": {
+      "calls": 7,
+      "empty": 1,
+      "errors": {}
+    }
+  }
+}

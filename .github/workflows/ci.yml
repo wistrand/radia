@@ -89,6 +89,10 @@ jobs:
             cat /tmp/bwrap.err
           fi
       - run: deno task test:extensions
+      # The agent lab without a model: the reporter's checks over frozen run evidence, and recorded
+      # traces re-issued through a real `radia mcp`. A step here rather than its own job for the
+      # billing reason below, and out of `test:runtime` because it spawns a space per case.
+      - run: deno task test:lab
       # The SDK parity containers (docker/py-parity/): python 3.9 and 3.13 pinned beside a pinned
       # deno, no way to skip. A step here rather than its own job, because GitHub bills each job
       # rounded UP to a whole minute and this takes ~20 seconds.

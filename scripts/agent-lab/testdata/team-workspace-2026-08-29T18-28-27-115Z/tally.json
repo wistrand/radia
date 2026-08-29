@@ -1,0 +1,44 @@
+{
+  "scenario": "team-workspace",
+  "models": {
+    "asked": {
+      "claude-lab": "opus"
+    },
+    "reported": {
+      "claude-lab": "claude-opus-5"
+    }
+  },
+  "operators": [
+    "deploy"
+  ],
+  "results": [
+    {
+      "name": "claude-lab",
+      "code": 0,
+      "calls": 4
+    },
+    {
+      "name": "deploy",
+      "code": 0,
+      "calls": 0
+    }
+  ],
+  "tally": {
+    "runner": {
+      "calls": 0,
+      "empty": 0,
+      "errors": {},
+      "traced": false
+    },
+    "claude-lab": {
+      "calls": 4,
+      "empty": 0,
+      "errors": {}
+    },
+    "deploy": {
+      "calls": 0,
+      "empty": 0,
+      "errors": {}
+    }
+  }
+}

@@ -1,0 +1,24 @@
+# inventory
+
+Entrypoint: `src/main.js`, exporting `default async function (record, space)`.
+
+It reads every `note` with `topic: 'inventory'`, pulls the first integer out of
+each `message` (`'widget A: 3 in stock'` -> 3), sums them, and RETURNS a note
+on topic `inventory-total` whose `message` is the total as a string.
+
+Sandbox is `brokered-host` (see the `sandbox` record on the space). Available
+calls, and nothing else:
+
+- `space.query(pattern, limit) -> record[]` -- `pattern` is one object,
+  `{kind, match}`; `match` is nested, not spread.
+- `space.readOne(pattern) -> record | null`
+- `space.put({kind, body}) -> {id}`
+
+No fetch, no filesystem, no processes, no env, no console anybody reads. The
+host stamps `team` and the parent links, so don't set them.
+
+The returned value IS the result record. Returning it is what fences the
+answer; putting it instead would not.
+
+To change what counts as a stock number, edit `stockFromMessage`. To change
+either topic, edit the constants at the top of `src/main.js`.

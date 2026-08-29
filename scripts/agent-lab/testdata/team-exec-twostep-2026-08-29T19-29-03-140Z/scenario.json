@@ -1,0 +1,157 @@
+{
+  "name": "team-exec-twostep",
+  "team": "lab",
+  "kinds": [
+    {
+      "kind": "tool_call",
+      "indexedPaths": [
+        {
+          "path": "tool",
+          "type": "keyword"
+        },
+        {
+          "path": "team",
+          "type": "keyword"
+        }
+      ],
+      "usage": "Ask a worker to do something it advertised. body: {tool, team, args}. `tool` is a name from the capability registry: query {kind:'capability'} to see what this space can do, and use the tool NAME exactly. The answer arrives as a tool_result whose callId is this record's id, so read it with space_children on the call."
+    },
+    {
+      "kind": "tool_result",
+      "indexedPaths": [
+        {
+          "path": "callId",
+          "type": "keyword"
+        },
+        {
+          "path": "team",
+          "type": "keyword"
+        }
+      ],
+      "claimable": false,
+      "usage": "A worker's answer to one tool_call. body: {callId, ok, output}. Find it with space_children on the call you made. It may be CLASSIFIED (the output of code somebody else wrote is untrusted by construction), so a claim refusing taint will not see work derived from it."
+    },
+    {
+      "kind": "sandbox",
+      "indexedPaths": [
+        {
+          "path": "name",
+          "type": "keyword"
+        },
+        {
+          "path": "language",
+          "type": "keyword"
+        },
+        {
+          "path": "isolation",
+          "type": "keyword"
+        },
+        {
+          "path": "network",
+          "type": "keyword"
+        },
+        {
+          "path": "processes",
+          "type": "keyword"
+        }
+      ],
+      "claimable": false,
+      "usage": "An execution environment and what it GUARANTEES, declared by the worker that serves it and verified before it served anything. Query this to learn what running code here can and cannot reach."
+    }
+  ],
+  "agents": [
+    {
+      "name": "lab-exec",
+      "background": true,
+      "grants": [
+        "tool_call:take",
+        "tool_result:put"
+      ],
+      "unscopedGrants": [
+        "sandbox:put,query,read_one",
+        "interest:put,query"
+      ],
+      "readyWhen": {
+        "kind": "capability",
+        "match": {
+          "tool": "run_javascript"
+        }
+      },
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/scripts/agent-lab/exec-worker.ts",
+        "--url",
+        "{{url}}",
+        "--provider",
+        "agent:lab-exec",
+        "--team",
+        "lab"
+      ],
+      "prompt": "unused: this worker holds no model"
+    },
+    {
+      "name": "claude-lab",
+      "harness": "claude",
+      "grants": [
+        "tool_call:put,query,read_one",
+        "tool_result:query,read_one"
+      ],
+      "configPath": ".mcp.json",
+      "timeoutSeconds": 420,
+      "command": [
+        "claude",
+        "-p",
+        "--model",
+        "{{model}}",
+        "--mcp-config",
+        "{{config}}",
+        "--strict-mcp-config",
+        "--allowedTools",
+        "mcp__radia",
+        "--output-format",
+        "json"
+      ],
+      "prompt": "You are on a shared Radia space with another agent, and this is a TWO-STEP job.\n\nStep 1: ask that agent, through the space, for a program that computes the sum of the first 1000 prime numbers, delivered as an ARTIFACT holding the source and nothing else. Tell it plainly not to run the program and not to send you the number: you will run it yourself. Before you write that task, look at what this space can actually execute, and ask for the source in a language that will run here.\n\nStep 2: when the reply arrives (space_watch blocks for up to the timeout you pass it, and the other agent needs a couple of minutes), fetch the artifact, run the code yourself using what the space offers, and report the number you got and how it was produced.\n\nUse the radia MCP tools for everything; there is no work to do on this machine.",
+      "unscopedGrants": [
+        "sandbox:query,read_one"
+      ],
+      "model": "opus"
+    },
+    {
+      "name": "codex-lab",
+      "harness": "codex",
+      "grants": [
+        "tool_call:put,query,read_one",
+        "tool_result:query,read_one"
+      ],
+      "timeoutSeconds": 420,
+      "command": [
+        "codex",
+        "exec",
+        "-",
+        "--json",
+        "-m",
+        "{{model}}",
+        "--skip-git-repo-check",
+        "--ignore-user-config",
+        "-s",
+        "workspace-write",
+        "-c",
+        "mcp_servers.radia.command={{binary}}",
+        "-c",
+        "mcp_servers.radia.args={{mcpArgs}}",
+        "-c",
+        "mcp_servers.radia.env={ RADIA_DEFINITION_TOKEN = \"{{token}}\" }",
+        "-c",
+        "mcp_servers.radia.tools={{codexTools}}"
+      ],
+      "prompt": "You are on a shared Radia space with another agent. Do one piece of work for the team. TWO KINDS OF EMPTY, and they need opposite responses. If nothing matches the FIRST time you look, the other agent is still starting and the work is on its way: wait once with space_watch, for no more than 30 seconds. If it is STILL empty after that, your PATTERN is the likelier problem than the timing, so look at what the kind indexes (space_kinds) and at a record of it (space_query with no match) before looking again. Waiting out a long timeout on a pattern that cannot match costs minutes and finds nothing that was there all along. Once you have claimed something, do exactly what it asks for and nothing more, answer through the space, and stop. Use the radia MCP tools for everything.",
+      "unscopedGrants": [
+        "sandbox:query,read_one"
+      ],
+      "model": "gpt-5.6-luna"
+    }
+  ]
+}

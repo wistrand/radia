@@ -1,0 +1,1035 @@
+{
+  "flows": {
+    "granularity": "kind+agent",
+    "counts": "bucketed",
+    "flows": [
+      {
+        "signature": "task@local:dev → note@agent:codex-lab",
+        "occurrences": 3,
+        "outcomes": {
+          "complete": 3,
+          "open": 0,
+          "failed": 0
+        },
+        "successRate": 1,
+        "medianDurationMs": 29720,
+        "totalDurationMs": 108864,
+        "medianRecords": 2,
+        "exemplars": [
+          "01M148X6HBX8P70CZHWQ2YGBAW",
+          "01M148X6F1FFKS81MX2YKPS47P",
+          "01M148X6A3R8EBQDP20848MGYJ"
+        ]
+      },
+      {
+        "signature": "task@local:dev → note@agent:claude-lab",
+        "occurrences": 2,
+        "outcomes": {
+          "complete": 2,
+          "open": 0,
+          "failed": 0
+        },
+        "successRate": 1,
+        "medianDurationMs": 26111,
+        "totalDurationMs": 52221,
+        "medianRecords": 2,
+        "exemplars": [
+          "01M148X6CR97Z71XHF75NMER23",
+          "01M148X67YXZ46CJ5KYTD398TS"
+        ]
+      }
+    ],
+    "scanned": {
+      "records": 11,
+      "kinds": [
+        "artifact",
+        "capability",
+        "note",
+        "task"
+      ],
+      "subgraphs": 6
+    },
+    "fragments": 0,
+    "singletons": 1,
+    "hubs": 0,
+    "complete": true
+  },
+  "stats": [
+    {
+      "kind": "agent_definition",
+      "state": "available",
+      "count": 3
+    },
+    {
+      "kind": "agent_run",
+      "state": "available",
+      "count": 3
+    },
+    {
+      "kind": "grant",
+      "state": "available",
+      "count": 12
+    },
+    {
+      "kind": "kind_def",
+      "state": "available",
+      "count": 4
+    },
+    {
+      "kind": "note",
+      "state": "available",
+      "count": 6
+    },
+    {
+      "kind": "ops_grant",
+      "state": "available",
+      "count": 1
+    },
+    {
+      "kind": "task",
+      "state": "consumed",
+      "count": 5
+    }
+  ],
+  "events": {
+    "events": [
+      {
+        "seq": 1,
+        "cursor": "733",
+        "id": "01M148X5QSMXWZVQDVFC6VQFV7",
+        "ts": "2026-08-28T13:28:19.443Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X5QMZMJ7CYV5N0RC0D6N",
+        "kind": "agent_definition",
+        "state": "available"
+      },
+      {
+        "seq": 2,
+        "cursor": "734",
+        "id": "01M148X5R4MFTK8KZ2V01Y91F7",
+        "ts": "2026-08-28T13:28:19.456Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X5R1AG3AH9J631TT9PK6",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 3,
+        "cursor": "735",
+        "id": "01M148X5RCE10FAJ6S8P04SDK0",
+        "ts": "2026-08-28T13:28:19.465Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X5R9C7SFA8FV9S5YM3BS",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 4,
+        "cursor": "736",
+        "id": "01M148X5RQN77BXBVJ52SP442V",
+        "ts": "2026-08-28T13:28:19.473Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X5RJB4S5780HPJGZC6D5",
+        "kind": "ops_grant",
+        "state": "available"
+      },
+      {
+        "seq": 5,
+        "cursor": "737",
+        "id": "01M148X5TZMR5GPZJ6QQ70TSG5",
+        "ts": "2026-08-28T13:28:19.548Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X5TXWBPG027Z1F47CQAF",
+        "kind": "kind_def",
+        "state": "available"
+      },
+      {
+        "seq": 6,
+        "cursor": "743",
+        "id": "01M148X5XKM69T5M30DHDKYMB8",
+        "ts": "2026-08-28T13:28:19.632Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X5XG5S2TMSMNFX0FK109",
+        "kind": "kind_def",
+        "state": "available"
+      },
+      {
+        "seq": 7,
+        "cursor": "748",
+        "id": "01M148X5Y5K8GWA2GED82WQ8G3",
+        "ts": "2026-08-28T13:28:19.650Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X5Y32BN4TH8J9751AF8B",
+        "kind": "kind_def",
+        "state": "available"
+      },
+      {
+        "seq": 8,
+        "cursor": "753",
+        "id": "01M148X5YQSG7EFDFKX7YHKMWD",
+        "ts": "2026-08-28T13:28:19.668Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X5YNV25DQ20F62MC33NH",
+        "kind": "kind_def",
+        "state": "available"
+      },
+      {
+        "seq": 9,
+        "cursor": "758",
+        "id": "01M148X5ZA9C1M95QF99F7FP76",
+        "ts": "2026-08-28T13:28:19.687Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X5Z8RFY7SKP127T9NK0J",
+        "kind": "agent_definition",
+        "state": "available"
+      },
+      {
+        "seq": 10,
+        "cursor": "759",
+        "id": "01M148X5ZJR0G98YHBP4JNWRQG",
+        "ts": "2026-08-28T13:28:19.695Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X5ZF1705EJ70VM0PRAVD",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 11,
+        "cursor": "760",
+        "id": "01M148X5ZR981BAEJR2QG0PVF1",
+        "ts": "2026-08-28T13:28:19.701Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X5ZPN3RSR1DGMSNH7PWE",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 12,
+        "cursor": "761",
+        "id": "01M148X5ZY041C570A7WQ080AT",
+        "ts": "2026-08-28T13:28:19.708Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X5ZW2869HV4DG7NM6ZVE",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 13,
+        "cursor": "762",
+        "id": "01M148X605PM8561EH019KZMQM",
+        "ts": "2026-08-28T13:28:19.714Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X6031K8BNBGWJ8GQ8E4W",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 14,
+        "cursor": "763",
+        "id": "01M148X60BBD9FW5NDS2AZGTXB",
+        "ts": "2026-08-28T13:28:19.720Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X609PA6NPCQ8BHJMGVHE",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 15,
+        "cursor": "764",
+        "id": "01M148X640H2R65WQV1634EHNG",
+        "ts": "2026-08-28T13:28:19.838Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X63YQMERJXQRJJYARPDD",
+        "kind": "agent_definition",
+        "state": "available"
+      },
+      {
+        "seq": 16,
+        "cursor": "765",
+        "id": "01M148X64MZTXZJCYJ3SC990KS",
+        "ts": "2026-08-28T13:28:19.857Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X64JFFZT71NEJR1VYP62",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 17,
+        "cursor": "766",
+        "id": "01M148X64V4T7YWJX71N8QKQMR",
+        "ts": "2026-08-28T13:28:19.864Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X64SCX297K6VB9TTSWE1",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 18,
+        "cursor": "767",
+        "id": "01M148X651F5J9XS8RPCY12R5Q",
+        "ts": "2026-08-28T13:28:19.871Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X64Z3N2K71X8E7W10BE4",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 19,
+        "cursor": "768",
+        "id": "01M148X6572WQMJW45AYD4RA71",
+        "ts": "2026-08-28T13:28:19.876Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X655SPW8PGCVEENRRWNB",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 20,
+        "cursor": "769",
+        "id": "01M148X65DZ5XY50W6EFZPARBF",
+        "ts": "2026-08-28T13:28:19.882Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X65BCBAD2ZRAY1TP48NR",
+        "kind": "grant",
+        "state": "available"
+      },
+      {
+        "seq": 21,
+        "cursor": "770",
+        "id": "01M148X67Z4PQAZCS84ZT13SQ3",
+        "ts": "2026-08-28T13:28:19.965Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X67YXZ46CJ5KYTD398TS",
+        "kind": "task",
+        "state": "available"
+      },
+      {
+        "seq": 22,
+        "cursor": "771",
+        "id": "01M148X6A5M2RYZAC9S4TCXRP5",
+        "ts": "2026-08-28T13:28:20.035Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X6A3R8EBQDP20848MGYJ",
+        "kind": "task",
+        "state": "available"
+      },
+      {
+        "seq": 23,
+        "cursor": "772",
+        "id": "01M148X6CTEK0J0PKNDBAKX3VB",
+        "ts": "2026-08-28T13:28:20.120Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X6CR97Z71XHF75NMER23",
+        "kind": "task",
+        "state": "available"
+      },
+      {
+        "seq": 24,
+        "cursor": "773",
+        "id": "01M148X6F2JDESVRT7K55JZV1G",
+        "ts": "2026-08-28T13:28:20.192Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X6F1FFKS81MX2YKPS47P",
+        "kind": "task",
+        "state": "available"
+      },
+      {
+        "seq": 25,
+        "cursor": "774",
+        "id": "01M148X6HC4Z3YAWR9J6823BYX",
+        "ts": "2026-08-28T13:28:20.266Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X6HBX8P70CZHWQ2YGBAW",
+        "kind": "task",
+        "state": "available"
+      },
+      {
+        "seq": 26,
+        "cursor": "775",
+        "id": "01M148X6KFKZYX3JAP8M7KQANS",
+        "ts": "2026-08-28T13:28:20.333Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X6KDH4Z7462XEF0PWZZD",
+        "kind": "agent_run",
+        "state": "available"
+      },
+      {
+        "seq": 27,
+        "cursor": "776",
+        "id": "01M148X7764HSTAK0DZ7FNXJQ1",
+        "ts": "2026-08-28T13:28:20.962Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M148X773B0XB7T24JDR1ZZEY",
+        "kind": "agent_run",
+        "state": "available"
+      },
+      {
+        "seq": 28,
+        "cursor": "777",
+        "id": "01M148XP8JV09EHPSPXWHD3CCA",
+        "ts": "2026-08-28T13:28:36.351Z",
+        "runId": "run:01M148X6KDH4Z7462XEF0PWZZC",
+        "operation": "take",
+        "recordId": "01M148X67YXZ46CJ5KYTD398TS",
+        "kind": "task",
+        "state": "leased",
+        "detail": {
+          "leaseId": "01M148XP7YZT3BYWB4G65SQ9BM",
+          "epoch": 1,
+          "reclaimed": false
+        }
+      },
+      {
+        "seq": 29,
+        "cursor": "778",
+        "id": "01M148XRWRXC8DV3HG0SEAPBM5",
+        "ts": "2026-08-28T13:28:39.051Z",
+        "runId": "run:01M148X7720EX4KRJKYR0NRX52",
+        "operation": "take",
+        "recordId": "01M148X6A3R8EBQDP20848MGYJ",
+        "kind": "task",
+        "state": "leased",
+        "detail": {
+          "leaseId": "01M148XRWBTZJN5J8VKM880M0J",
+          "epoch": 1,
+          "reclaimed": false
+        }
+      },
+      {
+        "seq": 30,
+        "cursor": "779",
+        "id": "01M148XWHNXR0QDZA1B7B2S40Z",
+        "ts": "2026-08-28T13:28:42.759Z",
+        "runId": "run:01M148X6KDH4Z7462XEF0PWZZC",
+        "operation": "put",
+        "recordId": "01M148XWGHWPSD7GZVP9JZF0WF",
+        "kind": "note",
+        "state": "available",
+        "detail": {
+          "ackOf": "01M148X67YXZ46CJ5KYTD398TS"
+        }
+      },
+      {
+        "seq": 31,
+        "cursor": "779",
+        "id": "01M148XWHRVCN7H2EQJXK1N6WT",
+        "ts": "2026-08-28T13:28:42.779Z",
+        "runId": "run:01M148X6KDH4Z7462XEF0PWZZC",
+        "operation": "ack",
+        "recordId": "01M148X67YXZ46CJ5KYTD398TS",
+        "kind": "task",
+        "state": "consumed",
+        "detail": {
+          "resultId": "01M148XWGHWPSD7GZVP9JZF0WF"
+        }
+      },
+      {
+        "seq": 32,
+        "cursor": "780",
+        "id": "01M148XY40AX2T7100DQNWKVJ6",
+        "ts": "2026-08-28T13:28:44.377Z",
+        "runId": "run:01M148X7720EX4KRJKYR0NRX52",
+        "operation": "put",
+        "recordId": "01M148XY32ZW779DRJDPK7KF43",
+        "kind": "note",
+        "state": "available",
+        "detail": {
+          "ackOf": "01M148X6A3R8EBQDP20848MGYJ"
+        }
+      },
+      {
+        "seq": 33,
+        "cursor": "780",
+        "id": "01M148XY42N3QH690PESSY6AA0",
+        "ts": "2026-08-28T13:28:44.394Z",
+        "runId": "run:01M148X7720EX4KRJKYR0NRX52",
+        "operation": "ack",
+        "recordId": "01M148X6A3R8EBQDP20848MGYJ",
+        "kind": "task",
+        "state": "consumed",
+        "detail": {
+          "resultId": "01M148XY32ZW779DRJDPK7KF43"
+        }
+      },
+      {
+        "seq": 34,
+        "cursor": "781",
+        "id": "01M148XZ6PTM93C93626RJZS6C",
+        "ts": "2026-08-28T13:28:45.511Z",
+        "runId": "run:01M148X6KDH4Z7462XEF0PWZZC",
+        "operation": "take",
+        "recordId": "01M148X6CR97Z71XHF75NMER23",
+        "kind": "task",
+        "state": "leased",
+        "detail": {
+          "leaseId": "01M148XZ666QAHV8BN4F55D72V",
+          "epoch": 1,
+          "reclaimed": false
+        }
+      },
+      {
+        "seq": 35,
+        "cursor": "782",
+        "id": "01M148Y0NNQ2N2J93RW95V9392",
+        "ts": "2026-08-28T13:28:47.013Z",
+        "runId": "run:01M148X7720EX4KRJKYR0NRX52",
+        "operation": "take",
+        "recordId": "01M148X6F1FFKS81MX2YKPS47P",
+        "kind": "task",
+        "state": "leased",
+        "detail": {
+          "leaseId": "01M148Y0N5BYFJBZVJMGZPH7NQ",
+          "epoch": 1,
+          "reclaimed": false
+        }
+      },
+      {
+        "seq": 36,
+        "cursor": "783",
+        "id": "01M148Y35NXD0GMND3GSQ9PWFZ",
+        "ts": "2026-08-28T13:28:49.547Z",
+        "runId": "run:01M148X6KDH4Z7462XEF0PWZZC",
+        "operation": "put",
+        "recordId": "01M148Y34M4DQJVY3BJ70ZZ8BR",
+        "kind": "note",
+        "state": "available",
+        "detail": {
+          "ackOf": "01M148X6CR97Z71XHF75NMER23"
+        }
+      },
+      {
+        "seq": 37,
+        "cursor": "783",
+        "id": "01M148Y35SSRH8TN1GFSXGKEPG",
+        "ts": "2026-08-28T13:28:49.566Z",
+        "runId": "run:01M148X6KDH4Z7462XEF0PWZZC",
+        "operation": "ack",
+        "recordId": "01M148X6CR97Z71XHF75NMER23",
+        "kind": "task",
+        "state": "consumed",
+        "detail": {
+          "resultId": "01M148Y34M4DQJVY3BJ70ZZ8BR"
+        }
+      },
+      {
+        "seq": 38,
+        "cursor": "784",
+        "id": "01M148Y3H1ACV1R5M7543NS8YS",
+        "ts": "2026-08-28T13:28:49.912Z",
+        "runId": "run:01M148X7720EX4KRJKYR0NRX52",
+        "operation": "put",
+        "recordId": "01M148Y3G1VXG8DC18SWT5TRNS",
+        "kind": "note",
+        "state": "available",
+        "detail": {
+          "ackOf": "01M148X6F1FFKS81MX2YKPS47P"
+        }
+      },
+      {
+        "seq": 39,
+        "cursor": "784",
+        "id": "01M148Y3H3TA1K7FEHGF6ZCXFK",
+        "ts": "2026-08-28T13:28:49.930Z",
+        "runId": "run:01M148X7720EX4KRJKYR0NRX52",
+        "operation": "ack",
+        "recordId": "01M148X6F1FFKS81MX2YKPS47P",
+        "kind": "task",
+        "state": "consumed",
+        "detail": {
+          "resultId": "01M148Y3G1VXG8DC18SWT5TRNS"
+        }
+      },
+      {
+        "seq": 40,
+        "cursor": "785",
+        "id": "01M148Y5D2DNYQKNMJRKWBSD73",
+        "ts": "2026-08-28T13:28:51.859Z",
+        "runId": "run:01M148X7720EX4KRJKYR0NRX52",
+        "operation": "take",
+        "recordId": "01M148X6HBX8P70CZHWQ2YGBAW",
+        "kind": "task",
+        "state": "leased",
+        "detail": {
+          "leaseId": "01M148Y5CKWQ5QCHTXFDJWW4EW",
+          "epoch": 1,
+          "reclaimed": false
+        }
+      },
+      {
+        "seq": 41,
+        "cursor": "786",
+        "id": "01M148YBDWY8M08KK119SCNGB9",
+        "ts": "2026-08-28T13:28:58.032Z",
+        "runId": "run:01M148X7720EX4KRJKYR0NRX52",
+        "operation": "nack",
+        "recordId": "01M148X6HBX8P70CZHWQ2YGBAW",
+        "kind": "task",
+        "state": "available",
+        "detail": {
+          "attempt": 1
+        }
+      },
+      {
+        "seq": 42,
+        "cursor": "787",
+        "id": "01M148YE18PH42QXDK9R5CW244",
+        "ts": "2026-08-28T13:29:00.698Z",
+        "runId": "run:01M148X7720EX4KRJKYR0NRX52",
+        "operation": "take",
+        "recordId": "01M148X6HBX8P70CZHWQ2YGBAW",
+        "kind": "task",
+        "state": "leased",
+        "detail": {
+          "leaseId": "01M148YE0TPE14ZKXRK02YPKX9",
+          "epoch": 2,
+          "reclaimed": false
+        }
+      },
+      {
+        "seq": 43,
+        "cursor": "788",
+        "id": "01M148YHCNR9RYR82SN4501D02",
+        "ts": "2026-08-28T13:29:04.136Z",
+        "runId": "run:01M148X7720EX4KRJKYR0NRX52",
+        "operation": "nack",
+        "recordId": "01M148X6HBX8P70CZHWQ2YGBAW",
+        "kind": "task",
+        "state": "available",
+        "detail": {
+          "attempt": 2
+        }
+      },
+      {
+        "seq": 44,
+        "cursor": "789",
+        "id": "01M148YK3A337A7YPVCY1TNEG7",
+        "ts": "2026-08-28T13:29:05.881Z",
+        "runId": "run:01M148X7720EX4KRJKYR0NRX52",
+        "operation": "take",
+        "recordId": "01M148X6HBX8P70CZHWQ2YGBAW",
+        "kind": "task",
+        "state": "leased",
+        "detail": {
+          "leaseId": "01M148YK2SMQ1ZFDV2E0BT5TX5",
+          "epoch": 3,
+          "reclaimed": false
+        }
+      },
+      {
+        "seq": 45,
+        "cursor": "790",
+        "id": "01M148YN9RS6XRP9RR4E9EK312",
+        "ts": "2026-08-28T13:29:08.139Z",
+        "runId": "run:01M148X7720EX4KRJKYR0NRX52",
+        "operation": "nack",
+        "recordId": "01M148X6HBX8P70CZHWQ2YGBAW",
+        "kind": "task",
+        "state": "available",
+        "detail": {
+          "attempt": 3
+        }
+      },
+      {
+        "seq": 46,
+        "cursor": "791",
+        "id": "01M148YQ8T1R7AK5VTRH2TGB28",
+        "ts": "2026-08-28T13:29:10.154Z",
+        "runId": "run:01M148X7720EX4KRJKYR0NRX52",
+        "operation": "take",
+        "recordId": "01M148X6HBX8P70CZHWQ2YGBAW",
+        "kind": "task",
+        "state": "leased",
+        "detail": {
+          "leaseId": "01M148YQ899A7CFBM6NC6RQWBD",
+          "epoch": 4,
+          "reclaimed": false
+        }
+      },
+      {
+        "seq": 47,
+        "cursor": "792",
+        "id": "01M148YW3FF3ANRPYCBPDMYZVY",
+        "ts": "2026-08-28T13:29:15.068Z",
+        "runId": "run:01M148X7720EX4KRJKYR0NRX52",
+        "operation": "put",
+        "recordId": "01M148YW2723V2G5RYH7H7F76X",
+        "kind": "note",
+        "state": "available",
+        "detail": {
+          "ackOf": "01M148X6HBX8P70CZHWQ2YGBAW"
+        }
+      },
+      {
+        "seq": 48,
+        "cursor": "792",
+        "id": "01M148YW3JA915E466G4PH427X",
+        "ts": "2026-08-28T13:29:15.089Z",
+        "runId": "run:01M148X7720EX4KRJKYR0NRX52",
+        "operation": "ack",
+        "recordId": "01M148X6HBX8P70CZHWQ2YGBAW",
+        "kind": "task",
+        "state": "consumed",
+        "detail": {
+          "resultId": "01M148YW2723V2G5RYH7H7F76X"
+        }
+      },
+      {
+        "seq": 49,
+        "cursor": "793",
+        "id": "01M14951D0RJ23V84D1QMFNEDP",
+        "ts": "2026-08-28T13:32:37.141Z",
+        "runId": "run:01M148X6KDH4Z7462XEF0PWZZC",
+        "operation": "put",
+        "recordId": "01M14951CRRX1XTQEW9PXNFR83",
+        "kind": "note",
+        "state": "available"
+      },
+      {
+        "seq": 50,
+        "cursor": "794",
+        "id": "01M1495AD86SP7SAMMZ08JDA5P",
+        "ts": "2026-08-28T13:32:46.373Z",
+        "runId": "local:dev",
+        "operation": "put",
+        "recordId": "01M1495AD63PZ4HR5A87D1GX8R",
+        "kind": "agent_run",
+        "state": "available"
+      }
+    ],
+    "nextAfter": "794"
+  },
+  "records.capability": {
+    "records": [],
+    "explain": [
+      "kind 'capability' is claimable:false (reference data), so records sitting 'available' forever is normal rather than stuck work."
+    ]
+  },
+  "records.artifact": {
+    "records": [],
+    "explain": [
+      "kind 'artifact' is claimable:false (reference data), so records sitting 'available' forever is normal rather than stuck work."
+    ]
+  },
+  "records.note": {
+    "records": [
+      {
+        "id": "01M14951CRRX1XTQEW9PXNFR83",
+        "kind": "note",
+        "body": {
+          "team": "lab",
+          "to": "all",
+          "topic": "queue-status",
+          "message": "agent:claude-lab: queue drained. All 5 lab tasks are settled — I did 'Reverse a string' and 'Sort words'; agent:codex-lab did 'Count vowels', 'Sum a list', and 'Summarise a note' (correctly reported as unresolvable, the referenced record 01ZZZZZZZZZZZZZZZZZZZZZZZZ does not exist). No claimable work remains after ~3 min of watching. Standing down."
+        },
+        "bodySha256": "fbeed07c96220e1a889cff4264c2b4f3c6e3bb08ca6855118c0d23d0a7d4e781",
+        "runtimeMeta": {
+          "createdBy": "run:01M148X6KDH4Z7462XEF0PWZZC",
+          "parentIds": [],
+          "taint": [],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-28T13:32:37.141Z"
+        }
+      },
+      {
+        "id": "01M148YW2723V2G5RYH7H7F76X",
+        "kind": "note",
+        "body": {
+          "team": "lab",
+          "to": "all",
+          "message": "Unable to summarize: referenced note 01ZZZZZZZZZZZZZZZZZZZZZZZZ does not exist in the space."
+        },
+        "bodySha256": "27ba39fb9daa7d0a3e8b519029e55f039855ccadaa36f1417c275ab44cb6ded0",
+        "runtimeMeta": {
+          "createdBy": "run:01M148X7720EX4KRJKYR0NRX52",
+          "delegationContext": {
+            "chain": [
+              "agent:codex-lab"
+            ],
+            "origin": "01M148X6HBX8P70CZHWQ2YGBAW"
+          },
+          "parentIds": [
+            "01M148X6HBX8P70CZHWQ2YGBAW"
+          ],
+          "taint": [
+            "foreign"
+          ],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-28T13:29:15.068Z"
+        }
+      },
+      {
+        "id": "01M148Y3G1VXG8DC18SWT5TRNS",
+        "kind": "note",
+        "body": {
+          "team": "lab",
+          "to": "all",
+          "message": "Total: 7,885."
+        },
+        "bodySha256": "027e98ad66a4b533b93ac6ad545fa64f01f8585a10559a60db58877e6d234ffd",
+        "runtimeMeta": {
+          "createdBy": "run:01M148X7720EX4KRJKYR0NRX52",
+          "delegationContext": {
+            "chain": [
+              "agent:codex-lab"
+            ],
+            "origin": "01M148X6F1FFKS81MX2YKPS47P"
+          },
+          "parentIds": [
+            "01M148X6F1FFKS81MX2YKPS47P"
+          ],
+          "taint": [
+            "foreign"
+          ],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-28T13:28:49.912Z"
+        }
+      },
+      {
+        "id": "01M148Y34M4DQJVY3BJ70ZZ8BR",
+        "kind": "note",
+        "body": {
+          "team": "lab",
+          "to": "all",
+          "topic": "task-result",
+          "message": "Task 'Sort words' (01M148X6CR97Z71XHF75NMER23) done by agent:claude-lab. Sorted alphabetically: digest, envelope, grant, lease, pattern"
+        },
+        "bodySha256": "13634faf81a7a2f59faf731e2747eaa615584081e7e03383eb5f5a54df1a48be",
+        "runtimeMeta": {
+          "createdBy": "run:01M148X6KDH4Z7462XEF0PWZZC",
+          "delegationContext": {
+            "chain": [
+              "agent:claude-lab"
+            ],
+            "origin": "01M148X6CR97Z71XHF75NMER23"
+          },
+          "parentIds": [
+            "01M148X6CR97Z71XHF75NMER23"
+          ],
+          "taint": [
+            "foreign"
+          ],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-28T13:28:49.547Z"
+        }
+      },
+      {
+        "id": "01M148XY32ZW779DRJDPK7KF43",
+        "kind": "note",
+        "body": {
+          "team": "lab",
+          "to": "all",
+          "message": "Count vowels: 12."
+        },
+        "bodySha256": "58306c8149da1cf04c61e5a40cceabca49d219cce8658279252ef4d600a5e546",
+        "runtimeMeta": {
+          "createdBy": "run:01M148X7720EX4KRJKYR0NRX52",
+          "delegationContext": {
+            "chain": [
+              "agent:codex-lab"
+            ],
+            "origin": "01M148X6A3R8EBQDP20848MGYJ"
+          },
+          "parentIds": [
+            "01M148X6A3R8EBQDP20848MGYJ"
+          ],
+          "taint": [
+            "foreign"
+          ],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-28T13:28:44.377Z"
+        }
+      },
+      {
+        "id": "01M148XWGHWPSD7GZVP9JZF0WF",
+        "kind": "note",
+        "body": {
+          "team": "lab",
+          "to": "all",
+          "topic": "task-result",
+          "message": "Task 'Reverse a string' (01M148X67YXZ46CJ5KYTD398TS) done by agent:claude-lab. 'content-routed-coordination' reversed is: noitanidrooc-detuor-tnetnoc"
+        },
+        "bodySha256": "d334f5ac9058ba50b30b33d9bf5f133933414aefd68efd5731a6a61815ef75e6",
+        "runtimeMeta": {
+          "createdBy": "run:01M148X6KDH4Z7462XEF0PWZZC",
+          "delegationContext": {
+            "chain": [
+              "agent:claude-lab"
+            ],
+            "origin": "01M148X67YXZ46CJ5KYTD398TS"
+          },
+          "parentIds": [
+            "01M148X67YXZ46CJ5KYTD398TS"
+          ],
+          "taint": [
+            "foreign"
+          ],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-28T13:28:42.759Z"
+        }
+      }
+    ],
+    "explain": [
+      "kind 'note' is claimable:false (reference data), so records sitting 'available' forever is normal rather than stuck work."
+    ]
+  },
+  "records.task": {
+    "records": [
+      {
+        "id": "01M148X6HBX8P70CZHWQ2YGBAW",
+        "kind": "task",
+        "body": {
+          "team": "lab",
+          "title": "Summarise a note",
+          "detail": "Read the note with record id 01ZZZZZZZZZZZZZZZZZZZZZZZZ and reply with a one-line summary of it.",
+          "tags": [
+            "text",
+            "quick"
+          ]
+        },
+        "bodySha256": "cd9027cccd9c3e1bc862df8a9ef74ba02b7256c6586b85e16bddcd6f8f85d644",
+        "runtimeMeta": {
+          "createdBy": "local:dev",
+          "parentIds": [],
+          "taint": [],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-28T13:28:20.266Z"
+        }
+      },
+      {
+        "id": "01M148X6F1FFKS81MX2YKPS47P",
+        "kind": "task",
+        "body": {
+          "team": "lab",
+          "title": "Sum a list",
+          "detail": "Add these numbers and reply with the total: 811, 4, 6857, 23, 190.",
+          "tags": [
+            "numbers",
+            "quick"
+          ]
+        },
+        "bodySha256": "c8bd24b6ed76af9ea22af7e0c26052a250f15eb7e73da6a4f98818ed7b7f7378",
+        "runtimeMeta": {
+          "createdBy": "local:dev",
+          "parentIds": [],
+          "taint": [],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-28T13:28:20.192Z"
+        }
+      },
+      {
+        "id": "01M148X6CR97Z71XHF75NMER23",
+        "kind": "task",
+        "body": {
+          "team": "lab",
+          "title": "Sort words",
+          "detail": "Sort these words alphabetically and reply with the sorted list: lease, envelope, grant, pattern, digest.",
+          "tags": [
+            "text",
+            "quick"
+          ]
+        },
+        "bodySha256": "80f4bb70a352efe25f475f36d59fc4982ecf9e9d33a3019f1fe6a68bcf0c78be",
+        "runtimeMeta": {
+          "createdBy": "local:dev",
+          "parentIds": [],
+          "taint": [],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-28T13:28:20.120Z"
+        }
+      },
+      {
+        "id": "01M148X6A3R8EBQDP20848MGYJ",
+        "kind": "task",
+        "body": {
+          "team": "lab",
+          "title": "Count vowels",
+          "detail": "Count the vowels in 'a lease is fenced and renewable' and reply with the number.",
+          "tags": [
+            "text",
+            "quick"
+          ]
+        },
+        "bodySha256": "cfa0d84634d2bc93c2c3b2e7ca202de14ee5758de45b74ae347a0b8856cefa06",
+        "runtimeMeta": {
+          "createdBy": "local:dev",
+          "parentIds": [],
+          "taint": [],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-28T13:28:20.035Z"
+        }
+      },
+      {
+        "id": "01M148X67YXZ46CJ5KYTD398TS",
+        "kind": "task",
+        "body": {
+          "team": "lab",
+          "title": "Reverse a string",
+          "detail": "Reverse the string 'content-routed-coordination' and reply with the result.",
+          "tags": [
+            "text",
+            "quick"
+          ]
+        },
+        "bodySha256": "60137c5aec0fca5677b9e3175d26cd7ae650ba2ff5400a9a352e801cd1a5d7d9",
+        "runtimeMeta": {
+          "createdBy": "local:dev",
+          "parentIds": [],
+          "taint": [],
+          "schemaVersion": 1,
+          "createdAt": "2026-08-28T13:28:19.965Z"
+        }
+      }
+    ]
+  },
+  "permissions.claude-lab": {
+    "principal": "claude-lab",
+    "subject": "claude-lab",
+    "privileged": false,
+    "kinds": [],
+    "ops": {
+      "reachable": false,
+      "kinds": []
+    },
+    "opsPowers": [],
+    "complete": true
+  },
+  "permissions.codex-lab": {
+    "principal": "codex-lab",
+    "subject": "codex-lab",
+    "privileged": false,
+    "kinds": [],
+    "ops": {
+      "reachable": false,
+      "kinds": []
+    },
+    "opsPowers": [],
+    "complete": true
+  }
+}

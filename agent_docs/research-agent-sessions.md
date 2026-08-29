@@ -5,8 +5,8 @@ the fixes are linked to where they landed.** The subject is CLAUDE CODE and CODE
 space through `radia mcp`, first by hand and then through the lab
 ([plan-agent-lab.md](plan-agent-lab.md), which is the harness rather than the findings).
 
-Thirty-six sessions so far, 2026-08-26 to 2026-08-29: four hand-run and pasted into a review,
-thirty-two through `deno task lab`. Each cost roughly $0.30 to $1.00 and 45 to 120 seconds; a three-model scenario is about $0.90.
+Forty-four sessions so far, 2026-08-26 to 2026-08-29: four hand-run and pasted into a review,
+forty through `deno task lab`. Each cost roughly $0.30 to $1.00 and 45 to 120 seconds; a three-model scenario is about $0.90.
 
 This doc does not restate. The traps live in [gotchas.md](gotchas.md), the team convention in
 [architecture-teams.md](architecture-teams.md), the lab's construction in
@@ -461,6 +461,16 @@ rather than as "none". The refusal said "'topic' is not a declared sortable path
 It now names what would work, or says the kind has none, which is the rule `noGrant` and
 `space_read_workspace` already follow (`src/core/matching.ts`, contract in
 `test/conformance/suites/kinds.ts`).
+
+**The better refusal fixed the recovery and not the reach: it is the SAME wrong call every time.**
+Two runs on 2026-08-29, different scenarios (`team-queue`, `team-exec-twostep`), same model, and
+byte-identical arguments both times: `orderBy: [{path: "team", dir: "desc"}]` on kind `note`. The
+recovery is now immediate (a successful query on the next call, twice), so the message change did
+its job. What did not change is the reach, and the path chosen says why: `team` is INDEXED and not
+sortable, so a model reading `space_kinds` is generalising from the one list it was shown to a
+capability nobody claimed. The remaining fix is at the digest rather than the refusal, and it is the
+absence this entry already named: a kind that declares nothing sortable should SAY "none" where
+`sortablePaths` would be, since an omitted field reads as an omission.
 
 **The nack loop is about one run in two, not a fixed bug.** The same impossible task, the same model,
 the same tool descriptions: the earlier run nacked three times with zero backoff before acking, this

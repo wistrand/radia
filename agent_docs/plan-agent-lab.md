@@ -162,13 +162,57 @@ takes here. Proved on planted violations: a run with the worker's records remove
 unplanted run does not, and one character changed inside an executed payload is caught by digest
 against the artifact it descends from.
 
-**Phase 3: replay in CI.** A recorded trace with the model stripped, replayed against a fresh
-binary, no API key, the same move `examples/chat/smoke-turnlink.ts` already makes for the chat.
-Real runs DISCOVER; replays REGRESS, and a replay can never find new model behaviour. Its seed is built:
-`scripts/agent-lab/fake-agent.ts` is a harness with no model, speaking JSON-RPC to the adapter with
-a fixed call sequence; phase 3 is that file reading its script from a recorded trace instead of
-carrying one. The `smoke` scenario runs two of them and is what answers "is the lab wired up"
-without spending a token.
+**Phase 3: replay in CI. BUILT 2026-08-29.** `scripts/agent-lab/replay.ts`, `deno task lab-replay
+<run-dir>… [--source]`, and `scripts/agent-lab/replay.test.ts` for the CI half (`deno task test:lab`, kept OUT of `test:runtime` because a case here spawns a space and an adapter and costs a dozen seconds): a recorded trace with the
+model stripped, re-issued through a real `radia mcp` against a space built from the same
+`scenario.json`. Real runs DISCOVER; replays REGRESS, and a replay can never find new model
+behaviour. Not `fake-agent.ts` reading a trace, as this section first proposed: a replay has to
+INTERLEAVE several agents by timestamp and rebuild arguments, which is a driver's job rather than a
+participant's, and `fake-agent.ts` stays what it was.
+
+Three things decide whether it is honest. THE VERDICT IS ASYMMETRIC, because a replay cannot
+reproduce a race and does not re-run the untraced participants: only "was answered, now refuses or
+errors" fails, a changed population is `diverged` and reported. ARGUMENTS ARE REBUILT from the run's
+own evidence, since `trace.ts` trims a value at 512 characters and a workspace's files live in the
+blob store rather than in any record: without indexing `space-blobs/` every `space_save_workspace`
+in the corpus is unreplayable, which is most of what a workspace run is. And COVERAGE IS STATED,
+never implied: participants not re-run and calls that could not be rebuilt are counted and named,
+because a replay that silently skipped half a trace while printing "no regressions" is worse than no
+replay.
+
+WHAT THE CORPUS CANNOT SEE, measured rather than assumed: every recorded run passes `--session`, so
+the adapter resolves its credential at startup and any bug that only bites an unsessioned process is
+outside replay's reach. The `health() → anonymous` defect fixed the same day was planted back and
+the replay stayed green. What it does catch was proven the same way: an off-by-one in
+`ScopeFiller.choose` (`< 1` for `< 2`) refuses a single-team caller, and `space_save_workspace` came
+back REGRESSED with the refusal quoted.
+
+**A settle is the call that needed the most work, and the one worth having.** `claimId` names a
+record the OPERATOR seeded and a claim the adapter minted, neither of which the recorded ids
+describe, so the first version skipped every `space_ack` in every queue run. Seeded records are now
+mapped by BODY as they are written, each take's claimId is remembered against the record it holds,
+and an id the recording never held is treated as a LITERAL rather than an unmapped reference, since
+the scenarios plant `01ZZZ…` for an agent to look up and a model writes ids into its own prose.
+Measured across the three queue runs: 20 skipped calls became 4, and those four are races
+(`its take won a different record`), which the asymmetric verdict declines to fail on. An ARTIFACT
+is paired by its content address instead, since `space_put_artifact` is the one write whose
+arguments carry no body: without that, one unmapped artifact cascaded into four skips (the ack
+naming it, the fetch reading it, the tool_call dispatching it, the children walk after its result).
+
+**A LOCAL FILE IS NOT EVIDENCE, and this is the tool's worst failure mode made into a case.** The
+image scenario puts its artifact by PATH, naming a PNG the harness generated beside its own config;
+that file does not travel with a run directory, so replayed anywhere else the call fails, and since
+the recording answered `ok` it would be reported as a REGRESSION. A false finding from a missing
+file is the one output that would make this worse than no replay. Such a call is SKIPPED and says
+so, and the frozen image fixture carries a path that resolves on no machine at all, so the guard is
+exercised rather than asserted.
+
+**The corpus is frozen, in part.** `scripts/agent-lab/testdata/` holds the evidence half of six real
+runs (traces, `space.json`, `tally.json`, the blobs, and `scenario.json` where the run is new enough
+to have one), without the credential file, the logs, or the 28 MB PGlite directory beside them. 468 KB, and it is what lets `report.ts`'s eight checks and the replay run in CI at all: before it, both
+ran only when somebody spent tokens, which is the one thing CI cannot do. `scripts/agent-lab/report.test.ts`
+pins the checks against the run that produced the `space_nack` finding, so that finding's evidence
+stops being re-derivable only by paying for another session.
 
 **Phase 4: diffing runs.** The point of the exercise: "the new build changed how agents behave" as a
 report rather than a read.
