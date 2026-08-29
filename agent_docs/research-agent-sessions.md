@@ -100,7 +100,18 @@ The worker had answered at **17:02:12.525**, 2.7 seconds earlier. `newOnly` mean
 call started", so the one record it was waiting for was the one record the flag hides, and it waited
 out the full 120s for a second answer nobody would send. Its description gave the REASON to use it (a
 fact kind hands back the same record forever) and never the cost; it now says a reply is the other
-case and wants the default.
+case and wants the default. UNVERIFIED against a live agent: the after arm carries both edits, so
+the rate above cannot separate "the description removed the race" from "the prompt changed the
+behaviour". Four runs with the new description and the OLD prompt would.
+
+ONE RUN, recorded because the CONDITION recurred rather than because the outcome was good. On
+2026-08-29 at 17:13, the first run carrying both edits, the worker answered 203ms after the call and
+therefore again before any watch could open. Codex omitted `newOnly` this time and the reconcile
+found the reply in **15ms**, where the same shape with `newOnly: true` had cost **120.4s**. Claude
+omitted it on its mailbox too. That is a data point about the RACE, not evidence about the fix: the
+prompt-only arm was already omitting the flag in 3 of 4 runs, so this run is equally consistent with
+either edit, and the arm is now MIXED (4 runs prompt-only, 1 prompt-and-description) which anyone
+reading the rate above should know before treating it as homogeneous.
 
 **A claim that matched nothing looks exactly like an empty queue.** Codex claimed with
 `{tags: {$in: ["image"]}}` on an array path, got nothing, and recovered with `{tags: ["image"]}`,
