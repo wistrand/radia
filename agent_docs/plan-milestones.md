@@ -12,11 +12,12 @@
 > **Read `[~]` before assuming an item is work waiting to be done.** A box here is one of three
 > things, and an audit on 2026-08-29 found the third outnumbering the first: OPEN (nobody decided),
 > GATED (decided, waiting on a first user or a measurement, and it says what would ungate it), or
-> ALREADY ANSWERED ELSEWHERE under another name. Genuinely open and ungated, in order of size: the
-> BASELINES in [plan-validation.md](plan-validation.md), which are what ungate the scheduler and the
-> marketplace; schema versioning + migration; SSE backpressure; externally-anchored checkpoints; KMS
-> wrapping; and the Python SDK's missing credential exchange. That doc's other half, the
-> FAULT-INJECTION MATRIX, was the largest of these and was completed 2026-08-29.
+> ALREADY ANSWERED ELSEWHERE under another name. Genuinely open and ungated, in order of size:
+> schema versioning + migration, SSE backpressure, externally-anchored checkpoints, KMS wrapping,
+> and the Python SDK's missing credential exchange. [plan-validation.md](plan-validation.md) was the
+> largest entry on that list and is now as complete as it can be: the fault matrix finished
+> 2026-08-29, and the baselines ran the same day for two of their three arms, the third blocked
+> until there is a scheduler to compare against.
 
 ## Goal
 
@@ -202,9 +203,12 @@ pinned in `test/http.test.ts` and the horizon derivation per adapter in
   delegating (`test/conformance/suites/failover.ts`, six cases on every adapter), and cursor expiry
   under a 24-stream reconnect storm over a horizon made by the REAL sweep. What the suite does not
   cover is stated there rather than implied: it cannot fail inside a storage transaction without a
-  test-only hook in production code, and a real primary kill stays a deployment test. **The
-  BASELINES half of that doc is still not run**, and it is what gates the scheduler and the
-  marketplace.
+  test-only hook in production code, and a real primary kill stays a deployment test. The BASELINES
+  half ran the same day (`bench/baselines.ts`, `deno task bench:baselines`): coordination costs
+  ~0.65ms and two records per item against a static orchestrator's zero, and what that buys is a
+  worker death costing the static arm its ANSWER while both space arms lose nothing. It does not
+  beat a plain queue on any timing column, and the one column that separates them is one record: an
+  unforeseen shape is consumed by a queue's dispatch and left claimable by content routing.
 - [x] **push `$any` into SQL** (`pushdown.ts`, both dialects): a type-guarded `EXISTS` over the
   array's elements for a scalar element predicate, exact, so the caller's LIMIT rides with it.
   Measured over HTTP against Postgres, it is flat at 1.6–1.9ms from 25k to 1M records

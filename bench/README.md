@@ -47,6 +47,7 @@ constant result size is the signal.
 | `suites/chatload.ts` | N chat sessions against one space, five parked streams each, taking real turns through one shared worker. Reports turns/s, p99 turn latency and QUERIES PER TURN as N grows; `CHATLOAD_DEBUG=1` prints the per-method breakdown that says which term moved |
 | `profile.ts` | `deno task profile <script> [args…]`: CPU-profile any workload with zero external tooling (see Profiling below) |
 | `deployment.ts` | standalone: one space over HTTP against whatever storage it was started with, re-measured as it fills. Takes a `--url` instead of an adapter, so it measures the thing the suites above cannot. **It writes records and cannot delete them**; point it at a throwaway space |
+| `baselines.ts` | standalone: plan-validation.md's BASELINES. One pipeline workload run three ways (static orchestration, a plain worker queue, content-routed) over the same storage, measured clean, with a worker death, and with work of an unforeseen shape. `deno task bench:baselines [-- --items N]` |
 | `edit-cost.ts` | standalone: what an edit costs versus rewriting a tree, in emitted characters and in records written. Not a timing suite, so it is run directly rather than through the harness |
 
 ## What the first run found

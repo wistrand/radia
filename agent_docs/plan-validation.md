@@ -3,8 +3,9 @@
 > Status: **the fault matrix is COMPLETE as of 2026-08-29.** The M0 subset landed with Phase 6, the
 > two CONTENDED cases on 2026-08-04 (`test/concurrency.test.ts`, Postgres only), and the last three
 > rows (partition during renewal, DB failover, cursor expiry under reconnect storm) on 2026-08-29.
-> The BASELINES and metrics below are still not run, and they are the half that gates the scheduler
-> and the marketplace. Origin: outline §12. The measurement plan that proves the design's claims and
+> The BASELINES are run too, as far as they can be: two of the three arms on 2026-08-29
+> (`bench/baselines.ts`), the third blocked until the scheduler exists to be compared against. Of
+> the eleven metrics, seven are taken and four say why they are not. Origin: outline §12. The measurement plan that proves the design's claims and
 > the fault matrix each milestone must survive.
 
 ## Goal
@@ -30,11 +31,42 @@ Three, to isolate contributions:
 - a plain worker queue,
 - a blackboard **without** the agenda scheduler (isolates the scheduler's contribution).
 
+**Two of the three are RUN** (2026-08-29, `bench/baselines.ts`, `deno task bench:baselines`): one
+pipeline workload, three arms over the same storage and the same computation, measured clean, with
+a worker death, and with work of a shape nobody anticipated. The third cannot be run and will not
+be until M3: "without the agenda scheduler" is what Radia IS, so the comparison has nothing on the
+other side of it.
+
+**What the run says, on a laptop at 200 items, sqlite in memory.** Coordination costs ~0.65ms and
+two records per item, against a static orchestrator's zero. That is the price. What it buys is the
+second table: a worker dying mid-run costs the static arm its answer (`right answer: NO`, one item
+never computed and nothing to notice), while both space arms recover with no item lost, the same
+event count and the same total.
+
+**The queue arm is not beaten on any timing column, and saying otherwise would be measuring the
+author.** Both space arms recover identically. ONE column separates them, and it is one record: an
+unforeseen shape is CONSUMED by the queue arm's dispatch on its way to a default branch, so a worker
+that arrives later knowing what to do with it has nothing left to claim, while nothing in the routed
+arm ever touched it (`still claimable`). That is the argument's shape rather than its size, and it
+is the honest version of the "earns its place" claim this doc opens with.
+
 ## Metrics
 
 Task success · tokens/cost · latency · invocation count · duplicate-execution rate ·
 lease-recovery latency · wakeup amplification · orphan rate · admission accuracy ·
 p50/p95/p99 take latency · throughput scaling in records × patterns × agents.
+
+Where each is taken, and the four that are not:
+
+| metric | where |
+|---|---|
+| latency, p50/p95/p99 take latency | `bench/suites/claims.ts`, and every suite reports percentiles rather than a mean |
+| throughput scaling in records × agents | `bench/suites/scale.ts` (2k/10k/40k), `claims.ts` (1/4/16 claimers) |
+| wakeup amplification | `bench/suites/fanout.ts`: the queries one write triggers as N streams park |
+| invocation count, duplicate-execution rate, orphan rate | `bench/baselines.ts`, as `work() ran`, `lost` and `unreached` |
+| lease-recovery latency | NOT measured, deliberately: it is `leaseSeconds` plus the worker's poll floor, both configured, so a number here reports back the config. What the config buys is measured instead, as whether work is LOST |
+| admission accuracy | needs the scheduler (M3). Nothing to measure yet |
+| task success, tokens/cost | need a model in the loop. Everything above is deterministic and runs with no API key, which is what makes it repeatable |
 
 ## Fault-injection matrix
 
