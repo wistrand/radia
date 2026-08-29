@@ -9,7 +9,7 @@ and all ten operations are built: HTTP handlers in `src/server/handlers/`, the s
 Watches are implemented (see Wire protocol below), as is the artifact payload plane (below), and
 `query` takes a keyset cursor (`after`/`dir`, or an opaque `cursor` that carries its own direction;
 see [design-matching.md](design-matching.md)).
-**Not implemented:** long-poll blocking on `take` (M1).
+**Not built, and decided against:** long-poll blocking on `take`. See "Wire protocol" below.
 
 ## Contents
 - Invariants
@@ -211,7 +211,21 @@ grant/auth/scheduler shapes that aren't validated until M1–M3.
 
 ## Wire protocol
 
-HTTP + JSON, OpenAPI-first; long-poll for blocking ops.
+HTTP + JSON, OpenAPI-first.
+
+**A blocking `take` was in the outline and is NOT built. Decided against 2026-08-29**, because both
+halves of what it promised exist and the gap it looked like it closed it does not. WAKEUP is watches
+plus a lazy claim path: `agentLoop` opens one watch per kind and falls back to a poll floored at 1s
+(`sdk/ts/loop.ts`), so a blocking take shaves that second and nothing else. WAITING FOR AN ANSWER is
+already a long poll at the CLIENT tier, twice, and both are polled rather than streamed for a stated
+reason: a watch per outstanding call is a stream per call (`sdk/ts/await.ts`, and `space_watch` in
+the MCP adapter, which waits up to 120s and reports a timeout as an ordinary outcome). The place a
+server-side block looks like the escape is a browser's six-connections-per-origin budget
+([plan-chat-web-ui.md](plan-chat-web-ui.md)), and a held request occupies a connection exactly as an
+SSE stream does. Against that it costs a shape in a frozen contract plus a second parked-request
+mechanism beside the notifier and the coalescer, which would need the fan-out work
+([plan-scaling.md](plan-scaling.md)) done again from scratch. **What would reopen it:** a client
+that cannot do SSE, or a measurement showing the 1s fallback floor costs a real worker something.
 
 **Two planes under `/v0` (implemented):** the frozen coordination verbs live at `/v0/*`
 (records put/read_one/query, `takes`, `leases/*`, `watches`, `health`); the
