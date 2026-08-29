@@ -12,6 +12,8 @@
 // (`command`), because they change on somebody else's release schedule and a wrong guess baked in
 // here would be discovered as a mystery rather than as a line to edit.
 
+import { renderRun } from "./report.ts";
+
 const argv = Deno.args;
 const flag = (name: string, fallback?: string) => {
   const i = argv.indexOf(name);
@@ -874,6 +876,15 @@ await collect("records.agent_run", ["query", "agent_run", "--json", "--limit", "
 for (const a of agents) await collect(`permissions.${a.name}`, ["permissions", a.name, "--json"]);
 await Deno.writeTextFile(`${runDir}/space.json`, JSON.stringify(collected, null, 2));
 
+// THE SCENARIO AS RUN, resolved. The evidence held what happened and never what was ASKED: the
+// prompts, the seeded work and the roles lived only in a file outside the run directory, which a
+// reader coming back to it a week later does not have. Written with the models RESOLVED, so a run
+// records the arm it actually was rather than the scenario's default.
+await Deno.writeTextFile(
+  `${runDir}/scenario.json`,
+  JSON.stringify({ ...scenario, agents: scenario.agents.map((a) => ({ ...a, model: modelOf(a) || undefined })) }, null, 2),
+);
+
 // ---- tally --------------------------------------------------------------------
 
 // A COUNT, not an assertion pass. Phase 2 of the plan joins this against the space and ranks
@@ -957,7 +968,17 @@ for (const [name, t] of Object.entries(tally)) {
   const errs = Object.entries(t.errors).map(([k, n]) => `${k}×${n}`).join(" ");
   console.log(`  ${name}: ${t.calls} calls, ${t.empty} answered EMPTY${errs ? `, refused: ${errs}` : ""}`);
 }
+// The page, written now rather than by a second command somebody has to remember. Rendering reads
+// only files this run already wrote, so a failure here costs the page and never the evidence.
+let page: string | undefined;
+try {
+  page = await renderRun(runDir);
+} catch (e) {
+  console.log(`\n(no run.html: ${e instanceof Error ? e.message : String(e)}; the evidence is intact, run lab-report over it)`);
+}
+
 console.log(`\nevidence in ${runDir}/`);
+if (page) console.log(`  run.html       what this run tried, how it went, and what broke  <- open this`);
 console.log(`  space.json     flows, stats, events, every record, every member's permissions`);
 console.log(`  <agent>/trace.jsonl   what the model asked for, one line per call`);
 console.log(`  <agent>/stdout.log    what the harness said`);

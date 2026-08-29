@@ -132,6 +132,18 @@ is not a member's to do. It is REFUSED on a harness, which is the lab's isolatio
 check rather than a convention. Everything else runs as its own member; a script gets its definition
 token in the environment rather than on the command line, where `ps` would carry it.
 
+**A run explains itself. BUILT 2026-08-29.** Every run writes `run.html` beside its evidence as it
+finishes (`run.ts` calls the renderer, so no second command has to be remembered), and
+`deno task lab-index ~/.radia-lab/*/` writes one page over a corpus: a card per scenario with runs,
+how many had findings and the median duration, then a sortable row per run. Directories holding no
+evidence are listed rather than dropped, since a set of 70 that quietly becomes 44 reads as though
+the killed runs never happened. The page shows: the prompts each agent was given, the seeded work, a
+verdict, every call on one clock, what happened to each claimed record, the findings, the mined
+shape, and the agents' own words marked as the weakest source. It shares the loader and the CHECKS
+with the text report, because two implementations of one verdict drift. It also needed something the
+evidence did not have: a run directory recorded what HAPPENED and never what was ASKED, so
+`scenario.json` is now written with the models resolved; older runs render without it and say so.
+
 **Phase 2: the assertion pass. BUILT 2026-08-28.** `scripts/agent-lab/report.ts`,
 `deno task lab-report <run-dir>…`: eight checks joining the trace against the space, ranked, with no
 new instrumentation, because the event log already carries claim history per record and the traces

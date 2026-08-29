@@ -156,6 +156,7 @@ stops measuring what a naive agent does.
   space.json             flows, stats, events, every record, every member's permissions
   space.log space.err    the space's own output
   credentials.json       this run's credentials, never the ones you use
+  scenario.json          what the run ASKED for: roles, prompts, seeded work, models as resolved
   tally.json             models asked and reported, exit codes, calls/empties/refusals per agent
   <agent>/.mcp.json      the config that harness was given
   <agent>/trace.jsonl    one line per tool call: what the model ASKED FOR
@@ -273,7 +274,33 @@ smaller. Both are thrown away with the run directory.
 ```
 deno task lab-report ~/.radia-lab/team-queue-2026-08-28T13-28-17-483Z
 deno task lab-report ~/.radia-lab/team-queue-* --json      # several runs print RATES
+deno task lab-report ~/.radia-lab/team-tree-* --html       # a page per run, beside the evidence
+deno task lab-report ~/.radia-lab/*/ --index               # one page over all of them
 ```
+
+**Every run writes its own page as it finishes.** `run.ts` calls the renderer directly, so
+`run.html` is in the evidence directory the moment the run ends and the closing summary points at
+it. Rendering reads only files the run already wrote, so a failure there costs the page and never
+the evidence.
+
+**`--index` writes one page over every directory given**, next to them by default
+(`~/.radia-lab/index.html`): a card per scenario carrying the number of runs, how many had findings
+and the median duration, then a filterable, sortable row per run linking to its own page. It lists
+directories that hold no evidence rather than dropping them, because a set of 70 that silently
+becomes a set of 44 tells the reader the killed runs never happened.
+
+**`--html` writes a standalone page** to `<run>/run.html`, or to a path you name for a single run.
+It answers the question the text report does not: what was this trying to do. Eight sections, in the
+order a reader needs them: the roles and the prompts each agent was given, the seeded work, a
+verdict line, a card per agent, every call on one clock as a swimlane, what happened to each claimed
+record and what answered it, the findings, the mined shape, and what the agents said in their own
+words, marked as the weakest evidence. No fonts, no scripts, no network: a run directory gets copied
+and mailed, and a page that needs a CDN renders blank on the machine that matters.
+
+It shares this file's loader and CHECKS with the text report deliberately: a second implementation
+of the findings would drift, and the point of the report is that its verdict is the same however you
+read it. Runs made before `scenario.json` existed still render, and say plainly that what they asked
+for was not recorded.
 
 Everything it prints is computed from evidence the run already collected: the event log gives claim
 history per record, the traces give what each model ASKED FOR, `space.json` gives records and mined
