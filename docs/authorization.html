@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Radia's trust model: authorized agents and credentialless code</title>
-  <meta name="description" content="How Radia enforces communication between mutually untrusted agents, narrows delegated authority, and lets sandboxed code operate without receiving a credential.">
+  <meta name="description" content="How Radia authorizes communication between independently deployed agents, narrows delegated authority, and lets sandboxed code operate without receiving a credential.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
@@ -47,10 +47,10 @@
 
 <aside class="sidebar" id="sidebar">
   <a href="#problem">Enforcement at the runtime boundary</a>
+  <a href="#code">Untrusted code is not a principal</a>
   <a href="#grants">Grants are records</a>
   <a href="#pattern">Restrict grants by record content</a>
   <a href="#identity">Agent definitions and run credentials</a>
-  <a href="#code">Untrusted code is not a principal</a>
   <a href="#taint">Propagate data-handling labels</a>
   <a href="#delegation">Delegate a caller's authority</a>
   <a href="#check">Inspect effective permissions</a>
@@ -60,11 +60,12 @@
 
 <div class="hero">
   <div class="container">
-    <h1>Authorized communication between untrusted participants</h1>
+    <h1>Authorized communication between independent participants</h1>
     <p class="subtitle">
-      Agents do not have to trust one another to apply policy correctly. Radia authorizes each
+      No agent has to take another's word for whether policy was applied. Radia authorizes each
       operation by principal, record kind and record contents at the shared runtime boundary.
-      Delegated authority can only narrow, while sandboxed code receives no authority to carry.
+      Authorship, grant history and delegated authority remain inspectable afterwards. Delegation
+      can only narrow, while sandboxed code receives no credential and acts only through a host.
     </p>
   </div>
 </div>
@@ -217,7 +218,7 @@
         <text x="228" y="120" text-anchor="middle" class="muted">not asked for</text>
         <text x="474" y="120" text-anchor="middle" class="muted" fill="#f87171">not allowed</text>
 
-        <text x="380" y="208" text-anchor="middle" class="muted">the answer says when a grant narrowed it, so empty is never mistaken for none exist</text>
+        <text x="380" y="208" text-anchor="middle" class="muted">the answer reports when a grant narrowed the view</text>
       </svg>
       <figcaption>
         Query explanations report when authorization narrowed a request. A client can distinguish
@@ -291,7 +292,8 @@
     </p>
     <p>
       This separates a durable minting credential from a short-lived acting credential. A leaked run
-      token is bounded by its expiry and run ceiling; a leaked definition token can be revoked.
+      token is bounded by its expiry and run ceiling. A leaked definition token can be revoked, but
+      until then it is one mint call away from the agent's full authority.
     </p>
   </div>
 </section>
@@ -309,7 +311,8 @@
     <p>
       Records can carry the closed labels <code>file</code>, <code>net</code> and
       <code>foreign</code>. Derived records inherit the union of their parents' labels. Clients may
-      add labels but cannot clear them.
+      add labels but cannot clear them. The broker supplies authoritative parents for jailed code;
+      an ordinary external client remains responsible for naming every input it used.
     </p>
 
     <figure>
@@ -374,10 +377,10 @@
       cannot choose or assert that identity in a request body.
     </p>
     <div class="callout">
-      <strong>Authority follows leases; untrust follows data.</strong> Delegation context is derived
-      from the lease and run that authorized work. Handling labels are derived independently from
-      data parents. A parent never grants permission, and a privileged authority chain never
-      launders labelled input.
+      <strong>Authority follows leases; handling restrictions follow data.</strong> Delegation
+      context is derived from the lease and run that authorized work. Handling labels are derived
+      independently from data parents. A parent never grants permission, and a privileged
+      authority chain never launders labelled input.
     </div>
 
     <figure class="diagram-scroll">

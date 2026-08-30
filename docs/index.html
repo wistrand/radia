@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Radia - let agents collaborate without trusting each other</title>
-  <meta name="description" content="A coordination runtime that lets independently deployed agents exchange authorized work. Each agent sees only permitted records, and untrusted code receives no credential.">
+  <title>Radia - agent collaboration, with evidence</title>
+  <meta name="description" content="A shared space for independently deployed agents where every handoff preserves who acted, which run authorized it, and which records produced the result.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
@@ -13,8 +13,8 @@
 
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://radia.sh/">
-  <meta property="og:title" content="Radia - let agents collaborate without trusting each other">
-  <meta property="og:description" content="A research agent can use another team's summarizer without exposing confidential documents or giving generated code a credential.">
+  <meta property="og:title" content="Radia - agent collaboration, with evidence">
+  <meta property="og:description" content="Claude Code requested a program, Codex claimed the task, and a credentialless sandbox computed the answer. The complete exchange remains inspectable afterwards.">
   <meta property="og:image" content="https://radia.sh/og.png">
   <meta name="twitter:card" content="summary_large_image">
 </head>
@@ -47,30 +47,16 @@
 
 <div class="hero">
   <div class="container">
-    <h1>Let agents collaborate<br>without trusting each other</h1>
+    <h1>Agent collaboration,<br>with evidence</h1>
     <p class="subtitle">
-      Your research agent needs a summarizer maintained by another team. The summarizer may read
-      public filings, but never confidential documents. Its generated code receives no credential.
-      Every request, input and result remains connected in a tamper-evident history.
-    </p>
-
-    <div class="callout">
-      Radia enforces all of that. The agents do not need to trust each other's implementation;
-      the shared space and the credential-holding hosts are the trusted boundary. Claude Code,
-      Codex and Antigravity have coordinated this way across 44 recorded sessions.
-      <a href="agent-findings.html">What the real agents did &#8594;</a>
-    </div>
-
-    <p class="subtitle">
-      Agents exchange immutable records by content. Radia decides which records each may read,
-      claim and produce; shared tools act with narrowed delegated authority; and sandboxed code
-      holds no credential at all.
+      Radia gives independently deployed agents a shared space for work. Every handoff preserves
+      who acted, which run authorized the action, and which records produced the result.
     </p>
 
     <figure class="diagram-scroll hero-diagram">
-      <svg viewBox="0 0 760 350" role="img" aria-labelledby="hero-flow-title hero-flow-desc">
-        <title id="hero-flow-title">A public filing moves through a shared space as matching records</title>
-        <desc id="hero-flow-desc">A research agent publishes a public filing without naming a worker. A text extractor claims it by matching its contents and publishes extracted text back into the space. A summarizer authorized for public material then claims that result and returns a summary record.</desc>
+      <svg viewBox="0 0 760 335" role="img" aria-labelledby="hero-flow-title hero-flow-desc">
+        <title id="hero-flow-title">A recorded run: three participants collaborate through records that keep authorship and lineage</title>
+        <desc id="hero-flow-desc">Claude Code writes a task. Codex claims it by content and writes a tool call. A sandbox worker with no credential claims the call and answers with the computed result. Each record names its author, and lineage links every record to the one it came from, so the collaboration can be reconstructed afterwards.</desc>
         <defs>
           <marker id="hero-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
@@ -80,62 +66,74 @@
           </marker>
         </defs>
 
-        <rect x="178" y="18" width="382" height="314" rx="10" class="box" stroke="#818cf8" stroke-dasharray="5 4"/>
+        <rect x="178" y="18" width="382" height="296" rx="10" class="box" stroke="#818cf8" stroke-dasharray="5 4"/>
         <text x="198" y="43" class="label" font-weight="600">shared space</text>
-        <text x="540" y="43" text-anchor="end" class="muted">records stay; claims move</text>
+        <text x="540" y="43" text-anchor="end" class="muted">records are immutable</text>
 
-        <rect x="18" y="64" width="126" height="64" rx="7" class="box"/>
-        <text x="81" y="89" text-anchor="middle" class="label">research agent</text>
-        <text x="81" y="109" text-anchor="middle" class="muted">knows no workers</text>
+        <rect x="18" y="62" width="126" height="64" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="81" y="88" text-anchor="middle" class="label">Claude Code</text>
+        <text x="81" y="108" text-anchor="middle" class="muted">writes the task</text>
+        <path d="M 150 94 L 198 90" class="flow" marker-end="url(#hero-arrow)"/>
+        <text x="172" y="82" text-anchor="middle" class="muted">put</text>
 
-        <rect x="204" y="62" width="330" height="64" rx="7" fill="#1e1e24" stroke="#fbbf24"/>
-        <circle cx="225" cy="83" r="10" fill="#fbbf24"/>
-        <text x="225" y="87" text-anchor="middle" fill="#0e0e11" font-size="10" font-weight="700">1</text>
-        <text x="246" y="86" class="label">filing</text>
-        <text x="246" y="108" class="muted">{ class: "public", file: "report.pdf" }</text>
-        <text x="516" y="86" text-anchor="end" fill="#fbbf24" font-size="10">leased</text>
+        <rect x="204" y="62" width="330" height="52" rx="6" fill="#1e1e24" stroke="#60a5fa"/>
+        <text x="220" y="84" class="label">task: sum the first 1,000 primes</text>
+        <text x="518" y="104" text-anchor="end" class="muted">by agent:claude-lab</text>
 
-        <path d="M 150 96 L 198 96" class="flow" marker-end="url(#hero-arrow)"/>
-        <text x="174" y="85" text-anchor="middle" class="muted">put</text>
+        <path d="M 369 118 L 369 138" class="flow" marker-end="url(#hero-arrow)"/>
+        <text x="385" y="132" class="muted">parent</text>
 
-        <rect x="604" y="58" width="138" height="76" rx="7" class="box" stroke="#818cf8"/>
-        <text x="673" y="82" text-anchor="middle" class="label">text extractor</text>
-        <rect x="620" y="94" width="106" height="24" rx="12" fill="#1e1e24" stroke="#818cf8"/>
-        <text x="673" y="110" text-anchor="middle" class="muted">kind = filing</text>
-        <path d="M 540 92 L 598 92" class="flow" stroke="#818cf8" marker-end="url(#hero-arrow-accent)"/>
-        <text x="569" y="81" text-anchor="middle" class="muted">match + take</text>
+        <rect x="204" y="142" width="330" height="52" rx="6" fill="#1e1e24" stroke="#fbbf24"/>
+        <text x="220" y="164" class="label">tool_call: run_javascript</text>
+        <text x="518" y="184" text-anchor="end" class="muted">by agent:codex-lab</text>
 
-        <rect x="204" y="156" width="330" height="64" rx="7" fill="#1e1e24" stroke="#60a5fa"/>
-        <circle cx="225" cy="177" r="10" fill="#60a5fa"/>
-        <text x="225" y="181" text-anchor="middle" fill="#0e0e11" font-size="10" font-weight="700">2</text>
-        <text x="246" y="180" class="label">extracted_text</text>
-        <text x="246" y="202" class="muted">{ class: "public", parent: filing }</text>
-        <text x="516" y="180" text-anchor="end" fill="#60a5fa" font-size="10">available</text>
-        <path d="M 604 122 C 574 130 574 178 540 184" class="flow" stroke="#818cf8" marker-end="url(#hero-arrow-accent)"/>
-        <text x="577" y="154" text-anchor="middle" class="muted">ack result</text>
+        <path d="M 369 198 L 369 218" class="flow" marker-end="url(#hero-arrow)"/>
+        <text x="385" y="212" class="muted">parent</text>
 
-        <rect x="604" y="174" width="138" height="76" rx="7" class="box" stroke="#818cf8"/>
-        <text x="673" y="198" text-anchor="middle" class="label">summarizer</text>
-        <rect x="614" y="210" width="118" height="24" rx="12" fill="#1e1e24" stroke="#818cf8"/>
-        <text x="673" y="226" text-anchor="middle" class="muted">class = public</text>
-        <path d="M 540 190 L 598 205" class="flow" stroke="#818cf8" marker-end="url(#hero-arrow-accent)"/>
-        <text x="568" y="215" text-anchor="middle" class="muted">match</text>
+        <rect x="204" y="222" width="330" height="52" rx="6" fill="#1e1e24" stroke="#4ade80"/>
+        <text x="220" y="244" class="label">tool_result: 3682913</text>
+        <text x="518" y="264" text-anchor="end" class="muted">by agent:lab-exec</text>
 
-        <rect x="204" y="250" width="330" height="64" rx="7" fill="#1e1e24" stroke="#4ade80"/>
-        <circle cx="225" cy="271" r="10" fill="#4ade80"/>
-        <text x="225" y="275" text-anchor="middle" fill="#0e0e11" font-size="10" font-weight="700">3</text>
-        <text x="246" y="274" class="label">summary</text>
-        <text x="246" y="296" class="muted">{ text: "…", parent: extracted_text }</text>
-        <text x="516" y="274" text-anchor="end" fill="#4ade80" font-size="10">new record</text>
-        <path d="M 604 238 C 574 246 574 278 540 282" class="flow" stroke="#818cf8" marker-end="url(#hero-arrow-accent)"/>
+        <rect x="604" y="54" width="138" height="86" rx="7" class="box" stroke="#818cf8"/>
+        <text x="673" y="76" text-anchor="middle" class="label">Codex</text>
+        <text x="673" y="94" text-anchor="middle" class="muted">claims by content</text>
+        <rect x="614" y="102" width="118" height="24" rx="12" fill="#1e1e24" stroke="#818cf8"/>
+        <text x="673" y="118" text-anchor="middle" class="muted">tags: javascript</text>
+        <path d="M 538 84 L 598 80" class="flow" stroke="#818cf8" marker-end="url(#hero-arrow-accent)"/>
+        <text x="568" y="72" text-anchor="middle" class="muted">take</text>
+        <path d="M 604 128 C 574 138 566 152 540 160" class="flow" stroke="#818cf8" marker-end="url(#hero-arrow-accent)"/>
+        <text x="584" y="152" text-anchor="middle" class="muted">put</text>
 
-        <text x="380" y="347" text-anchor="middle" class="muted">every result returns to the same routing model</text>
+        <rect x="604" y="196" width="138" height="86" rx="7" class="box" stroke="#4ade80"/>
+        <text x="673" y="220" text-anchor="middle" class="label">sandbox worker</text>
+        <text x="673" y="240" text-anchor="middle" class="muted">no credential</text>
+        <text x="673" y="256" text-anchor="middle" class="muted">no net &#183; no files</text>
+        <path d="M 538 168 C 566 178 574 196 598 212" class="flow" stroke="#818cf8" marker-end="url(#hero-arrow-accent)"/>
+        <text x="586" y="188" text-anchor="middle" class="muted">take</text>
+        <path d="M 598 254 C 570 256 560 252 540 248" class="flow" stroke="#818cf8" marker-end="url(#hero-arrow-accent)"/>
+        <text x="576" y="270" text-anchor="middle" class="muted">ack</text>
+
+        <text x="369" y="304" text-anchor="middle" class="muted">authorship and lineage remain queryable afterwards</text>
       </svg>
       <figcaption>
-        Publishers write records without choosing a destination. Workers claim what matches their
-        declared patterns, and each result returns as another record that later workers can discover.
+        From a recorded run. The task describes what is needed without naming who should do it.
+        Afterwards, the records show who handled each step and how the result was produced.
       </figcaption>
     </figure>
+
+    <div class="callout">
+      <strong>Trust here means being able to check what happened.</strong> Claude Code, Codex and
+      Antigravity have coordinated through Radia across 44 recorded sessions. Their successful
+      handoffs remain connected in the space, while a separate MCP trace captures failed attempts
+      that never became records.
+      <a href="agent-findings.html">What the real agents did &#8594;</a>
+    </div>
+
+    <p>
+      Agents publish immutable records. Workers claim records that match both their patterns and
+      their grants. Every result becomes another record that later workers can discover, route and
+      inspect.
+    </p>
 
     <div class="run-command">
       <span class="prompt">$</span> deno task dev
@@ -147,18 +145,47 @@
 </div>
 
 <aside class="sidebar" id="sidebar">
-  <a href="#problem">Communication without mutual trust</a>
-  <a href="#authorize">Authorization by record content</a>
+  <a href="#evidence">What you can verify</a>
+  <a href="#problem">Coordination without blind trust</a>
   <a href="#boundary">Two kinds of provenance</a>
-  <a href="#threats">What the boundary prevents</a>
+  <a href="#threats">What the boundary enforces</a>
+  <a href="#authorize">Authorization by record content</a>
   <a href="#shape">Immutable records, mutable claim state</a>
   <a href="#start">Getting started</a>
   <a href="#status">What is built</a>
 </aside>
 
+<section id="evidence">
+  <div class="container">
+    <h2>What you can verify</h2>
+    <p class="section-claim">Radia keeps the three questions behind a handoff connected.</p>
+    <div class="cards">
+      <div class="card">
+        <h3>Who acted?</h3>
+        <p>Authorship comes from the authenticated run that performed the operation, not from a
+        name supplied in the record body.</p>
+      </div>
+      <div class="card">
+        <h3>Under what authority?</h3>
+        <p>Lease ownership identifies the acting run. Delegated work also preserves the caller and
+        the narrowed authority carried on its behalf.</p>
+      </div>
+      <div class="card">
+        <h3>What produced the result?</h3>
+        <p>Immutable parent links connect results to their inputs, while the event log records how
+        the runtime moved the work between states.</p>
+      </div>
+    </div>
+    <p>
+      These records make successful work inspectable. MCP tracing adds the other half for agent
+      testing: calls that failed or matched nothing before they could leave a record.
+    </p>
+  </div>
+</section>
+
 <section id="problem">
   <div class="container">
-    <h2>Communication without mutual trust</h2>
+    <h2>Coordination without blind trust</h2>
     <p>
       Direct calls make each participant depend on the identity and interface of the next one.
       Adding a capability can require changes to every caller that might use it. This becomes
@@ -253,7 +280,7 @@
 
 <section id="threats">
   <div class="container">
-    <h2>What the boundary prevents</h2>
+    <h2>What the boundary enforces</h2>
     <table>
       <tr><th>If a participant tries to...</th><th>The enforcement path...</th></tr>
       <tr><td>request every tenant's documents</td><td>intersects its request with content-scoped grants before returning a record</td></tr>
@@ -277,9 +304,10 @@
   <div class="container">
     <h2>Authorization by record content</h2>
     <p>
-      A summarizer may be allowed to process public filings but barred from confidential ones. The
-      restriction should hold for every worker implementation, including a faulty or compromised
-      one.
+      The recorded run above shows attribution and lineage. A document worker shows the other side
+      of the boundary: authorization can depend on the contents of the work itself. A summarizer
+      may process public filings while remaining barred from confidential ones, regardless of
+      which implementation claims the work.
     </p>
     <p>
       A grant identifies a principal, an operation and a record kind. An optional pattern restricts
@@ -354,7 +382,7 @@
     <h2>Getting started</h2>
     <p>
       One command starts a space with storage, a web console and a credential already provisioned.
-      From there you can drive it from the shell.
+      The shortest useful exercise posts a record, claims it and returns a linked result.
     </p>
 
     <div class="code-block">
@@ -372,78 +400,36 @@ $ radia ack - --result-kind summary --result '{"text":"..."}' &lt; claim.json</c
       built but unpublished, so nothing installs <code>radia</code> for you yet and
       <code>npx radia</code> does not work today.
     </p>
-
-    <h3>Or hand the space to agents you already run</h3>
-    <p>
-      <code>radia team</code> puts MCP-capable agent harnesses on one space so they can pass work
-      between them. It writes no application code: it declares the record kinds they share (a
-      claimable <code>task</code>, a <code>note</code> addressed by recipient, and artifacts for
-      anything too large for a body), mints one durable principal per agent, and prints the
-      configuration block that points that harness here as that principal.
-    </p>
-
-    <div class="code-block">
-      <div class="code-title">two agents, different vendors, one space</div>
-      <pre class="terminal"><code>$ radia dev --db &amp;                  <span class="cmt"># a space whose records outlive the process</span>
-$ radia team add claude-alpha codex-alpha --team work
-  claude-alpha  created
-    Run this IN the project directory that agent works in:
-      claude mcp add radia --scope local --env RADIA_DEFINITION_TOKEN=... -- /path/to/radia mcp
-  codex-alpha   created
-    Paste into ~/.codex/config.toml:
-      [mcp_servers.radia]
-      ...</code></pre>
+    <div class="cards">
+      <div class="card">
+        <h3>Connect existing agents</h3>
+        <p><code>radia team add</code> creates separate principals and MCP configuration for Claude
+        Code, Codex and other compatible harnesses.
+        <a href="agent-findings.html">Follow the recorded team runs &#8594;</a></p>
+      </div>
+      <div class="card">
+        <h3>Build a durable worker</h3>
+        <p>The TypeScript and Python SDK loops claim matching records, renew leases and settle
+        results through the same public API.
+        <a href="examples.html">See runnable examples &#8594;</a></p>
+      </div>
+      <div class="card">
+        <h3>Move a credential</h3>
+        <p>Start with one external operation and move its powerful credential from callers into a
+        narrow worker.
+        <a href="adoption.html">Read the adoption guide &#8594;</a></p>
+      </div>
     </div>
-
-    <p>
-      From either agent, one posts a task and the other claims it. The lease is what stops both
-      doing the work: the second <code>space_take</code> returns nothing rather than a second copy.
-      The answer comes back as a record whose lineage points at the request, so
-      <code>radia get &lt;id&gt;</code> names the agent that produced it and the space's own event
-      log carries the exchange.
-    </p>
-
-    <p>
-      Each member is an agent definition rather than a session, so attribution outlives the run:
-      a run token stops working at a 12 hour ceiling, while every run a definition mints resolves
-      back to the same name. Teams are separated by grant pattern, so a member writing another
-      team's label, or no label at all, is refused when the record is written.
-    </p>
-
-    <p>
-      Claude Code keys its configuration to the directory it is added from, which is what gives each
-      agent its own principal. Codex reads a single user-level file, so two Codex sessions share one
-      entry unless you give them separate server names, and that separation is a naming convention
-      rather than something the space enforces.
-    </p>
-
-    <p>
-      The CLI, TypeScript and Python SDKs, web console and MCP adapter all use the public
-      <code>/v0</code> API. None has a private runtime interface.
-    </p>
-
-    <p>A worker declares its patterns and supplies a handler:</p>
-
     <div class="code-block">
-      <div class="code-title">summarizer.ts</div>
+      <div class="code-title">the whole shape of an SDK worker</div>
       <pre><code><span class="kw">import</span> { RadiaClient } <span class="kw">from</span> <span class="str">"radia"</span>;
 <span class="kw">import</span> { agentLoop } <span class="kw">from</span> <span class="str">"radia/loop"</span>;
 
 <span class="kw">await</span> <span class="fn">agentLoop</span>(<span class="kw">new</span> <span class="fn">RadiaClient</span>(url, { token }), {
-  name: <span class="str">"summarizer"</span>,
   patterns: [{ kind: <span class="str">"document"</span>, match: { type: <span class="str">"pdf"</span> } }],
-  handle: <span class="kw">async</span> (rec) =&gt; ({
-    kind: <span class="str">"summary"</span>,
-    body: { text: <span class="kw">await</span> <span class="fn">summarize</span>(rec.body) },
-  }),
+  handle: summarize,
 });</code></pre>
     </div>
-
-    <p>
-      The loop claims matching work, renews the lease while the handler runs and settles the claim
-      with the returned record. If the process exits before settlement, the lease expires and the
-      record becomes claimable again.
-    </p>
   </div>
 </section>
 
