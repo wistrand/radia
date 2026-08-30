@@ -84,16 +84,24 @@ export function userGrants(owner: string): Grant[] {
 }
 
 /**
- * Let a person INSPECT their pipeline in the console.
+ * Let a person read the console's AGGREGATES for their pipeline.
  *
- * Separate from `grantUser`, and opt-in, because it is a real widening: the console's Graph, Feed
- * and Events views are the ops plane, and the only power that opens them for reading is `observe` —
- * which opens EVERY read, unscoped. There is no "observe my own records" tier that fits here: the
- * self-scope tier needs every grant to say `createdBy: "self"`, and this pipeline's results are
- * written by WORKERS, so that scope would hide exactly what a person wants to look at.
+ * Narrower than it used to be, and the reason is worth knowing before handing this out. This
+ * pipeline's user grants are pattern-scoped on `{owner}` (`userGrants` above), so the PATTERN tier
+ * (architecture-ops-tiers.md, built 2026-08-26 with this app as one of the three that drove it)
+ * already opens the per-record half of the ops plane without any power at all: record detail,
+ * lineage, children and the console's whole GRAPH tab work for an ordinary pipeline user. Verified
+ * endpoint by endpoint, not assumed.
  *
- * Right for a single-user or demo space. Wrong for a shared one, where it lets any pipeline user
- * read every other person's records.
+ * What still needs `observe` is the aggregates: `ops/stats`, `ops/events` and the diagnostics
+ * counts, so the console's Feed, Space map and Overview numbers. Those push to SQL, where the
+ * pre-filter is a sound OVER-approximation, so counting there would report more rows than the
+ * caller may see; pattern-scoped kinds are left out and NAMED instead. A caller without this power
+ * gets an honest, explained partial view rather than a refusal.
+ *
+ * Still a real widening, because `observe` remains unscoped: right for a single-user or demo space,
+ * wrong for a shared one, where it lets any pipeline user read every other person's records. Do not
+ * reach for it to make the Graph work; that already works.
  */
 export async function grantObserve(admin: RadiaClient, owner: string): Promise<void> {
   const power = { principal: owner, operations: ["observe"] };

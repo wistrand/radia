@@ -778,8 +778,11 @@ async function loadStats() {
     return;
   }
   const rows = r.data.stats;
-  if (!rows.length) { $("stats").innerHTML = `<div class="empty">No records yet.</div>`; return; }
-  $("stats").innerHTML = `<table><thead><tr><th>Kind</th><th>State</th><th>Count</th></tr></thead><tbody>`
+  const note = scopeNote(r.data.scope);
+  // "No records yet" is FALSE for a caller whose kinds are scoped by grant pattern: those are not
+  // counted here at all, and the server says so. Only say the space is empty when nothing narrowed.
+  if (!rows.length) { $("stats").innerHTML = note || `<div class="empty">No records yet.</div>`; return; }
+  $("stats").innerHTML = note + `<table><thead><tr><th>Kind</th><th>State</th><th>Count</th></tr></thead><tbody>`
     + rows.map((s) => `<tr><td class="mono">${esc(s.kind)}</td><td>${stateBadge(s.state)}</td><td>${s.count}</td></tr>`).join("")
     + `</tbody></table>`;
 }
@@ -872,6 +875,9 @@ async function loadDoctor() {
       + `</div>`);
   }
   if (d.scope) {
+    // The server's note names WHICH kinds were left out; the sentence after it is what diagnostics
+    // adds on top, and neither is guessable from the other.
+    out.push(scopeNote(d.scope));
     out.push(`<div class="muted">scoped view: findings cover only records this session may see; the chain, erasures and sweep backlogs are absent here, not clean</div>`);
   }
   $("doctor").innerHTML = out.join("");
@@ -1051,6 +1057,20 @@ function indexedPathsOf(kind) {
  *  Built for models reading the response; a person reading a panel has the same problem. */
 function explainNotes(notes) {
   return (notes || []).map((n) => `<div class="note info">${esc(n)}</div>`).join("");
+}
+/**
+ * The server's own account of a NARROWED read, rendered where an empty answer would otherwise read
+ * as an empty space.
+ *
+ * `scope.note` is computed once by `describeScope` (src/server/handlers/ops.ts) and only placed
+ * here: restating it in the client is how two explanations of one rule start disagreeing. It
+ * matters even when rows DID come back, because the aggregates leave pattern-scoped kinds out
+ * entirely, so a partial count is the same lie in smaller print. Observed for real: a member's
+ * `space_stats` came back `[]` on a space holding eight kinds and was read as "the space is empty"
+ * (agent_docs/research-agent-sessions.md). The MCP surface was fixed then; this one was not.
+ */
+function scopeNote(scope) {
+  return scope && scope.note ? `<div class="note info">${esc(scope.note)}</div>` : "";
 }
 async function loadRecords() {
   const kind = $("rec-kind").value.trim();
@@ -1737,6 +1757,7 @@ async function refreshFeedMatch() {
   feedMatchIds = new Set(r.data.records.map((x) => x.id));
   $("feed-msg").innerHTML = `<div class="muted">match filter: events for the newest ${feedMatchIds.size} matching record${feedMatchIds.size === 1 ? "" : "s"} (a bounded query, refreshed each poll, not a census)</div>`;
 }
+let feedScope = null; // the scope the server reported for this feed's reads
 async function pollFeed() {
   if (feedPolling || feedSeq === null) return; // never follow before the tail seed set the cursor
   feedPolling = true;
@@ -1768,7 +1789,13 @@ function renderFeed() {
   let rows = feedRows;
   if (kindF && !feedMatchIds) rows = rows.filter((e) => e.kind === kindF);
   if (feedMatchIds) rows = rows.filter((e) => e.recordId && feedMatchIds.has(e.recordId));
-  if (!rows.length) { $("feed-list").innerHTML = `<div class="empty">No events${feedRows.length ? " match the filter" : " yet"}.</div>`; return; }
+  if (!rows.length) {
+    // A filter matching nothing is the caller's own doing; an empty LOG may be a narrowing, and
+    // the event log does not cover pattern-scoped kinds at all.
+    const note = feedRows.length ? "" : scopeNote(feedScope);
+    $("feed-list").innerHTML = note || `<div class="empty">No events${feedRows.length ? " match the filter" : " yet"}.</div>`;
+    return;
+  }
   if ($("feed-group").value !== "thread") {
     $("feed-list").innerHTML =
       `<table><thead><tr><th>#</th><th>Time</th><th>Op</th><th>Kind</th><th>Record</th><th>State</th><th>Detail</th></tr></thead><tbody>`
@@ -1824,6 +1851,7 @@ function startFeed() {
 async function seedFeed() {
   const r = await api("GET", "/v0/ops/events?tail=100");
   if (!r.ok) { $("feed-list").innerHTML = `<div class="note err">${esc(errText(r))}</div>`; return; }
+  feedScope = r.data.scope || null; // why the log may be short, straight from the server
   feedRows = [...r.data.events].reverse();
   feedSeq = String(r.data.nextAfter ?? "0");
   await resolveFeedRoots();

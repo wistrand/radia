@@ -28,11 +28,15 @@ So there are two ways in, and they answer different questions:
 - `--auto-grant`: everyone the IdP vouches for may use this. One policy decision, said once. This is
   what makes the bundled `demo` user work with no extra step.
 - `--grant human:…`: a principal you already have. Repeatable.
-- `--observe`: additionally let them open the console links. SEPARATE because it is a real widening:
-  the console's Graph and Feed views are the ops plane, and the only power that opens them for
-  reading is `observe`, which opens EVERY read, unscoped. Right for a single-user or demo space,
-  wrong for a shared one. Without it the links answer "may not access the ops plane", which is
-  correct rather than broken.
+- `--observe`: additionally let them read the console's AGGREGATES. SEPARATE because it is a real
+  widening: `observe` opens EVERY read, unscoped. Right for a single-user or demo space, wrong for a
+  shared one. It is narrower than it once was, and the difference is measured rather than assumed:
+  this app's user grants are pattern-scoped on `{owner}`, so the PATTERN tier already opens the
+  per-record half of the ops plane to an ordinary user, and the console's whole GRAPH tab, plus
+  record detail, lineage and children, work without this flag. What the flag adds is `ops/stats`,
+  `ops/events` and the diagnostics counts, so the Feed, the Space map and the Overview numbers.
+  Without it those views come back EMPTY AND EXPLAINED (the space names the kinds it left out and
+  why), not refused.
 
 `--observe` is applied to everyone who has ALREADY enrolled as well as to new sign-ins. It has to
 be: the auto-grant sweep skips anyone already holding grants, so a power added on a later run would
