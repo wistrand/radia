@@ -31,7 +31,7 @@ async function listener(space: Space, agent: string, pattern: { kind: string; ma
     { principal: agent, kind: pattern.kind, operations: ["take", "query"] },
   ]);
   const { run } = await space.mintRun(definitionToken);
-  await space.put({ kind: "interest", body: pattern }, undefined, run);
+  await space.put({ kind: "interest", body: pattern }, undefined, { author: run });
   return run;
 }
 

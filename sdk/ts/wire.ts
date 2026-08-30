@@ -359,15 +359,6 @@ export const OPS_GRANT = "ops_grant";
 export const OIDC_IDENTITY = "oidc_identity";
 export const RESERVED_KINDS = [KIND_DEF, GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, ARTIFACT, INTEREST, SHRED, OPS_GRANT, OIDC_IDENTITY];
 
-/**
- * A deterministic idempotency key for a declaration, stable across process restarts and
- * independent of field order: the same def dedups (no record growth), a changed def is a new
- * successor record.
- *
- * NORMATIVE, and the reason it sits in the wire vocabulary rather than in the runtime: the server
- * and every client must produce the same string, or a client redeclaring an unchanged kind appends
- * a duplicate record on every startup and the registry grows without bound.
- */
 /** FNV-1a, 32-bit, as 8 hex characters. NOT a security hash: it shortens a usage line inside a
  *  content key, where the failure of a collision is one re-wording that does not write. Chosen
  *  because it is four lines in any language, and `kindDefKey` is NORMATIVE: a second implementation
@@ -381,6 +372,15 @@ export function fnv1a(s: string): string {
   return h.toString(16).padStart(8, "0");
 }
 
+/**
+ * A deterministic idempotency key for a declaration, stable across process restarts and
+ * independent of field order: the same def dedups (no record growth), a changed def is a new
+ * successor record.
+ *
+ * NORMATIVE, and the reason it sits in the wire vocabulary rather than in the runtime: the server
+ * and every client must produce the same string, or a client redeclaring an unchanged kind appends
+ * a duplicate record on every startup and the registry grows without bound.
+ */
 export function kindDefKey(def: KindDef): string {
   const ip = [...(def.indexedPaths ?? [])].map((p) => `${p.path}:${p.type}`).sort().join(",");
   const sp = [...(def.sortablePaths ?? [])].sort().join(",");

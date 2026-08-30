@@ -146,11 +146,11 @@ export const chatLoadBenches: Bench[] = [
         ]);
         const workerRun = (await space.mintRun(workerDef)).run;
 
-        /** `Space.put` authorizes ITSELF now (design-auth.md, "Where each verb is enforced"), so a
-         *  direct call pays the same grant read and write-side pattern check every real put pays,
-         *  and simulating the handler here would double-count it. */
+        /** Through the ACTING handle, the way a handler writes (design-auth.md, "Where each verb
+         *  is enforced"): the handle pays the same grant read and write-side pattern check every
+         *  real put pays, so the turn's measured cost is the wire's. */
         const authorizedPut = (principal: string, kind: string, body: Record<string, unknown>) =>
-          space.put({ kind, body }, undefined, principal);
+          space.as(principal).put({ kind, body });
 
         // --- park 5N streams, each running the SSE loop body -------------------------------
         const stop = { done: false };
@@ -218,7 +218,7 @@ export const chatLoadBenches: Bench[] = [
           while (!workerStop.done) {
             // The grant read rides INSIDE `Space.take` now, so the claim pays it with no
             // simulation here; leaving the old manual `readAccess` in would double-count it.
-            const claim = await space.take({ pattern: { kind: "llm_call" } }, { leaseSeconds: 30 }, workerRun);
+            const claim = await space.as(workerRun).take({ pattern: { kind: "llm_call" } }, { leaseSeconds: 30 });
             if (!claim) {
               await space.waitForEvents(200, "llm_call");
               continue;

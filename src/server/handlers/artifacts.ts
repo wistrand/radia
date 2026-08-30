@@ -112,12 +112,12 @@ export async function handlePutArtifact(space: Space, req: Request, principal: s
     // `digest` or `size` still cannot be satisfied here, and deliberately: those are not known
     // until the bytes are read, and buffering 32MB to answer an authorization question is a free
     // denial of service.
-    // This PRE-PAYLOAD check stays in the handler on purpose: it refuses before the body stream
-    // is read, and buffering 32MB to answer an authorization question is a free denial of service.
-    // The record write re-checks in core (`Space.put`) over the full body afterwards.
-    const constraint = await space.authorize(principal, "put", ARTIFACT);
+    // This PRE-PAYLOAD check runs before the body stream is read, because buffering 32MB to
+    // answer an authorization question is a free denial of service. The handle's `putArtifact`
+    // re-checks over the full body afterwards.
+    const acting = space.as(principal);
     const scopeBody = { ...appFields, mediaType, ...(filename ? { filename } : {}) };
-    if (constraint && !space.bodyMatchesGrant(ARTIFACT, scopeBody, constraint)) {
+    if (!await acting.mayPut(ARTIFACT, scopeBody)) {
       return problem(403, "forbidden", `this artifact is outside the pattern scope of your put grant`);
     }
     const bytes = await readCapped(req, space.maxArtifactBytes);
@@ -126,7 +126,7 @@ export async function handlePutArtifact(space: Space, req: Request, principal: s
     }
     if (bytes.byteLength === 0) return problem(400, "invalid_body", "artifact body is empty");
     const parentIds = (req.headers.get("x-radia-parent-ids") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-    const out = await space.putArtifact(
+    const out = await acting.putArtifact(
       bytes,
       {
         mediaType,
@@ -136,7 +136,6 @@ export async function handlePutArtifact(space: Space, req: Request, principal: s
         taint: clientTaint(req.headers.get("x-radia-taint"), { reserved: true }), // a RAISE
       },
       req.headers.get("Idempotency-Key") ?? undefined,
-      principal,
     );
     return new Response(JSON.stringify(out), { status: 201, headers: { "content-type": "application/json" } });
   } catch (e) {
@@ -175,7 +174,7 @@ export async function handleGetArtifact(
     if (principal !== null) {
       // The verdict is core's (`Space.artifactReadGate`): 404 for foreign-or-missing so an id's
       // existence never leaks, 403 only for the pattern scope. This handler owns the wording.
-      const gate = await space.artifactReadGate(principal);
+      const gate = await space.as(principal).artifactGate();
       const verdict = gate(await space.getRecord(recordId));
       if (verdict === "not_found") return problem(404, "not_found", `no artifact ${recordId}`);
       if (verdict === "forbidden") {
@@ -339,7 +338,7 @@ export async function handleMintPathCapability(space: Space, req: Request, princ
   }
   try {
     // ONE access read for the whole entry list, verdicts per record from the shared gate.
-    const gate = await space.artifactReadGate(principal);
+    const gate = await space.as(principal).artifactGate();
     for (const entry of entries) {
       const verdict = gate(await space.getRecord(entry.artifactId));
       if (verdict === "not_found") {
@@ -372,7 +371,7 @@ export async function handleMintCapability(space: Space, recordId: string, princ
     // The gate runs BEFORE a capability is minted (its own doc says why: a bearer URL outlives
     // this check, and a self-scoped principal must not convert a foreign artifact into a tokenless
     // link).
-    const gate = await space.artifactReadGate(principal);
+    const gate = await space.as(principal).artifactGate();
     const verdict = gate(await space.getRecord(recordId));
     if (verdict === "not_found") return problem(404, "not_found", `no artifact ${recordId}`);
     if (verdict === "forbidden") {
@@ -426,9 +425,8 @@ export async function handleMintUploadCapability(space: Space, req: Request, pri
   try {
     // The SAME check the direct upload makes, in the same order, over everything knowable before
     // the payload. A capability that skipped it would be a way to write around a pattern scope.
-    const constraint = await space.authorize(principal, "put", ARTIFACT);
     const scopeBody = { ...appFields, mediaType, ...(filename ? { filename } : {}) };
-    if (constraint && !space.bodyMatchesGrant(ARTIFACT, scopeBody, constraint)) {
+    if (!await space.as(principal).mayPut(ARTIFACT, scopeBody)) {
       return problem(403, "forbidden", "this artifact is outside the pattern scope of your put grant");
     }
     // A client RAISE, carried through to the write exactly as the direct upload carries it.
@@ -470,7 +468,10 @@ export async function handleCapabilityUpload(space: Space, req: Request, capabil
   }
   if (bytes.byteLength === 0) return problem(400, "invalid_body", "artifact body is empty");
   try {
-    const out = await space.putArtifact(
+    // ACTING AS THE MINTER, never as whoever presents the capability: the record says who decided
+    // it should exist, and the minter's grants are re-checked as they stand at redemption, the
+    // same rule watch revalidation follows.
+    const out = await space.as(grant.principal).putArtifact(
       bytes,
       {
         mediaType: grant.mediaType,
@@ -480,9 +481,6 @@ export async function handleCapabilityUpload(space: Space, req: Request, capabil
         taint: grant.taint,
       },
       undefined,
-      // AUTHORED BY THE MINTER, never by whoever presents the capability: the record says who
-      // decided it should exist, which is the only principal the space ever authorized.
-      grant.principal,
     );
     return new Response(JSON.stringify(out), { status: 201, headers: { "content-type": "application/json" } });
   } catch (e) {

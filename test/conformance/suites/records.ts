@@ -123,7 +123,7 @@ export const recordSuites: Suite[] = [
       // well-formed one cannot subtract.)
       // Same author on both, so this isolates the washing property: a different author would
       // legitimately add `foreign` and the assertion would be testing two things at once.
-      const dirty = await space.put({ kind: "task", body: { tag: "src" }, taint: ["file"] }, undefined, "human:local", { unchecked: "fixture: plants authorship below the grant layer" });
+      const dirty = await space.put({ kind: "task", body: { tag: "src" }, taint: ["file"] }, undefined, { author: "human:local" });
       const clearAttempt = new Request("http://x/v0/records", {
         method: "POST",
         body: JSON.stringify({ kind: "task", body: { tag: "washed" }, parentIds: [dirty.id], taint: [] }),

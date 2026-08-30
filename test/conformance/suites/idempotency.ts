@@ -38,7 +38,7 @@ export const idempotencySuites: Suite[] = [
       await space.put({ kind: "grant", body: { principal: "agent:w", kind: "answer", operations: ["put"] } });
 
       const { id } = await space.put({ kind: "task", body: { tag: "t" } });
-      const claim = await space.take({ recordId: id }, { leaseSeconds: 300 }, "agent:w");
+      const claim = await space.take({ recordId: id }, { leaseSeconds: 300, owner: "agent:w" });
       assert(claim, "expected a claim");
       const key = "ack-once";
       const result = { kind: "answer", body: { tag: "t" } };

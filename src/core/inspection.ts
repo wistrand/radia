@@ -30,6 +30,15 @@ export interface LiveInterest {
   match?: Record<string, unknown>;
 }
 
+/** Does this condition address the ELEMENTS of an array path? `$exists` counts: it asks about the
+ *  field, not its contents. A bare array value does not: `{tags: ["a"]}` is whole-list equality,
+ *  which is legal and almost never what the caller meant. */
+function arrayPredicate(cond: unknown): boolean {
+  if (cond === null || typeof cond !== "object" || Array.isArray(cond)) return false;
+  const keys = Object.keys(cond as Record<string, unknown>);
+  return keys.length > 0 && keys.every((k) => k === "$any" || k === "$each" || k === "$exists");
+}
+
 /**
  * Why unclaimed work is unclaimed, which age alone cannot say.
  *
@@ -105,15 +114,6 @@ export interface InspectionHost {
  * Never make this change the result. It annotates, so a caller that ignores it is exactly as
  * correct as before.
  */
-/** Does this condition address the ELEMENTS of an array path? `$exists` counts: it asks about the
- *  field, not its contents. A bare array value does not: `{tags: ["a"]}` is whole-list equality,
- *  which is legal and almost never what the caller meant. */
-function arrayPredicate(cond: unknown): boolean {
-  if (cond === null || typeof cond !== "object" || Array.isArray(cond)) return false;
-  const keys = Object.keys(cond as Record<string, unknown>);
-  return keys.length > 0 && keys.every((k) => k === "$any" || k === "$each" || k === "$exists");
-}
-
 export function explainQuery(
   h: InspectionHost,
   pattern: Pattern,

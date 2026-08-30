@@ -231,7 +231,7 @@ export const watchSuites: Suite[] = [
 
       // The run declares what it listens for. Authorship is server-assigned, so the body never
       // claims which run it belongs to.
-      await space.put({ kind: "interest", body: { kind: "task", match: { tag: "x" } } }, undefined, run);
+      await space.put({ kind: "interest", body: { kind: "task", match: { tag: "x" } } }, undefined, { author: run });
 
       const hit = await space.matchingInterests("task", { tag: "x" });
       assertEquals(hit.interests.length, 1, "the interest matches a record it would claim");
@@ -252,7 +252,7 @@ export const watchSuites: Suite[] = [
         { principal: "agent:w", kind: "interest", operations: ["put", "query"] },
       ]);
       const { run } = await space.mintRun(definitionToken);
-      await space.put({ kind: "interest", body: { kind: "task" } }, undefined, run);
+      await space.put({ kind: "interest", body: { kind: "task" } }, undefined, { author: run });
       assertEquals((await space.matchingInterests("task", {})).interests.length, 1);
 
       // A crashed worker never retires its interest, so the record outlives the process. Presence
@@ -273,13 +273,13 @@ export const watchSuites: Suite[] = [
         { principal: "agent:w", kind: "interest", operations: ["put", "query"] },
       ]);
       const { run } = await space.mintRun(definitionToken);
-      await space.put({ kind: "interest", body: { kind: "task", match: { tag: "x" } } }, undefined, run);
-      await space.put({ kind: "interest", body: { kind: "task", match: { tag: "y" } } }, undefined, run);
+      await space.put({ kind: "interest", body: { kind: "task", match: { tag: "x" } } }, undefined, { author: run });
+      await space.put({ kind: "interest", body: { kind: "task", match: { tag: "y" } } }, undefined, { author: run });
       assertEquals((await space.matchingInterests("task", { tag: "x" })).interests.length, 1);
       assertEquals((await space.matchingInterests("task", { tag: "y" })).interests.length, 1);
 
       // One entry per (author, kind, pattern), so a retirement targets one of them.
-      await space.put({ kind: "interest", body: { kind: "task", match: { tag: "x" }, retired: true } }, undefined, run);
+      await space.put({ kind: "interest", body: { kind: "task", match: { tag: "x" }, retired: true } }, undefined, { author: run });
       assertEquals((await space.matchingInterests("task", { tag: "x" })).interests.length, 0, "withdrawn");
       assertEquals((await space.matchingInterests("task", { tag: "y" })).interests.length, 1, "the sibling stands");
     },
@@ -292,7 +292,7 @@ export const watchSuites: Suite[] = [
         { principal: "agent:w", kind: "interest", operations: ["put", "query"] },
       ]);
       const { run } = await space.mintRun(definitionToken);
-      await space.put({ kind: "interest", body: { kind: "task" } }, undefined, run);
+      await space.put({ kind: "interest", body: { kind: "task" } }, undefined, { author: run });
       assertEquals((await space.matchingInterests("task", { anything: 1 })).interests.length, 1);
       assertEquals((await space.matchingInterests("task", {})).interests.length, 1);
     },

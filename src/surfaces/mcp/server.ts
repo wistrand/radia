@@ -890,7 +890,6 @@ function lose(claims: Map<string, Claim>, claimId: string, reason: "lease_lost" 
   );
 }
 
-/** Resolve a claimId to its lease and stop its heartbeat. Settling ends the claim either way. */
 /**
  * Recover a claim THIS PROCESS never made, from the space.
  *
@@ -936,6 +935,7 @@ async function recoverClaim(client: RadiaClient, claimId: string): Promise<Claim
   };
 }
 
+/** Resolve a claimId to its lease and stop its heartbeat. Settling ends the claim either way. */
 async function takeClaim(claims: Map<string, Claim>, a: Record<string, unknown>, client: RadiaClient): Promise<Claim> {
   const id = str(a, "claimId");
   const c = claims.get(id) ?? await recoverClaim(client, id);

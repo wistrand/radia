@@ -277,7 +277,7 @@ export const kindSuites: Suite[] = [
 
       // Refused as a DECLARATION, so which principal wrote it never enters into it.
       assertEquals(
-        await errorCode(() => space.put({ kind: "kind_def", body: SHRUNK_GRANT }, undefined, "agent:dev")),
+        await errorCode(() => space.put({ kind: "kind_def", body: SHRUNK_GRANT }, undefined, { author: "agent:dev" })),
         "reserved_kind",
       );
       assertEquals(await errorCode(() => space.persistKind(SHRUNK_GRANT)), "reserved_kind", "…including for an operator");

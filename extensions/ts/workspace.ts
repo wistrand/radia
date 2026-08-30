@@ -66,8 +66,6 @@ export function mediaTypeFor(path: string): string {
   } as Record<string, string>)[ext] ?? "text/plain";
 }
 
-/** One file in a tree. `digest` is the artifact's content address, so two workspaces sharing a file
- *  share the blob and erasing it erases the payload for both. */
 /**
  * The kind a manifest is written as, in one place so a space declaring it and a convention
  * extending it cannot disagree about which paths exist.
@@ -90,6 +88,8 @@ export const WORKSPACE_KIND: KindDef = {
   claimable: false,
 };
 
+/** One file in a tree. `digest` is the artifact's content address, so two workspaces sharing a file
+ *  share the blob and erasing it erases the payload for both. */
 export interface WorkspaceFile {
   path: string;
   /** `100644` or `100755`, git's spelling. Nothing else: a device node or a setuid bit is not a

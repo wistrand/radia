@@ -279,23 +279,23 @@ export const limitSuites: Suite[] = [
       const { run } = await space.mintRun(definitionToken);
 
       for (let i = 0; i < 3; i++) {
-        await space.put({ kind: "interest", body: { kind: "task", match: { op: `op${i}` } } }, undefined, run);
+        await space.put({ kind: "interest", body: { kind: "task", match: { op: `op${i}` } } }, undefined, { author: run });
       }
       assertEquals(
-        await codeOf(() => space.put({ kind: "interest", body: { kind: "task", match: { op: "op9" } } }, undefined, run)),
+        await codeOf(() => space.put({ kind: "interest", body: { kind: "task", match: { op: "op9" } } }, undefined, { author: run })),
         "too_many_interests",
       );
 
       // A restart republishes what it already declared. Refusing that would leave a worker at the
       // ceiling unable to come back, which is a worse failure than the one being prevented.
       assertEquals(
-        await codeOf(() => space.put({ kind: "interest", body: { kind: "task", match: { op: "op0" } } }, undefined, run)),
+        await codeOf(() => space.put({ kind: "interest", body: { kind: "task", match: { op: "op0" } } }, undefined, { author: run })),
         "",
       );
       // And a withdrawal is never refused, or the ceiling would be a trap with no way down.
       assertEquals(
         await codeOf(() =>
-          space.put({ kind: "interest", body: { kind: "task", match: { op: "op9" }, retired: true } }, undefined, run)
+          space.put({ kind: "interest", body: { kind: "task", match: { op: "op9" }, retired: true } }, undefined, { author: run })
         ),
         "",
       );
@@ -306,7 +306,7 @@ export const limitSuites: Suite[] = [
       ]);
       const { run: otherRun } = await space.mintRun(other);
       assertEquals(
-        await codeOf(() => space.put({ kind: "interest", body: { kind: "task", match: { op: "x" } } }, undefined, otherRun)),
+        await codeOf(() => space.put({ kind: "interest", body: { kind: "task", match: { op: "x" } } }, undefined, { author: otherRun })),
         "",
       );
     },

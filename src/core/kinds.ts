@@ -666,11 +666,11 @@ export function assertKnownKindDefFields(body: unknown): void {
   }
 }
 
-/** Validate a declaration. Throws RadiaError on any problem (a registration error). */
 /** A usage line is prose on a hot path (`loadKinds` reads every declaration at startup), so it is
  *  bounded. Past this it is a document and belongs in the app's own docs. */
 export const MAX_KIND_USAGE = 600;
 
+/** Validate a declaration. Throws RadiaError on any problem (a registration error). */
 export function validateKindDef(def: KindDef): void {
   if (typeof def.kind !== "string" || def.kind.length === 0) {
     throw new RadiaError("invalid_kind", "kind must be a non-empty string");

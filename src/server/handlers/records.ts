@@ -111,9 +111,10 @@ export async function handlePut(space: Space, req: Request, principal: string): 
   if (typeof put === "string") return problem(400, "invalid_body", put);
 
   try {
-    // The grant check runs INSIDE `Space.put` (design-auth.md, "Where each verb is enforced"), so
-    // this handler and an in-process caller get the same refusal from one implementation.
-    const { id } = await space.put(put, req.headers.get("Idempotency-Key") ?? undefined, principal);
+    // The handle IS the authorization boundary (design-auth.md, "Where each verb is enforced"):
+    // everything called on it consults this principal's grants, and there is no unchecked verb to
+    // reach for.
+    const { id } = await space.as(principal).put(put, req.headers.get("Idempotency-Key") ?? undefined);
     return new Response(JSON.stringify({ id }), {
       status: 201,
       headers: { "content-type": "application/json" },
@@ -169,8 +170,7 @@ export async function handleRegistry(space: Space, req: Request, principal: stri
   const unknownReg = rejectUnknown(j, ["kind", "match"]);
   if (unknownReg) return unknownReg;
   try {
-    const { constraint, createdBy, ...out } = await space.registryOfAs(
-      principal,
+    const { constraint, createdBy, ...out } = await space.as(principal).registryOf(
       j.kind,
       j.match as Record<string, unknown> | undefined,
     );
@@ -221,9 +221,8 @@ export async function handleQuery(space: Space, req: Request, principal: string)
     page = { after: j.after as string | undefined, dir: j.dir as "asc" | "desc" | undefined };
   }
   try {
-    // The grant COMPOSES inside `Space.queryAs` (design-auth.md, "Where each verb is enforced"),
-    // which hands back what it applied so the response can keep saying so.
-    const { records, pattern: scoped, constraint, createdBy } = await space.queryAs(principal, pattern, limit, page);
+    // The handle's read hands back what it applied so the response can keep saying so.
+    const { records, pattern: scoped, constraint, createdBy } = await space.as(principal).query(pattern, limit, page);
     // The cursor for the NEXT page is the last id of this one, echoed so a caller never has to
     // know that the cursor happens to be a record id.
     // `explain: true` annotates the answer with the traps this query walked into. Opt-in so the
@@ -267,7 +266,7 @@ export async function handleReadOne(space: Space, req: Request, principal: strin
     orderBy: j.orderBy as Pattern["orderBy"],
   };
   try {
-    const { record, pattern: scoped, constraint, createdBy } = await space.readOneAs(principal, pattern);
+    const { record, pattern: scoped, constraint, createdBy } = await space.as(principal).readOne(pattern);
     // THE ENVELOPE, always, because a bare `null` cannot say WHY nothing came back: a null produced
     // inside a grant's bounds means the record may exist and be somebody else's, and one outside
     // any bound means no such record. Every other read gained that distinction; this was the last

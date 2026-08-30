@@ -44,42 +44,40 @@ import { declareSandbox, listSandboxes, verifySandbox } from "./sandbox-registry
 import { INPUT_DIR, type InvokeContext, type Invoker, outputStamp, treeCache, type TreeCache } from "./host.ts";
 import { validatePath } from "./workspace.ts";
 
-/**
- * The channel: a PRIVATE pipe pair, not stdout.
- *
- * The host makes two FIFOs in a control directory and passes their paths to the shim: the run
- * writes requests to `req`, reads replies from `resp`, and a frame is one line of JSON. That is the
- * whole format. There is no marker, no leading newline and no interleaving rule, because nothing
- * else writes to these pipes.
- *
- * IT USED TO BE STDOUT, and the framing rules that needed were the cost. An entrypoint that logs is
- * NORMAL, so protocol shared a stream with chatter: output lacking a trailing newline
- * (`print(..., end="")`, a progress bar) prepended itself to the next frame, which no longer started
- * its line, was read as chatter, and left the jail blocked on an answer that never came until a
- * timeout naming the wrong cause. Three rules held that off (a long printable marker starting the
- * line, a leading newline before every frame, a mid-line marker diagnosed as corruption) and all
- * three were things another implementation had to get exactly right on a NORMATIVE surface.
- *
- * A dedicated fd was the honest ideal and was declined because `Command` exposes no portable extra
- * one. That reasoning missed the filesystem: a FIFO is the extra fd, reached by path. It costs NO
- * new capability, which is the property that decided it over a unix socket. Measured: Deno gates
- * unix sockets behind `--allow-net` (scopable to one path, but the jail's no-network posture is
- * proved by that flag's ABSENCE, and safe-by-absence is worth more than a narrow allow), while a
- * FIFO needs only read and write on one directory, which a run with an output tree already has.
- *
- * Deadlock, which is what a pipe gets wrong: opening a FIFO blocks until the other end opens. The
- * host opens BOTH ends of BOTH pipes (`read: true, write: true`, i.e. O_RDWR) before spawning, which
- * never blocks, so the child's opens never block either. The cost is that the host never sees EOF,
- * so the read loop ends on the RESULT frame, or on the child exiting plus a quiet window.
- *
- * STDOUT AND STDERR ARE NOW ONLY DIAGNOSTICS, which is what people use them as anyway. A flood is
- * absorbed rather than fatal: both are drained to a bounded tail.
- *
- * THE CHANNEL IS UNTRUSTED and nothing depends on it being otherwise. Jailed code can write a forged
- * frame and gains nothing by it: the compartment stamp, the labels, the forced parent, the
- * idempotency key and the agent's own grants are applied HOST-side, so a forged call is exactly as
- * constrained as a legitimate one.
- */
+// The channel: a PRIVATE pipe pair, not stdout.
+//
+// The host makes two FIFOs in a control directory and passes their paths to the shim: the run
+// writes requests to `req`, reads replies from `resp`, and a frame is one line of JSON. That is the
+// whole format. There is no marker, no leading newline and no interleaving rule, because nothing
+// else writes to these pipes.
+//
+// IT USED TO BE STDOUT, and the framing rules that needed were the cost. An entrypoint that logs is
+// NORMAL, so protocol shared a stream with chatter: output lacking a trailing newline
+// (`print(..., end="")`, a progress bar) prepended itself to the next frame, which no longer started
+// its line, was read as chatter, and left the jail blocked on an answer that never came until a
+// timeout naming the wrong cause. Three rules held that off (a long printable marker starting the
+// line, a leading newline before every frame, a mid-line marker diagnosed as corruption) and all
+// three were things another implementation had to get exactly right on a NORMATIVE surface.
+//
+// A dedicated fd was the honest ideal and was declined because `Command` exposes no portable extra
+// one. That reasoning missed the filesystem: a FIFO is the extra fd, reached by path. It costs NO
+// new capability, which is the property that decided it over a unix socket. Measured: Deno gates
+// unix sockets behind `--allow-net` (scopable to one path, but the jail's no-network posture is
+// proved by that flag's ABSENCE, and safe-by-absence is worth more than a narrow allow), while a
+// FIFO needs only read and write on one directory, which a run with an output tree already has.
+//
+// Deadlock, which is what a pipe gets wrong: opening a FIFO blocks until the other end opens. The
+// host opens BOTH ends of BOTH pipes (`read: true, write: true`, i.e. O_RDWR) before spawning, which
+// never blocks, so the child's opens never block either. The cost is that the host never sees EOF,
+// so the read loop ends on the RESULT frame, or on the child exiting plus a quiet window.
+//
+// STDOUT AND STDERR ARE NOW ONLY DIAGNOSTICS, which is what people use them as anyway. A flood is
+// absorbed rather than fatal: both are drained to a bounded tail.
+//
+// THE CHANNEL IS UNTRUSTED and nothing depends on it being otherwise. Jailed code can write a forged
+// frame and gains nothing by it: the compartment stamp, the labels, the forced parent, the
+// idempotency key and the agent's own grants are applied HOST-side, so a forged call is exactly as
+// constrained as a legitimate one.
 
 /** Frames the host will read from one run before giving up. Untrusted code can write in a loop, and
  *  the pipe is the one place that still costs the host memory. */
@@ -215,9 +213,6 @@ export interface Runtime {
   boot(entrypoint: string, record: RadiaRecord, chan: Channel): string;
 }
 
-/** The program the jail actually runs. Generated, never materialised into the tree: the tree is
- *  content-addressed and adding a file to it would change the digest that identifies the code,
- *  and since phase 6 that directory is shared between claims. */
 /**
  * What a brokered entrypoint may call, as data, so it can be DECLARED rather than described.
  *
@@ -254,6 +249,9 @@ export const BROKER_API: SandboxApi = {
   absent: ["fetch and any network", "the filesystem beyond the run's own directory", "process spawning", "environment variables", "console output anybody reads"],
 };
 
+/** The program the jail actually runs. Generated, never materialised into the tree: the tree is
+ *  content-addressed and adding a file to it would change the digest that identifies the code,
+ *  and since phase 6 that directory is shared between claims. */
 function jsBoot(entrypoint: string, record: RadiaRecord, chan: Channel): string {
   return `
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -377,13 +375,6 @@ function assertHostCanRun(spec: SandboxSpec | null): void {
 }
 
 /**
- * An invoker that materialises the tree, runs the entrypoint jailed, and serves its proposals
- * under the agent's own identity.
- *
- * Replaces `sandboxInvoker` from phase 4: same isolation, plus a way for the code to participate
- * without a credential.
- */
-/**
  * Declare what a brokered host runs and what its code may call, as a `sandbox` record.
  *
  * WRITTEN BY THE HOST rather than by an operator, which is the same shape `declareExecJail` already
@@ -426,6 +417,13 @@ export async function declareBrokerSandbox(
   return { id, refusedBecause };
 }
 
+/**
+ * An invoker that materialises the tree, runs the entrypoint jailed, and serves its proposals
+ * under the agent's own identity.
+ *
+ * Replaces `sandboxInvoker` from phase 4: same isolation, plus a way for the code to participate
+ * without a credential.
+ */
 export function brokeredInvoker(reader: RadiaClient, opts: BrokerOptions = {}): Invoker {
   const cache = opts.cache ?? treeCache(reader);
   return async (ctx: InvokeContext) => {

@@ -225,9 +225,9 @@ export const selfScopeSuites: Suite[] = [
       const principal = resolved.ok && resolved.kind === "run" ? resolved.principal : "";
 
       for (let i = 0; i < 5; i++) await space.put({ kind: "message", body: { role: "user", i } });
-      for (let i = 0; i < 2; i++) await space.put({ kind: "message", body: { role: "user", i } }, undefined, principal, { unchecked: "fixture: plants authorship below the grant layer" });
+      for (let i = 0; i < 2; i++) await space.put({ kind: "message", body: { role: "user", i } }, undefined, { author: principal });
       for (let i = 0; i < 4; i++) await space.put({ kind: "note", body: { i } });
-      await space.put({ kind: "note", body: { i: 99 } }, undefined, principal, { unchecked: "fixture: plants authorship below the grant layer" });
+      await space.put({ kind: "note", body: { i: 99 } }, undefined, { author: principal });
 
       // The state that produced a wrong number in a live session: an unscoped {put, query} grant
       // (written by the fleet's bootstrap) beside a self-scoped {query} one (a human narrowing it
