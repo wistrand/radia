@@ -582,20 +582,6 @@ export class Space {
     return { entries: [...view.entries.values()], complete: view.complete, scanned: view.scanned };
   }
 
-  /** `registryOf`, principal-driven: the third read beside `queryAs`/`readOneAs`, under the same
-   *  `query` op, because a registry projection is a read like any other and a rule that binds two
-   *  of the three doors is the recurring class this whole move closes. */
-  async registryOfAs(
-    principal: string,
-    kind: string,
-    match?: Record<string, unknown>,
-  ): Promise<{ entries: RadiaRecord[]; complete: boolean; scanned: number; constraint: Record<string, unknown>[] | null; createdBy?: string[] }> {
-    const { constraint, createdBy } = await this.readAccess(principal, "query", kind);
-    const scoped = constraint ? combineMatch(match, constraint) : match;
-    const out = await this.registryOf(kind, scoped, createdBy ? { createdBy } : undefined);
-    return { ...out, constraint, createdBy };
-  }
-
   /** Rebuild the registry from kind_def records (call once at startup). A kind's latest
    *  declaration wins (records are immutable; a redeclaration is a successor, not a mutation). */
   async loadKinds(): Promise<void> {

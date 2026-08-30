@@ -62,7 +62,7 @@ Deno.test({
       const violations: string[] = [];
       const claimer = async (who: number) => {
         for (let round = 0; round < ROUNDS; round++) {
-          const claimed = await space.take({ pattern: { kind: "task" } }, { ...{ leaseSeconds: 30 }, owner: `run:c${who}` });
+          const claimed = await space.take({ pattern: { kind: "task" } }, { leaseSeconds: 30, owner: `run:c${who}` });
           if (!claimed) continue;
           const env = await space.getEnvelope(claimed.record.id);
           const now = await space.now(); // the DB clock, the only one a claim is judged against

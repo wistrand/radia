@@ -172,7 +172,7 @@ export async function handleGetArtifact(
 ): Promise<Response> {
   try {
     if (principal !== null) {
-      // The verdict is core's (`Space.artifactReadGate`): 404 for foreign-or-missing so an id's
+      // The verdict is the handle's (`ActingSpace.artifactGate`): 404 for foreign-or-missing so an id's
       // existence never leaks, 403 only for the pattern scope. This handler owns the wording.
       const gate = await space.as(principal).artifactGate();
       const verdict = gate(await space.getRecord(recordId));
