@@ -322,7 +322,7 @@ and key collision are open problems in its own §6.6, where a pattern matches co
 promotion pins a digest. And it has no crash model: the word appears nowhere in 88 pages, because a
 `dispose` that never ran took the runtime with it, where a lease expires without the worker's
 cooperation. Its §6.3 defers sandboxing untrusted components to "an external sandbox" outside the
-language, which is [plan-jail-confinement.md](plan-jail-confinement.md) and the broker, so those
+language, which is [architecture-jail-confinement.md](architecture-jail-confinement.md) and the broker, so those
 two halves compose rather than compete. Its §6.1 is borrowed in
 [design-api.md](design-api.md) ("The guarantee").
 

@@ -1,10 +1,21 @@
-# Plan: confining the filesystem, per platform
+# Architecture: confining the filesystem, per platform
 
-> Status: phases 1, 3 and 4 BUILT (2026-08-06); 2 REJECTED; 5 is a posture. Phase 4's macOS run
-> EXECUTED later the same day on a real Mac (macOS 26.4.1, Deno 2.9.5, arm64): the full
-> `deno task test:extensions` suite passed, darwin-gated case included, with the machine's own Deno
-> cache verified untouched afterwards. Still never run in this repo's CI. The defect is package
-> T in [plan-audit-remediation.md](plan-audit-remediation.md); this is the plan to close it.
+> Status: BUILT and package T is CLOSED. Phases 1, 3 and 4 shipped 2026-08-06; 2 REJECTED; 5 is a
+> posture. Phase 4's macOS run EXECUTED later the same day on a real Mac (macOS 26.4.1, Deno 2.9.5,
+> arm64): the full `deno task test:extensions` suite passed, darwin-gated case included, with the
+> machine's own Deno cache verified untouched afterwards. Still never run in this repo's CI, which
+> is the one residual and is a coverage gap rather than an open defect. Renamed from
+> `plan-jail-confinement.md` on 2026-08-30, under the lifecycle rule in CLAUDE.md: the phase
+> numbers are kept because source files cite them. The defect it closed is package T in
+> [plan-audit-remediation.md](plan-audit-remediation.md).
+>
+> **The jail is one backend, not the mechanism.** A sandbox is a RECORD
+> ([design-execution.md](design-execution.md)), so the confinement property lives on the record
+> (`SandboxSpec.importsConfined`) rather than in a language's name: `denoSandbox` carries false,
+> `bwrapSandbox` carries true, and `probeSandbox` breaks out of any spec claiming a confinement it
+> does not have. Adding a backend is a record and a probe, not a redesign. Read that before reading
+> this as "the Deno jail is the isolation story".
+>
 > Everything below marked "measured" was run against the real jail on Linux, except phase 4:
 > `sandbox-exec` was verified on a real Mac 2026-08-06 (macOS 26.4.1, Deno 2.9.5, arm64). Read
 > [design-execution.md](design-execution.md) first: the language question is an isolation question,
@@ -325,6 +336,13 @@ native Windows host still runs code, still runs it unconfined, and its own secre
 from the jail (see the residual under phase 2). Saying "only WSL2 is supported" is not a mechanism,
 and a doc that implied otherwise would be the same class of claim as a sandbox record that overstates
 its jail.
+
+That distinction is what package T's closure rests on, so keep the two halves apart. The SUPPORT
+POLICY is why it is no longer an open defect: native Windows is not a platform this project ships
+for (`scripts/build-release.sh` builds four targets and none of them is Windows), and an unsupported
+platform cannot hold a package open. The MECHANISM is unchanged and is stated by the record and the
+boot line, not by the ledger. If native Windows ever becomes supported, the package reopens and the
+work is a confiner for it, not a rewording here.
 
 **BUILT (2026-08-07), and NOT a Windows question: `--require-confinement`.** The exec worker refuses
 to serve at all when no confiner holds. The temptation was to special-case Windows, but the same gap

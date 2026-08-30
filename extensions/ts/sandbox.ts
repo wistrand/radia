@@ -67,7 +67,7 @@ export interface RunOptions {
    * The permission model still runs the code and still denies net, env, run, ffi and write. This
    * bounds only what the process can SEE, which is the one channel permissions do not cover:
    * module loading ignores `--allow-read` and `--deny-read` entirely
-   * (plan-jail-confinement.md). A mount namespace closes it by making the file absent rather than
+   * (architecture-jail-confinement.md). A mount namespace closes it by making the file absent rather than
    * forbidden.
    *
    * Filesystem ONLY, deliberately: net is left to Deno's flags, so the confiner never passes
@@ -190,7 +190,7 @@ export function jailArgs(opts: RunOptions, memoryMb: number, entry: string): str
  *
  * VERIFIED on macOS 26.4.1 with Deno 2.9.5 (arm64): the module-loading hole reproduces there, this
  * closes it, and workspace-relative imports keep working. ~6ms (bare jail 10.3ms median, confined
- * 16.0ms). See plan-jail-confinement.md phase 4 for the session that produced it.
+ * 16.0ms). See architecture-jail-confinement.md phase 4 for the session that produced it.
  *
  * Four things that are not obvious and were each hit while verifying:
  *

@@ -51,7 +51,7 @@ console.error(
     ? `exec-worker: JavaScript runs CONFINED (${jail.confine} over the Deno jail); module loading is bounded`
     : `exec-worker: JavaScript runs UNCONFINED (${
       jail.unconfinedBecause.map((f) => f.claim).join(", ")
-    }). Module loading is not bounded by the read permission; see agent_docs/plan-jail-confinement.md`,
+    }). Module loading is not bounded by the read permission; see agent_docs/architecture-jail-confinement.md`,
 );
 await declareExecJail(client, jail);
 

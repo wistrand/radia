@@ -1,6 +1,6 @@
 // A Web Worker sandbox: running jailed code inside a browser tab (agent_docs/plan-webworker-sandbox.md).
 //
-// THE TRAP THIS EXISTS TO CLOSE, and it is plan-jail-confinement.md in browser clothing. A bare
+// THE TRAP THIS EXISTS TO CLOSE, and it is architecture-jail-confinement.md in browser clothing. A bare
 // `new Worker(blobUrl)` looks like a jail — its own thread, no DOM, message passing only — and
 // leaves the two axes that matter wide open:
 //

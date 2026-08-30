@@ -8,11 +8,11 @@ limitation 1 is rewritten from "no code execution" to the narrower true statemen
 space (agent_docs/plan-browser-space.md limitation 1), so jailed model-written code can run in a
 tab. Not a new isolation idea: a `sandbox` RECORD declaring properties, a broker binding for the
 channel, and a boot probe that PROVES the guarantee before advertising it, exactly as
-[design-execution.md](design-execution.md), [plan-jail-confinement.md](plan-jail-confinement.md)
+[design-execution.md](design-execution.md), [architecture-jail-confinement.md](architecture-jail-confinement.md)
 and `extensions/ts/broker.ts` already prescribe. All extensions-tier + playground wiring; nothing
 in `src/`.
 
-## The trap, which is plan-jail-confinement.md in browser clothing
+## The trap, which is architecture-jail-confinement.md in browser clothing
 
 A bare `new Worker(blobUrl)` LOOKS like a jail (own thread, no DOM, message-passing only) and
 leaves the two axes that matter wide open. The parallel to the Deno flags is exact: the boundary

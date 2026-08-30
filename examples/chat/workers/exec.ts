@@ -75,7 +75,7 @@ const denyRead = argAll("--deny-dir").filter(Boolean);
  *
  * Not a Windows switch, though that is the platform where the answer is always no: the same gap
  * exists on a Linux host without bubblewrap and on a Mac whose profile fails. A read permission
- * does not bound module loading (agent_docs/plan-jail-confinement.md), so an unconfined jail reads
+ * does not bound module loading (agent_docs/architecture-jail-confinement.md), so an unconfined jail reads
  * any JSON its user can read. Off by default, because that unconfined jail is what every host had
  * until the confiners existed and turning it off silently would break working setups; on, for a
  * space where model-written code runs anywhere near something that matters.
@@ -613,13 +613,13 @@ let confine: "bubblewrap" | "sandbox-exec" | undefined;
       ? `JavaScript runs CONFINED (${confine} over the Deno jail); module loading is bounded`
       : "JavaScript runs UNCONFINED (no usable confiner). Module loading is not bounded by " +
         "the read permission, so any JSON this user can read is reachable from the sandbox: " +
-        `${confinedFailed.map((f) => f.claim).join(", ")}. See agent_docs/plan-jail-confinement.md`,
+        `${confinedFailed.map((f) => f.claim).join(", ")}. See agent_docs/architecture-jail-confinement.md`,
   );
 
   // PYTHON, per platform. Linux confines it with a mount namespace; macOS with a Seatbelt profile,
   // which has to be `(deny default)` because Python brings no permission model for a filesystem
   // confiner to sit under. Neither is assumed: whichever the platform suggests is PROBED, and a host
-  // where it does not hold simply has no Python (agent_docs/plan-jail-confinement.md).
+  // where it does not hold simply has no Python (agent_docs/architecture-jail-confinement.md).
   const macPython = Deno.build.os === "darwin" ? macosPython() : undefined;
   const py = macPython
     ? seatbeltPythonSandbox({ name: "python", interpreter: macPython, timeoutMs })

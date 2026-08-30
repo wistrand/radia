@@ -9,7 +9,9 @@
 > **A third audit opened package W on 2026-08-22 and CLOSED it the same day** (fourteen
 > findings across seven root causes, five guards proved red first; two reported findings did not
 > survive the check and are recorded with the correction, and the structural debt it named stays
-> open). **T remains open.** Everything else closed: A–G and J–O by 2026-08-03, **H, I, N, P, Q, R
+> open). **T closed 2026-08-06**: the confiner shipped the day the defect was measured, and this
+> entry said otherwise until 2026-08-30, which is a projection read as state over an append-only
+> ledger, in prose rather than in code. Everything else closed: A–G and J–O by 2026-08-03, **H, I, N, P, Q, R
 > and S** on 2026-08-04. What remains is the deferred low-severity batch below. The two pooled-Postgres races
 > package S fixed without a failing test now have one each (`test/concurrency.test.ts`, both
 > validated against the pre-fix adapter planted back in). The guards pass: `deno task test:runtime`
@@ -54,12 +56,13 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | ~~Q~~ | ~~Designed features unreachable~~     | ~~P2~~   | **CLOSED 2026-08-04**                 |
 | ~~R~~ | ~~Dead taint parameter; half-tested guard~~ | ~~P2~~ | **CLOSED 2026-08-04**                 |
 | ~~S~~ | ~~Round-two reports, re-derived~~     | ~~P1/P2~~ | **CLOSED 2026-08-04** (11 of 12 reproduced) |
-| **T** | **Module loading escapes the Deno jail's read permission** | **P1** | **CLOSED on Linux + macOS 2026-08-06** (macOS confiner unexecuted in CI); **OPEN on Windows** |
+| ~~T~~ | ~~Module loading escapes the Deno jail's read permission~~ | ~~P1~~ | **CLOSED 2026-08-06** (macOS confiner unexecuted in CI; native Windows unsupported) |
 | ~~U~~ | ~~Idempotency keys scoped to one run token~~ | ~~P2~~ | **CLOSED 2026-08-09** |
 | ~~V~~ | ~~A worker dereferences a body field with its OWN authority~~ | ~~P1~~ | **CLOSED 2026-08-16** (reproduced, then fixed) |
 | ~~W~~ | ~~Third audit: SDK parity, audit-event integrity, two orderings of "newest"~~ | ~~P1/P2~~ | **CLOSED 2026-08-22** (14 findings; 5 guards proved red) |
 
-Packages A–S and U–W are closed; **T is open**. Closed lessons are rules in
+**Every package is closed**, T included (2026-08-06; this line said otherwise until
+2026-08-30). Closed lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
 
@@ -470,7 +473,7 @@ Recorded here because the audit named them and they have no other home; none is 
 
 The structural debt below is untouched and stays open.
 
-## Package T: module loading escapes the read permission (P1) — OPEN
+## Package T: module loading escapes the read permission (P1) — CLOSED 2026-08-06
 
 **The defect, measured 2026-08-06.** Inside the `deno-permissions` jail,
 `import("file:///anywhere.json", { with: { type: "json" } })` returns the file. It is bounded by
@@ -503,12 +506,28 @@ cases in `extensions/conformance/workspace.test.ts`, both proved against plants;
 the one worth knowing, since a probe without a real canary reports `held: true` for a wide-open
 jail.
 
-**What is not done: the fix.** A mount namespace closes it, because an unbound path does not exist
-to open. The plan, with the measurements behind it and a per-platform story, is
-[plan-jail-confinement.md](plan-jail-confinement.md): a filesystem-only confiner under the
-unchanged permission jail, bubblewrap on Linux and `sandbox-exec` on macOS, both measured. One
-finding there needed no jail and is CLOSED (2026-08-06): the jail honoured a `deno.json` written
-into the model's own workspace, and now runs with `--no-config --no-lock --no-npm`.
+**The fix, SHIPPED 2026-08-06.** A mount namespace closes it, because an unbound path does not
+exist to open. A filesystem-only confiner sits under the unchanged permission jail: bubblewrap on
+Linux (`bwrapSandbox`, `extensions/ts/sandbox.ts`) and `sandbox-exec` on macOS, both measured, with
+`defaultConfiner` choosing per platform and `probeSandbox` deciding at boot whether it actually
+holds. `examples/chat/workers/exec.ts`, the blast radius named above, applies it. The measurements
+and the per-platform story are in
+[architecture-jail-confinement.md](architecture-jail-confinement.md). One finding there needed no
+jail and closed the same day: the jail honoured a `deno.json` written into the model's own
+workspace, and now runs with `--no-config --no-lock --no-npm`.
+
+**Why this was never as large as it reads, and the reason to read `SandboxSpec` before the CVE.**
+The Deno jail is ONE BACKEND, not the isolation mechanism. A sandbox is a record
+([design-execution.md](design-execution.md)), so confinement is a PROPERTY ON THE RECORD
+(`importsConfined`) rather than a language's name, and a grant binds that property. Building
+another jail is a record plus a probe, which is why the remedy took one day: nothing above the
+backend had to change, and `sandbox-web.ts` later added a fourth backend on the same seam without
+touching this one.
+
+**Scope: no supported platform is affected.** Native Windows has no confiner and says so, and
+native Windows is NOT SUPPORTED (README; WSL2 reports `linux` and takes the bubblewrap branch with
+no code added, though that path is unverified in CI). An unsupported platform cannot hold a package
+open, so this closes rather than staying open against a target the project does not ship for.
 
 Do NOT reach for the obvious cheap mitigation. The vector is decided by file EXTENSION, so renaming
 this space's secrets off `.json` looks like a free fix; it was proposed, and rejected, because the
