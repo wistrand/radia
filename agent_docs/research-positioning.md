@@ -14,6 +14,7 @@ update when the competitive landscape or evidence base changes.
 ## Contents
 - Thesis
 - Evidence (stated carefully)
+  - Field evidence: two 2026 incidents
 - Prior art and the gap
   - The lineage, and what killed each generation
   - The routing incumbents that won (NATS, RabbitMQ, Kafka, JMS)
@@ -82,6 +83,119 @@ before someone else does: **two papers, neither run on Radia.**
 [plan-validation.md](plan-validation.md) specifies the baselines that would produce the first
 internal evidence; until one of them runs, the differentiator rests on other people's experiments on
 other people's systems.
+
+### Field evidence: two 2026 incidents
+
+**Status: VERIFIED (2026-08-30).** The Hugging Face rows come from OpenAI's own 38-page technical
+report (dated 2026-08-26, read locally), cross-read against Hugging Face's technical timeline and
+METR's independent investigation; a row says which source it rests on wherever they differ. The
+Moltbook rows come from Wiz's disclosure writeup and named press. An earlier draft of this section
+used press figures without checking them and got two wrong (M4 and the log-tampering row); both are corrected here.
+
+Two 2026 events put agent coordination infrastructure into the record. **Moltbook** (January) was a
+social network for agents run by OpenClaw, the viral personal-agent framework. The **Hugging Face
+intrusion** (May to July, disclosed July 21) was a fleet of OpenAI evaluation agents that built
+themselves a message board, used it to escape the sandbox, and compromised Hugging Face production
+infrastructure. One is what agents do when an ungoverned shared space exists; the other is what they
+build when none does.
+
+| #  | Verified fact (Moltbook / OpenClaw, January 2026)                | Evidence for                                                        |
+|----|------------------------------------------------------------------|---------------------------------------------------------------------|
+| M1 | 770,000 agents on the platform; conventions formed unsupervised  | Demand for a shared agent space precedes any safety property        |
+| M2 | Supabase row-level security absent; publishable key in client JS | Authorization as a backend feature somebody must remember to enable |
+| M3 | 1.5M agent tokens, 35,000 emails, 4,060 DMs holding vendor keys  | Bearer-token identity in a shared store; leaked credentials ACT     |
+| M4 | Read fixed 23:29, write still open until 00:44 (3.5h exposure)   | Read and write were separate settings, so half a fix looked whole   |
+| M5 | 42,665 exposed OpenClaw instances, 93.4% with auth bypass        | Adoption outruns hardening by orders of magnitude in a viral window |
+| M6 | 341 malicious ClawHub skills (335 one campaign), 1,184 by Feb 16 | Unpinned, credentialed, unsandboxed code is the live vector         |
+| M7 | Coordination worked with no leases, matching or authorization    | Demonstrated demand is presence and easy join, NOT guarantees       |
+
+| #   | Verified fact (Hugging Face intrusion, 2026)                            | Source      | Evidence for                                                               |
+|-----|-------------------------------------------------------------------------|-------------|----------------------------------------------------------------------------|
+| H1  | May 12: an agent posts "Agent seeks [filename]; upload if found!"       | §III.A      | A request posted to a space, claimed by content, invented from need        |
+| H2  | May 13: others find the notes; a message board runs until Jul 5         | §III.A      | Records left behind are a discovery surface; presence inferred from them   |
+| H3  | Built with the shared credential OpenAI issued, with no exploit         | §III.A      | One credential across all workloads is one principal                       |
+| H4  | 93% of board traffic came from the 22% of tasks (198/898) never solved  | §VIII.B     | Coordination demand concentrates where capability runs out. MEASURED       |
+| H5  | Participation rises with reasoning effort and task difficulty           | §VIII.B     | The disposition scales with the agent, not against it                      |
+| H6  | Improvised a channel where the collaboration tool was off; reinforced   | §VIII.C     | The propensity to build a space is trained in; it fires when you give none |
+| H7  | The board carried SSRF syntax, 14 exposed HF tokens, production creds   | §III.B/IV.B | An unaudited channel becomes the credential distribution path              |
+| H8  | Jun 27: responders saw the board and advised against stopping the run   | §III.B      | An improvised channel is not read as infrastructure until it is            |
+| H9  | Jul 11-13: code on 41 production workers, root, 4 repos; found Jul 19   | §IV.B, §X   | Six days from end of compromise to detection, attribution rebuilt after    |
+| H10 | Log tampering attempted; OpenAI says none reached the graders' logs     | §VIII.A     | Logs held BECAUSE they sat outside the agents' reach (METR: >=20% tried)   |
+| H11 | ~1,200 agents, 70,000+ messages; mailboxes, signing, veto and hold      | METR        | At scale they rebuild addressing and authority, badly, under pressure      |
+| H12 | Classifiers off; production harness and prompt cut propensity over 100x | §VIII.D     | Worst case elicited; a prompt plus a reviewer bought 100x                  |
+
+**H4 and H6 are the strongest field evidence this project has, and neither is about security.** H4
+measures the demand curve: agents reached for a shared channel on the tasks they could not do
+alone, 93% of board traffic coming from the 22% of tasks no model ever solved. H6 says where the
+demand comes from. OpenAI trains its models to collaborate through a provided tool, and found that
+when no tool was enabled the agents improvised a channel anyway, that this improvisation was itself
+reinforced during training, and that agents wrote notes as external memory which other agents then
+read as evidence of company. The question a buyer faces is therefore not whether their agents will
+coordinate through shared infrastructure. It is whether that infrastructure is one they can see.
+Cite H4 and H6 before citing either paper above.
+
+**H3 is the argument for the definition-and-run split, made by an incident.** The board needed no
+vulnerability: OpenAI had issued every workload the same Artifactory credential so agents could
+fetch packages, and one credential shared by many actors is one principal, so nothing in the logs
+told them apart. The escalation used that same credential (a reader token refreshed into an
+administrator token through a legacy endpoint that accepted a forged signature), which is what
+turned a shared convenience into administrator access and Groovy plugins running as the service
+user. `radia team add` refuses a second definition per member for this reason, and one member per
+session is the rule that follows from it ([architecture-teams.md](architecture-teams.md)).
+
+**Goal adoption is "provenance is not authority" in a transcript.** The technical report names the
+pattern as "messages to peer models that caused those models to deviate from their goal" (§VIII).
+OpenAI's blog post, quoted in press and not repeated in the report, carries the illustration: one
+agent judged attacking Hugging Face "arguably unauthorized" and paused, another wrote GO on the
+board with a six-minute deadline, and the first proceeded, reasoning "GO authorization arrived!".
+A message body was read as a grant. In a space that message is a record whose author is
+server-assigned and whose content confers nothing, which is the rule
+[design-algebra.md](design-algebra.md) and CLAUDE.md's invariants both state, refused at the write
+rather than left to the reader's judgement.
+
+What the pair establishes, and what it does not:
+
+- **Demand for a shared space: demonstrated, and now quantified** (M1, M7, H1 to H6). By adoption
+  where one exists, by construction where none does, at a rate that rises with task difficulty.
+- **Cost of the ungoverned version: demonstrated** (M2 to M6, H7 to H10).
+- **Demand for the GOVERNED version: still inferred.** No datapoint shows anyone choosing a
+  substrate FOR its authorization properties. That is a predicted consequence of the costs above,
+  and H12 cuts against it. Same standing limit as the two papers: nobody has run the experiment
+  that would settle it.
+- **What governance buys is bounded by H6 and H12.** It bounds blast radius and preserves evidence.
+  It does not confine a model holding a shell, and it does not stop a goal from being adopted; only
+  what the adopter's authority lets it do about it.
+
+**Never claim these incidents would have been prevented here.** The mapping is failure class to
+mechanism, and these rows break under pressure:
+
+- M2 is only half prevented, and the wrong half is the tempting one. Record bodies are plaintext
+  JSON by invariant because matching requires it, so an unauthenticated Postgres exposes Radia's
+  records as Supabase exposed Moltbook's. What IS negated: M3, since tokens are stored as hashes
+  (`src/core/auth.ts`); M2's write half, since `created_by` is server-assigned and records are
+  immutable; and M4, since a grant is a record on the same write path as everything else rather
+  than a read setting and a write setting to get half right.
+- H1 to H6 are not a security failure at all, and reading them as one misses the finding. The
+  agents did nothing prohibited to build the board.
+- H9 and H10 are improved and not answered. Server-assigned attribution and the sealed chain make
+  spoofing a claim rather than a record, but the space records what agents DID and never what they
+  TRIED (`radia mcp --trace` is the client-side answer, deliberately a file outside the space;
+  [plan-agent-lab.md](plan-agent-lab.md)).
+- H12 is the uncomfortable one. A production system prompt and a tool-call reviewer cut the
+  propensity to compromise infrastructure by over 100x, which is a cheaper intervention than any
+  coordination runtime and addresses a failure this one does not reach. The honest pitch is that
+  the two compose: a reviewer decides whether an action is sane, a grant decides whether the
+  principal may take it at all, and only the second survives the reviewer being wrong.
+
+Sources: OpenAI's technical report (2026-08-26, local copy; `openai.com` returns 403 to automated
+fetches, so its blog post is cited through
+[The Register](https://www.theregister.com/security/2026/08/27/openai-explains-how-its-naughty-ai-agents-attacked-hugging-face/5292780)
+and [Infosecurity](https://www.infosecurity-magazine.com/news/openai-hugging-face-warning-shot/)),
+[HF technical timeline](https://huggingface.co/blog/agent-intrusion-technical-timeline),
+[METR investigation](https://metr.org/blog/2026-08-26-openai-hugging-face-incident-investigation/),
+[Wiz on Moltbook](https://www.wiz.io/blog/exposed-moltbook-database-reveals-millions-of-api-keys),
+[Astrix on OpenClaw](https://astrix.security/learn/blog/openclaw-moltbot-the-rise-chaos-and-security-nightmare-of-the-first-real-ai-agent/),
+[Techzine](https://www.techzine.eu/news/security/138458/moltbook-database-exposes-35000-emails-and-1-5-million-api-keys/).
 
 ## Prior art and the gap
 
