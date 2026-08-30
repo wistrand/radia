@@ -56,7 +56,7 @@ export interface JailChoice {
  * Pick the JavaScript jail this host can actually provide, and say which one that is.
  *
  * Confined first, then the bare Deno jail. The order and the fallback are the chat's, and the
- * reason is measured (agent_docs/plan-jail-confinement.md): unconfined, a JSON import reaches any
+ * reason is measured (agent_docs/architecture-jail-confinement.md): unconfined, a JSON import reaches any
  * file this user can read, past the read roots and past `--deny-read`, because module loading is
  * not bounded by Deno's permissions. A mount namespace closes it. WHICH confiner is a platform
  * guess; WHETHER it works is the probe's answer.

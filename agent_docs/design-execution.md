@@ -95,7 +95,7 @@ Python has no such flags, so its profile must `(deny default)` and grant upward:
 applied to Python would pass every axis anyone tests and leave the rest open. An earlier revision of
 this section concluded from that asymmetry that Python could not be offered on macOS at all. It can;
 the asymmetry is in the PROFILE, not in the platform. See
-[plan-jail-confinement.md](plan-jail-confinement.md).
+[architecture-jail-confinement.md](architecture-jail-confinement.md).
 
 ### Selection: the capability name is the answer
 
@@ -174,7 +174,7 @@ ms}` out, plus the optional `expect` that produces a `check`. Nothing in it ment
 > not module loading, so the Deno jail's "no filesystem" is false for `.json` and for any `.ts`/`.js`
 > it can name. The option space below is therefore incomplete in one direction: what the Deno jail
 > needs is not a different runtime but a filesystem CONFINER underneath it, which is a smaller and
-> composable change. See [plan-jail-confinement.md](plan-jail-confinement.md) and package T in
+> composable change. See [architecture-jail-confinement.md](architecture-jail-confinement.md) and package T in
 > [plan-audit-remediation.md](plan-audit-remediation.md).
 
 

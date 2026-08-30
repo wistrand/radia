@@ -266,7 +266,7 @@ filesystem at all. Net, env, run and write stay denied whatever it says. It is s
 
 See [the workspace documentation](../../docs/workspaces.html),
 [the execution design](../../agent_docs/design-execution.md) and
-[the confinement plan](../../agent_docs/plan-jail-confinement.md) for the trust boundaries.
+[the confinement plan](../../agent_docs/architecture-jail-confinement.md) for the trust boundaries.
 
 ## Terminal controls
 
