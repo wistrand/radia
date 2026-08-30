@@ -59,13 +59,27 @@ const unlabel = (line: string) => line.replace(/^\[[^\]\n]{1,48}\] /, "");
  * labelled and goes through `notice`, so it waits for the line to be idle. A worker that dies at
  * boot still gets its message out; it simply arrives at the next prompt.
  */
+/**
+ * Whether THIS launcher is beating, which is the only thing that makes `--presence` true.
+ *
+ * Module state rather than a parameter because it must not be forgettable at any of the seven
+ * spawn sites, and because it is a fact about this PROCESS. It starts false, which is the safe
+ * direction: a worker that does not claim presence is simply never judged stale.
+ */
+let beating = false;
+
 function spawn(name: string, args: string[], env?: Record<string, string>): Deno.ChildProcess {
   const proc = new Deno.Command("deno", {
-    // `--presence` is passed to every worker this launcher starts, and only here, because it is a
-    // claim about the LAUNCHER: these processes are covered by the beats `announceFleet` writes, so
-    // their advertisements may be judged stale once the beats stop. A worker started by hand is not
-    // covered and must not claim it, which is why this is not a default inside the worker.
-    args: ["run", ...args, "--presence"],
+    // `--presence` is a claim about the LAUNCHER: these processes are covered by the beats
+    // `announceFleet` writes, so their advertisements may be judged stale once the beats stop. A
+    // worker started by hand is not covered and must not claim it, which is why this is not a
+    // default inside the worker.
+    //
+    // CONDITIONAL on the beats actually happening. The flag and the heartbeat are two halves of one
+    // promise: a fleet whose announce failed but whose workers still claimed presence would have
+    // every one of its tools hidden by every session, while serving perfectly well. So a launcher
+    // that cannot beat runs an unpoliced fleet, which is exactly the behaviour before any of this.
+    args: ["run", ...args, ...(beating ? ["--presence"] : [])],
     ...(env ? { env } : {}),
     stdout: "null",
     stderr: "piped",
@@ -320,7 +334,10 @@ export function launchWebUi(webPort: number, host = "127.0.0.1"): Deno.ChildProc
 // The SUBJECT is the fleet as a whole, because the thing being withdrawn is: an advertisement is
 // keyed by (provider, tool) and belongs to no launcher.
 
-const FLEET_SUBJECT = "fleet";
+/** The subject that answers "is a launcher running at all", as opposed to "is this provider
+ *  served". Exported because the chat's banner asks the same question at boot, and a second
+ *  spelling of it would report a healthy fleet as missing. */
+export const FLEET_SUBJECT = "fleet";
 
 /** Say this launcher is running, and keep saying it until `signal` aborts. Returns the fleet id to
  *  hand back to `retireFleetAdvertisements`.
@@ -341,6 +358,7 @@ export async function announceFleet(admin: RadiaClient, signal: AbortSignal): Pr
   for (const provider of FLEET_PROVIDERS) {
     await announcePresence(admin, FLEET_PRESENCE, provider, { instance: handle.instance, signal, onError });
   }
+  beating = true;
   return handle.instance;
 }
 

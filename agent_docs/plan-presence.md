@@ -231,6 +231,16 @@ asks the same question at BOOT and prints `fleet NOT RUNNING` with the command t
 (`examples/chat/chat.ts`). Silent when it cannot tell, and silent in solo mode, where this process
 just launched the fleet it would be warning about.
 
+**Second review pass, after first real use.** Running it found four more, none reachable from a
+test. A HEARTBEAT MUST NOT STOP THE THING IT DESCRIBES: `announceFleet` awaited its first beat and
+sat one line above `launchFleet` with no catch, so a failed beat meant no fleet at all. Its fix is
+the coupling, not the catch: `--presence` is a promise that the launcher beats, so a launcher that
+cannot beat runs an UNPOLICED fleet rather than one whose every tool a session hides. A dead fleet
+also printed one notice per hidden tool, twenty for a single event, so the report is per PROVIDER.
+The banner's fleet check spelled the subject a second time, where a rename would have reported a
+healthy fleet as missing. And the Python SDK carried the same pre-envelope `read_one` defect as the
+TypeScript one, where the silent half is worse: a found record read back as absent.
+
 **Known and accepted, with the reasoning:**
 - An SSO deployment's EXISTING people never receive the `chat_presence` grant, because
   `sweepEnrolments` skips anyone already holding something. That is the trap CLAUDE.md names for

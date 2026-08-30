@@ -182,9 +182,10 @@ export interface PresenceView {
   readonly live: ReadonlyMap<string, ReadonlySet<string>>;
   readonly scanned: number;
   /**
-   * Whether the walk reached the TTL horizon (or the end of the kind). FALSE means the scan
-   * ceiling stopped it early, so the answer is a prefix: an instance may be live and unlisted.
-   * Never decide a withdrawal on an incomplete view.
+   * Whether the walk reached the TTL horizon (or the end of the kind). FALSE means the answer is a
+   * PREFIX and an instance may be live and unlisted: the scan ceiling stopped the walk, a page came
+   * back full with nowhere to continue, or a GRANT narrowed the read to a subset of who is beating.
+   * Never decide a withdrawal, or judge an advertisement stale, on an incomplete view.
    */
   readonly complete: boolean;
 }

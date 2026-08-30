@@ -56,7 +56,7 @@ import {
 } from "./space/keys.ts";
 import { type ConversationKey, NoConversationKeyError, sealConversation } from "../../extensions/ts/encrypted.ts";
 import { apiKey, encryptMode, EXEC_TIMEOUT_MS, execRoots, loginDefinitionToken, loginSource, loginToken, operatorToken, resume, scopeMode, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
-import { announceFleet, launchFleet, launchWebUi, retireFleetAdvertisements, spawnSpace } from "./client/fleet.ts";
+import { announceFleet, FLEET_SUBJECT, launchFleet, launchWebUi, retireFleetAdvertisements, spawnSpace } from "./client/fleet.ts";
 import { denoSandbox } from "../../extensions/ts/sandbox.ts";
 import { declareSandbox } from "../../extensions/ts/sandbox-registry.ts";
 import { ToolSet } from "./client/turn.ts";
@@ -216,7 +216,15 @@ async function setUpSpace(a: RadiaClient): Promise<void> {
   // these workers serve everybody.
   // Announced BEFORE the workers start, so a fleet exiting in the gap between the two sees this
   // one and leaves the shared advertisements alone (client/fleet.ts).
-  fleetId = await announceFleet(a, shutdown.signal);
+  // A HEARTBEAT MUST NOT STOP THE THING IT DESCRIBES. The first beat is awaited so a presence this
+  // process cannot write is loud rather than silent, but a fleet that fails to announce still
+  // serves: `launchFleet` then spawns workers that claim no presence, so nothing judges them
+  // stale, which is the behaviour before any of this existed.
+  try {
+    fleetId = await announceFleet(a, shutdown.signal);
+  } catch (e) {
+    notice(dim(`[fleet] could not record this fleet as running (${e}); starting it unpoliced`));
+  }
   procs.push(...launchFleet(tokens, fleetKey));
   // The retention sweep, at the one moment this app reliably has an operator credential in hand.
   // Best-effort in the background: a chat that cannot sweep is a chat, not an error.
@@ -698,8 +706,8 @@ field("tools", tools.all().length > 0 ? `${tools.all().length} discovered` : dim
 // started a fleet of its own, which is the case the line would only ever nag about.
 if (!admin) {
   try {
-    const beats = await livePresence(session, FLEET_PRESENCE, { subject: "fleet" });
-    if (beats.complete && !beats.live.has("fleet")) {
+    const beats = await livePresence(session, FLEET_PRESENCE, { subject: FLEET_SUBJECT });
+    if (beats.complete && !beats.live.has(FLEET_SUBJECT)) {
       field("fleet", `NOT RUNNING  ${dim("start one with: deno task chat -- --serve --auto-grant")}`);
     }
   } catch { /* no grant to read presence, or an older space: say nothing rather than guess */ }

@@ -234,8 +234,9 @@ The rule: a scope belongs on kinds that carry DATA, never on the ones that descr
   up for four days answered `/v0/records/read-one` with the pre-2026-08-28 bare record, and the
   SDK's `(...).record` was a `TypeError: Cannot read properties of null` with nothing naming the
   cause. Worse than the crash was the other half: a FOUND record under the old shape has no `record`
-  key, so `?? null` would have reported it as absent. `readOneEnvelope` refuses both and says the
-  space is older than the client. Restart the space. Guard: test/http.test.ts "readOne refuses the
+  key, so `?? null` would have reported it as absent. `readOneEnvelope` (and `_read_one_envelope` in the
+  Python SDK, which had the same defect) refuses both and says the space is older than the client.
+  Restart the space. Guard: test/http.test.ts "readOne refuses the
   pre-envelope response shape".
 
 ### Registries, and reads that must not truncate
