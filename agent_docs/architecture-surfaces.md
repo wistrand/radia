@@ -456,16 +456,21 @@ model can report a stuck lease and do nothing about it.
 
 ## Distribution: `scripts/build-release.sh`
 
-`deno task release` compiles five targets and stages the esbuild/uv shape: `dist/npm/radia` (a
-launcher plus `optionalDependencies` on per-platform packages) and `dist/pypi` (wheel source whose
-launcher `execv`s the bundled binary; `exec` matters, so `radia mcp`'s stdio stays a direct pipe).
+`deno task release` compiles four targets (Linux and macOS, x64 and arm64; native Windows is
+unsupported, WSL2 runs the Linux binary) and stages the SDK packages: `dist/npm/radia` (TS SDK +
+`extensions/` as source) and `dist/pypi` (the Python SDK, published as `radia-space` since the bare
+PyPI name is taken; it still imports as `radia`). Neither carries a binary or launcher:
+the binary's one supported install is `curl | sh` (`docs/install.sh`, downloading the gzipped
+release assets `.github/workflows/release.yml` attaches to a `v*` tag and verifying them against
+the release's `SHA256SUMS`; `test/docs.test.ts` holds the target list, the asset names and the
+sums file as a contract between the three files).
 
 `--include` must list every runtime asset (`src/ui/index.html` and `src/ui/vendor/blitzoom.bundle.js`),
 or the binary boots and then 404s. `deno task compile` carries the same flags for the single-binary
 build.
 
-The npm package carries more than the launcher: the TypeScript SDK and `extensions/` ship as SOURCE
-beside it, so an agent author who has `radia` has the client and the conventions built on it with
+The npm package is the TypeScript SDK and `extensions/` shipped as SOURCE, so an agent
+author who has `radia` has the client and the conventions built on it with
 nothing to compile. One trap the build has to handle: an extension imports the SDK as
 `../../sdk/ts/client.ts` in the repo and `../sdk/` once staged, so the script rewrites the path.
 Nothing type-checks the staged tree, so a wrong path there would be a silent break rather than a
@@ -473,6 +478,7 @@ build failure. The two are versioned differently on purpose (the SDK mirrors the
 contract; an extension is a convention that evolves), which is why they are separate directories in
 the package rather than one.
 
-**Unverified:** `npx radia dev` and `pipx run radia dev` have never been executed end to end.
-That needs a registry publish. Only the host target has been compiled; the four cross-compiled
-targets and the staged package metadata are best-effort until someone publishes once.
+**Unverified:** neither SDK package has been installed from a registry, and no release tag has
+been published, so the `curl | sh` path is unexercised end to end. Only the host target has been
+compiled; the cross-compiled targets and the staged package metadata are best-effort until
+someone publishes once.

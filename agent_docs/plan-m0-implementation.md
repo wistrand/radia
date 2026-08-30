@@ -9,7 +9,7 @@
 
 ## Goal
 
-Ship `npx radia dev`: an embedded, single-process Radia space with a bundled MCP adapter
+Ship `radia dev` behind a one-command install: an embedded, single-process Radia space with a bundled MCP adapter
 and a friendly dev UI (see "Dev UI"), reachable in under a minute, with the core kernel
 (put/take/ack/nack/release/renew, record+envelope split, fencing, idempotency,
 equality/range matching, transactional event log, dead-letter) behind the frozen wire
@@ -68,9 +68,11 @@ watches and the M1 **authorization stack** (grants, run-token bootstrap chain, p
 delegation, taint; see the Enhancements note below), the dev console, examples, and several
 enhancements. Per-phase records with verify results are in the Phases section below.
 
-The one thing M0 claims that has not been executed end to end is `npx radia dev` / `pipx run`:
-the binaries compile and the shim packages are staged by `deno task release`, but nothing has
-been published to a registry, so the install path itself is unexercised.
+The one thing M0 claims that has not been executed end to end is the install path. The plan's
+`npx radia dev` / `pipx run` shape was SUPERSEDED on 2026-08-30 before any publish: the binary
+installs only via `curl | sh` (`docs/install.sh` + the release workflow), npm and pip carry the
+SDKs with no binary inside, and native Windows is unsupported (WSL2 runs the Linux binary). No
+release tag or registry publish exists yet, so the path stays unexercised.
 
 Two storage rules the phases produced (`src/storage/`):
 - `ack` with a result appends the successor's own `put` event. Without it the record exists
@@ -289,7 +291,7 @@ real infra and is deferred past M0; see [plan-validation.md](plan-validation.md)
 - [x] Minimal CLI (`src/surfaces/cli.ts`) over the public API only: `health stats doctor kinds get lineage children events watch put query read-one take ack nack release`, `--json` on every verb. `take --json` emits the claim; pipe it back to `ack -`/`nack -`/`release -`. Discovery-first: `kinds` is a query for `kind_def` records, and no verb carries a table of known kinds.
 - [x] TS SDK (`sdk/ts/client.ts` + `loop.ts`: `RadiaClient` over `/v0`, `agentLoop` with heartbeat at lease/3, per-attempt idempotency key). Demo agents in `examples/` + `deno task demo` exercise it end-to-end over HTTP.
 - [x] **Python SDK at parity** (`sdk/py/radia.py`): `RadiaClient` (records, claims, watches with SSE reconnect + opaque cursor, ops reads), `agent_loop` with background watchers, heartbeat, per-attempt idempotency key, and the same permanent-403-on-watch handling as the TS loop. **Standard library only**: `urllib` + `threading`, nothing to install, Python 3.9+.
-- [x] Release wrapping: `scripts/build-release.sh` (`deno task release`) runs `deno compile` for 5 targets, then stages the esbuild/uv shape: `dist/npm/radia` (launcher + `optionalDependencies` on per-platform packages) and `dist/pypi` (wheel source with a launcher that `execv`s the bundled binary; `exec` matters so `radia mcp`'s stdio stays a direct pipe). `/dist/` is gitignored. Publishing is manual and unexercised; see Verify.
+- [x] Release wrapping: `scripts/build-release.sh` (`deno task release`) runs `deno compile` per target and stages the registry packages. Built here as the esbuild/uv launcher shape (5 targets, npm launcher + `optionalDependencies` platform packages, a wheel whose launcher `execv`s a bundled binary); SUPERSEDED 2026-08-30 before any publish: 4 targets (native Windows unsupported, WSL2 runs the Linux binary), SDK-only npm/pip packages, and the binary behind `docs/install.sh`. `/dist/` is gitignored. Publishing is manual and unexercised; see Verify.
 
 **Verify:** PASSED for everything runnable locally. Against a live space: `radia dev` provisions
 the credential (0600) and the CLI presents it, proven by a bogus `RADIA_TOKEN` 401ing on an
@@ -303,18 +305,19 @@ kinds/put/query, a three-record `agent_loop` drain emitting results, a live watc
 credential resolution at parity with `RADIA_TOKEN` precedence; and the compiled binary serving
 the console, the vendored bundle, and its own CLI.
 
-**Not verified:** `npx radia dev` / `pipx run radia dev` end to end. That needs a publish (or a
-local registry), and installing packages is out of scope here. Cross-compilation for the four
-non-host targets is likewise unrun; only the host target was built. The staged package metadata
-is therefore best-effort until someone publishes once.
+**Not verified:** the install path end to end (since superseded: `curl | sh` for the binary,
+SDK-only npm/pip; see "Current state" above). That needs a publish, which is out of scope here.
+Cross-compilation for the non-host targets is likewise unrun; only the host target was built.
+The staged package metadata is therefore best-effort until someone publishes once.
 
 ## Open questions
 
 - **SQLite library: resolved to `node:sqlite`.** The FFI package `jsr:@db/sqlite`
   segfaulted under Deno 2.9.2 ([gotchas.md](gotchas.md)), so the adapter uses the built-in
   `node:sqlite`. It is marked unstable upstream; watch for API changes on Deno upgrades.
-- **npm/pip binary distribution mechanics** (embed vs. download-on-install): defer the
-  polished version to M1; a rough shim is enough for the M0 demo.
+- **npm/pip binary distribution mechanics: resolved by removal (2026-08-30).** npm and pip
+  carry the SDKs only; the binary ships as release assets behind the `curl | sh` installer
+  (`docs/install.sh`), and native Windows is unsupported (WSL2).
 
 <!-- When M0 lands: fold each phase's built behavior into the relevant architecture-*.md
      (promoted from design-*.md), point those docs into src/ paths + symbols, delete the

@@ -85,9 +85,10 @@ deno run -A src/main.ts <verb>   # from source, no build (what the tasks above d
 deno task compile                # → ./radia, a self-contained binary; then ./radia <verb>
 ```
 
-Putting the compiled binary on your `PATH` makes the examples read literally. The `npx radia` /
-`pipx run radia` packaging is built by `deno task release` but is **not published**, so neither
-works today.
+Putting the compiled binary on your `PATH` makes the examples read literally. The supported install
+is `curl -fsSL https://radia.sh/install.sh | bash`, which fetches a prebuilt binary from the GitHub
+release; until a release is published, compile from the checkout as above. npm and PyPI carry the
+SDKs only, never the binary. Native Windows is unsupported; run the Linux binary under WSL2.
 
 Storage is in-memory by default. To persist across restarts, pass `--db`:
 
@@ -313,19 +314,21 @@ seal key and blob KEK follows the working directory.
 ### Distribution
 
 ```bash
-./scripts/build-release.sh          # per-OS binaries + staged npm and pip shim packages
+./scripts/build-release.sh          # per-OS binaries + staged npm and pip SDK packages
 ./scripts/build-release.sh host     # just this machine, for a quick check
 ```
 
-`deno compile` produces one self-contained binary (console and its vendored asset included); the npm
-and pip packages are thin launchers that exec it, so once published `npx radia dev` and
-`pipx run radia dev` will need neither Deno nor a compile step. Nothing is on npm or PyPI yet, and
-neither launcher has been run end to end, so treat both as untested.
+`deno compile` produces one self-contained binary (console and its vendored asset included) per
+target: Linux and macOS, x64 and arm64. Native Windows is unsupported; WSL2 runs the Linux binary.
+The binary's one supported install is `curl | sh` ([docs/install.sh](docs/install.sh), which
+downloads the release assets `.github/workflows/release.yml` publishes on a `v*` tag and verifies
+them against the release's `SHA256SUMS`). Nothing is on npm or PyPI yet.
 
-The npm package also carries the **TypeScript SDK** and the **extensions** as source, so an agent
-author who has `radia` has the client and the conventions built on it with nothing to compile. The
-two are versioned differently on purpose: the SDK mirrors the frozen `/v0` contract, while an
-extension is a convention that evolves. See [extensions/README.md](extensions/README.md).
+The npm package carries the **TypeScript SDK** and the **extensions** as source, and the pip
+package (`radia-space` on PyPI, importable as `radia`) the **Python SDK**; neither carries a
+binary or a launcher. The SDK and the extensions are
+versioned differently on purpose: the SDK mirrors the frozen `/v0` contract, while an extension is
+a convention that evolves. See [extensions/README.md](extensions/README.md).
 
 ## How it works
 

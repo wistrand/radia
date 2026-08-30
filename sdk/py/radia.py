@@ -1,7 +1,7 @@
 """Radia Python SDK, at parity with sdk/ts/client.ts (Phase 7).
 
 Thin wrappers over the public ``/v0`` API: exactly what an external agent uses, with no
-privileged access. Standard library only (``urllib``), so ``pip install radia`` pulls nothing
+privileged access. Standard library only (``urllib``), so ``pip install radia-space`` pulls nothing
 else in and the SDK works on any Python 3.9+ without a build step. That is the minimal-dependency
 invariant applied to the client side.
 

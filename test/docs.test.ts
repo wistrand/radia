@@ -231,7 +231,7 @@ Deno.test("docs: the installer targets are targets the release actually builds",
   const build = await Deno.readTextFile(new URL("../scripts/build-release.sh", import.meta.url));
   const workflow = await Deno.readTextFile(new URL("../.github/workflows/release.yml", import.meta.url));
 
-  const built = new Set([...build.matchAll(/^\s*"([a-z0-9_]+-[a-z0-9-]+)\s/gm)].map((m) => m[1]));
+  const built = new Set([...build.matchAll(/^\s*"([a-z0-9_]+-[a-z0-9-]+)"\s*$/gm)].map((m) => m[1]));
   assert(built.size >= 4, `failed to read the release targets, found ${[...built]}`);
   // The QUOTED value each case arm echoes, not a substring match: `aarch64-apple-darwin-oops`
   // contains a valid triple and is not one, which is exactly the typo this guard exists to catch.

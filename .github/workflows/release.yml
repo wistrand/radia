@@ -4,10 +4,12 @@
 # GitHub release. The installer resolves `releases/latest/download/radia-<target>.gz`, so the asset
 # NAMES here are a contract with that script; `test/docs.test.ts` checks the two agree.
 #
-# One job, no matrix: `deno compile --target` cross-compiles, so one runner produces all five.
+# One job, no matrix: `deno compile --target` cross-compiles, so one runner produces all four
+# (Linux and macOS, x64 and arm64; native Windows is unsupported, WSL2 runs the Linux binary).
 #
-# The npm and pip packages `deno task release` also stages are NOT published here. Publishing to a
-# registry needs credentials and an account decision; attaching files to a release needs neither.
+# The npm and pip SDK packages `deno task release` also stages are NOT published here. Publishing
+# to a registry needs credentials and an account decision; attaching files to a release needs
+# neither.
 
 name: release
 
@@ -46,13 +48,7 @@ jobs:
           mkdir -p dist/assets
           for dir in dist/bin/*/; do
             target="$(basename "$dir")"
-            bin="$dir/radia"
-            [ -f "$bin" ] || bin="$dir/radia.exe"
-            # The Windows asset keeps its .exe, so what people download unpacks to a runnable name.
-            case "$target" in
-              *windows*) gzip -9 -c "$bin" > "dist/assets/radia-$target.exe.gz" ;;
-              *) gzip -9 -c "$bin" > "dist/assets/radia-$target.gz" ;;
-            esac
+            gzip -9 -c "$dir/radia" > "dist/assets/radia-$target.gz"
           done
           # Bare names, not `./name`: this file is read by `docs/install.sh` and by people.
           cd dist/assets && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
