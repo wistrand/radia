@@ -39,7 +39,7 @@ function bodyTaint(raw: unknown): string[] | undefined {
   return clientTaint(raw, { reserved: true }); // a RAISE; see clientTaint
 }
 import type { PutRequest } from "../../core/record.ts";
-import { combineMatch, pageIsDescending, type Pattern } from "../../core/matching.ts";
+import { pageIsDescending, type Pattern } from "../../core/matching.ts";
 import { RadiaError } from "../../core/errors.ts";
 import { problem, rejectUnknown, statusFor } from "../problem.ts";
 import { decodeCursor, encodeCursor, type Page } from "../../../sdk/ts/wire.ts";
@@ -111,10 +111,8 @@ export async function handlePut(space: Space, req: Request, principal: string): 
   if (typeof put === "string") return problem(400, "invalid_body", put);
 
   try {
-    const constraint = await space.authorize(principal, "put", put.kind);
-    if (constraint && !space.bodyMatchesGrant(put.kind, put.body, constraint)) {
-      return problem(403, "forbidden", `record body is outside the pattern scope of your put grant for '${put.kind}'`);
-    }
+    // The grant check runs INSIDE `Space.put` (design-auth.md, "Where each verb is enforced"), so
+    // this handler and an in-process caller get the same refusal from one implementation.
     const { id } = await space.put(put, req.headers.get("Idempotency-Key") ?? undefined, principal);
     return new Response(JSON.stringify({ id }), {
       status: 201,
@@ -171,11 +169,11 @@ export async function handleRegistry(space: Space, req: Request, principal: stri
   const unknownReg = rejectUnknown(j, ["kind", "match"]);
   if (unknownReg) return unknownReg;
   try {
-    const { constraint, createdBy } = await space.readAccess(principal, "query", j.kind);
-    const match = constraint
-      ? combineMatch(j.match as Record<string, unknown> | undefined, constraint)
-      : j.match as Record<string, unknown> | undefined;
-    const out = await space.registryOf(j.kind, match, createdBy ? { createdBy } : undefined);
+    const { constraint, createdBy, ...out } = await space.registryOfAs(
+      principal,
+      j.kind,
+      j.match as Record<string, unknown> | undefined,
+    );
     return Response.json({ ...out, ...describeReadScope(constraint, createdBy) });
   } catch (e) {
     if (e instanceof RadiaError) return problem(statusFor(e.code, 400), e.code, e.message);
@@ -223,16 +221,14 @@ export async function handleQuery(space: Space, req: Request, principal: string)
     page = { after: j.after as string | undefined, dir: j.dir as "asc" | "desc" | undefined };
   }
   try {
-    // Both halves of the read scope in one call. A self-scoped grant narrows the coordination
-    // plane too, and asking for the pattern alone is how that gets forgotten.
-    const { constraint, createdBy } = await space.readAccess(principal, "query", pattern.kind);
-    if (constraint) pattern.match = combineMatch(pattern.match, constraint); // grant ∧ request
-    const records = await space.query(pattern, limit, page, createdBy ? { createdBy } : undefined);
+    // The grant COMPOSES inside `Space.queryAs` (design-auth.md, "Where each verb is enforced"),
+    // which hands back what it applied so the response can keep saying so.
+    const { records, pattern: scoped, constraint, createdBy } = await space.queryAs(principal, pattern, limit, page);
     // The cursor for the NEXT page is the last id of this one, echoed so a caller never has to
     // know that the cursor happens to be a record id.
     // `explain: true` annotates the answer with the traps this query walked into. Opt-in so the
     // hot path pays nothing, and never affects the result.
-    const explain = j.explain === true ? space.explainQuery(pattern, records.length, limit, page) : [];
+    const explain = j.explain === true ? space.explainQuery(scoped, records.length, limit, page) : [];
     return Response.json({
       records,
       // Offered only when the walk is one this cursor can describe. With `orderBy` the order is a
@@ -242,7 +238,7 @@ export async function handleQuery(space: Space, req: Request, principal: string)
       // SQL. Resolving the default here instead (`page?.dir ?? "asc"`) would be a sixth site
       // deciding it, which is what step 7 of plan-bounded-reads.md exists to stop: a cursor that
       // says `a:` for a walk the storage ran descending sends the next page backwards.
-      nextCursor: records.length === limit && !pattern.orderBy?.length
+      nextCursor: records.length === limit && !scoped.orderBy?.length
         ? encodeCursor(pageIsDescending(page) ? "desc" : "asc", records[records.length - 1].id)
         : undefined,
       ...describeReadScope(constraint, createdBy),
@@ -271,9 +267,7 @@ export async function handleReadOne(space: Space, req: Request, principal: strin
     orderBy: j.orderBy as Pattern["orderBy"],
   };
   try {
-    const { constraint, createdBy } = await space.readAccess(principal, "read_one", pattern.kind);
-    if (constraint) pattern.match = combineMatch(pattern.match, constraint); // grant ∧ request
-    const record = await space.readOne(pattern, createdBy ? { createdBy } : undefined);
+    const { record, pattern: scoped, constraint, createdBy } = await space.readOneAs(principal, pattern);
     // THE ENVELOPE, always, because a bare `null` cannot say WHY nothing came back: a null produced
     // inside a grant's bounds means the record may exist and be somebody else's, and one outside
     // any bound means no such record. Every other read gained that distinction; this was the last
@@ -288,7 +282,7 @@ export async function handleReadOne(space: Space, req: Request, principal: strin
     // `explain` stays opt-in, as on `query`: the notes cost a computation, the envelope does not.
     // The limit passed cannot read as a page (`explainQuery` warns when `returned >= limit`), since
     // one record answering a request for one record is complete rather than truncated.
-    const explain = j.explain === true ? space.explainQuery(pattern, record ? 1 : 0, 2, undefined) : [];
+    const explain = j.explain === true ? space.explainQuery(scoped, record ? 1 : 0, 2, undefined) : [];
     return Response.json({
       record,
       ...describeReadScope(constraint, createdBy),

@@ -52,7 +52,7 @@ Deno.test("delegation: a privileged worker cannot mint a delegated run at all", 
     // `human:local` is the default operator. It holds no definition (that is refused too), so the
     // principal is presented directly, which is exactly the shape `authorize` short-circuits on.
     const alice = await agentRun(t.space, "human:alice", [grant("human:alice", "note", ["put", "query"])]);
-    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run);
+    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run, { unchecked: "fixture: plants authorship below the grant layer" });
     const e = await assertRejects(() => t.space.mintDelegatedRun("human:local", id), RadiaError);
     assertEquals(e.code, "forbidden");
     assertStringIncludes(e.message, "would not be attenuated");
@@ -69,7 +69,7 @@ Deno.test("delegation: the SUPERVISOR cannot mint one either, because its carve-
     // which keys on the AGENT and returns `null` before any grant is read.
     const sup = await agentRun(t.space, "agent:supervisor", [grant("agent:supervisor", "note", ["query"])]);
     const alice = await agentRun(t.space, "human:alice", [grant("human:alice", "note", ["put", "query"])]);
-    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run);
+    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run, { unchecked: "fixture: plants authorship below the grant layer" });
     const e = await assertRejects(() => t.space.mintDelegatedRun(sup.run, id), RadiaError);
     assertEquals(e.code, "forbidden");
     assertStringIncludes(e.message, "supervisor");
@@ -104,7 +104,7 @@ Deno.test("delegation: the delegated run is a SUBSET on every axis (op, pattern,
     const worker = await agentRun(t.space, "agent:w", [
       grant("agent:w", "note", ["query", "read_one"]), // unscoped, and `read_one` alice lacks
     ]);
-    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run);
+    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run, { unchecked: "fixture: plants authorship below the grant layer" });
     const d = await t.space.mintDelegatedRun(worker.run, id);
     assertEquals(d.actingFor, "human:alice");
     assertEquals(d.agent, "agent:w", "delegation narrows authority, it does not change identity");
@@ -180,7 +180,7 @@ Deno.test("delegation: no shared grant is refused at the MINT, not handed back a
     // on it, which is the interesting empty case: a kind in common is not authority in common.
     const alice = await agentRun(t.space, "human:alice", [grant("human:alice", "note", ["put"])]);
     const worker = await agentRun(t.space, "agent:w", [grant("agent:w", "note", ["query"])]);
-    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run);
+    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run, { unchecked: "fixture: plants authorship below the grant layer" });
     const e = await assertRejects(() => t.space.mintDelegatedRun(worker.run, id), RadiaError);
     assertEquals(e.code, "empty_delegation");
   } finally {
@@ -206,12 +206,12 @@ Deno.test("delegation: the caller resolves THROUGH the run, so a relaying worker
       grant("agent:w", "memo", ["query", "read_one"]),
     ]);
 
-    const seed = await t.space.put({ kind: "note", body: { owner: "alice", topic: "seed" } }, undefined, alice.run);
+    const seed = await t.space.put({ kind: "note", body: { owner: "alice", topic: "seed" } }, undefined, alice.run, { unchecked: "fixture: plants authorship below the grant layer" });
     const relayDelegated = await t.space.mintDelegatedRun(relay.run, seed.id);
     assertEquals(relayDelegated.actingFor, "human:alice");
     // The relay emits the next link UNDER its delegated run, which is the whole point: the record
     // now carries a resolvable caller for whoever picks it up.
-    const link = await t.space.put({ kind: "note", body: { owner: "alice", topic: "link" } }, undefined, relayDelegated.run);
+    const link = await t.space.put({ kind: "note", body: { owner: "alice", topic: "link" } }, undefined, relayDelegated.run, { unchecked: "fixture: plants authorship below the grant layer" });
 
     const wd = await t.space.mintDelegatedRun(worker.run, link.id);
     assertEquals(wd.actingFor, "human:alice", "one hop, no walk: actingFor holds a resolved principal");
@@ -223,7 +223,7 @@ Deno.test("delegation: the caller resolves THROUGH the run, so a relaying worker
 
     // Without the relay's delegated run, the same record names the RELAY as its caller: this is
     // the finding the shape exists for. `body.owner` still says "alice" and is ignored.
-    const bare = await t.space.put({ kind: "note", body: { owner: "alice", topic: "bare" } }, undefined, relay.run);
+    const bare = await t.space.put({ kind: "note", body: { owner: "alice", topic: "bare" } }, undefined, relay.run, { unchecked: "fixture: plants authorship below the grant layer" });
     const bareDelegated = await t.space.mintDelegatedRun(worker.run, bare.id);
     assertEquals(bareDelegated.actingFor, "agent:relay");
     assertEquals(
@@ -241,7 +241,7 @@ Deno.test("delegation: a delegated run may not delegate again", async () => {
   try {
     const alice = await agentRun(t.space, "human:alice", [grant("human:alice", "note", ["put", "query"])]);
     const worker = await agentRun(t.space, "agent:w", [grant("agent:w", "note", ["query"])]);
-    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run);
+    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run, { unchecked: "fixture: plants authorship below the grant layer" });
     const d = await t.space.mintDelegatedRun(worker.run, id);
     const e = await assertRejects(() => t.space.mintDelegatedRun(d.run, id), RadiaError);
     assertEquals(e.code, "forbidden");
@@ -258,7 +258,7 @@ Deno.test("delegation: a COLD memo re-reads the run rather than falling back to 
   try {
     const alice = await agentRun(t.space, "human:alice", [grant("human:alice", "note", ["query"], { owner: "alice" })]);
     const worker = await agentRun(t.space, "agent:w", [grant("agent:w", "note", ["query", "read_one"])]);
-    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run);
+    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run, { unchecked: "fixture: plants authorship below the grant layer" });
     const d = await t.space.mintDelegatedRun(worker.run, id);
 
     // A SECOND Space over the same database: no memo at all, which is what `ack` sees when it
@@ -281,7 +281,7 @@ Deno.test("delegation: RENEWING a delegated run keeps its attenuation", async ()
   try {
     const alice = await agentRun(t.space, "human:alice", [grant("human:alice", "note", ["query"], { owner: "alice" })]);
     const worker = await agentRun(t.space, "agent:w", [grant("agent:w", "note", ["query", "read_one"])]);
-    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run);
+    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run, { unchecked: "fixture: plants authorship below the grant layer" });
     const d = await t.space.mintDelegatedRun(worker.run, id);
     await t.space.renewRun(d.run);
 
@@ -314,8 +314,8 @@ Deno.test("delegation: the token resolves over the wire with the attenuation app
     const handler = makeHandler(t.space, "<html>c</html>", true);
     const alice = await agentRun(t.space, "human:alice", [grant("human:alice", "note", ["query"], { owner: "alice" })]);
     const worker = await agentRun(t.space, "agent:w", [grant("agent:w", "note", ["query", "read_one"])]);
-    const seed = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run);
-    await t.space.put({ kind: "note", body: { owner: "bob", topic: "x" } }, undefined, "run:other");
+    const seed = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run, { unchecked: "fixture: plants authorship below the grant layer" });
+    await t.space.put({ kind: "note", body: { owner: "bob", topic: "x" } }, undefined, "run:other", { unchecked: "fixture: plants authorship below the grant layer" });
 
     const res = await handler(
       new Request("http://t/v0/agent-runs/delegated", {
@@ -354,7 +354,7 @@ Deno.test("delegation: a delegated run holds NO ops powers, whatever its worker 
     await t.space.put({ kind: "ops_grant", body: { principal: "agent:w", operations: ["observe"] } });
     assert((await t.space.opsPowers(worker.run)).has("observe"), "the worker itself observes");
 
-    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run);
+    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run, { unchecked: "fixture: plants authorship below the grant layer" });
     const d = await t.space.mintDelegatedRun(worker.run, id);
     // `ops_grant` is keyed by principal and resolved through `grantSubject`, which answers with the
     // WORKER's agent. Without an explicit refusal the delegated run reads the whole space.
@@ -370,7 +370,7 @@ Deno.test("delegation: a delegated run may not write authorization kinds", async
   try {
     const alice = await agentRun(t.space, "human:alice", [grant("human:alice", "note", ["query"])]);
     const worker = await agentRun(t.space, "agent:w", [grant("agent:w", "note", ["query"])]);
-    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run);
+    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run, { unchecked: "fixture: plants authorship below the grant layer" });
     const d = await t.space.mintDelegatedRun(worker.run, id);
     const e = await assertRejects(() => t.space.authorize(d.run, "put", "grant"), RadiaError);
     assertEquals(e.code, "forbidden");
@@ -385,7 +385,7 @@ Deno.test("delegation: write-side scoping binds too, so a delegated put stays in
   try {
     const alice = await agentRun(t.space, "human:alice", [grant("human:alice", "note", ["put", "query"], { owner: "alice" })]);
     const worker = await agentRun(t.space, "agent:w", [grant("agent:w", "note", ["put", "query"])]);
-    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "seed" } }, undefined, alice.run);
+    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "seed" } }, undefined, alice.run, { unchecked: "fixture: plants authorship below the grant layer" });
     const d = await t.space.mintDelegatedRun(worker.run, id);
     // Through the HANDLER, because write-side scoping is enforced there (`bodyMatchesGrant` against
     // the `put` constraint), which is the path a real worker takes.
@@ -419,7 +419,7 @@ Deno.test("delegable: the worker's OWN token cannot use a delegable grant, but i
     await t.space.put({ kind: "grant", body: grant(delegablePrincipal("agent:w"), "note", ["query"]) });
 
     await assertRejects(() => t.space.authorize(worker.run, "query", "note"), RadiaError, "no 'query' grant");
-    const seed = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run);
+    const seed = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run, { unchecked: "fixture: plants authorship below the grant layer" });
 
     // A delegable grant raises entitlement to a LEASE: the mint now yields authority the worker
     // cannot exercise alone, so seeing the record is no longer enough.
@@ -475,7 +475,7 @@ Deno.test("delegation: an unchanged delegation REUSES its run instead of appendi
     const handler = makeHandler(t.space, "<html>c</html>", true);
     const alice = await agentRun(t.space, "human:alice", [grant("human:alice", "note", ["query"], { owner: "alice" })]);
     const worker = await agentRun(t.space, "agent:w", [grant("agent:w", "note", ["query", "read_one"])]);
-    const seed = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run);
+    const seed = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run, { unchecked: "fixture: plants authorship below the grant layer" });
     const mint = async () => {
       const res = await handler(
         new Request("http://t/v0/agent-runs/delegated", {
@@ -521,7 +521,7 @@ Deno.test("delegation: reuse never revives a STOPPED run, so the cascade holds",
     const handler = makeHandler(t.space, "<html>c</html>", true);
     const alice = await agentRun(t.space, "human:alice", [grant("human:alice", "note", ["query"])]);
     const worker = await agentRun(t.space, "agent:w", [grant("agent:w", "note", ["query"])]);
-    const seed = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run);
+    const seed = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run, { unchecked: "fixture: plants authorship below the grant layer" });
     const mint = () =>
       handler(
         new Request("http://t/v0/agent-runs/delegated", {
@@ -590,8 +590,8 @@ Deno.test("delegation: runs are ENUMERABLE by caller, which is what makes a casc
     const bob = await agentRun(t.space, "human:bob", [grant("human:bob", "note", ["query"])]);
     const w1 = await agentRun(t.space, "agent:w1", [grant("agent:w1", "note", ["query"])]);
     const w2 = await agentRun(t.space, "agent:w2", [grant("agent:w2", "note", ["query"])]);
-    const aliceRec = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run);
-    const bobRec = await t.space.put({ kind: "note", body: { owner: "bob", topic: "x" } }, undefined, bob.run);
+    const aliceRec = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run, { unchecked: "fixture: plants authorship below the grant layer" });
+    const bobRec = await t.space.put({ kind: "note", body: { owner: "bob", topic: "x" } }, undefined, bob.run, { unchecked: "fixture: plants authorship below the grant layer" });
     const d1 = await t.space.mintDelegatedRun(w1.run, aliceRec.id);
     const d2 = await t.space.mintDelegatedRun(w2.run, aliceRec.id);
     await t.space.mintDelegatedRun(w1.run, bobRec.id);
@@ -693,7 +693,7 @@ Deno.test("delegation: offboarding needs BOTH run classes, not just the delegate
     // person's own session alive for up to the run ceiling.
     const leaver = await agentRun(t.space, "human:leaver", [grant("human:leaver", "note", ["put", "query"])]);
     const worker = await agentRun(t.space, "agent:w", [grant("agent:w", "note", ["query"])]);
-    const seed = await t.space.put({ kind: "note", body: { owner: "leaver", topic: "x" } }, undefined, leaver.run);
+    const seed = await t.space.put({ kind: "note", body: { owner: "leaver", topic: "x" } }, undefined, leaver.run, { unchecked: "fixture: plants authorship below the grant layer" });
     const delegated = await t.space.mintDelegatedRun(worker.run, seed.id);
 
     const byActingFor = await t.space.query<{ run: string }>({ kind: "agent_run", match: { actingFor: "human:leaver" } }, 50);
@@ -735,7 +735,7 @@ Deno.test("delegation: entitlement is a lease OR read access, never neither", as
     // Holds `query` on `memo` and nothing at all on `note`: it can neither read the record nor
     // hold a lease on it, so naming it is refused before any caller is resolved.
     const stranger = await agentRun(t.space, "agent:stranger", [grant("agent:stranger", "memo", ["query"])]);
-    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run);
+    const { id } = await t.space.put({ kind: "note", body: { owner: "alice", topic: "x" } }, undefined, alice.run, { unchecked: "fixture: plants authorship below the grant layer" });
     const e = await assertRejects(() => t.space.mintDelegatedRun(stranger.run, id), RadiaError);
     assertEquals(e.code, "forbidden");
     assertStringIncludes(e.message, "neither holds a lease");

@@ -379,6 +379,35 @@ flowchart TD
     Grant -->|"yes, with pattern"| AllowT(["allow, AND grant ∧ request"])
 ```
 
+### Where each verb is enforced
+
+Every coordination verb authorizes itself. `Space.put` enforces whenever a
+principal is named (`checkPutGrant`, one implementation shared with `ack`'s result check), so the
+wire and an in-process caller get the same refusal. An attribution-only write below the grant
+layer says so by name: `put(req, key, principal, { unchecked: "why" })`, the `unsafeAsPopulation`
+shape, reason required. A caller passing NO principal is the runtime's own write, ledgered by
+`test/layering.test.ts`.
+
+| verb | grant check lives in | note |
+|---|---|---|
+| `put` (records, and the artifact record) | core (`Space.checkPutGrant`, eager) | moved 2026-08-30; eager, so a put retry after a narrowed grant still answers 403 as the handler always did |
+| `ack`'s result | core (same helper, DEFERRED to storage) | deferred so an idempotent replay skips it (package W5) |
+| artifact READS (meta, download, both capability mints) | core (`Space.artifactReadGate`: access read once, a verdict per record; 404 for foreign-or-missing so an id's existence never leaks, 403 only for the pattern scope) | moved 2026-08-30; the handlers keep the wording, core owns the rule |
+| artifact PRE-PAYLOAD check | handler (`artifacts.ts`) | deliberately: it refuses before the body stream is read, since buffering 32MB to answer authorization is a free denial of service. The record write re-checks in core over the full body |
+| `take` | core (`Space.take`: grant ∧ request, self scope, the grant's taint barrier intersected with the caller's, and record-id takes authorized on the record's own kind) | moved 2026-08-30; the grant COMPOSES into selection rather than refusing after it |
+| `query` / `read_one` / registry | core (`Space.queryAs` / `readOneAs` / `registryOfAs`) | moved 2026-08-30; distinct entries because the wire REPORTS its narrowing, so each returns what it applied; the raw `query` stays the runtime's own read, and the ledger pins the handlers to the `As` forms |
+| watch scope | core (`Space.scopeWatch`) | the handler's copy drifted from revalidation's |
+| `take.allowTaint` | core (`Space.take`) | in-process callers never pass a handler |
+
+Capability-minted uploads are re-checked at REDEMPTION with the minter's grants as they stand
+then, not only at mint: the same rule watch revalidation follows (a stream is a request that never
+ends; a capability is a request that arrives later). `test/layering.test.ts` holds the seam with
+two guards (a Space is constructed only in `src/main.ts`/`src/browser.ts`; every coordination call
+site is in a ledger naming its authorization), and the conformance auth suite proves the core
+check on every adapter, planted-bypass red first (for `take` and the reads, the plant read the
+constraint and did not apply it, and the scoped principal saw the other compartment's record).
+Phase 2 is COMPLETE; `Space.access` stayed the one seam throughout.
+
 ## The operator bit: a power taxonomy
 
 `Space.isPrivileged` is ONE bit (`ctx.operators` + the supervisor + the space's own identity), and

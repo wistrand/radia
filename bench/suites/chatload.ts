@@ -146,14 +146,11 @@ export const chatLoadBenches: Bench[] = [
         ]);
         const workerRun = (await space.mintRun(workerDef)).run;
 
-        /** A put through the SERVER's own sequence. `Space.put` does not authorize — the handler
-         *  does (`handlers/records.ts`) — so calling it directly would skip the grant read and the
-         *  write-side pattern check that every real put pays. */
-        const authorizedPut = async (principal: string, kind: string, body: Record<string, unknown>) => {
-          const constraint = await space.authorize(principal, "put", kind);
-          if (constraint && !space.bodyMatchesGrant(kind, body, constraint)) throw new Error(`refused: ${kind}`);
-          return await space.put({ kind, body }, undefined, principal);
-        };
+        /** `Space.put` authorizes ITSELF now (design-auth.md, "Where each verb is enforced"), so a
+         *  direct call pays the same grant read and write-side pattern check every real put pays,
+         *  and simulating the handler here would double-count it. */
+        const authorizedPut = (principal: string, kind: string, body: Record<string, unknown>) =>
+          space.put({ kind, body }, undefined, principal);
 
         // --- park 5N streams, each running the SSE loop body -------------------------------
         const stop = { done: false };
@@ -219,9 +216,8 @@ export const chatLoadBenches: Bench[] = [
         const workerStop = { done: false };
         const worker = (async () => {
           while (!workerStop.done) {
-            // `readAccess` before the claim, the way `handlers/leases.ts` does: a take pays a grant
-            // read too, and leaving it out would flatter the worker side of every turn.
-            await space.readAccess(workerRun, "take", "llm_call");
+            // The grant read rides INSIDE `Space.take` now, so the claim pays it with no
+            // simulation here; leaving the old manual `readAccess` in would double-count it.
             const claim = await space.take({ pattern: { kind: "llm_call" } }, { leaseSeconds: 30 }, workerRun);
             if (!claim) {
               await space.waitForEvents(200, "llm_call");

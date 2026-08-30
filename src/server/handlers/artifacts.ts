@@ -112,6 +112,9 @@ export async function handlePutArtifact(space: Space, req: Request, principal: s
     // `digest` or `size` still cannot be satisfied here, and deliberately: those are not known
     // until the bytes are read, and buffering 32MB to answer an authorization question is a free
     // denial of service.
+    // This PRE-PAYLOAD check stays in the handler on purpose: it refuses before the body stream
+    // is read, and buffering 32MB to answer an authorization question is a free denial of service.
+    // The record write re-checks in core (`Space.put`) over the full body afterwards.
     const constraint = await space.authorize(principal, "put", ARTIFACT);
     const scopeBody = { ...appFields, mediaType, ...(filename ? { filename } : {}) };
     if (constraint && !space.bodyMatchesGrant(ARTIFACT, scopeBody, constraint)) {
@@ -170,13 +173,12 @@ export async function handleGetArtifact(
 ): Promise<Response> {
   try {
     if (principal !== null) {
-      const { constraint, createdBy } = await space.readAccess(principal, "read_one", ARTIFACT);
-      const rec = await space.getRecord(recordId);
-      if (!rec || rec.kind !== ARTIFACT) return problem(404, "not_found", `no artifact ${recordId}`);
-      // A self scope restricts artifact BYTES too. 404 rather than 403 for a foreign artifact: the
-      // caller is not entitled to learn that the id exists.
-      if (!space.authorAllows(createdBy, rec)) return problem(404, "not_found", `no artifact ${recordId}`);
-      if (constraint && !space.bodyMatchesGrant(ARTIFACT, rec.body, constraint)) {
+      // The verdict is core's (`Space.artifactReadGate`): 404 for foreign-or-missing so an id's
+      // existence never leaks, 403 only for the pattern scope. This handler owns the wording.
+      const gate = await space.artifactReadGate(principal);
+      const verdict = gate(await space.getRecord(recordId));
+      if (verdict === "not_found") return problem(404, "not_found", `no artifact ${recordId}`);
+      if (verdict === "forbidden") {
         return problem(403, "forbidden", "this artifact is outside the pattern scope of your read grant");
       }
     }
@@ -336,15 +338,14 @@ export async function handleMintPathCapability(space: Space, req: Request, princ
     entries.push({ path, artifactId });
   }
   try {
-    const { constraint, createdBy } = await space.readAccess(principal, "read_one", ARTIFACT);
+    // ONE access read for the whole entry list, verdicts per record from the shared gate.
+    const gate = await space.artifactReadGate(principal);
     for (const entry of entries) {
-      const rec = await space.getRecord(entry.artifactId);
-      // 404 rather than 403 for a record outside the caller's scope, matching the per-record reads:
-      // a mint must not become an existence oracle either.
-      if (!rec || rec.kind !== ARTIFACT || !space.authorAllows(createdBy, rec)) {
+      const verdict = gate(await space.getRecord(entry.artifactId));
+      if (verdict === "not_found") {
         return problem(404, "not_found", `no artifact ${entry.artifactId} (for path ${JSON.stringify(entry.path)})`);
       }
-      if (constraint && !space.bodyMatchesGrant(ARTIFACT, rec.body, constraint)) {
+      if (verdict === "forbidden") {
         return problem(403, "forbidden", `artifact ${entry.artifactId} (path ${JSON.stringify(entry.path)}) is outside the pattern scope of your read grant`);
       }
     }
@@ -368,14 +369,13 @@ export async function handleMintPathCapability(space: Space, req: Request, princ
 
 export async function handleMintCapability(space: Space, recordId: string, principal: string): Promise<Response> {
   try {
-    const { constraint, createdBy } = await space.readAccess(principal, "read_one", ARTIFACT);
-    const rec = await space.getRecord(recordId);
-    if (!rec || rec.kind !== ARTIFACT) return problem(404, "not_found", `no artifact ${recordId}`);
-    // A capability is a bearer URL that outlives this check, so the scope has to be applied BEFORE
-    // one is minted. Otherwise a self-scoped principal converts a foreign artifact into a link
-    // that needs no token at all.
-    if (!space.authorAllows(createdBy, rec)) return problem(404, "not_found", `no artifact ${recordId}`);
-    if (constraint && !space.bodyMatchesGrant(ARTIFACT, rec.body, constraint)) {
+    // The gate runs BEFORE a capability is minted (its own doc says why: a bearer URL outlives
+    // this check, and a self-scoped principal must not convert a foreign artifact into a tokenless
+    // link).
+    const gate = await space.artifactReadGate(principal);
+    const verdict = gate(await space.getRecord(recordId));
+    if (verdict === "not_found") return problem(404, "not_found", `no artifact ${recordId}`);
+    if (verdict === "forbidden") {
       return problem(403, "forbidden", "this artifact is outside the pattern scope of your read grant");
     }
     const { capability, expiresAt } = space.mintDownloadCapability(recordId);

@@ -551,6 +551,20 @@ export class Space {
     return { entries: [...view.entries.values()], complete: view.complete, scanned: view.scanned };
   }
 
+  /** `registryOf`, principal-driven: the third read beside `queryAs`/`readOneAs`, under the same
+   *  `query` op, because a registry projection is a read like any other and a rule that binds two
+   *  of the three doors is the recurring class this whole move closes. */
+  async registryOfAs(
+    principal: string,
+    kind: string,
+    match?: Record<string, unknown>,
+  ): Promise<{ entries: RadiaRecord[]; complete: boolean; scanned: number; constraint: Record<string, unknown>[] | null; createdBy?: string[] }> {
+    const { constraint, createdBy } = await this.readAccess(principal, "query", kind);
+    const scoped = constraint ? combineMatch(match, constraint) : match;
+    const out = await this.registryOf(kind, scoped, createdBy ? { createdBy } : undefined);
+    return { ...out, constraint, createdBy };
+  }
+
   /** Rebuild the registry from kind_def records (call once at startup). A kind's latest
    *  declaration wins (records are immutable; a redeclaration is a successor, not a mutation). */
   async loadKinds(): Promise<void> {
@@ -842,7 +856,44 @@ export class Space {
 
   /** `principal` is the RESOLVED caller (server-assigned `created_by` + idempotency scope); it
    *  defaults to the space's own identity for in-process/operator callers. */
-  async put(req: PutRequest, idempotencyKey?: string, principal?: string): Promise<{ id: string }> {
+  /**
+   * The put-grant check both write paths share: `put` runs it eagerly, `ack` defers it to storage
+   * so an idempotent replay skips it (audit package W5). ONE implementation, so a body-level rule
+   * added here reaches records, artifact records and ack results alike; before this, the same rule
+   * lived once in the handler and once here, which is how package Y's class recurs.
+   */
+  private async checkPutGrant(principal: string, kind: string, body: unknown, noun: "record" | "result"): Promise<void> {
+    const constraint = await this.authorize(principal, "put", kind);
+    if (constraint && !this.bodyMatchesGrant(kind, body, constraint)) {
+      throw new RadiaError(
+        "forbidden",
+        noun === "record"
+          ? `record body is outside the pattern scope of your put grant for '${kind}'`
+          : `result body is outside the pattern scope of the put grant for '${kind}'`,
+      );
+    }
+  }
+
+  async put(
+    req: PutRequest,
+    idempotencyKey?: string,
+    principal?: string,
+    /** `unchecked` skips the grant check WITH A REASON, the `unsafeAsPopulation` shape: for
+     *  attribution-only writes below the grant layer (conformance suites planting authorship).
+     *  Absent principal means the runtime's own write and is ledgered by `test/layering.test.ts`. */
+    opts: { unchecked?: string } = {},
+  ): Promise<{ id: string }> {
+    // EAGER, unlike ack's deferred check: the handler authorized before calling, so a put RETRY
+    // after a narrowed grant has always answered 403 rather than replaying, and moving the check
+    // must not change that. Enforced whenever a principal is named, so an in-process caller gets
+    // the same answer the wire gives.
+    if (principal !== undefined) {
+      if (opts.unchecked !== undefined) {
+        if (!opts.unchecked) throw new Error("put({unchecked}) needs a reason: say why the grant check does not apply");
+      } else {
+        await this.checkPutGrant(principal, req.kind, req.body, "record");
+      }
+    }
     const declared = this.validateReservedBody(req); // throws RadiaError before anything commits
     // Refused before anything commits, and what an ACKNOWLEDGED break costs is carried onto the
     // event, since a break nobody refused is one only the log can still report.
@@ -1559,6 +1610,54 @@ export class Space {
    * the whole sort key plus the oracle's type rules, so combining them is rejected rather than
    * silently resolved one way.
    */
+  /**
+   * The principal-driven read: `query` with the caller's grant COMPOSED in core, the same move
+   * `put` and `take` made (design-auth.md, "Where each verb is enforced"). A distinct entry rather
+   * than a parameter on `query`, because the wire REPORTS its narrowing (`describeReadScope`: a
+   * read that narrows silently makes a scoped caller confidently wrong), so this returns what it
+   * applied alongside the records, and the grant is read exactly once. `query` itself stays the
+   * runtime's own unauthorized read; the ledger in `test/layering.test.ts` pins the handlers here.
+   */
+  async queryAs<T = unknown>(
+    principal: string,
+    pattern: Pattern,
+    limit = 100,
+    page?: Page,
+  ): Promise<{ records: RadiaRecord<T>[]; pattern: Pattern; constraint: Record<string, unknown>[] | null; createdBy?: string[] }> {
+    const { constraint, createdBy } = await this.readAccess(principal, "query", pattern.kind);
+    const scoped = constraint ? { ...pattern, match: combineMatch(pattern.match, constraint) } : pattern;
+    const records = await this.query<T>(scoped, limit, page, createdBy ? { createdBy } : undefined);
+    return { records, pattern: scoped, constraint, createdBy };
+  }
+
+  /**
+   * The artifact READ rule, in one place: access read once, verdict per record, for the three
+   * doors bytes leave through (meta/download, the download capability, the path capability's
+   * entry loop). `not_found` covers missing, non-artifact AND out-of-self-scope alike, because a
+   * caller not entitled to a record must not learn its id exists; `forbidden` is only ever the
+   * pattern scope, which is safe to name since the caller could already see the record's kind.
+   * A capability is a bearer URL that outlives this check, so the gate runs BEFORE one is minted.
+   */
+  async artifactReadGate(principal: string): Promise<(rec: RadiaRecord | null | undefined) => "ok" | "not_found" | "forbidden"> {
+    const { constraint, createdBy } = await this.readAccess(principal, "read_one", ARTIFACT);
+    return (rec) => {
+      if (!rec || rec.kind !== ARTIFACT || !this.authorAllows(createdBy, rec)) return "not_found";
+      if (constraint && !this.bodyMatchesGrant(ARTIFACT, rec.body, constraint)) return "forbidden";
+      return "ok";
+    };
+  }
+
+  /** `readOne`, principal-driven: same shape and reasons as `queryAs`, under the `read_one` op. */
+  async readOneAs(
+    principal: string,
+    pattern: Pattern,
+  ): Promise<{ record: RadiaRecord | null; pattern: Pattern; constraint: Record<string, unknown>[] | null; createdBy?: string[] }> {
+    const { constraint, createdBy } = await this.readAccess(principal, "read_one", pattern.kind);
+    const scoped = constraint ? { ...pattern, match: combineMatch(pattern.match, constraint) } : pattern;
+    const record = await this.readOne(scoped, createdBy ? { createdBy } : undefined);
+    return { record, pattern: scoped, constraint, createdBy };
+  }
+
   async query<T = unknown>(pattern: Pattern, limit = 100, page?: Page, scope?: StatsScope): Promise<RadiaRecord<T>[]> {
     const compiled = await this.compileFresh(pattern);
     if (page && (page.after || page.dir) && compiled.orderBy?.length) {
@@ -1780,7 +1879,50 @@ export class Space {
   /** Claim work under a fenced lease. Returns the record + lease, or null if none is claimable.
    *  The lease is owned by the claiming `principal` (a `run:*`, so a stopped run's leases can be
    *  quarantined); defaults to the space's run id for in-process/operator callers. */
-  async take(sel: TakeInput, opts: TakeOptions = {}, principal?: string): Promise<TakeResult | null> {
+  /** INTERSECTION, not union: a caller may narrow what it is willing to receive and may never widen
+   *  past what its grants permit, so `undefined` (no barrier) on either side falls through to the
+   *  other and two lists meet in the middle. */
+  private static intersectAllow(caller: string[] | undefined, grant: string[] | undefined): string[] | undefined {
+    if (!caller) return grant;
+    if (!grant) return caller;
+    return caller.filter((l) => grant.includes(l));
+  }
+
+  async take(
+    sel: TakeInput,
+    opts: TakeOptions = {},
+    principal?: string,
+    /** Same escape as `put`: skip the grant composition WITH A REASON, for suites planting lease
+     *  ownership below the grant layer. Absent principal is the runtime's own claim, ledgered. */
+    authz: { unchecked?: string } = {},
+  ): Promise<TakeResult | null> {
+    // ENFORCED HERE, like `put` (design-auth.md, "Where each verb is enforced"): the grant does not
+    // refuse after selection, it COMPOSES into it. Four pieces move together, because leaving any
+    // one in a handler is a rule that binds one door: the pattern narrows to grant ∧ request, a
+    // self scope narrows to the caller's own records, the GRANT's taint barrier intersects the
+    // caller's (a caller may narrow what it accepts, never widen past its grants), and a record-id
+    // take authorizes on the record's own kind with the constraint synthesized as a pattern the
+    // record must satisfy.
+    let pattern = sel.pattern;
+    let createdBy = opts.createdBy;
+    let allow = opts.allowTaint;
+    if (principal !== undefined) {
+      if (authz.unchecked !== undefined) {
+        if (!authz.unchecked) throw new Error("take({unchecked}) needs a reason: say why the grant does not compose");
+      } else {
+        const recordId = "recordId" in sel ? sel.recordId : undefined;
+        let kind = pattern?.kind;
+        if (!kind && recordId) kind = (await this.storage.getRecord(recordId))?.kind;
+        if (kind) {
+          const access = await this.readAccess(principal, "take", kind);
+          if (access.constraint) {
+            pattern = { kind, match: combineMatch(pattern?.match, access.constraint), orderBy: pattern?.orderBy };
+          }
+          createdBy = access.createdBy ?? createdBy;
+          allow = Space.intersectAllow(allow, access.allowTaint);
+        }
+      }
+    }
     const spec: LeaseSpec = {
       leaseId: newUlid(),
       ownerRun: principal ?? this.ctx.runId,
@@ -1790,12 +1932,12 @@ export class Space {
       // Validated HERE, not only at the HTTP boundary: the SDK, the MCP adapter and in-process
       // callers never pass through a handler, the same reason `compilePattern` validates its own
       // input. An allowlist is the widening direction, so the reserved label is refused.
-      allowTaint: opts.allowTaint ? normalizeTaint(opts.allowTaint) : undefined,
-      createdBy: opts.createdBy,
+      allowTaint: allow ? normalizeTaint(allow) : undefined,
+      createdBy,
     };
     const selector: TakeSelector = "recordId" in sel
-      ? { recordId: sel.recordId, pattern: sel.pattern ? await this.compileFresh(sel.pattern) : undefined }
-      : { pattern: await this.compileFresh(sel.pattern) };
+      ? { recordId: sel.recordId, pattern: pattern ? await this.compileFresh(pattern) : undefined }
+      : { pattern: await this.compileFresh(pattern!) };
     return this.storage.take(selector, spec).then((r) => {
       this.notifier.notify(); // a claim changes state; a nack/release elsewhere may reopen work
       return r;
@@ -1869,14 +2011,7 @@ export class Space {
       // package W5). Run here, a retry of an already-succeeded ack threw `forbidden` whenever the
       // worker's put grant had narrowed in between, instead of replaying the stored response. The
       // FOREIGN branch above already had this right and says so; this is the same rule.
-      authorizeResult = owner
-        ? async () => {
-          const constraint = await this.authorize(owner, "put", result.kind);
-          if (constraint && !this.bodyMatchesGrant(result.kind, result.body, constraint)) {
-            throw new RadiaError("forbidden", `result body is outside the pattern scope of the put grant for '${result.kind}'`);
-          }
-        }
-        : undefined;
+      authorizeResult = owner ? () => this.checkPutGrant(owner, result.kind, result.body, "result") : undefined;
       // Derive the audit authority chain from the lease (undefined for operator/root owners).
       const delegationContext = owner ? await this.deriveDelegation(owner, lease.recordId) : undefined;
       // Taint propagates along data lineage: the leased record is a parent, so a tainted task

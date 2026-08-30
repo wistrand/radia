@@ -204,3 +204,60 @@ Deno.test("[layering] the RUNTIME logs; only a surface prints", async () => {
   }
   assertEquals(violations, [], "use getLogger(<component>) from src/log.ts; a bare console call has no level and no destination");
 });
+
+// ── the authorization seam: core verbs do not authorize themselves ───────────────────────────────
+//
+// Enforcement lives per VERB in different layers (`agent_docs/design-auth.md`, "Where each verb is
+// enforced"): `put`/`take`/`query` in the handlers, `ack`'s result and a watch's scope in core. So
+// a Space instance IS the unauthorized API, and nothing but convention stops a new caller from
+// claiming records ungranted. Two guards, both proven to FAIL on a planted violation.
+
+Deno.test("[layering] a Space is constructed only where the wire wraps it", async () => {
+  // `new Space(` in src/ is allowed exactly where `makeHandler` (or `runCli`'s boot) takes custody
+  // of it. Everyone else reaches the space through `/v0`, where the handlers enforce grants. Tests
+  // and bench construct spaces too, deliberately (they test the unauthorized API); this scans src/.
+  const violations: string[] = [];
+  const allowed = new Set(["main.ts", "browser.ts"]);
+  for (const file of await tsFiles(SRC, "src/")) {
+    const text = code(await Deno.readTextFile(new URL(file.replace("src/", ""), SRC)));
+    if (allowed.has(file.replace("src/", ""))) continue;
+    if (/new Space\(/.test(text)) violations.push(`${file} constructs a Space`);
+    if (/import\s*{[^}]*\bSpace\b[^}]*}\s*from/.test(text.replace(/import type[^;]+;/g, ""))) {
+      violations.push(`${file} imports Space as a value`);
+    }
+  }
+  assertEquals(violations, [], "construct a Space only in src/main.ts or src/browser.ts; anywhere else, be a /v0 client");
+});
+
+Deno.test("[layering] every coordination call on a Space is in the ledger, with its authorization named", async () => {
+  // The LEDGER: file -> verb -> count, each entry naming where its authorization happens. A new
+  // call site fails this test by design: either follow the file's authorize-then-call pattern and
+  // bump the count, or write the reason a grant check is deliberately absent. The receiver is
+  // matched by the conventional name `space`; the construction guard above is what keeps instances
+  // from existing under other names outside the allowlisted births.
+  const LEDGER: Record<string, Record<string, number>> = {
+    // artifact reads pass through ONE gate (Space.artifactReadGate): access read once, a verdict
+    // per record, 404 for foreign-or-missing so an id's existence never leaks
+    "src/server/handlers/artifacts.ts": { artifactReadGate: 3 },
+    // put's check and the reads' composition run INSIDE Space (phase 2): queryAs / readOneAs /
+    // registryOfAs return what they applied, so the wire keeps reporting its narrowing
+    "src/server/handlers/records.ts": { put: 1, queryAs: 1, readOneAs: 1, registryOfAs: 1 },
+    // take's grant COMPOSES inside Space.take (phase 2); settles are owner-bound and ack's
+    // RESULT is authorized inside Space.ack (space.ts, "Emitting a result IS a put")
+    "src/server/handlers/leases.ts": { take: 1, ack: 1, nack: 1, release: 1, renew: 1 },
+    // scope derived in core (Space.scopeWatch), the one verb that already moved enforcement in
+    "src/server/handlers/watches.ts": { createWatch: 1 },
+    // provisionObserver: a BOOT-TIME operator write, before any request principal exists. The one
+    // deliberately unauthorized coordination call in src/.
+    "src/credentials.ts": { put: 1 },
+  };
+  const found: Record<string, Record<string, number>> = {};
+  for (const file of await tsFiles(SRC, "src/")) {
+    const text = code(await Deno.readTextFile(new URL(file.replace("src/", ""), SRC)));
+    for (const [, verb] of text.matchAll(/\bspace\.(put|take|ack|nack|release|renew|query|queryAs|readOne|readOneAs|registryOf|registryOfAs|artifactReadGate|createWatch|registerKind)\(/g)) {
+      found[file] = found[file] ?? {};
+      found[file][verb] = (found[file][verb] ?? 0) + 1;
+    }
+  }
+  assertEquals(found, LEDGER, "a coordination call on a Space appeared or moved; authorize it (or ledger why not)");
+});

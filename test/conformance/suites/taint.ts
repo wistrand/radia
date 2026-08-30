@@ -248,10 +248,10 @@ export const taintSuites: Suite[] = [
     name: "taint: `foreign` marks another principal's lineage, and only that",
     run: async (adapter) => {
       const space = newSpace(adapter);
-      const alice = (await space.put({ kind: "task", body: { tag: "al" } }, undefined, "agent:alice")).id;
-      const own = await space.put({ kind: "result", body: {}, parentIds: [alice] }, undefined, "agent:alice");
+      const alice = (await space.put({ kind: "task", body: { tag: "al" } }, undefined, "agent:alice", { unchecked: "fixture: plants authorship below the grant layer" })).id;
+      const own = await space.put({ kind: "result", body: {}, parentIds: [alice] }, undefined, "agent:alice", { unchecked: "fixture: plants authorship below the grant layer" });
       assertEquals(await taintOf(space, own.id), [], "deriving from your own record is not foreign");
-      const theirs = await space.put({ kind: "result", body: {}, parentIds: [alice] }, undefined, "agent:bob");
+      const theirs = await space.put({ kind: "result", body: {}, parentIds: [alice] }, undefined, "agent:bob", { unchecked: "fixture: plants authorship below the grant layer" });
       assertEquals(await taintOf(space, theirs.id), ["foreign"]);
     },
   },

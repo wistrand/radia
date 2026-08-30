@@ -5,23 +5,11 @@
 import type { Space, TakeInput } from "../../core/space.ts";
 import type { Lease } from "../../storage/adapter.ts";
 import type { PutRequest } from "../../core/record.ts";
-import { combineMatch, type Pattern } from "../../core/matching.ts";
+import type { Pattern } from "../../core/matching.ts";
 import { RadiaError } from "../../core/errors.ts";
 import { pickResult } from "./records.ts";
 import { clientTaint } from "../../core/kinds.ts";
 
-/**
- * Both taint barriers at once: the caller's own and the one its grants impose.
- *
- * INTERSECTION, not union. A caller may narrow what it is willing to receive and may never widen
- * past what its grants permit, so `undefined` (no barrier) on either side falls through to the
- * other and two lists meet in the middle.
- */
-function intersectAllow(caller: string[] | undefined, grant: string[] | undefined): string[] | undefined {
-  if (!caller) return grant;
-  if (!grant) return caller;
-  return caller.filter((l) => grant.includes(l));
-}
 import { problem, rejectUnknown } from "../problem.ts";
 
 async function body(req: Request): Promise<Record<string, unknown> | null> {
@@ -105,34 +93,11 @@ export async function handleTake(space: Space, req: Request, principal: string):
   // before labels existed, which is what that marker exists to hold back.
   const callerAllow = j.requireUntainted === true ? [] : clientTaint(j.allowTaint);
   try {
-    // Authorize on the kind (from the pattern, or the record's own kind for a record-id take).
-    let kind = pattern?.kind;
-    if (!kind && recordId) kind = (await space.getRecord(recordId))?.kind;
-    let createdBy: string[] | undefined;
-    let grantAllow: string[] | undefined;
-    if (kind) {
-      const access = await space.readAccess(principal, "take", kind);
-      // A pattern-scoped grant narrows the claim: the record must also match the grant (grant ∧
-      // request). For a record-id take that means synthesizing a pattern the record must satisfy.
-      if (access.constraint) {
-        pattern = { kind, match: combineMatch(pattern?.match, access.constraint), orderBy: pattern?.orderBy };
-      }
-      // A claim returns the record BODY, so a self scope has to narrow `take` exactly as it
-      // narrows `query`. Otherwise draining the queue reads every record of the kind. It cannot
-      // ride in the pattern: `created_by` is envelope metadata, which patterns never see.
-      createdBy = access.createdBy;
-      // The grant's own barrier, carried to the intersection below: the principal cannot decline
-      // it, or `scope: {taint: "none"}` would be advice rather than enforcement.
-      grantAllow = access.allowTaint;
-    }
+    // The grant COMPOSES inside `Space.take` (design-auth.md, "Where each verb is enforced"): the
+    // pattern narrows to grant ∧ request, a self scope narrows to own records, and the grant's
+    // taint barrier intersects the caller's. This handler contributes only what the wire carries.
     const sel: TakeInput = recordId ? { recordId, pattern } : { pattern: pattern! };
-    const result = await space.take(
-      sel,
-      // Both barriers apply, and the effective allowlist is their INTERSECTION: the caller may
-      // narrow what it accepts, and may never widen past what its grants permit.
-      { leaseSeconds, allowTaint: intersectAllow(callerAllow, grantAllow), createdBy },
-      principal,
-    );
+    const result = await space.take(sel, { leaseSeconds, allowTaint: callerAllow }, principal);
     return ok(result); // {record, lease} or null
   } catch (e) {
     if (e instanceof RadiaError) return problem(e.code === "forbidden" ? 403 : 400, e.code, e.message);
