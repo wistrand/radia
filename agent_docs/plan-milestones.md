@@ -51,7 +51,7 @@ chain, per-run leases with stop/quarantine, delegation, taint), the M1 **Postgre
 (conformance-verified against a live server), the **tamper-evident event chain** and the M1
 **resource limits** are built; see
 [plan-m0-implementation.md](plan-m0-implementation.md) for the per-phase record and the
-`design-*` docs for spec + rationale + source pointers. Only the registry publish itself is
+`design-*` docs for spec + rationale + source pointers. Only the SDK registry publish itself is
 unexercised. The rest of M2/M3 is unbuilt.
 
 One more thing landed off the list: **a client re-authenticates itself**. The durable half of the
@@ -75,8 +75,9 @@ bundled **MCP adapter** (stdio JSON-RPC; credential and fenced lease held outsid
 context, lease renewed internally), the **Python SDK** at parity (stdlib only), auto-provisioned
 local credentials, and `deno task release` (per-OS binaries + SDK-only npm/pip packages).
 The binary installs only via `curl | sh` (`docs/install.sh`; decided 2026-08-30, replacing the
-launcher-package plan), native Windows is unsupported (WSL2 runs the Linux binary), and nothing
-is published yet, so the install path is unexercised.
+launcher-package plan), native Windows is unsupported (WSL2 runs the Linux binary), and the
+path is live: `v2026.8.0` is released and the installer verified against it. The SDK packages
+are still unpublished.
 Full per-phase record in
 [plan-m0-implementation.md](plan-m0-implementation.md).
 
@@ -88,7 +89,7 @@ explicitly **not** production-readiness.
 > embedded storage, ordered phases with verify steps) is in
 > [plan-m0-implementation.md](plan-m0-implementation.md).
 
-- [x] `deno task dev`: embedded storage (PGlite/SQLite), single process, **web console** (dev UI), bundled **MCP adapter** (`radia mcp`). Distribution staged by `deno task release` (binaries for the `curl | sh` installer + SDK-only npm/pip packages: TS SDK and `extensions/` as source in npm, the Python SDK in pip); the install path awaits a release tag.
+- [x] `deno task dev`: embedded storage (PGlite/SQLite), single process, **web console** (dev UI), bundled **MCP adapter** (`radia mcp`). Distribution staged by `deno task release` (binaries for the `curl | sh` installer + SDK-only npm/pip packages: TS SDK and `extensions/` as source in npm, the Python SDK in pip); the install path is live and verified (`v2026.8.0`).
 - [x] put / take / ack / nack / release / renew
 - [x] record + envelope split with denormalized routing columns
 - [x] `body_sha256` on every record

@@ -68,11 +68,11 @@ watches and the M1 **authorization stack** (grants, run-token bootstrap chain, p
 delegation, taint; see the Enhancements note below), the dev console, examples, and several
 enhancements. Per-phase records with verify results are in the Phases section below.
 
-The one thing M0 claims that has not been executed end to end is the install path. The plan's
-`npx radia dev` / `pipx run` shape was SUPERSEDED on 2026-08-30 before any publish: the binary
-installs only via `curl | sh` (`docs/install.sh` + the release workflow), npm and pip carry the
-SDKs with no binary inside, and native Windows is unsupported (WSL2 runs the Linux binary). No
-release tag or registry publish exists yet, so the path stays unexercised.
+The install path: the plan's `npx radia dev` / `pipx run` shape was SUPERSEDED on 2026-08-30
+before any publish. The binary installs only via `curl | sh` (`docs/install.sh` + the release
+workflow), npm and pip carry the SDKs with no binary inside, and native Windows is unsupported
+(WSL2 runs the Linux binary). The `curl | sh` path is VERIFIED end to end against the published
+`v2026.8.0` release (same day); the SDK packages remain unpublished.
 
 Two storage rules the phases produced (`src/storage/`):
 - `ack` with a result appends the successor's own `put` event. Without it the record exists
@@ -291,7 +291,7 @@ real infra and is deferred past M0; see [plan-validation.md](plan-validation.md)
 - [x] Minimal CLI (`src/surfaces/cli.ts`) over the public API only: `health stats doctor kinds get lineage children events watch put query read-one take ack nack release`, `--json` on every verb. `take --json` emits the claim; pipe it back to `ack -`/`nack -`/`release -`. Discovery-first: `kinds` is a query for `kind_def` records, and no verb carries a table of known kinds.
 - [x] TS SDK (`sdk/ts/client.ts` + `loop.ts`: `RadiaClient` over `/v0`, `agentLoop` with heartbeat at lease/3, per-attempt idempotency key). Demo agents in `examples/` + `deno task demo` exercise it end-to-end over HTTP.
 - [x] **Python SDK at parity** (`sdk/py/radia.py`): `RadiaClient` (records, claims, watches with SSE reconnect + opaque cursor, ops reads), `agent_loop` with background watchers, heartbeat, per-attempt idempotency key, and the same permanent-403-on-watch handling as the TS loop. **Standard library only**: `urllib` + `threading`, nothing to install, Python 3.9+.
-- [x] Release wrapping: `scripts/build-release.sh` (`deno task release`) runs `deno compile` per target and stages the registry packages. Built here as the esbuild/uv launcher shape (5 targets, npm launcher + `optionalDependencies` platform packages, a wheel whose launcher `execv`s a bundled binary); SUPERSEDED 2026-08-30 before any publish: 4 targets (native Windows unsupported, WSL2 runs the Linux binary), SDK-only npm/pip packages, and the binary behind `docs/install.sh`. `/dist/` is gitignored. Publishing is manual and unexercised; see Verify.
+- [x] Release wrapping: `scripts/build-release.sh` (`deno task release`) runs `deno compile` per target and stages the registry packages. Built here as the esbuild/uv launcher shape (5 targets, npm launcher + `optionalDependencies` platform packages, a wheel whose launcher `execv`s a bundled binary); SUPERSEDED 2026-08-30 before any publish: 4 targets (native Windows unsupported, WSL2 runs the Linux binary), SDK-only npm/pip packages, and the binary behind `docs/install.sh`. `/dist/` is gitignored. The binary release is published and installer-verified (`v2026.8.0`); SDK registry publishing is manual and unexercised; see Verify.
 
 **Verify:** PASSED for everything runnable locally. Against a live space: `radia dev` provisions
 the credential (0600) and the CLI presents it, proven by a bogus `RADIA_TOKEN` 401ing on an
@@ -305,10 +305,10 @@ kinds/put/query, a three-record `agent_loop` drain emitting results, a live watc
 credential resolution at parity with `RADIA_TOKEN` precedence; and the compiled binary serving
 the console, the vendored bundle, and its own CLI.
 
-**Not verified:** the install path end to end (since superseded: `curl | sh` for the binary,
-SDK-only npm/pip; see "Current state" above). That needs a publish, which is out of scope here.
-Cross-compilation for the non-host targets is likewise unrun; only the host target was built.
-The staged package metadata is therefore best-effort until someone publishes once.
+**Since verified (2026-08-30):** the install path end to end, in its superseded shape (`curl | sh`
+for the binary, SDK-only npm/pip; see "Current state" above): the `v2026.8.0` release built all
+four targets in CI and the installer ran against it. **Still not verified:** the non-Linux-x64
+binaries at runtime, and the SDK packages, which remain unpublished.
 
 ## Open questions
 

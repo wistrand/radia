@@ -395,10 +395,10 @@ $ radia ack - --result-kind summary --result '{"text":"..."}' &lt; claim.json</c
     </div>
 
     <p>
-      Run it from the checkout: compile it as above, or
-      <code>deno run -A src/main.ts &lt;verb&gt;</code> directly. Once a release is published, the
-      binary installs with <code>curl -fsSL https://radia.sh/install.sh | bash</code> (Linux and
-      macOS; on Windows use WSL2). npm and PyPI are reserved for the SDKs and carry no binary.
+      Or skip the checkout: the binary installs with
+      <code>curl -fsSL https://radia.sh/install.sh | bash</code> (Linux and
+      macOS; on Windows use WSL2), verified against the release's checksums. npm and PyPI are
+      reserved for the SDKs and carry no binary.
     </p>
     <div class="cards">
       <div class="card">
@@ -486,8 +486,7 @@ $ radia ack - --result-kind summary --result '{"text":"..."}' &lt; claim.json</c
 
     <div class="callout warn">
       <strong>Radia is not production-ready and has not been independently adopted.</strong> The
-      packages are unpublished, several production-hardening tasks remain, and current use starts
-      from a source checkout.
+      SDK packages are unpublished and several production-hardening tasks remain.
     </div>
   </div>
 </section>

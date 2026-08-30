@@ -27,7 +27,8 @@ blob directory is shared with nobody. **Not implemented:** the
 `production` deployment mode, the multi-instance cache-coherence work (see
 Scaling), an external KMS (M2). `single-node` is BUILT (`radia serve`, below). Envelope encryption itself is BUILT and is not waiting on one:
 `src/storage/crypto.ts` seals each blob under a per-blob DEK wrapped by a space KEK, with a keyring
-so rotation is a config change (`radia rewrap` finishes it). `npm`/`pip` binary wrapping is BUILT but unpublished
+so rotation is a config change (`radia rewrap` finishes it). The binary is released behind the
+`curl | sh` installer; the npm/pip SDK packages are staged but unpublished
 (`deno task release`; see [architecture-surfaces.md](architecture-surfaces.md)).
 
 ## Contents
@@ -306,5 +307,6 @@ Code), and a real agent participating before any SDK code is written.
 
 **Status (M0 Phase 7):** `radia dev`, `radia mcp`, and the per-OS binaries are built, and
 `deno task release` stages the npm and pip SDK packages (`scripts/build-release.sh`).
-The install path itself is unexercised: no release tag has been published, and neither has
-either SDK package. See [architecture-surfaces.md](architecture-surfaces.md) "Distribution".
+The `curl | sh` install is LIVE and verified end to end against the `v2026.8.0` release
+(2026-08-30); the SDK packages remain unpublished. See
+[architecture-surfaces.md](architecture-surfaces.md) "Distribution".
