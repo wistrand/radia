@@ -38,7 +38,8 @@
 //     context.ts (thread records → provider payload; pure, and where the context bugs live)
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
-import { registerChatKinds } from "./space/kinds.ts";
+import { FLEET_PRESENCE, registerChatKinds } from "./space/kinds.ts";
+import { livePresence } from "../../extensions/ts/presence.ts";
 import { assignUserGrants, bootstrap, setSessionOwner } from "./space/roles.ts";
 import { watchAutoGrants } from "./space/auto-grant.ts";
 import {
@@ -215,7 +216,7 @@ async function setUpSpace(a: RadiaClient): Promise<void> {
   // these workers serve everybody.
   // Announced BEFORE the workers start, so a fleet exiting in the gap between the two sees this
   // one and leaves the shared advertisements alone (client/fleet.ts).
-  fleetId = announceFleet(a, shutdown.signal);
+  fleetId = await announceFleet(a, shutdown.signal);
   procs.push(...launchFleet(tokens, fleetKey));
   // The retention sweep, at the one moment this app reliably has an operator credential in hand.
   // Best-effort in the background: a chat that cannot sweep is a chat, not an error.
@@ -686,6 +687,23 @@ for (let i = 0; i < 50 && tools.all().length === 0; i++) {
 }
 endStatus("");
 field("tools", tools.all().length > 0 ? `${tools.all().length} discovered` : dim("none advertised yet"));
+
+// IS ANYBODY SERVING? A joining session starts no workers by design, so on a space whose fleet has
+// stopped it looks perfectly healthy until a turn sits there for thirty seconds and reports that no
+// worker claimed the call. The presence records answer that at BOOT, and this session already reads
+// them to decide which advertisements are stale (`liveAdvertisements`).
+//
+// Silent when it cannot tell: a session whose principal predates the `chat_presence` grant gets a
+// 403 here, and a warning nobody can act on is worse than none. Silent too when this process just
+// started a fleet of its own, which is the case the line would only ever nag about.
+if (!admin) {
+  try {
+    const beats = await livePresence(session, FLEET_PRESENCE, { subject: "fleet" });
+    if (beats.complete && !beats.live.has("fleet")) {
+      field("fleet", `NOT RUNNING  ${dim("start one with: deno task chat -- --serve --auto-grant")}`);
+    }
+  } catch { /* no grant to read presence, or an older space: say nothing rather than guess */ }
+}
 
 /**
  * Ctrl-V: attach whatever is on the clipboard.

@@ -11,9 +11,13 @@ import { publishCapability } from "../../../extensions/ts/capability.ts";
 import { publishModel, retireModel } from "../../../extensions/ts/model.ts";
 import { streamChat } from "../provider/openrouter.ts";
 import { conversationKeys, fleetKeyPair } from "../space/keys.ts";
-import { arg, onStop } from "../util.ts";
+import { arg, argOn, onStop } from "../util.ts";
 
 const ME = "agent:chat-inference";
+
+/** Set by the launcher that beats for this provider (`spawn` in client/fleet.ts), so these
+ *  advertisements may be judged stale once it stops. Absent when a worker is started by hand. */
+const PRESENCE = { presence: argOn("--presence") };
 const url = arg("--url") ?? Deno.env.get("RADIA_URL") ?? "http://127.0.0.1:7788";
 const token = arg("--token"); // agent:chat-inference definition token (scoped grants)
 const apiKey = Deno.env.get("OPENROUTER_API_KEY") ?? "";
@@ -37,7 +41,7 @@ const fleet = await fleetKeyPair();
 if (tier) {
   const ad = { tier, model, rank };
   await publishModel(client, ad);
-  await publishCapability(client, ESCALATE, ME);
+  await publishCapability(client, ESCALATE, ME, undefined, PRESENCE);
   // A stopped worker must stop being routed to: `model` is a latest-wins registry, so a retirement
   // takes the tier out of rotation and the next start revives it.
   onStop(() => retireModel(client, ad));

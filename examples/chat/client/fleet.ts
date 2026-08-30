@@ -40,6 +40,8 @@ import type { FleetKeyPair } from "../../../extensions/ts/encrypted.ts";
 import { dim, notice } from "./terminal.ts";
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
 import { retireProviderCapabilities } from "../../../extensions/ts/capability.ts";
+import { announcePresence, retireIfLast, retirePresence } from "../../../extensions/ts/presence.ts";
+import { FLEET_PRESENCE } from "../space/kinds.ts";
 
 const local = `http://127.0.0.1:${port}`;
 
@@ -59,7 +61,11 @@ const unlabel = (line: string) => line.replace(/^\[[^\]\n]{1,48}\] /, "");
  */
 function spawn(name: string, args: string[], env?: Record<string, string>): Deno.ChildProcess {
   const proc = new Deno.Command("deno", {
-    args: ["run", ...args],
+    // `--presence` is passed to every worker this launcher starts, and only here, because it is a
+    // claim about the LAUNCHER: these processes are covered by the beats `announceFleet` writes, so
+    // their advertisements may be judged stale once the beats stop. A worker started by hand is not
+    // covered and must not claim it, which is why this is not a default inside the worker.
+    args: ["run", ...args, "--presence"],
     ...(env ? { env } : {}),
     stdout: "null",
     stderr: "piped",
@@ -301,72 +307,73 @@ export function launchWebUi(webPort: number, host = "127.0.0.1"): Deno.ChildProc
 // after that, because an unchanged definition re-published over a tombstone replays its own key and
 // dedups (`publishCapability` in extensions/ts/capability.ts).
 //
-// So the rule is LAST ONE OUT withdraws. Each launcher records that it is running, refreshes while
-// it lives, and retires that record on the way out; the withdrawal happens only when no other
-// launcher's record is live. Two fleets exiting at the same instant can both see the other and skip
-// it, which leaves advertisements standing with nobody serving — the same state a crash already
-// produces, and the one the doc on `retireProviderCapabilities` already tells callers to expect. It
-// fails toward leaving a stale advertisement rather than removing a live one, which is the side to
-// fail on: a stale one costs a failed tool call, a wrongly withdrawn one makes a working tool
-// invisible until its definition changes.
+// So the rule is LAST ONE OUT withdraws, and it is `extensions/ts/presence.ts` now rather than a
+// projection written here: a launcher beats while it lives, retires on the way out, and the
+// withdrawal runs only when no other launcher is inside the TTL. Two fleets exiting at the same
+// instant can both see the other and skip it, which leaves advertisements standing with nobody
+// serving — the same state a crash already produces, and the one the doc on
+// `retireProviderCapabilities` already tells callers to expect. It fails toward leaving a stale
+// advertisement rather than removing a live one, which is the side to fail on: a stale one costs a
+// failed tool call, a wrongly withdrawn one makes a working tool invisible until its definition
+// changes.
+//
+// The SUBJECT is the fleet as a whole, because the thing being withdrawn is: an advertisement is
+// keyed by (provider, tool) and belongs to no launcher.
 
-export const FLEET_KIND = "chat_fleet";
-/** Live without a refresh. A SIGKILLed launcher stops counting after this rather than blocking
- *  every future withdrawal; the refresh below is well inside it, so a slow tick never reads dead. */
-const FLEET_TTL_MS = 15 * 60_000;
-const FLEET_REFRESH_MS = 5 * 60_000;
+const FLEET_SUBJECT = "fleet";
 
 /** Say this launcher is running, and keep saying it until `signal` aborts. Returns the fleet id to
- *  hand back to `retireFleetAdvertisements`. */
-export function announceFleet(admin: RadiaClient, signal: AbortSignal): string {
-  const fleetId = crypto.randomUUID();
-  const beat = () =>
-    markFleet(admin, fleetId).catch((e) => notice(dim(`[fleet] could not record this fleet as running: ${e}`)));
-  void beat();
-  const timer = setInterval(beat, FLEET_REFRESH_MS);
-  signal.addEventListener("abort", () => clearInterval(timer), { once: true });
-  return fleetId;
+ *  hand back to `retireFleetAdvertisements`.
+ *
+ *  AWAITS the first beat, which the hand-rolled version did not: a fleet that has not landed its
+ *  first record yet is invisible to another fleet's withdrawal check, and the window for that was
+ *  every startup rather than a rare race.
+ *
+ *  TWO KINDS OF SUBJECT, answering two questions that happen to correlate here and are not the same
+ *  question. `fleet` is "is a launcher running", which is what decides the withdrawal below. Each
+ *  PROVIDER is "is this worker's tools served by anything", which is what lets a session drop a
+ *  dead fleet's advertisements without waiting for a withdrawal that a crash never performs
+ *  (`liveAdvertisements`). One instance id beats on all of them, so a launcher is one row of the
+ *  answer to both. */
+export async function announceFleet(admin: RadiaClient, signal: AbortSignal): Promise<string> {
+  const onError = (e: unknown) => notice(dim(`[fleet] could not record this fleet as running: ${e}`));
+  const handle = await announcePresence(admin, FLEET_PRESENCE, FLEET_SUBJECT, { signal, onError });
+  for (const provider of FLEET_PROVIDERS) {
+    await announcePresence(admin, FLEET_PRESENCE, provider, { instance: handle.instance, signal, onError });
+  }
+  return handle.instance;
 }
 
 /** Withdraw this launcher's presence, then the fleet's advertisements IF nobody else is serving. */
 export async function retireFleetAdvertisements(admin: RadiaClient, fleetId: string): Promise<void> {
-  await markFleet(admin, fleetId, true);
-  const others = await liveFleets(admin, fleetId);
-  if (others > 0) {
-    notice(dim(`[fleet] ${others} other fleet${others === 1 ? "" : "s"} still serving: leaving the tool advertisements up`));
-    return;
-  }
-  await retireProviderCapabilities(admin, FLEET_PROVIDERS);
-}
-
-function markFleet(admin: RadiaClient, fleetId: string, retired = false): Promise<{ id: string }> {
-  // Keyed per refresh WINDOW, so a fleet running for a week costs one record per window instead of
-  // one per beat, and the newest per `fleetId` is all the projection reads.
-  const window = Math.floor(Date.now() / FLEET_REFRESH_MS);
-  return admin.put(
-    { kind: FLEET_KIND, body: { fleetId, ...(retired ? { retired: true } : {}) } },
-    retired ? `chat-fleet:${fleetId}:retired` : `chat-fleet:${fleetId}:${window}`,
+  // Stop counting for each PROVIDER first. Letting the beats simply lapse would leave those subjects
+  // reading live for the whole TTL, and the withdrawal below is best-effort: if it fails, sessions
+  // would go on offering tools this fleet no longer serves for fifteen minutes rather than at once.
+  // Safe while another fleet runs, since a subject is live if ANY instance beats for it and this
+  // retires only ours.
+  await Promise.all(
+    FLEET_PROVIDERS.map((subject) =>
+      retirePresence(admin, FLEET_PRESENCE, { subject, instance: fleetId })
+        .catch(() => {/* best effort: shutdown must not fail over a tombstone */})
+    ),
   );
-}
-
-/** How many OTHER launchers have said recently that they are running.
- *
- *  Newest-first and bounded: a fleet whose newest record fell off the end of this read is older
- *  than 200 writes of this kind and cannot be inside the TTL, so the bound cannot hide a live one.
- *  Ages come from `createdAt`, which is the DATABASE clock; the comparison is against this
- *  process's, which is the one place this file trusts the two to be roughly in step. */
-async function liveFleets(admin: RadiaClient, exclude: string): Promise<number> {
-  const rows = await admin.queryNewest<{ fleetId?: string; retired?: boolean }>({ kind: FLEET_KIND }, 200);
-  const seen = new Set<string>();
-  let live = 0;
-  for (const r of rows) {
-    const b = r.body;
-    if (typeof b.fleetId !== "string" || b.fleetId === exclude || seen.has(b.fleetId)) continue;
-    seen.add(b.fleetId); // desc, so the first record for a fleet is its newest
-    if (b.retired) continue;
-    if (Date.now() - Date.parse(r.runtimeMeta.createdAt) < FLEET_TTL_MS) live++;
-  }
-  return live;
+  const result = await retireIfLast(
+    admin,
+    FLEET_PRESENCE,
+    { subject: FLEET_SUBJECT, instance: fleetId },
+    async () => {
+      await retireProviderCapabilities(admin, FLEET_PROVIDERS);
+    },
+  );
+  if (result.withdrew) return;
+  // The two declines read differently to whoever is watching a terminal: one is the ordinary case,
+  // the other means this process could not tell and left the advertisements up on that basis.
+  const n = result.others.length;
+  notice(dim(
+    result.complete
+      ? `[fleet] ${n} other fleet${n === 1 ? "" : "s"} still serving: leaving the tool advertisements up`
+      : `[fleet] could not read the whole fleet list: leaving the tool advertisements up`,
+  ));
 }
 
 /** Start a space of our own when none is running. */

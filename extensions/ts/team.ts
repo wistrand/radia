@@ -13,8 +13,9 @@
 // answers the same next year, across restarts and across machines. `radia revoke` is its off
 // switch, and `radia runs --for` stops what it minted.
 
+import { RadiaClientError } from "../../sdk/ts/client.ts";
 import type { RadiaClient } from "../../sdk/ts/client.ts";
-import { AGENT_DEFINITION, ARTIFACT, KIND_DEF, type KindDef } from "../../sdk/ts/wire.ts";
+import { AGENT_DEFINITION, ARTIFACT, KIND_DEF, type KindDef, kindDefKey } from "../../sdk/ts/wire.ts";
 import { CAPABILITY, CAPABILITY_KIND, retireProviderCapabilities } from "./capability.ts";
 import { WORKSPACE_KIND } from "./workspace.ts";
 import { activeByKey, grantKey, isRetired, newestByKey, opsGrantKey } from "../../sdk/ts/registry.ts";
@@ -245,25 +246,73 @@ export interface RosterEntry {
  */
 export async function declareTeamKinds(admin: RadiaClient): Promise<string[]> {
   const live = await liveKinds(admin);
-  for (const def of TEAM_KINDS) await admin.registerKind(mergeKind(live.get(def.kind), def));
+  for (const def of TEAM_KINDS) await declareKind(admin, def, live);
   return TEAM_KINDS.map((d) => d.kind);
 }
 
 /** The newest declaration per kind name, which is what the registry projects and what a merge has
- *  to extend. Retirements included: reviving a retired kind is a redeclaration like any other. */
-async function liveKinds(admin: RadiaClient): Promise<Map<string, KindDef>> {
+ *  to extend. Retirements included: reviving a retired kind is a redeclaration like any other.
+ *
+ *  Exported because `mergeKind` is useless without it and neither is about TEAMS: any app sharing a
+ *  space with another declares over kinds it does not own. The chat learned that the hard way, by
+ *  refusing to start on a space `radia team add` had touched. */
+export async function liveKinds(admin: RadiaClient): Promise<Map<string, { id: string; def: KindDef }>> {
   const rows = await admin.queryAll<KindDef>({ kind: KIND_DEF });
-  const out = new Map<string, KindDef>();
-  for (const [name, rec] of newestByKey<KindDef>(rows, (b) => b.kind)) out.set(name, rec.body);
+  const out = new Map<string, { id: string; def: KindDef }>();
+  // The RECORD, not just the body: an incompatible redeclaration is acknowledged by naming the
+  // `kind_def` record it replaces, so a caller that only kept the body cannot acknowledge anything.
+  for (const [name, rec] of newestByKey<KindDef>(rows, (b) => b.kind)) out.set(name, { id: rec.id, def: rec.body });
   return out;
 }
 
 /**
- * `declared` extended with every indexed path the space already carries for that kind.
+ * Declare `def` over whatever the space already carries for that kind.
  *
- * ADDITIVE ON PATHS ONLY. Everything else (`claimable`, `contentKey`, `usage`) is this build's
- * opinion and is stated, because those are single-valued: merging them would mean picking a winner
- * with no basis. Paths are a set, so a union is the one merge that is always safe.
+ * THE THREE THINGS A SHARED KIND NEEDS, and every one of them stopped an app booting before it was
+ * written down. MERGE, so another convention's paths survive this declaration. SKIP when the merged
+ * declaration is what is already live, because `supersedes` is not part of `kindDefKey`: re-putting
+ * an acknowledged declaration without it is the same key with a different body, so the app would
+ * start exactly once. And ACKNOWLEDGE only what the server actually refuses, by attempting first:
+ * sending `supersedes` unasked files every ordinary change as a break in the audit, and sending it
+ * on an unchanged declaration is an `idempotency_conflict`.
+ *
+ * What it will NOT acknowledge is narrowing a content key the space already carries and this
+ * declaration does not contain. Widening only ever SPLITS entries; narrowing collapses distinct
+ * ones and lets the sweep delete the losers, which is somebody else's data and not this app's call.
+ */
+export async function declareKind(
+  admin: RadiaClient,
+  def: KindDef,
+  live: Map<string, { id: string; def: KindDef }>,
+): Promise<void> {
+  const cur = live.get(def.kind);
+  const merged = mergeKind(cur?.def, def);
+  if (cur && kindDefKey(merged) === kindDefKey(cur.def)) return;
+  try {
+    await admin.registerKind(merged);
+  } catch (e) {
+    if (!(e instanceof RadiaClientError) || e.code !== "incompatible_redeclaration") throw e;
+    const theirs = cur?.def.contentKey ?? [];
+    const ours = merged.contentKey ?? [];
+    if (theirs.length > 0 && !theirs.every((k) => ours.includes(k))) throw e;
+    await admin.registerKind({ ...merged, supersedes: cur?.id ?? null });
+  }
+}
+
+/**
+ * `declared` extended with every indexed path the space already carries for that kind, and holding
+ * on to a live `contentKey` that already CONTAINS the declared one.
+ *
+ * `claimable` and `usage` stay this build's opinion and are stated, because those are single-valued
+ * and merging them would mean picking a winner with no basis. Paths are a set, so a union is always
+ * safe. The content key has a basis too, in one direction only: a live key containing ours is a
+ * REFINEMENT of the same identity, so adopting it can only SPLIT entries, never collapse two into
+ * one and let the sweep delete the loser, which is the one direction `incompatibleChanges` calls
+ * data loss. Our own records, missing the extra path, stay visible and compactable because an
+ * absent path is a VALUE rather than a refusal to classify (`keyOf` in `src/core/gc.ts`).
+ *
+ * Narrowing it back is NOT the same move and is not made here: that is the collapsing direction,
+ * and the runtime is right to demand an acknowledgement for it.
  */
 export function mergeKind(existing: KindDef | undefined, declared: KindDef): KindDef {
   if (!existing?.indexedPaths?.length) return declared;
@@ -274,7 +323,10 @@ export function mergeKind(existing: KindDef | undefined, declared: KindDef): Kin
     // and a path declared twice with two types is a conflict no merge can resolve silently.
     if (!seen.has(p.path)) paths.push(p);
   }
-  return { ...declared, indexedPaths: paths };
+  const mine = declared.contentKey ?? [];
+  const live = existing.contentKey ?? [];
+  const refines = mine.length > 0 && live.length > mine.length && mine.every((k) => live.includes(k));
+  return { ...declared, indexedPaths: paths, ...(refines ? { contentKey: live } : {}) };
 }
 
 /**

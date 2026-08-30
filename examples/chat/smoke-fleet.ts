@@ -237,6 +237,25 @@ check("the rule holds at three tiers too", ["fast", "balanced", "deep"][heuristi
     // LITERAL reads only. `Deno.env.get(SOME_CONST)` is invisible here, which is exactly the shape
     // the exec worker's read has, so this does not cover that case and must not be read as doing
     // so; what closes that one is `env()` in space/keys.ts answering "unset" instead of throwing.
+    // EVERY advertisement a launched worker publishes must carry the presence flag, because the
+    // launcher beats for it (`spawn` appends --presence) and a reader treats an untracked
+    // advertisement as always-live. Missing it on ONE publish is enough: `publishCapability`
+    // supersedes by (provider, tool), so a second publish without the flag strips it off the first.
+    // That shipped — images.ts published its two tools directly WITH the flag and then again
+    // through `serveTools` without it, so the one provider whose tools a crashed fleet kept
+    // offering was the one that advertised them twice.
+    for (const call of [
+      ...scanned.matchAll(/publishCapability\(([^;]*?)\)\s*;/g),
+      ...scanned.matchAll(/serveTools\(([\s\S]*?)\n\}\)\s*;/g),
+    ]) {
+      const site = call[0].slice(0, 40).replace(/\s+/g, " ");
+      check(
+        `${file.split("/").pop()}: '${site}…' claims presence`,
+        /PRESENCE|presence:/.test(call[1]),
+        /PRESENCE|presence:/.test(call[1]) ? "flagged" : "PUBLISHES WITHOUT THE PRESENCE FLAG",
+      );
+    }
+
     const allowed = args.match(/--allow-env=([A-Za-z0-9_,]+)/)?.[1]?.split(",");
     if (!allowed) continue;
     const named = [...scanned.matchAll(/Deno\.env\.get\(\s*["']([A-Za-z0-9_]+)["']/g)].map((m2) => m2[1]);
@@ -266,8 +285,8 @@ check("the rule holds at three tiers too", ["fast", "balanced", "deep"][heuristi
   check("a tool is advertised once published", await advertised());
 
   const a = new AbortController(), b = new AbortController();
-  const fleetA = announceFleet(client, a.signal);
-  const fleetB = announceFleet(client, b.signal);
+  const fleetA = await announceFleet(client, a.signal);
+  const fleetB = await announceFleet(client, b.signal);
   a.abort();
   await retireFleetAdvertisements(client, fleetA);
   check("one fleet exiting leaves a serving fleet's advertisements alone", await advertised());
@@ -279,7 +298,7 @@ check("the rule holds at three tiers too", ["fast", "balanced", "deep"][heuristi
   // The cycle has to close, or a space becomes un-advertisable after one restart: the revival is a
   // fresh key anchored on the tombstone, and the next withdrawal is anchored on the revival.
   const c2 = new AbortController();
-  const fleetC = announceFleet(client, c2.signal);
+  const fleetC = await announceFleet(client, c2.signal);
   await publishCapability(client, TOOL, PROVIDER);
   check("the next fleet's publish revives it", await advertised());
   c2.abort();

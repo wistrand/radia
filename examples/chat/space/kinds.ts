@@ -9,8 +9,34 @@ import { PROGRESS_KIND } from "../../../extensions/ts/progress.ts";
 import { CAPABILITY_KIND } from "../../../extensions/ts/capability.ts";
 import { CANCEL_KIND, TURN_COMPLETE_KIND } from "../../../extensions/ts/turn.ts";
 import { SANDBOX_KIND } from "../../../extensions/ts/sandbox-registry.ts";
+import { presenceKind, presenceSpec } from "../../../extensions/ts/presence.ts";
+// Not because this is a team: `mergeKind`/`liveKinds` are about DECLARING OVER A KIND SOMEBODY ELSE
+// ALSO DECLARES, which is any two apps on one space. See `declare` below.
+import { declareKind, liveKinds } from "../../../extensions/ts/team.ts";
+
+/**
+ * Which launchers are still running their workers. The reader and the writer share this one object
+ * because they must agree on the TTL and the beat (`extensions/ts/presence.ts`); the defaults are
+ * the pair this app measured its way to, fifteen minutes live on a five-minute beat.
+ */
+export const FLEET_PRESENCE = presenceSpec("chat_presence");
 
 export async function registerChatKinds(client: RadiaClient): Promise<void> {
+  // EVERY declaration below is additive against what the space already carries, because a
+  // redeclaration REPLACES rather than merges and several of these kinds are not this app's alone.
+  // `artifact` and `capability` are reserved kinds that other conventions extend for their own
+  // reasons — `extensions/ts/team.ts` adds a `team` path to both — so declaring this app's list
+  // flat drops theirs, which stops every grant, interest and watch pattern naming it from
+  // compiling. The runtime refuses that outright now, so the chat simply would not start on a
+  // space `radia team add` had touched: `incompatible_redeclaration: this redeclaration of
+  // 'capability' drops the indexed path 'team'`. Merging is what makes two apps able to share a
+  // space at all, and it is what `declareTeamKinds` already does from the other side.
+  const live = await liveKinds(client);
+  // ONE helper, shared with `declareTeamKinds`, because both sides of this hit the same three
+  // walls: merge so another convention's paths survive, skip what is already declared, and
+  // acknowledge only what the server refuses. See `declareKind`.
+  const declare = (def: Parameters<RadiaClient["registerKind"]>[0]) => declareKind(client, def, live);
+
   // A `capability` record = a tool a worker serves ({tool, def}). The chatbot DISCOVERS its
   // tools by querying these, instead of a hard-coded list. That is content-routed capability
   // discovery: the "no preconfigured routing table" thesis applied to tools.
@@ -21,7 +47,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // declared that query throws `undeclared_path`, the publisher's catch swallows it, and every
   // publish falls back to the unanchored key. The visible symptom is a retired tool that cannot be
   // revived, which is two silent steps away from the missing declaration.
-  await client.registerKind({
+  await declare({
     ...CAPABILITY_KIND, // extensions/ts/capability.ts owns the shape
   });
   // REDECLARING a reserved kind, on purpose. `artifact` is defined in code with {digest, mediaType}
@@ -32,7 +58,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // REPLACES rather than merges (latest-wins), and dropping `digest` would break dedup by content.
   // The runtime enforces exactly that now: a reserved kind may be EXTENDED, never shrunk, so
   // omitting `digest`/`mediaType`/`claimable` here is refused with `reserved_kind`.
-  await client.registerKind({
+  await declare({
     kind: "artifact",
     indexedPaths: [
       { path: "digest", type: "keyword" },
@@ -47,7 +73,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // The fleet's PUBLIC wrapping key, as a registry (plan-encryption.md phase 2). Public by nature,
   // so every session reads it unscoped; `keyId` is indexed so a reader can name the one it wants
   // rather than fold the whole registry to answer "is this the key I sealed to".
-  await client.registerKind({
+  await declare({
     kind: "fleet_key",
     indexedPaths: [{ path: "keyId", type: "keyword" }],
     claimable: false,
@@ -61,17 +87,17 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // every fleet on this space, so withdrawing them while another fleet serves takes the tool list
   // away from everybody (`retireFleetAdvertisements` in client/fleet.ts). Refreshed while it runs,
   // because a SIGKILLed launcher must stop counting rather than block withdrawal forever.
-  await client.registerKind({
-    kind: "chat_fleet",
-    indexedPaths: [{ path: "fleetId", type: "keyword" }],
-    claimable: false,
-    contentKey: ["fleetId"],
-  });
-  await client.registerKind({ kind: "conversation", indexedPaths: [], claimable: false });
+  //
+  // The shape comes from `extensions/ts/presence.ts` rather than being declared here: an unkeyed
+  // kind with a retention stamp, so a dead launcher's beats DELETE themselves. This replaced a
+  // `chat_fleet` kind keyed by `fleetId`, whose newest record per key no sweep may ever touch, so
+  // every launcher that ever ran left one record standing forever.
+  await declare(presenceKind(FLEET_PRESENCE));
+  await declare({ kind: "conversation", indexedPaths: [], claimable: false });
   // A person's PUBLIC keys, one per machine they read on. Public by nature, and what makes a
   // conversation readable from more than one place: a session seals to every live key here, so a
   // second machine is reachable without anyone copying a file.
-  await client.registerKind({
+  await declare({
     kind: "person_key",
     indexedPaths: [{ path: "principal", type: "keyword" }, { path: "keyId", type: "keyword" }],
     claimable: false,
@@ -85,7 +111,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // session cannot fetch by id — get-by-id is the ops plane, and every public read is a pattern
   // over declared paths. So key material addressed by `conversationId` is the difference between a
   // key its owner can fetch and one only an operator can.
-  await client.registerKind({
+  await declare({
     kind: "conversation_key",
     indexedPaths: [{ path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }],
     claimable: false,
@@ -99,9 +125,9 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // a client has something to wait for, and Escape as a fact the worker can read. Both carry
   // `turnAt`, because a conversation accumulates one of each per turn and a per-conversation read
   // finds the previous turn's.
-  await client.registerKind(TURN_COMPLETE_KIND);
-  await client.registerKind(CANCEL_KIND);
-  await client.registerKind({
+  await declare(TURN_COMPLETE_KIND);
+  await declare(CANCEL_KIND);
+  await declare({
     kind: "message",
     // `role` is indexed because it is the dimension anyone aggregating a conversation reaches for
     // ("how many user turns, how many tool results") and every message body carries it. Without it
@@ -142,7 +168,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // record holds but its kind does not declare is invisible to matching, so a scoped query is
   // rejected with `undeclared_path` rather than answered. That is what makes "how many run_javascript
   // did we do in THIS conversation" reachable in one query instead of a walk down children.
-  await client.registerKind({
+  await declare({
     kind: "llm_call",
     // `turnAt` groups a turn's rounds, which is what the router's per-turn ceiling reads and what
     // makes "the calls of one turn" a query rather than a scan.
@@ -160,7 +186,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // `contentKey: tier` IS what `liveModels` projects by: it reads the registry server-side, so the
   // key is stated here and nowhere else, and what compaction keeps is what the router reads by
   // construction rather than by a comment claiming somebody checked.
-  await client.registerKind({
+  await declare({
     kind: "model",
     indexedPaths: [{ path: "tier", type: "keyword" }],
     claimable: false,
@@ -169,7 +195,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // `conversationId` on the RESULT kinds, not just the call kinds: these are keyed by callId, and a
   // grant scoped by conversation can only bind a path the body actually carries. Without it a
   // session holding a callId from another conversation could read its result.
-  await client.registerKind({
+  await declare({
     // Since plan-chat-turn.md 2a this answers INLINE calls only (the router's classifier: `messages`
     // in the body, no conversation). A conversation call's answer is the assistant `message` itself,
     // acked by the inference worker inside the lease's fence.
@@ -177,7 +203,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     indexedPaths: [{ path: "callId", type: "keyword" }, { path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }],
     claimable: false,
   });
-  await client.registerKind({
+  await declare({
     kind: "llm_chunk",
     indexedPaths: [
       { path: "callId", type: "keyword" },
@@ -192,7 +218,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     // answer. The runtime stamps this into each record at commit; a writer may still override.
     defaultRetentionSeconds: 24 * 3600,
   });
-  await client.registerKind({
+  await declare({
     kind: "tool_call",
     // `attempt` and `retryOf` record the iteration loop: code generation is write, run, read the
     // error, fix, rerun, and every attempt used to parent to the conversation, so eight tries were
@@ -217,7 +243,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // A `sandbox` = an execution environment and what it guarantees, declared by the OPERATOR and
   // verified by the worker before it serves anything. A record rather than prose because a grant
   // can bind `{network: false}` and a sentence in a tool description cannot.
-  await client.registerKind(SANDBOX_KIND);
+  await declare(SANDBOX_KIND);
   // A `workspace` = one version of a multi-file working tree: a manifest of {path, mode, digest,
   // artifactId} with the bytes stored as artifacts. Latest-wins by name like `procedure`, so a new
   // version is a successor and every earlier one stays readable.
@@ -225,7 +251,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // `treeDigest` is indexed because it is the tree's IDENTITY: it is how a re-written identical
   // tree is recognised (and skipped), and eventually what a `check` attaches to. `basedOn` is
   // indexed so a fork is a query: two manifests naming one predecessor diverged.
-  await client.registerKind({
+  await declare({
     kind: "workspace",
     indexedPaths: [
       { path: "name", type: "keyword" },
@@ -246,7 +272,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   //
   // Indexed on `verdict` so "what was claimed and did not hold" is one query, which is the
   // question an auditor asks and the model never volunteers.
-  await client.registerKind({
+  await declare({
     kind: "check",
     indexedPaths: [
       { path: "callId", type: "keyword" },
@@ -258,7 +284,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     ],
     claimable: false,
   });
-  await client.registerKind({
+  await declare({
     kind: "tool_result",
     indexedPaths: [{ path: "callId", type: "keyword" }, { path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }],
     claimable: false,
@@ -269,7 +295,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // written by the SESSION principal, so `created_by` names the asker authoritatively rather than
   // a body field anyone could set. Indexed on conversationId because the approver is the person
   // in that conversation; `kind` so a request can be found by what it asks for.
-  await client.registerKind({
+  await declare({
     kind: "grant_request",
     indexedPaths: [{ path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }, { path: "kind", type: "keyword" }],
     claimable: false,
@@ -280,7 +306,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // wrote it. `conversationId` is indexed because that scope is enforced on every execution, not
   // just used to filter what the model is offered. The code itself is an artifact; the record
   // carries its id, never its text (records route, blobs hold bytes).
-  await client.registerKind({
+  await declare({
     kind: "procedure",
     indexedPaths: [{ path: "name", type: "keyword" }, { path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }],
     claimable: false,
@@ -288,7 +314,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // `progress` = what a worker is doing right now, keyed to the call the chat awaits. Turn
   // feedback is a record like everything else (see progress.ts): the chat renders the stream,
   // and its ABSENCE tells the chat nobody claimed the work.
-  await client.registerKind({
+  await declare({
     ...PROGRESS_KIND, // extensions/ts/progress.ts owns the shape; this app only declares it
   });
 }

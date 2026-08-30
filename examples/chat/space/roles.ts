@@ -14,6 +14,7 @@
 import { RadiaClient } from "../../../sdk/ts/client.ts";
 import { INSPECT_SCHEMAS, REMEDIATE_SCHEMAS } from "../../../extensions/ts/agent-tools.ts";
 import { readDefinition } from "../../../extensions/ts/team.ts";
+import { FLEET_PRESENCE } from "./kinds.ts";
 
 /** The tools the SESSION serves in its own process (client/session-tools.ts), derived from the
  *  same schemas that file serves so the grant and the server cannot disagree about the list. */
@@ -328,6 +329,11 @@ export function userGrants(scope?: Record<string, unknown>, principal?: string):
     // entirely when the principal is unknown, because an UNBOUND pattern here is exactly that hole.
     ...(me ? [{ kind: "person_key", operations: ["put", "query"], pattern: { principal: me } }] : []),
     { kind: "capability", operations: ["query"] }, // a registry: the fleet's tools, not session data
+    // Which launchers are still running, which is how a session tells a live advertisement from one
+    // a crashed fleet left behind (`liveAdvertisements`). Read-only and the same category as
+    // `capability`: it says who is serving, never anything about a conversation. Without it the
+    // filter fails open and the session simply keeps offering every advertised tool.
+    { kind: FLEET_PRESENCE.kind, operations: ["query"] },
     // The fleet's PUBLIC wrapping key. Unscoped and unremarkable: a public key is public, and a
     // session that cannot read it cannot start an encrypted conversation at all.
     { kind: "fleet_key", operations: ["query"] },

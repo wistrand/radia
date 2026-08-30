@@ -26,13 +26,15 @@ import { progress } from "../../../extensions/ts/progress.ts";
 import { answer, serveTools } from "../../../extensions/ts/tool-worker.ts";
 import { readToolArtifact, storeToolArtifact } from "../../../extensions/ts/media.ts";
 import { conversationKeys, fleetKeyPair } from "../space/keys.ts";
-import { arg, onStop } from "../util.ts";
-import { publishCapability } from "../../../extensions/ts/capability.ts";
+import { arg, argOn, onStop } from "../util.ts";
 import { publishModel, retireModel } from "../../../extensions/ts/model.ts";
 import type { ToolDef } from "../provider/openrouter.ts";
 
 const ME = "agent:chat-images";
 
+/** Set by the launcher that beats for this provider (`spawn` in client/fleet.ts), so these
+ *  advertisements may be judged stale once it stops. Absent when a worker is started by hand. */
+const PRESENCE = { presence: argOn("--presence") };
 
 const url = arg("--url") ?? "http://127.0.0.1:7788";
 const token = arg("--token"); // agent:chat-images run token
@@ -117,11 +119,14 @@ const ANALYZE_IMAGE: ToolDef = {
   },
 };
 
-// Advertise the tools (discovery, like any capability) and the models (fleet inventory). `modalities`
-// is what keeps these out of TEXT routing: the router and the escalation ladder select tiers that
-// serve text, and neither of these does. It is the same array the request sends as `modalities: ["image"]`.
-await publishCapability(client, GENERATE_IMAGE, ME);
-await publishCapability(client, ANALYZE_IMAGE, ME);
+// Advertise the models (fleet inventory). `modalities` is what keeps these out of TEXT routing: the
+// router and the escalation ladder select tiers that serve text, and neither of these does. It is
+// the same array the request sends as `modalities: ["image"]`.
+//
+// The TOOLS are advertised by `serveTools` below and nowhere else. They were published here too,
+// which is one definition written twice: the copy here carried the presence flag and the one in
+// `serveTools` did not, so every boot superseded its own advertisement with an untracked one and
+// the images worker was the one provider a crashed fleet never stopped offering.
 const AD = { tier: "image", model, rank: 0, modalities: ["image"] };
 // `inputMediaTypes` puts the announcement on a RECORD as well as in a description, so "what can
 // this space read?" is answerable by query rather than by parsing prose out of a tool definition.
@@ -156,6 +161,7 @@ await serveTools(client, {
       readImage(ctx!.callId, { args: a, conversationId: ctx!.conversationId, owner: ctx!.owner }, client),
   },
   schemas: [GENERATE_IMAGE, ANALYZE_IMAGE],
+  ...PRESENCE,
   leaseSeconds: 120, // image generation is slow; the heartbeat keeps the lease alive
 });
 

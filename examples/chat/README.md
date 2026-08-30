@@ -168,10 +168,17 @@ Definitions and grants for these roles live in `space/roles.ts` and process star
 
 A tool advertisement is keyed by (provider, tool), so two fleets on one space publish one record
 rather than one each, and withdrawal on exit belongs to the LAST fleet out. Each launcher records
-that it is running (`chat_fleet`, refreshed while it lives) and withdraws the advertisements only
-when no other launcher's record is live; a fleet killed outright stops counting after 15 minutes.
+that it is running (`chat_presence`, refreshed while it lives, on the shared presence convention in
+`extensions/ts/presence.ts`) and withdraws the advertisements only when no other launcher's record
+is live; a fleet killed outright stops counting after 15 minutes.
 An exiting fleet used to retire them for everybody, which took every file tool off a running
 session's list until a worker's description happened to change.
+
+A withdrawal only ever happens on a clean exit, so a session also judges advertisements by the
+beats: a worker spawned by this launcher marks its advertisements as presence-tracked, and a
+session hides the tools of any tracked provider that has stopped beating, saying which one went
+away. A crashed fleet therefore stops offering tools without anything having withdrawn them; a
+provider that does not beat at all is untracked and always offered.
 
 ## Conversations and turns
 
