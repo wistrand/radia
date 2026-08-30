@@ -131,6 +131,27 @@ answers it as authorization (which digest a tier MAY run, pinned in a grant). Th
 invented a `stage_code` advertisement to answer it as discovery (which digest IS running). They are
 complementary rather than duplicative, but nothing says so and nothing composes them.
 
+**Ephemeral presence has been hand-rolled three times, and capability advertisements never
+expire.** `retireProviderCapabilities` (`extensions/ts/capability.ts`) states its own limit: an
+advertisement is a claim of intent, never evidence of liveness, and only a clean shutdown
+withdraws one. The chat's `chat_fleet` records (`examples/chat/client/fleet.ts`) bound the
+last-one-out withdrawal VOTE with `FLEET_TTL_MS`; the advertisements themselves have no TTL, so a
+crashed sole fleet's tools stay advertised until someone cleans up by hand. The same shape exists
+as the MUD's `presence` projection ([plan-mud.md](plan-mud.md)) and the run-scoped `interest`
+liveness ([plan-gc.md](plan-gc.md)). The chat's shape is already the generic convention: newest
+record per id inside a TTL, keyed per refresh WINDOW so a long-lived heartbeat stays a handful of
+records. Heartbeat timers stay client-side; the space never fires one. Action 7.
+
+**`collapseByTool` answers a name conflict with the newest definition, and failing closed is
+blocked on presence.** `conflicted: true` is computed (`extensions/ts/capability.ts`) and its one
+consumer outside tests prints a deduped notice and hands the newest definition to the model
+(`examples/chat/client/turn.ts`), so a `capability: put` holder can SUBSTITUTE a tool's definition
+rather than merely break it. Failing closed today is worse, twice over: with no expiry, a stale
+advertisement from a crashed old-version fleet takes a working tool offline indefinitely, and
+version skew during a rolling upgrade (the ordinary cause of a conflict) breaks the tool
+mid-deploy. The fixes are ordered, never parallel: presence first (action 7), then fail closed
+(action 8), once a live disagreement is distinguishable from a stale one.
+
 ## Where the apps are weaker than the runtime allows
 
 Recorded because the gap is the app's, not Radia's, and both are worth fixing.
@@ -182,6 +203,8 @@ DESIGN-FIRST means the open question below has to be answered before code.
 | 4 | ~~Plan from bulk reads, in memory~~ **BUILT 2026-08-16** | O(1) queries per wake instead of O(datasets x stages); `ui.html` is the worked example | SMALL | `examples/analysis/planner.ts` |
 | 5 | Pin stage code with promotion instead of self-report | turns the memo's foundation from a claim into an enforced fact, and would be the first worked composition of promotion with something other than an exec runner. **BUILT in full 2026-08-17** (stages as workspace agents, pins on both sides, shape as a `stage_def` registry): [architecture-analysis-workspace-agents.md](architecture-analysis-workspace-agents.md) | MEDIUM | `examples/analysis/`, `extensions/ts/promotion.ts` |
 | 6 | A scoped ops READ tier | **BUILT 2026-08-26 as the PATTERN tier**, reversing the 2026-08-16 "do not build". A third app (`extensions/ts/team.ts`) consumes the GENERIC MCP tools rather than serving its own, so five ops-plane reads had no working tier and `observe` was being handed out to cover it. No new concept: the grant pattern that already bounds coordination reads, applied through `Space.readFilter` | `Space.readFilter`, `Space.opsScope`, `test/team.test.ts` | aggregates still do not cover pattern-scoped kinds (an exact count needs the oracle, not the SQL pre-filter) |
+| 7 | An ephemeral presence convention in `extensions/` | hand-rolled three times (`chat_fleet`, the MUD's `presence`, the run-scoped `interest`), and capability advertisements never expire, so a crashed sole fleet's tools stay advertised forever. The chat's shape is the prototype: newest record per id inside a TTL, keyed per refresh window | SMALL | `extensions/ts/` (new), `examples/chat/client/fleet.ts` converts |
+| 8 | `collapseByTool` fails closed on a conflict | the flag plus one console notice is the whole defence today, and newest-wins lets a `capability: put` holder substitute a definition. Blocked on 7: without liveness, failing closed lets a stale advertisement from a crashed process take a working tool offline indefinitely, and breaks tools during rolling upgrades | SMALL, AFTER 7 | `extensions/ts/capability.ts`, `examples/chat/client/turn.ts` |
 
 **Actions 1 and 2 are built** (`sdk/ts/client.ts`, `sdk/ts/registry.ts`, `sdk/py/radia.py`;
 guards in `test/registry.test.ts` and `test/http.test.ts`, both proved red). Two
@@ -262,6 +285,8 @@ would have shown nothing.
 | The amortized GC is not that penalty's cause | plan-gc.md's measured table: 0.36–9ms per trigger, one trigger per 1000 writes |
 | Neither history, data volume, nor idle sibling spaces cause it | Profiled: per-1000-file chunks flat at ~1.35s across 13k artifacts, replay of the file's history ±0, 9 idlers ±0 even under `taskset -c 0,1` with `MemoryMax=5G`; idle space CPU 0% over 15s, before and after writes |
 | The fix holds in context | Full suite, aged client, nine siblings alive: the heavy test runs 18s on its private space vs 21s shared before the fix |
+| Capability advertisements never expire | `retireProviderCapabilities` is the only withdrawal path and runs on clean shutdown only; `FLEET_TTL_MS` (`examples/chat/client/fleet.ts`) bounds the last-one-out vote, never the advertisements |
+| The `conflicted` flag has one consumer outside tests | grep: `examples/chat/client/turn.ts` prints a deduped notice and uses the newest definition; the conformance suite and `smoke-capability.ts` assert the flag itself |
 
 **Not checked, and stated as inference:** that the runtime's boundary is in "the right place" is a
 judgement from two apps, not a measurement. A third application with a different shape (streaming
