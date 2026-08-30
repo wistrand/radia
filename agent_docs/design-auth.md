@@ -342,11 +342,12 @@ to see (`{createdBy: "self"}`, `{taint: "file,net"}`). It is a closed vocabulary
 authorization reads. Never extend `pattern` to reach envelope state instead; see
 [design-matching.md](design-matching.md) "What patterns cannot express".
 
-**Enforcement is at the HTTP boundary, and only there.** The handlers resolve the constraint and
-apply it; `Space.take`/`Space.query` do no grant work of their own, and the ack-side body check
-inside `Space.ack` runs only against a constraint the handler passed in. An in-process consumer of
-`Space` (embedded mode, an example launcher, the conformance suite) bypasses grants entirely. Read
-every "the runtime enforces X" here as "the HTTP boundary enforces X".
+**Enforcement is in core, reached through the handle.** `Space.as(principal)` returns the
+`ActingSpace` whose every verb consults grants; the handlers hold one and resolve nothing
+themselves ("Where each verb is enforced", below). An in-process consumer chooses its door by
+TYPE: the handle enforces, the raw facade is the runtime's own attribution-only API (embedded
+mode, launchers and the conformance suites use it deliberately, and `test/layering.test.ts`
+ledgers every raw call in `src/`). Read "the runtime enforces X" literally.
 
 ## Authorization flow (the request path)
 
@@ -387,7 +388,9 @@ is no per-call decision to get wrong and no escape parameter to misuse. The raw 
 are the runtime's own, and their parameters are ATTRIBUTION only (`put(..., {author})` names
 `created_by`; `take(..., {owner})` names the lease owner) — which is what fixtures planting
 authorship always meant, and what the retired `{unchecked: "why"}` escape existed to say before
-the two concepts were separated. Handlers hold a handle (`const acting = space.as(principal)`);
+the two concepts were separated. The one exception: a raw settle's `principal` is the PRESENTING
+identity, which the lease fence compares to the owner inside the settle's transaction — ownership
+enforcement, not a grant read, and not mere attribution. Handlers hold a handle (`const acting = space.as(principal)`);
 `test/layering.test.ts` keeps raw verbs out of them with a two-part ledger (raw call sites, and
 the `as(` count per handler file). Same bind-once idiom as `ToolContext.caller()`, `RadiaClient`
 and `readFilter`.

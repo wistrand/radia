@@ -70,9 +70,10 @@ the moment a pattern can execute, grants stop being inspectable and the pushdown
 ([design-auth.md](design-auth.md), "Grants"). For applications that means environment tiering falls
 out with no additional mechanism: a supervisor whose grant is `put runnable {env:"ci"}` cannot mint
 a prod runnable, and an executor whose take grant is patterned `{env:"ci"}` is incapable of
-claiming prod work whatever its own pattern asks for. That is the mechanism §5 is built on. Read
-every "the runtime enforces X" as "the HTTP boundary enforces X", since an in-process caller of
-`Space` bypasses all of it (§8, newly found gaps).
+claiming prod work whatever its own pattern asks for. That is the mechanism §5 is built on. "The
+runtime enforces X" reads literally since 2026-08-30: every coordination verb enforces in core
+behind `Space.as(principal)`, and an in-process caller chooses its door by type: the handle
+enforces, the raw facade is the runtime's own attribution-only API (§8, now closed).
 
 **Classification is the seam that does not fit.** Patterns see record bodies, taint is envelope
 state, so nothing in the routing language can filter on it; the envelope-side vocabulary that can
@@ -157,8 +158,9 @@ claim time in the runtime, not in executor discipline, and no incumbent offers t
 
 Limits, verified 2026-08-03: the barrier is bindable by a grant (`scope.taint`, an ALLOWLIST), so
 an executor cannot opt out, but only when EVERY applicable grant carries one, since grants union.
-Enforcement moved into `src/core/` for reads and ack-emitted writes; `Space.put` still authorizes
-only at the HTTP boundary, so an embedded host calling it directly writes past every grant. And
+Enforcement lives in core for every coordination verb (`Space.as(principal)`, 2026-08-30); the
+raw facade stays deliberately unauthorized, so an embedded host enforces exactly when it holds the
+handle, a type distinction the layering ledger makes visible in-repo. And
 taint still launders by omitting the parent edge on a direct put (§5). Pilot-grade, not a security
 product.
 
@@ -434,23 +436,25 @@ rediscovered as new; the corresponding positive claim is in "verified true" abov
   Note the union rule: the grant-side barrier binds only when EVERY applicable grant carries one.
   Superseded in shape by the label set: the boolean it was written against saturated after the first
   tool call, so "bindable" was true and useless. See [design-taint.md](design-taint.md).
-- **PARTIALLY CLOSED.** ~~`authorize`/`combineMatch`/`bodyMatchesGrant` live in handlers, so
-  in-process `Space` callers bypass all of it.~~ They live in `src/core/` now, and reads
-  (`readAccess`) plus ack-emitted writes (`Space.ack`) authorize inside the core. Still open, and
-  it is the one that matters for §5: **`Space.put` does not authorize** (`src/core/space.ts`, "that
-  only a privileged principal may put one is enforced at the API boundary"), so a host embedding
-  `Space` and calling `put` directly writes past every grant. Until that closes, "the medium is the
-  enforcement point" is true of the HTTP surface and a design intent for an embedded one.
+- **CLOSED (2026-08-30).** ~~`authorize`/`combineMatch`/`bodyMatchesGrant` live in handlers, so
+  in-process `Space` callers bypass all of it.~~ Enforcement lives in core for every coordination
+  verb, reached through `Space.as(principal)`: the `ActingSpace` handle whose put/take/settles/
+  reads/artifact ops all consult grants (design-auth.md, "Where each verb is enforced"). The raw
+  verbs remain deliberately unauthorized and their parameters are attribution only (`{author}`,
+  `{owner}`); `test/layering.test.ts` ledgers every raw call in `src/`. An embedded host is the
+  enforcement point exactly when it holds the handle rather than the raw facade, which is now a
+  type distinction instead of a per-call discipline.
 - Taint launders by omitting the parent edge on a direct put. `computeTaint` reads only
   `parentIds` and the client's raise, so a caller that derives content without declaring the parent
   writes it clean.
 - `body_sha256` never re-verified on read; unencrypted blob `get` does not re-hash.
 - `declassify` mints a new record id with the same `body_sha256`, so a clearance keyed on record id
   and one keyed on digest diverge across it.
-- The artifact put grant is checked against `{mediaType}` before `x-radia-meta` appFields are
-  parsed (`handlers/artifacts.ts`: `authorize` + `bodyMatchesGrant` on `{mediaType}` alone, ~20
-  lines before `appFields`), so an appField-scoped put grant denies every artifact write
-  (fail-closed). Not hit by the chat, whose artifact writers hold an unscoped `artifact: put`.
+- **CLOSED.** ~~The artifact put grant is checked against `{mediaType}` before `x-radia-meta`
+  appFields are parsed, so an appField-scoped put grant denies every artifact write.~~ The
+  pre-payload check now runs over `{...appFields, mediaType, filename}` (`handlers/artifacts.ts`,
+  `ActingSpace.mayPut`), parsed before the check, and the record write re-checks the full body in
+  core. The team convention depends on exactly this: a compartment label is an appField.
 - Schema versioning and migration of kinds are unbuilt (`plan-milestones.md`: `[~]`). Every
   application here depends on it eventually; a capability mesh at org scale reaches it first.
 

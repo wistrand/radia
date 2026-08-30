@@ -323,8 +323,9 @@ already runs."** Name the incumbent, and state precisely where the models don't 
   payload* reach *this step*", a question Temporal's architecture has no place to ask. This is
   Radia's design center, stated with the same care as the evidence above: real in design,
   early in maturity. Credentials and grants resolve from records per request, so authorization is
-  NOT single-instance; the live limit is that `Space.put` authorizes only at the HTTP boundary, so
-  an embedded host calling it directly writes past every grant. See
+  NOT single-instance; enforcement lives in core behind `Space.as(principal)`, and the live limit
+  is that the RAW facade stays deliberately unauthorized, so an embedded host is the enforcement
+  point only while it holds the handle rather than the raw verbs. See
   [design-auth.md](design-auth.md), [gotchas.md](gotchas.md), and the claim ledger in
   [research-applications.md](research-applications.md) §8, which carries the current status.
 - **Data plane vs. execution log.** Temporal caps payload/history size and tells you to keep
