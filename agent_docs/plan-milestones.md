@@ -73,8 +73,10 @@ chatbot's conversation-as-record-thread model, dev diagnostics (`GET /v0/ops/rec
 `/graph`), the **Space** map in the console, and Phase 7's surfaces: the `radia` CLI, the
 bundled **MCP adapter** (stdio JSON-RPC; credential and fenced lease held outside the model
 context, lease renewed internally), the **Python SDK** at parity (stdlib only), auto-provisioned
-local credentials, and `deno task release` (per-OS binaries + npm/pip launcher packages).
-`npx radia dev` / `pipx run` are staged but unpublished, so that install path is unexercised.
+local credentials, and `deno task release` (per-OS binaries + SDK-only npm/pip packages).
+The binary installs only via `curl | sh` (`docs/install.sh`; decided 2026-08-30, replacing the
+launcher-package plan), native Windows is unsupported (WSL2 runs the Linux binary), and nothing
+is published yet, so the install path is unexercised.
 Full per-phase record in
 [plan-m0-implementation.md](plan-m0-implementation.md).
 
@@ -86,7 +88,7 @@ explicitly **not** production-readiness.
 > embedded storage, ordered phases with verify steps) is in
 > [plan-m0-implementation.md](plan-m0-implementation.md).
 
-- [x] `deno task dev`: embedded storage (PGlite/SQLite), single process, **web console** (dev UI), bundled **MCP adapter** (`radia mcp`). Distribution staged by `deno task release` (binaries + npm/pip shims, with the TS SDK and `extensions/` shipped as source in the npm package); `npx radia dev` awaits a publish.
+- [x] `deno task dev`: embedded storage (PGlite/SQLite), single process, **web console** (dev UI), bundled **MCP adapter** (`radia mcp`). Distribution staged by `deno task release` (binaries for the `curl | sh` installer + SDK-only npm/pip packages: TS SDK and `extensions/` as source in npm, the Python SDK in pip); the install path awaits a release tag.
 - [x] put / take / ack / nack / release / renew
 - [x] record + envelope split with denormalized routing columns
 - [x] `body_sha256` on every record

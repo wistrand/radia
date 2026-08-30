@@ -101,14 +101,14 @@ flowchart TB
 
 Adoption constraint (strategy, not packaging): a coordination runtime delivers value
 only after multiple agents join, so friction before the first local two-agent demo kills
-the funnel. The bar: **`npx radia dev` → running space + web inspector in under a minute;
-an agent joins from a second terminal.**
+the funnel. The bar: **one `curl | sh` install → `radia dev` → running space + web inspector in
+under a minute; an agent joins from a second terminal.**
 
 Three modes, one contract:
 
 | Mode          | Invocation                        | Storage                        | Auth                                                              | Integrity                                     |
 |---------------|-----------------------------------|--------------------------------|-------------------------------------------------------------------|-----------------------------------------------|
-| `dev`         | `radia dev` (`npx`/`pipx` once published) | embedded (SQLite/PGlite), 1 proc | auto-provisioned local credentials, **same API shape, never "no tokens"** | event log, hash chain optional               |
+| `dev`         | `radia dev` (curl-installed binary)       | embedded (SQLite/PGlite), 1 proc | auto-provisioned local credentials, **same API shape, never "no tokens"** | event log, hash chain optional               |
 | `single-node` | `radia serve --config <file>`     | Postgres (or a persisted embedded db) | admin-provisioned definitions, or OIDC                      | hash-chained log                              |
 | `production`  | HA deployment                     | HA Postgres                    | full control plane, workload identity, KMS                        | anchored signed checkpoints, envelope encryption |
 
@@ -278,14 +278,21 @@ local agent processes still crash.
 
 ## Distribution
 
-Distribution ≠ implementation language: ship one native (or single-runtime) server binary
-wrapped for both `npm` and `pip` (the esbuild/uv pattern), because agent developers split
-across both ecosystems. M0 decision: a **Deno + TypeScript** server on **PGlite**.
+Distribution ≠ implementation language: ship one native (or single-runtime) server binary.
+M0 decision: a **Deno + TypeScript** server on **PGlite**.
 `deno compile` gives per-OS binaries with no build step for dev, and PGlite keeps the M0
 SQL dialect aligned with the M1 Postgres adapter. The wire contract is frozen, so the
 implementation can be rewritten behind the stable OpenAPI protocol later. See
 [plan-m0-implementation.md](plan-m0-implementation.md) for the runtime rationale and build
 plan.
+
+Install decision (2026-08-30): the binary's ONLY supported install is `curl | sh`
+(`docs/install.sh`, fetching release assets published by `.github/workflows/release.yml`).
+npm and pip are reserved for the SDKs, because agent developers split across both ecosystems:
+the npm package is the TS SDK plus `extensions/` as source, the pip package the Python SDK,
+and neither carries a binary or launcher. Native Windows is unsupported; WSL2 runs the Linux
+binary. The earlier launcher-package plan (`npx radia dev` / `pipx run radia dev`) was built
+and dropped before anything was published.
 
 **That "later" was settled on 2026-08-04: the kernel stays through M1, and the question reopens only
 on evidence** — see [plan-milestones.md](plan-milestones.md) "Decided" for what counts as evidence
@@ -294,10 +301,10 @@ Postgres driver cannot serve). A rewrite would touch `src/core`, `src/server` an
 only; every surface is a client of this contract.
 
 The `dev` command bundles the MCP adapter and inspector: the sharpest onboarding path is
-`npx radia dev`, one line in an MCP-capable harness config (e.g. Claude Code), and a real
-agent participating before any SDK code is written.
+one install command, `radia dev`, one line in an MCP-capable harness config (e.g. Claude
+Code), and a real agent participating before any SDK code is written.
 
 **Status (M0 Phase 7):** `radia dev`, `radia mcp`, and the per-OS binaries are built, and
-`deno task release` stages the npm and pip launcher packages (`scripts/build-release.sh`).
-The `npx`/`pipx` path itself is unexercised and needs a registry publish. See
-[architecture-surfaces.md](architecture-surfaces.md) "Distribution".
+`deno task release` stages the npm and pip SDK packages (`scripts/build-release.sh`).
+The install path itself is unexercised: no release tag has been published, and neither has
+either SDK package. See [architecture-surfaces.md](architecture-surfaces.md) "Distribution".

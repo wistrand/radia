@@ -150,9 +150,9 @@ outcomes decided things here:
   instead of references is the fix: a provider's departure is an ordinary data condition.
 - **It lost the mainstream to simpler things, not to better ones.** Resolver errors, classloader
   isolation and a compendium spec of thousands of pages did the damage; the systems that absorbed
-  its ideas won by being startable in an afternoon. That is the same claim as the `npx radia dev`
-  adoption thesis, and it is the reason surface discipline belongs beside the invariants rather
-  than in a style guide.
+  its ideas won by being startable in an afternoon. That is the same claim as the one-command-install
+  `radia dev` adoption thesis, and it is the reason surface discipline belongs beside the invariants
+  rather than in a style guide.
 
 
 **The convergent contemporaries (Flock, PatchBoard), added 2026-08-17.** Both surfaced by an

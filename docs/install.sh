@@ -123,7 +123,7 @@ Build from a checkout instead: git clone https://github.com/$REPO && cd radia &&
     Darwin/x86_64) echo "x86_64-apple-darwin" ;;
     Darwin/arm64) echo "aarch64-apple-darwin" ;;
     *) die "no released binary for $os/$arch.
-Windows: download radia-x86_64-pc-windows-msvc.exe.gz from the release page.
+Native Windows is unsupported: run this installer inside WSL2 instead.
 Anything else: build from a checkout with \`deno task compile\`." ;;
   esac
 }
