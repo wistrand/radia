@@ -100,6 +100,27 @@ Deno.test("[encrypted] no marker this build can read, and that is the phase-1 co
   assertReadable(undefined, "here");
 });
 
+Deno.test("[encrypted] READABLE is empty in the SOURCE, not merely for the markers we sample", async () => {
+  // The case above samples two markers, so it already fails if either is added to the set. It
+  // cannot catch a FUTURE marker being added, and emptiness is the invariant rather than the
+  // sample: nothing clears a marker except `openBody` having applied a key, so one entry here
+  // turns every `assertReadable` in the tree into a no-op, silently and everywhere at once. That
+  // is a one-line change that looks like enabling support for a version this build understands.
+  //
+  // Structural rather than behavioural for the same reason `test/layering.test.ts` greps: the
+  // property is about the declaration, and no amount of sampling markers states it.
+  const src = await Deno.readTextFile(new URL("../ts/encrypted.ts", import.meta.url));
+  const decl = /const READABLE\b[^=]*=\s*([^;]+);/.exec(src);
+  assert(decl, "the READABLE declaration moved or was reshaped; this guard is reading for a shape that is gone");
+  assertEquals(
+    decl[1].replace(/\s+/g, ""),
+    "newSet<string>()",
+    "READABLE must construct EMPTY. A marker in it is not a feature flag: it asserts that every " +
+      "reader in this process can decrypt that version, which is a claim no build can make on " +
+      "another's behalf. Decrypting is what clears a marker; membership here would forge it.",
+  );
+});
+
 Deno.test("[encrypted] the refusal names the READER, because that is the useful half", () => {
   const e = assertThrows(
     () => assertReadable({ enc: ENC_V1 }, "assembleContext"),
