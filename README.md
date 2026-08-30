@@ -87,7 +87,9 @@ deno task compile                # → ./radia, a self-contained binary; then ./
 
 Putting the compiled binary on your `PATH` makes the examples read literally. The supported install
 is `curl -fsSL https://radia.sh/install.sh | bash`, which fetches a prebuilt binary from the GitHub
-release and verifies it against the release's checksums. npm and PyPI carry the
+release and verifies it against the release's checksums. After that, `radia update` replaces it in
+place with the same verification, and `radia update --check` reports whether a release exists
+without touching anything. npm and PyPI carry the
 SDKs only, never the binary. Native Windows is unsupported; run the Linux binary under WSL2.
 
 Storage is in-memory by default. To persist across restarts, pass `--db`:
@@ -308,7 +310,8 @@ that forwards only the main port leaves every capability URL pointing at nothing
 turns it off and serves artifacts as downloads from the main origin instead.
 
 Not yet provided, and a deployment still owns them: TLS (terminate at a proxy), backup and restore,
-and an upgrade procedure. Set `RADIA_DIR` in the unit file, or the runtime directory holding the
+and an upgrade procedure. `radia update` swaps the binary; deciding when to restart a space and how
+to roll one back is the deployment's. Set `RADIA_DIR` in the unit file, or the runtime directory holding the
 seal key and blob KEK follows the working directory.
 
 ### Distribution
@@ -330,7 +333,15 @@ them against the release's `SHA256SUMS`). Nothing is on npm or PyPI yet.
 
 ```bash
 curl -fsSL https://radia.sh/install.sh | bash     # -> ~/.local/bin/radia
+radia update --check                              # is there a newer release? exit 1 if so
+radia update                                      # replace this binary with it
 ```
+
+`update` reads the same asset names and `SHA256SUMS` the installer does, which is why
+`test/docs.test.ts` holds that contract across three files. It refuses to run from a checkout,
+where the binary it would replace is `deno` itself. Releases are not signed; the reasoning and the
+triggers that would change it are in
+[agent_docs/plan-self-update.md](agent_docs/plan-self-update.md).
 
 The npm package carries the **TypeScript SDK** and the **extensions** as source, and the pip
 package (`radia-space` on PyPI, importable as `radia`) the **Python SDK**; neither carries a

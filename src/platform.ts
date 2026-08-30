@@ -50,12 +50,16 @@ export interface PlatformBackend {
   execPath(): string;
   env(name: string): string | undefined;
   osName(): string;
+  buildTarget(): string;
+  isStandalone(): boolean;
   readTextFile(path: string | URL): string | undefined;
   writeTextFile(path: string, text: string): void;
   appendTextFile(path: string, text: string): void;
   mkdirp(path: string): void;
   removeFile(path: string): void;
   restrictToOwner(path: string): void;
+  makeExecutable(path: string): void;
+  realPath(path: string): string;
   lockFile(path: string, waitMs: number): Promise<{ release(): void } | undefined>;
   writeBinaryFile(path: string, bytes: Uint8Array): Promise<void>;
   renameFile(from: string, to: string): void;
@@ -73,6 +77,7 @@ export interface PlatformBackend {
   serve(opts: ServeOptions, handler: (req: Request) => Response | Promise<Response>): { finished: Promise<void> };
   httpGetJson(url: string): Promise<unknown>;
   httpRequest(url: string, init: RequestInit): Promise<Response>;
+  runCapture(cmd: string, args: string[], timeoutMs: number): Promise<{ code: number; stdout: string }>;
 }
 
 const encoder = new TextEncoder();
@@ -91,6 +96,8 @@ const denoBackend: PlatformBackend = {
     }
   },
   osName: () => Deno.build.os,
+  buildTarget: () => Deno.build.target,
+  isStandalone: () => Deno.build.standalone,
   readTextFile: (path) => {
     try {
       return Deno.readTextFileSync(path);
@@ -112,6 +119,11 @@ const denoBackend: PlatformBackend = {
       Deno.chmodSync(path, 0o600);
     } catch { /* best-effort hardening; the caller already handled the write */ }
   },
+  makeExecutable: (path) => {
+    if (Deno.build.os === "windows") return; // executability is the extension there
+    Deno.chmodSync(path, 0o755);
+  },
+  realPath: (path) => Deno.realPathSync(path),
   lockFile: async (path, waitMs) => {
     const file = Deno.openSync(path, { create: true, read: true, write: true });
     // `lock()` waits rather than failing, and there is no try-lock in Deno, so the timer IS the
@@ -225,6 +237,20 @@ const denoBackend: PlatformBackend = {
     }
   },
   httpRequest: (url, init) => fetch(url, init),
+  runCapture: async (cmd, args, timeoutMs) => {
+    const child = new Deno.Command(cmd, { args, stdout: "piped", stderr: "null" }).spawn();
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch { /* already exited */ }
+    }, timeoutMs);
+    try {
+      const { code, stdout } = await child.output();
+      return { code, stdout: new TextDecoder().decode(stdout) };
+    } finally {
+      clearTimeout(timer);
+    }
+  },
 };
 
 let backend: PlatformBackend = denoBackend;
@@ -279,6 +305,21 @@ export function osName(): string {
   return backend.osName();
 }
 
+/** The target triple this build was compiled FOR (`x86_64-unknown-linux-gnu`). It is also the
+ *  release asset name `radia update` fetches, which is why the verb needs no uname mapping and no
+ *  musl check the way `docs/install.sh` does: a binary that is running is by definition a binary
+ *  this machine can run. */
+export function buildTarget(): string {
+  return backend.buildTarget();
+}
+
+/** Is this a compiled binary rather than a run from source? `radia update` REFUSES when false,
+ *  because `execPath()` from a checkout names the `deno` executable, and replacing that is the
+ *  worst outcome the verb has. */
+export function isStandalone(): boolean {
+  return backend.isStandalone();
+}
+
 // ---------------------------------------------------------------------------
 // Files
 //
@@ -317,6 +358,20 @@ export function removeFile(path: string): void {
  *  per-user directory ACLs are the protection instead. */
 export function restrictToOwner(path: string): void {
   backend.restrictToOwner(path);
+}
+
+/** Mark a file executable (0755). No-op on Windows, where the extension decides. Throws, unlike
+ *  `restrictToOwner`: a downloaded binary that cannot be made executable must fail the update
+ *  rather than be renamed into place unusable. */
+export function makeExecutable(path: string): void {
+  backend.makeExecutable(path);
+}
+
+/** Resolve symlinks to the real file. `radia` on a PATH is often a symlink, and an update has to
+ *  replace what it points AT: renaming over the link would leave the real binary stale and the
+ *  next update replacing a file nobody runs. */
+export function realPath(path: string): string {
+  return backend.realPath(path);
 }
 
 /**
@@ -467,4 +522,17 @@ export function httpGetJson(url: string): Promise<unknown> {
  *  long, and the caller is the only thing that knows what "too long" means. */
 export function httpRequest(url: string, init: RequestInit): Promise<Response> {
   return backend.httpRequest(url, init);
+}
+
+// ---------------------------------------------------------------------------
+// Processes
+// ---------------------------------------------------------------------------
+
+/** Run a command to completion and capture its stdout, killed at `timeoutMs`. stderr is discarded.
+ *  ONE caller and it is deliberately narrow: `radia update` runs the binary it just downloaded and
+ *  requires it to report its version BEFORE renaming it into place, which is what keeps a
+ *  wrong-architecture build from becoming the `radia` on someone's PATH. Spawning is otherwise not
+ *  a runtime operation; a sandboxed process belongs to `extensions/ts/sandbox.ts`, outside `src/`. */
+export function runCapture(cmd: string, args: string[], timeoutMs: number): Promise<{ code: number; stdout: string }> {
+  return backend.runCapture(cmd, args, timeoutMs);
 }

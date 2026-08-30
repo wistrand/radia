@@ -42,6 +42,7 @@ export const VALUELESS = new Set([
   "--prune",
   "--rotate",
   "--observe",
+  "--check",
 ]);
 
 /** The value of `--name`, or undefined. First occurrence wins, not last, which keeps
