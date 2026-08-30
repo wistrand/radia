@@ -897,3 +897,32 @@ Deno.test("console: the Space map resolves a batch's runs before it maps them", 
   // The lookup is per RUN, not per event: a 500-event batch from one worker is one request.
   assert(/new Set\(/.test(extractFunction(html, "agentsFor")), "agentsFor must dedupe to distinct runs");
 });
+
+Deno.test("console: a NARROWED read says so instead of reading as an empty space", () => {
+  // The failure this prevents was observed on the sibling surface: a member's `space_stats` came
+  // back `[]` on a space holding eight kinds and the model reported the space as empty
+  // (agent_docs/research-agent-sessions.md). The MCP reads were fixed then and the console was not,
+  // so a person whose kinds are scoped by grant PATTERN saw "No records yet" and "No events yet"
+  // over a space full of their own records. The server already computes the explanation; the only
+  // job here is to put it on the screen rather than to restate it.
+  assert(/function scopeNote\(scope\)/.test(html), "the console renders the server's scope note");
+  assert(
+    /scope && scope\.note/.test(html),
+    "…from `scope.note`, computed once by describeScope, never restated client-side",
+  );
+
+  // Every view whose emptiness can be a narrowing must prefer the note to its own "nothing here".
+  // Matched on the RENDER expression, not on the message: both strings also appear as static
+  // placeholders in the markup, which is what the first version of this test found instead.
+  for (const [view, render] of [["stats", '$("stats").innerHTML = note || '], ["feed", '$("feed-list").innerHTML = note || ']]) {
+    assert(html.includes(render), `the ${view} view claims emptiness without first offering the scope note`);
+  }
+  assert(html.includes("const note = scopeNote(r.data.scope);"), "stats takes the note from its own read");
+  assert(html.includes("feedScope = r.data.scope"), "the feed keeps the scope its seed reported");
+
+  // Diagnostics already said "scoped view"; it must now also name WHICH kinds were left out, which
+  // only the server knows.
+  const doc = html.indexOf("scoped view: findings cover only records");
+  assert(doc > 0, "the diagnostics scope line is still there");
+  assert(/scopeNote\(d\.scope\)/.test(html.slice(doc - 400, doc)), "…preceded by the server's own note");
+});

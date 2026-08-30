@@ -44,6 +44,17 @@ WALL rather than a skip (`getLineage`, `getGraph` take `allow`), and a graph dro
 endpoint was not returned. Post-filtering the output would have left an edge pointing at a node the
 answer omits, which is the same probe from one step further out.
 
+**Measured 2026-08-30, endpoint by endpoint, because two apps were still handing out `observe` on
+the strength of a limitation that had been removed.** For a caller whose grants carry a pattern,
+`ops/records/{id}`, `/lineage`, `/children` and `/graph` all answer 200 with the real record, so the
+console's GRAPH tab, record detail and lineage work with NO ops power. `ops/stats` and `ops/events`
+answer 200 with an empty set plus the `scope` that names the pattern-scoped kinds they left out, so
+the Feed, the Space map and the Overview counts are what `observe` still buys, and nothing else.
+`examples/analysis/roles.ts` said "there is no observe-my-own-records tier that fits here" and the
+team entry in CLAUDE.md said "there is no tier between it and `createdBy: 'self'`"; both predate this
+tier and are corrected. Before widening a grant to make a view work, check which HALF of the plane
+the view uses.
+
 **The AGGREGATES deliberately do not cover pattern-scoped kinds.** `stats`, `ops/records` and
 `events` push to SQL, and the pushdown contract makes the pre-filter a sound OVER-approximation the
 oracle narrows afterwards (`src/storage/pushdown.ts`), so a `COUNT(*)` over it reports more rows
