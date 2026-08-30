@@ -1,6 +1,6 @@
 {
   "name": "radia",
-  "version": "2026.8.0",
+  "version": "2026.8.1",
   "license": "Apache-2.0",
   "exports": "./src/main.ts",
   "tasks": {
@@ -37,6 +37,7 @@
     "chat": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run examples/chat/chat.ts",
     "chat-web": "deno run --allow-net --allow-read=examples/chat/web examples/chat/web/serve.ts",
     "workspace-git": "deno run --allow-net --allow-read --allow-write --allow-env extensions/ts/export-git.ts",
+    "bump": "deno run --allow-read --allow-write scripts/bump-version.ts",
     "compile": "deno compile --allow-net --allow-read --allow-write --allow-env --allow-run --include src/ui/index.html --include src/ui/vendor/blitzoom.bundle.js --output radia src/main.ts",
     "release": "./scripts/build-release.sh",
     "bundle-browser": "./scripts/build-browser.sh",
