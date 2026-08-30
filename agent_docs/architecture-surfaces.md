@@ -478,7 +478,7 @@ build failure. The two are versioned differently on purpose (the SDK mirrors the
 contract; an extension is a convention that evolves), which is why they are separate directories in
 the package rather than one.
 
-**Unverified:** neither SDK package has been installed from a registry, and no release tag has
-been published, so the `curl | sh` path is unexercised end to end. Only the host target has been
-compiled; the cross-compiled targets and the staged package metadata are best-effort until
-someone publishes once.
+**Verified 2026-08-30:** the `curl | sh` path ran end to end against the real `v2026.8.0`
+release (download, checksum, `radia version` reporting the tag), and CI cross-compiled all four
+targets. **Unverified:** the three non-Linux-x64 binaries have not been executed, and neither
+SDK package has been published to a registry, so their staged metadata stays best-effort.

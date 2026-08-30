@@ -14,7 +14,7 @@ that conceptual lineage. Radia Perlman is not affiliated with or an endorser of 
 
 > **Status:** The coordination kernel, authorization stack, event chain, flow mining, resource
 > limits, three storage adapters, web console, CLI, MCP adapter and TypeScript/Python SDKs are
-> implemented. Radia is not production-ready, the packages are unpublished and the project has no
+> implemented. Radia is not production-ready, the SDK packages are unpublished and the project has no
 > independent adoption. See [the milestone plan](agent_docs/plan-milestones.md) for implemented and
 > remaining work and [the audit record](agent_docs/plan-audit-remediation.md) for known security
 > boundaries.
@@ -87,7 +87,7 @@ deno task compile                # → ./radia, a self-contained binary; then ./
 
 Putting the compiled binary on your `PATH` makes the examples read literally. The supported install
 is `curl -fsSL https://radia.sh/install.sh | bash`, which fetches a prebuilt binary from the GitHub
-release; until a release is published, compile from the checkout as above. npm and PyPI carry the
+release and verifies it against the release's checksums. npm and PyPI carry the
 SDKs only, never the binary. Native Windows is unsupported; run the Linux binary under WSL2.
 
 Storage is in-memory by default. To persist across restarts, pass `--db`:
@@ -323,6 +323,10 @@ target: Linux and macOS, x64 and arm64. Native Windows is unsupported; WSL2 runs
 The binary's one supported install is `curl | sh` ([docs/install.sh](docs/install.sh), which
 downloads the release assets `.github/workflows/release.yml` publishes on a `v*` tag and verifies
 them against the release's `SHA256SUMS`). Nothing is on npm or PyPI yet.
+
+```bash
+curl -fsSL https://radia.sh/install.sh | bash     # -> ~/.local/bin/radia
+```
 
 The npm package carries the **TypeScript SDK** and the **extensions** as source, and the pip
 package (`radia-space` on PyPI, importable as `radia`) the **Python SDK**; neither carries a
