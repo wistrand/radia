@@ -58,9 +58,10 @@
   <div class="container">
     <h1>Choosing a coordination system</h1>
     <p class="subtitle">
-      Radia is built for independently deployed participants that should not have to trust one
-      another. It combines content-based work selection with runtime-enforced input and output
-      policy, narrowed delegation and credentialless execution. Other systems often provide
+      Radia is built for independently deployed participants whose collaboration must stay
+      checkable: the runtime authorizes each handoff and records who acted and which records
+      produced the result. It combines content-based work selection with runtime-enforced input
+      and output policy, narrowed delegation and credentialless execution. Other systems often provide
       stronger workflow execution, messaging ecosystems or in-process orchestration.
     </p>
   </div>
@@ -82,40 +83,52 @@
     </p>
 
     <table>
-      <tr><th></th><th>How work is routed</th><th>How access is granted</th><th>What a result is</th></tr>
+      <tr><th></th><th>Native unit of coordination</th><th>Evidence kept by the system</th><th>Native authorization boundary</th></tr>
       <tr>
         <td><strong>Radia</strong></td>
-        <td>a stored description you can query</td>
-        <td>per record, by its contents</td>
-        <td>a record others can pick up</td>
+        <td>immutable record selected by content</td>
+        <td>records, lineage, leases and runtime events</td>
+        <td>operation, kind and declared record contents</td>
       </tr>
       <tr>
         <td>Temporal</td>
-        <td>function name on a queue</td>
-        <td>per namespace</td>
-        <td>an opaque value in a history</td>
+        <td>workflow, activity and task queue</td>
+        <td>durable workflow event history</td>
+        <td>service and namespace controls; workflow policy remains application-defined</td>
       </tr>
       <tr>
-        <td>NATS, RabbitMQ, Kafka</td>
-        <td>a key the sender chose</td>
-        <td>per topic</td>
-        <td>a message in a stream or queue</td>
+        <td>RabbitMQ</td>
+        <td>exchange, routing key and queue</td>
+        <td>messages and broker events; result relationships are application-owned</td>
+        <td>virtual host, resource and optional topic-routing permissions</td>
+      </tr>
+      <tr>
+        <td>NATS</td>
+        <td>subject, stream and consumer</td>
+        <td>retained messages and stream state</td>
+        <td>account and publish or subscribe subject permissions</td>
+      </tr>
+      <tr>
+        <td>Kafka</td>
+        <td>topic, partition and record key</td>
+        <td>retained log records and consumer offsets</td>
+        <td>cluster and named-resource ACLs</td>
       </tr>
       <tr>
         <td>DBOS</td>
-        <td>function name</td>
+        <td>function, workflow and queue</td>
+        <td>transaction-backed execution history</td>
         <td>application and database identities</td>
-        <td>a durable step</td>
       </tr>
       <tr>
         <td>LangGraph, CrewAI</td>
-        <td>edges you wrote in code</td>
+        <td>agents and transitions defined by the application</td>
+        <td>framework state, messages or checkpoints</td>
         <td>application-defined</td>
-        <td>framework state or messages</td>
       </tr>
     </table>
 
-    <h3>Where the trust decision lives</h3>
+    <h3>Where enforcement lives</h3>
     <table>
       <tr><th>Property</th><th>Radia's native boundary</th></tr>
       <tr><td>Input authorization</td><td>Runtime intersects requested content with grants before query, watch or claim</td></tr>
@@ -278,9 +291,8 @@
     <p>
       The difference is not speed. In DBOS every process talks to Postgres directly, holding database
       credentials, and routing is by function name. Radia puts one server in the middle so that
-      mutually distrusting agents can share a space, and pays for it with a network hop and a
-      permission check on every operation. Take those two things away and you would have something
-      very like DBOS.
+      independent agents can share a space with every successful operation authorized and recorded.
+      Radia pays for that boundary with a network hop and a permission check on every operation.
     </p>
     <div class="callout warn">
       <strong>Do not read those numbers as headroom here.</strong> They come from a saturation test
