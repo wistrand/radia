@@ -314,6 +314,10 @@ seal key and blob KEK follows the working directory.
 ### Distribution
 
 ```bash
+deno task bump                      # stamp the next YYYY.M.COUNTER version everywhere,
+                                    # then run the git commands it prints (the v* tag builds
+                                    # and publishes the release); `deno task bump 2027.1.2`
+                                    # sets an explicit version instead
 ./scripts/build-release.sh          # per-OS binaries + staged npm and pip SDK packages
 ./scripts/build-release.sh host     # just this machine, for a quick check
 ```
