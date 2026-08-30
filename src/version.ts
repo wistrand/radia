@@ -9,8 +9,11 @@
 // beside it: `deno compile` embeds only what `--include` names, and a version that resolves at
 // runtime would answer differently from a checkout than from the artifact people install.
 
-/** The release this build is. Mirrored by `deno.json`'s `version` (guarded). */
-export const VERSION = "0.0.1";
+/** The release this build is. Mirrored by `deno.json`'s `version` (guarded).
+ *  CalVer as semver: `YYYY.M.COUNTER`, the month unpadded (semver refuses a leading zero) and the
+ *  counter restarting at 0 each month. The number is a release stamp, not a compatibility claim;
+ *  compatibility lives in `API_VERSION` below. */
+export const VERSION = "2026.8.0";
 
 /** The frozen wire contract's version: the `/v0` path prefix and the `api` field of `/v0/health`.
  *  Distinct from `VERSION` on purpose, and it moves far more slowly: the implementation may ship
