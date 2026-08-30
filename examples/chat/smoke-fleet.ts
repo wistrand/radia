@@ -200,6 +200,21 @@ check("the rule holds at three tiers too", ["fast", "balanced", "deep"][heuristi
   // closing bracket is not always followed by the closing paren.
   const spawns = [...fleetSrc.matchAll(/spawn\(\s*[`"'][^`"']*[`"']\s*,\s*\[([\s\S]*?)\]\s*(?:,[^)]*)?\)/g)];
   check("the fleet's spawns are parseable (this guard is not silently testing nothing)", spawns.length >= 5, `${spawns.length} spawns`);
+
+  // The flag and the heartbeat are TWO HALVES OF ONE PROMISE. A worker claiming presence that
+  // nothing beats for has every one of its tools hidden by every session while it serves perfectly
+  // well, so `--presence` may only be passed by a launcher that is actually beating. Asserted on
+  // the source because the failure needs a fleet whose announce failed, which no suite can stage.
+  check(
+    "--presence is conditional on this launcher beating, never unconditional",
+    /beating \? \["--presence"\] : \[\]/.test(fleetSrc) && !/,\s*"--presence"\]/.test(fleetSrc),
+    /beating \? \["--presence"\] : \[\]/.test(fleetSrc) ? "conditional" : "UNCONDITIONAL",
+  );
+  check(
+    "…and `beating` is only ever set after a beat lands",
+    /beating = true;/.test(fleetSrc) && fleetSrc.indexOf("beating = true;") > fleetSrc.indexOf("await announcePresence"),
+    "set after announcePresence",
+  );
   for (const m of spawns) {
     const args = m[1];
     const file = args.match(/["'](examples\/chat\/workers\/[a-z-]+\.ts)["']/)?.[1];

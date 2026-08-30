@@ -243,6 +243,7 @@ check("a restarted worker's tool comes back", tools.has("read_file"), [...tools.
       await new Promise((r) => setTimeout(r, 200));
     }
   }
+  try {
   const c2 = new RadiaClient(`http://127.0.0.1:${PORT2}`, { token: operatorToken(`http://127.0.0.1:${PORT2}`) });
   // The chat of an earlier build: `fleet_key` before it became a latest-wins registry.
   await c2.registerKind({ kind: "fleet_key", indexedPaths: [{ path: "keyId", type: "keyword" }], claimable: false });
@@ -255,8 +256,12 @@ check("a restarted worker's tool comes back", tools.has("read_file"), [...tools.
   const fk = (await c2.queryAll<{ kind: string; contentKey?: string[] }>({ kind: "kind_def" }))
     .find((r) => r.body.kind === "fleet_key")!;
   check("…with this app's own key migration landed", fk.body.contentKey?.join(",") === "keyId", fk.body.contentKey?.join(",") ?? "(none)");
-  old.kill();
-  await old.status;
+  } finally {
+    // The space dies with this block whatever happened in it: a leaked one holds the port and the
+    // next run of this suite cannot start.
+    old.kill();
+    await old.status;
+  }
 }
 
 space.kill();

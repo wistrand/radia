@@ -56,6 +56,26 @@ class RadiaError(Exception):
         self.detail = detail
 
 
+def _read_one_envelope(r: Any) -> Dict[str, Any]:
+    """Read ``/v0/records/read-one``'s envelope, and REFUSE the shape that predates it.
+
+    That endpoint used to answer with the bare record, so a no-match serialized to ``null`` and a
+    match to an object with no ``record`` key. Against a space still running that code, the first is
+    an ``AttributeError`` on the first read and the second is far worse: a FOUND record reported as
+    absent, silently. The cause is never local -- it is a long-running space process holding source
+    older than the client talking to it. Kept in step with ``readOneEnvelope`` in ``sdk/ts/client.ts``.
+    """
+    if isinstance(r, dict) and "record" in r:
+        return r
+    raise RadiaError(
+        200,
+        "server_too_old",
+        "this space answered read-one with the pre-2026-08-28 bare-record shape, so it is running "
+        "older code than this client. Restart the space; a `deno run src/main.ts` process keeps the "
+        "source it started with",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Credentials: mirrors src/credentials.ts so `radia dev` provisioning works here too.
 # ---------------------------------------------------------------------------
@@ -782,7 +802,7 @@ class RadiaClient:
         # The endpoint answers ``{record, scope?}``, like ``query``; unwrapped here so a caller
         # sees the record. ``read_one_report`` keeps the scope, which is what distinguishes a
         # ``None`` that found nothing from one that found nothing THIS PRINCIPAL MAY READ.
-        return self._req("POST", "/v0/records/read-one", pattern).get("record")
+        return _read_one_envelope(self._req("POST", "/v0/records/read-one", pattern)).get("record")
 
     def read_one_report(self, pattern: Dict[str, Any]) -> Dict[str, Any]:
         """The same read, plus what qualifies a ``None``.
@@ -790,7 +810,7 @@ class RadiaClient:
         ``scope`` is present exactly when a grant narrowed the read, so a ``None`` beside one means
         the record may exist and belong to somebody else. Returns ``{"record": …, "scope": …}``.
         """
-        return self._req("POST", "/v0/records/read-one", {**pattern, "explain": True})
+        return _read_one_envelope(self._req("POST", "/v0/records/read-one", {**pattern, "explain": True}))
 
     def read_newest(self, pattern: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """The NEWEST record matching ``pattern``, or ``None``.

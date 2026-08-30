@@ -681,6 +681,11 @@ export class ToolSet {
   /** Conflicts already reported, tool -> the providers it was reported for, so a standing
    *  disagreement is mentioned once and a NEW one still gets through. */
   private readonly warned = new Map<string, string>();
+  /** Which providers this session has already said are gone, and the tools they took with them.
+   *  Separate from `warned`, which is keyed by TOOL: a dead fleet takes twenty of them at once and
+   *  the event is the PROVIDER, so it is reported once per provider and re-reported if it dies
+   *  again after coming back. */
+  private readonly hidden = new Map<string, string>();
 
   /**
    * Tools this PROCESS serves for itself, which are therefore not advertised and cannot be
@@ -765,13 +770,22 @@ export class ToolSet {
       if (beats.complete) live = new Set(beats.live.keys());
     } catch { /* no grant to read presence, or an older space: police nothing */ }
     const { entries, unserved } = liveAdvertisements(view.entries, live);
+    // A tool that vanishes with no explanation reads as a tool that never existed. Reported BY
+    // PROVIDER rather than by tool: a fleet that stops takes every tool it served, and twenty
+    // identical lines about one event bury the conversation they interrupt.
+    const gone = new Map<string, string[]>();
     for (const [tool, providers] of unserved) {
-      // A tool that vanishes with no explanation reads as a tool that never existed.
-      const seen = `unserved:${providers.join(",")}`;
-      if (this.warned.get(tool) === seen) continue;
-      this.warned.set(tool, seen);
-      notice(dim(`[tool '${tool}' is advertised by ${providers.join(", ")}, which stopped running; hiding it]`));
+      const who = providers.join(", ");
+      gone.set(who, [...(gone.get(who) ?? []), tool]);
     }
+    for (const [who, hiddenTools] of gone) {
+      const seen = hiddenTools.slice().sort().join(",");
+      if (this.hidden.get(who) === seen) continue;
+      this.hidden.set(who, seen);
+      const n = hiddenTools.length;
+      notice(dim(`[${n} tool${n === 1 ? "" : "s"} from ${who} hidden: it stopped running]`));
+    }
+    for (const who of this.hidden.keys()) if (!gone.has(who)) this.hidden.delete(who);
     // A capability whose `def` is not a tool definition is skipped rather than passed on (inside
     // `collapseByTool`). One malformed record would otherwise break EVERY turn, since the whole
     // list goes to the model, and publishing is only as trustworthy as the workers holding a
