@@ -37,17 +37,21 @@ function samples(html: string): string {
 }
 
 Deno.test("docs: every CLI verb the site shows is a verb the CLI has", async () => {
-  // BOTH dispatch sites. `dev` and `mcp` are handled by the ENTRY POINT rather than by the verb
-  // switch (they own a process rather than making a request), so reading `cli.ts` alone reported
-  // `radia dev` as an unknown verb: a false positive that would push the site to write
-  // `deno task dev` where a reader with the binary types `radia dev`.
+  // BOTH dispatch sites and BOTH dispatch FORMS. `dev` and `mcp` are handled by the ENTRY POINT
+  // rather than by the verb switch (they own a process rather than making a request), so reading
+  // `cli.ts` alone reported `radia dev` as an unknown verb: a false positive that would push the
+  // site to write `deno task dev` where a reader with the binary types `radia dev`. `version` and
+  // `update` are the same false positive one shape further in: they are answered by an `if` ahead
+  // of the switch, because both must work with no space, no credential and no base URL.
   const cli = await Deno.readTextFile(new URL("../src/surfaces/cli.ts", import.meta.url));
   const main = await Deno.readTextFile(new URL("../src/main.ts", import.meta.url));
   const verbs = new Set(
-    [cli, main].flatMap((src) => [...src.matchAll(/case "([a-z][a-z-]*)":/g)].map((m) => m[1])),
+    [cli, main].flatMap((src) =>
+      [...src.matchAll(/case "([a-z][a-z-]*)":|cmd === "([a-z][a-z-]*)"/g)].map((m) => m[1] ?? m[2])
+    ),
   );
   assert(verbs.size > 10, "failed to extract the CLI's verbs; the switch may have been reshaped");
-  for (const owned of ["dev", "mcp"]) {
+  for (const owned of ["dev", "mcp", "version", "update"]) {
     assert(verbs.has(owned), `the entry point no longer dispatches \`${owned}\`; this check is reading the wrong file`);
   }
 

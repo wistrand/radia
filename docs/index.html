@@ -400,6 +400,12 @@ $ radia ack - --result-kind summary --result '{"text":"..."}' &lt; claim.json</c
       macOS; on Windows use WSL2), verified against the release's checksums. npm and PyPI are
       reserved for the SDKs and carry no binary.
     </p>
+    <p>
+      <code>radia update</code> replaces that binary with a later release, verified the same way.
+      <code>radia update --check</code> reports whether one exists and changes nothing, exiting 1
+      when there is, so a scheduled check is yours to write rather than something the runtime does
+      on startup. Releases carry checksums and no signature.
+    </p>
     <div class="cards">
       <div class="card">
         <h3>Connect existing agents</h3>

@@ -39,6 +39,7 @@ import {
 import { flag, flags, has, positional } from "../flags.ts";
 import { ensureParent } from "../paths.ts";
 import { API_VERSION, VERSION } from "../version.ts";
+import { runUpdate } from "./update.ts";
 import { env, httpRequest, onShutdown, readBinaryFile, serve, stdin, UsageError, writeBinaryFile, writeStdoutBytes } from "../platform.ts";
 import type { Lease } from "../storage/adapter.ts";
 
@@ -49,6 +50,9 @@ Options common to every command:
   --json             raw JSON output (default: a compact human table)
 
   version            this build and the wire contract it speaks; needs no space and no credential
+  update [--check] [--release <tag>]
+                     replace this binary with a release build, checksum-verified. --check only
+                     reports, exiting 1 when an update is available. Needs no space either
 
 Inspect
   health                              backend, DB clock, resolved principal
@@ -328,6 +332,13 @@ export async function runCli(cmd: string, argv: string[]): Promise<number> {
   if (cmd === "version" || cmd === "--version") {
     console.log(has(argv, "--json") ? JSON.stringify({ version: VERSION, api: API_VERSION }) : `radia ${VERSION}  api ${API_VERSION}`);
     return 0;
+  }
+  // Beside `version` and for the same reason: this replaces THIS BINARY, so it needs no space, no
+  // credential and no base URL, and it must answer on a machine where none of the three exist.
+  if (cmd === "update") {
+    const { code, lines } = await runUpdate({ check: has(argv, "--check"), release: flag(argv, "--release") });
+    for (const line of lines) console.log(line);
+    return code;
   }
   const base = flag(argv, "--url") ?? defaultBase();
   const observer = OBSERVER_VERBS.has(cmd) && !env("RADIA_TOKEN") ? storedObserver(base)?.definitionToken : undefined;

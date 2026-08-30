@@ -465,6 +465,30 @@ release assets `.github/workflows/release.yml` attaches to a `v*` tag and verify
 the release's `SHA256SUMS`; `test/docs.test.ts` holds the target list, the asset names and the
 sums file as a contract between the three files).
 
+`radia update` (`src/surfaces/update.ts`) is the SECOND reader of that contract, and the reason the
+guard names three files rather than two. It replaces this binary with a release build and verifies
+the same way, which makes it the upgrade path a person actually has: re-running the installer works
+and requires knowing a release exists, which nothing said. `--check` reports and exits 1 when one
+does, so a schedule is the operator's to write rather than a phone-home on `radia dev`.
+
+Three properties are worth knowing before touching it, each a failure it already refuses:
+
+- **It refuses unless `isStandalone()`.** From a checkout `execPath()` names the `deno` executable,
+  so `deno task cli update` would replace it. That is the worst outcome the verb has.
+- **`buildTarget()` IS the release asset name.** `Deno.build.target` is the triple the binary was
+  compiled for, so there is no uname mapping to drift and no musl check to write: a binary that is
+  running is one this machine can run. `docs/install.sh` needs both because it runs before there is
+  a binary to ask.
+- **The temp file goes in the TARGET directory, and the download runs before the rename.** `/tmp`
+  is usually another mount and `rename` across filesystems fails `EXDEV`; the pre-flight is what
+  keeps a wrong-architecture build from becoming the `radia` on a PATH. Both rules come from the
+  installer. An unwritable destination names the path and offers `RADIA_INSTALL_DIR`, never `sudo`.
+
+Signing is designed and DEFERRED, on a checked finding rather than on effort: `radia.sh`, the
+release assets and any signing key all sit under one GitHub trust root, so a signature adds nothing
+against the party it is normally sold against. The design, and the three triggers that would change
+that, are in [plan-self-update.md](plan-self-update.md).
+
 `--include` must list every runtime asset (`src/ui/index.html` and `src/ui/vendor/blitzoom.bundle.js`),
 or the binary boots and then 404s. `deno task compile` carries the same flags for the single-binary
 build.
