@@ -515,7 +515,7 @@ const lostConv = await aliceC.put({ kind: "conversation", body: {} });
 {
   const CLEAR_BY_DECISION = new Set([
     // Key material and routing, which must stay readable for the crypto to work at all.
-    "fleet_key", "person_key", "conversation_key", "chat_fleet",
+    "fleet_key", "person_key", "conversation_key", "chat_presence",
     // No prose in the body. `conversation` is an empty anchor; the rest carry ids, names and counts.
     "conversation", "model", "progress", "turn_complete", "interest", "capability",
     // Bytes live in the blob store, and the record carries a digest and a media type.

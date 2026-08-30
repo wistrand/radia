@@ -124,6 +124,12 @@ export interface ServeOptions {
    * scope of your put grant for 'capability'`.
    */
   scope?: Record<string, string>;
+
+  /** Claim presence tracking on every advertisement this worker publishes
+   *  (`CapabilityBody.presence`). Set it only when something beats for this provider, which in
+   *  practice means the launcher that spawned this process: a claim with no beats behind it makes
+   *  every reader treat these tools as gone. */
+  presence?: boolean;
   /** For a loop label; defaults to `provider`. */
   name?: string;
   leaseSeconds?: number;
@@ -203,7 +209,7 @@ export async function serveTools(client: RadiaClient, opts: ServeOptions): Promi
   for (const name of Object.keys(opts.tools)) {
     const def = opts.schemas.find((s) => s.function.name === name);
     if (!def) continue;
-    await publishCapability(client, def, provider, opts.scope);
+    await publishCapability(client, def, provider, opts.scope, { presence: opts.presence });
     served.push(name);
   }
 

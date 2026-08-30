@@ -14,6 +14,7 @@
 // add a field.
 
 import { assert, assertEquals } from "@std/assert";
+import { RadiaClient } from "../sdk/ts/client.ts";
 import { makeArtifactHandler, makeHandler } from "../src/server/http.ts";
 import { Space } from "../src/core/space.ts";
 import { SqliteAdapter } from "../src/storage/sqlite.ts";
@@ -1675,3 +1676,25 @@ Deno.test("http: the two handlers that had no field check refuse a typo too", as
   }
 });
 
+
+Deno.test("readOne refuses the pre-envelope response shape instead of guessing", async () => {
+  // A long-running `deno run src/main.ts` process keeps the source it started with, so a client
+  // edited today routinely talks to a space from last week. read-one used to answer with the BARE
+  // record: a no-match serialized to `null` (a TypeError in the client) and a match to an object
+  // with no `record` key, which `?? null` would have turned into "no such record" — a found record
+  // reported as absent, silently. Both must name the cause instead of guessing.
+  for (const [shape, body] of [["a no-match", "null"], ["a match", '{"id":"01","kind":"k","body":{}}']]) {
+    const server = Deno.serve({ port: 0, onListen: () => {} }, () => Response.json(JSON.parse(body)));
+    try {
+      const client = new RadiaClient(`http://127.0.0.1:${server.addr.port}`, "t");
+      const err = await client.readOne({ kind: "k" }).then(() => null, (e) => e as Error);
+      assert(err, `${shape} from a pre-envelope space must not resolve`);
+      assert(
+        err.message.includes("older code than this client"),
+        `${shape} must name the skew, got: ${err.message}`,
+      );
+    } finally {
+      await server.shutdown();
+    }
+  }
+});

@@ -13,7 +13,7 @@
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
-import { registerChatKinds } from "./space/kinds.ts";
+import { FLEET_PRESENCE, registerChatKinds } from "./space/kinds.ts";
 import { assignUserGrants, CHAT_USER, setSessionOwner } from "./space/roles.ts";
 import { Thread } from "./client/thread.ts";
 
@@ -74,6 +74,15 @@ check("…and is not the shared default principal", alice.owner !== CHAT_USER);
 // grants — drift a suite full of pre-provisioned principals never sees, hence this check.
 const discovery = await alice.client.queryOldest({ kind: "kind_def" }, 5).then(() => "ok", (e) => String(e));
 check("a fresh session can discover kinds (space_kinds' underlying read)", discovery === "ok", discovery);
+
+// The same drift, one kind along. A session reads presence to tell a live advertisement from one a
+// crashed fleet left behind (`liveAdvertisements`); without the grant the read 403s, the filter
+// polices nothing, and the tool list silently goes back to offering a dead fleet's tools. Nothing
+// else can catch that, because the failure is a feature quietly not applying.
+const beats = await alice.client
+  .queryNewest({ kind: FLEET_PRESENCE.kind }, 1)
+  .then(() => "ok", (e) => String(e));
+check("…and can read which fleets are beating (the staleness filter's read)", beats === "ok", beats);
 
 // The token names a RUN, not the human. The chat must map it back through the space, because the
 // run id is what a scoped read reports and what a grant would otherwise be assigned to.

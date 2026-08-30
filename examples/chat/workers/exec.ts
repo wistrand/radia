@@ -41,6 +41,10 @@ import type { ToolDef } from "../provider/openrouter.ts";
 
 const ME = "agent:chat-exec";
 
+/** Set by the launcher that beats for this provider (`spawn` in client/fleet.ts), so these
+ *  advertisements may be judged stale once it stops. Absent when a worker is started by hand. */
+const PRESENCE = { presence: argOn("--presence") };
+
 
 const url = arg("--url") ?? "http://127.0.0.1:7788";
 const token = arg("--token"); // agent:chat-exec run token
@@ -294,9 +298,9 @@ const RETIRE_PROCEDURE: ToolDef = {
   },
 };
 
-await publishCapability(client, SAVE_PROCEDURE, ME);
-await publishCapability(client, READ_PROCEDURE, ME);
-await publishCapability(client, RETIRE_PROCEDURE, ME);
+await publishCapability(client, SAVE_PROCEDURE, ME, undefined, PRESENCE);
+await publishCapability(client, READ_PROCEDURE, ME, undefined, PRESENCE);
+await publishCapability(client, RETIRE_PROCEDURE, ME, undefined, PRESENCE);
 
 // EVERYTHING the handler reads must be declared above `agentLoop`, which never returns: a `const`
 // placed after it is never evaluated, so it stays in the temporal dead zone for the life of the
@@ -627,11 +631,11 @@ let confine: "bubblewrap" | "sandbox-exec" | undefined;
   }).catch((e) => [{ claim: "backend", held: false, detail: String(e) }]);
   if (pyFailed.length === 0) {
     patterns.push({ kind: "tool_call", match: { tool: "run_python" } });
-    await publishCapability(client, RUN_PYTHON, ME);
+    await publishCapability(client, RUN_PYTHON, ME, undefined, PRESENCE);
     await declareSandbox(client, py);
-    await publishCapability(client, runJavascriptDef(true), ME);
+    await publishCapability(client, runJavascriptDef(true), ME, undefined, PRESENCE);
   } else {
-    await publishCapability(client, runJavascriptDef(false), ME);
+    await publishCapability(client, runJavascriptDef(false), ME, undefined, PRESENCE);
     // Two very different outcomes, and reporting them alike taught the wrong thing. A jail that
     // could not START (no `bwrap` installed, no permission to spawn it) is an ABSENT language: an
     // ordinary fact about this host, and the notice should read like one. A jail that ran and then

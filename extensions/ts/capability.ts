@@ -29,6 +29,17 @@ export interface CapabilityBody {
   tool: string;
   def?: ToolDef;
   provider?: string;
+  /**
+   * This provider BEATS (`extensions/ts/presence.ts`), so a reader may treat the absence of a live
+   * beat as proof the advertisement is stale. Opt-in, and it travels on the record rather than in
+   * the reader's configuration for two reasons: a reader discovers which providers to police
+   * instead of being told, and the claim OUTLIVES the beats, which is what makes it usable — a
+   * crashed provider's presence records age out precisely when a reader needs to know it is gone.
+   *
+   * Without it a provider is outside the convention and always counts live, so a fleet that does
+   * not beat keeps working unchanged.
+   */
+  presence?: true;
 }
 
 /** `contentKey` is the latest-wins identity, declared so `radia gc` can compact the registry:
@@ -92,11 +103,18 @@ export async function publishCapability(
    *  scopes writes once (the second publish replays the first key) and reads the wrong scope's
    *  record as "unchanged, nothing to say". Absent, every byte of this function is as it was. */
   scope?: Record<string, string>,
+  /** Claim presence tracking on the advertisement (`CapabilityBody.presence`). Only for a provider
+   *  something actually beats for: claiming it without beats makes every reader treat this tool as
+   *  gone. */
+  opts: { presence?: boolean } = {},
 ): Promise<void> {
   const tool = def.function.name;
   const hash = await defHash(def);
   const scoped = scope && Object.keys(scope).length ? `:${await defHash(Object.entries(scope).sort())}` : "";
-  let key = `capability:${provider ?? "?"}:${tool}:${hash}${scoped}`;
+  // The flag is part of the KEY and of the unchanged-check below, or a provider that STARTS beating
+  // re-puts an identical body under the identical key, the write dedups, and the advertisement it
+  // meant to upgrade stays untracked forever.
+  let key = `capability:${provider ?? "?"}:${tool}:${hash}${scoped}${opts.presence ? ":p" : ""}`;
   try {
     // Narrowed to THIS provider: another worker's advertisement of the same name must not read as
     // "unchanged, nothing to say" and suppress this one.
@@ -112,8 +130,17 @@ export async function publishCapability(
       // repeat-publish that rule protects against exits early on the hash check above, so
       // "newest is retired" suffices and the simpler condition is the honest one.
       key += `:after:${existing[0].id}`;
-    } else if (current?.def && await defHash(current.def) === hash) {
-      return; // unchanged and live
+    } else if (current?.def) {
+      if (await defHash(current.def) === hash && !!current.presence === !!opts.presence) {
+        return; // unchanged and live
+      }
+      // SUPERSEDING A LIVE RECORD, so anchor on it. The definition hash is already in the key, but
+      // `presence` only picks between two constant keys, so a provider that turns the flag back to a
+      // value it used before replays THAT write: nothing is written, the call reports success, and
+      // the older record stays newest. A worker restarted by hand after running under a launcher
+      // was left advertising `presence: true` with nothing beating for it, which hides the tool it
+      // is serving from every reader.
+      key += `:after:${existing[0].id}`;
     }
   } catch (e) {
     // No grant to read capabilities, or an older server. The publish still happens, but it can no
@@ -128,7 +155,11 @@ export async function publishCapability(
   }
   // Scope UNDER the body, never over it: a value stated here is what the grant will check, and a
   // caller that named one itself is left to be refused on its own terms rather than corrected.
-  const body: CapabilityBody = { ...scope, ...(provider ? { tool, def, provider } : { tool, def }) };
+  const body: CapabilityBody = {
+    ...scope,
+    ...(provider ? { tool, def, provider } : { tool, def }),
+    ...(opts.presence ? { presence: true as const } : {}),
+  };
   await client.put({ kind: CAPABILITY, body }, key);
 }
 
@@ -205,6 +236,57 @@ export async function retireProviderCapabilities(client: RadiaClient, providers:
   return retired;
 }
 
+/**
+ * Drop the advertisements of providers that claimed presence and are not beating.
+ *
+ * A FILTER over records rather than an argument to `collapseByTool`, which is what keeps the two
+ * conventions apart: `capability.ts` imports nothing from `presence.ts`, and an app that wires them
+ * together passes the live set it already read. Applied BEFORE the collapse, so a dead provider can
+ * neither win a tool name nor manufacture a conflict against the live one.
+ *
+ * FAIL-OPEN by construction: only a provider that opted in can be dropped. An advertisement with no
+ * `presence` flag, or none with a provider at all, is outside the convention and always survives.
+ *
+ * `unserved` names the tools that had advertisements and now have none, because a tool that
+ * silently disappears from a model's list reads as a tool that was never there. Nothing here logs;
+ * the caller decides what to say.
+ */
+export function liveAdvertisements(
+  entries: Iterable<RadiaRecord<CapabilityBody>>,
+  /**
+   * Who is beating, or UNDEFINED when the caller could not find out (no grant to read presence, a
+   * space that predates it, a failed read). Undefined polices nothing and keeps every
+   * advertisement; an EMPTY SET is the opposite claim, that everyone tracked is dead, and drops
+   * every tracked tool. The distinction is the whole safety of this function: a caller that turned
+   * a failed read into an empty set would silently strip a working fleet's entire tool list.
+   */
+  liveProviders: ReadonlySet<string> | undefined,
+): { entries: RadiaRecord<CapabilityBody>[]; unserved: Map<string, string[]> } {
+  if (!liveProviders) return { entries: [...entries], unserved: new Map() };
+  const kept: RadiaRecord<CapabilityBody>[] = [];
+  const dropped = new Map<string, Set<string>>();
+  const served = new Set<string>();
+  for (const rec of entries) {
+    const b = rec.body;
+    const tool = typeof b?.tool === "string" ? b.tool : undefined;
+    if (tool && b.presence === true && b.provider && !liveProviders.has(b.provider)) {
+      const set = dropped.get(tool) ?? new Set<string>();
+      set.add(b.provider);
+      dropped.set(tool, set);
+      continue;
+    }
+    kept.push(rec);
+    // The SAME test `collapseByTool` applies, or a record carrying a tool name with no usable
+    // definition counts as serving it here and is skipped there: the name would then be reported
+    // by neither `tools` nor `unserved`, which is the silent disappearance this map exists to
+    // prevent.
+    if (tool && typeof b.def?.function?.name === "string") served.add(tool);
+  }
+  const unserved = new Map<string, string[]>();
+  for (const [tool, providers] of dropped) if (!served.has(tool)) unserved.set(tool, [...providers].sort());
+  return { entries: kept, unserved };
+}
+
 /** One tool name, and who serves it. */
 export interface ToolEntry {
   def: ToolDef;
@@ -219,10 +301,42 @@ export interface ToolEntry {
  * Compared by SERIALIZED DEFINITION rather than by hash: the question is exact equality, and both
  * sides are built by the same code from the same literal, so key order is stable. Identical
  * definitions from several providers are replicas of one worker and report as one tool. Definitions
- * that DIFFER are two tools wearing one name; the newest wins, as everywhere else in a latest-wins
- * registry, and the caller is told rather than left to infer it from behaviour.
+ * that DIFFER are two tools wearing one name, and that name is WITHHELD by default: newest-wins
+ * hands a model one description while either provider may claim the call, which reports the
+ * disagreement to a caller who has already passed the wrong definition on. Answering with nothing
+ * is the honest answer to an ambiguous question; `onConflict: "newest"` is the opt-out.
  */
-export function collapseByTool(entries: Iterable<RadiaRecord<CapabilityBody>>): Map<string, ToolEntry> {
+export interface ToolCatalog {
+  /** The tools a caller may offer. */
+  tools: Map<string, ToolEntry>;
+  /**
+   * Names WITHHELD because live providers disagree about what they mean. Disjoint from `tools`,
+   * and empty under `onConflict: "newest"`, where a conflicted entry stays in `tools` carrying
+   * `conflicted: true` instead.
+   *
+   * Report these. A tool that vanishes without explanation reads as one that never existed.
+   */
+  conflicts: Map<string, ToolEntry>;
+}
+
+export function collapseByTool(
+  entries: Iterable<RadiaRecord<CapabilityBody>>,
+  opts: {
+    /**
+     * What to do when two live providers advertise incompatible definitions under one name.
+     *
+     * `"withhold"` (default) drops the name from `tools`. The model is otherwise handed one
+     * description while EITHER provider may claim the call, so what it was told and what runs can
+     * differ, and a principal holding `capability: put` can substitute a tool's definition rather
+     * than merely break it. Withholding is not a fix for a hostile publisher: it changes what a
+     * model is TOLD and never who may claim a `tool_call`.
+     *
+     * `"newest"` keeps the pre-2026-08-30 behaviour, newest definition wins, for a caller that
+     * would rather serve an ambiguous tool than none.
+     */
+    onConflict?: "withhold" | "newest";
+  } = {},
+): ToolCatalog {
   const byTool = new Map<string, { rec: RadiaRecord<CapabilityBody>; body: CapabilityBody }[]>();
   for (const rec of entries) {
     const body = rec.body;
@@ -231,7 +345,8 @@ export function collapseByTool(entries: Iterable<RadiaRecord<CapabilityBody>>): 
     if (group) group.push({ rec, body });
     else byTool.set(body.tool, [{ rec, body }]);
   }
-  const out = new Map<string, ToolEntry>();
+  const tools = new Map<string, ToolEntry>();
+  const conflicts = new Map<string, ToolEntry>();
   for (const [tool, all] of byTool) {
     // A record with NO provider predates namespacing: an older advertisement of this same tool, not
     // a rival one. Treated as a peer, every upgraded worker reports as disagreeing with its own past
@@ -243,13 +358,19 @@ export function collapseByTool(entries: Iterable<RadiaRecord<CapabilityBody>>): 
     // group spans PROVIDERS, so its records come from different processes by construction.
     const winner = group.reduce((a, b) => (newer(a.rec, b.rec) ? b : a));
     const shapes = new Set(group.map((g) => JSON.stringify(g.body.def)));
-    out.set(tool, {
+    const entry: ToolEntry = {
       def: winner.body.def!,
       providers: [...new Set(group.map((g) => g.body.provider ?? "?"))].sort(),
       // Only a disagreement between NAMED providers counts. One provider superseding its own older
       // definition is an upgrade: the ordinary case, and it must stay silent.
       conflicted: shapes.size > 1 && new Set(group.map((g) => g.body.provider)).size > 1,
-    });
+    };
+    // A conflict this reaches is between LIVE providers: `liveAdvertisements` has already dropped
+    // the advertisements of anything that stopped beating, so a crashed worker's stale definition
+    // can no longer withhold a tool the survivor serves unambiguously. That ordering is why this
+    // default could be flipped at all.
+    if (entry.conflicted && opts.onConflict !== "newest") conflicts.set(tool, entry);
+    else tools.set(tool, entry);
   }
-  return out;
+  return { tools, conflicts };
 }

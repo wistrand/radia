@@ -17,12 +17,16 @@
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
+import { declareTeamKinds } from "../../extensions/ts/team.ts";
 import {
   collapseByTool,
+  liveAdvertisements,
   liveCapabilities,
   publishCapability,
   retireProviderCapabilities,
 } from "../../extensions/ts/capability.ts";
+import { announcePresence, livePresence } from "../../extensions/ts/presence.ts";
+import { FLEET_PRESENCE } from "./space/kinds.ts";
 import type { ToolDef } from "./provider/openrouter.ts";
 
 const PORT = 7804;
@@ -55,7 +59,13 @@ function check(name: string, ok: boolean, detail = "") {
  *  re-implementation here could only ever prove that this file's own loop was right. */
 async function toolList() {
   const view = await liveCapabilities(client);
-  return collapseByTool(view.entries);
+  return collapseByTool(view.entries).tools;
+}
+
+/** The names withheld because live providers disagree about them. */
+async function conflictList() {
+  const view = await liveCapabilities(client);
+  return collapseByTool(view.entries).conflicts;
 }
 
 const def = (name: string, description: string): ToolDef => ({
@@ -95,15 +105,23 @@ check("…and identical definitions are not a conflict", tools.get("read_file")?
 
 // ---- a genuine collision: one name, two meanings ----
 // Under the flat key this was invisible: the newer record replaced the older one and the model kept
-// calling a name whose description no longer matched what might claim it.
+// calling a name whose description no longer matched what might claim it. Reporting it was the
+// first fix and was not enough, since either provider may still claim the call: the name is now
+// WITHHELD, so the model is told nothing rather than told one of two answers.
 await publishCapability(client, def("read_file", "read a row from the database"), B);
 tools = await toolList();
-check("one name with two meanings is still one entry", tools.get("read_file")?.providers.length === 2, tools.get("read_file")?.providers.join(","));
-check("…but it is reported as CONFLICTED", tools.get("read_file")?.conflicted === true);
+let contested = await conflictList();
+check("a contested name is not offered to the model", !tools.has("read_file"), [...tools.keys()].join(","));
+check("…it is REPORTED instead of silently dropped", contested.get("read_file")?.conflicted === true);
+check("…and both claimants are named", contested.get("read_file")?.providers.join(",") === "agent:alpha,agent:beta", contested.get("read_file")?.providers.join(","));
+
+// The opt-out, for a caller that would rather serve an ambiguous tool than none.
+const lenient = collapseByTool((await liveCapabilities(client)).entries, { onConflict: "newest" });
+check("newest-wins survives as an explicit choice", lenient.tools.get("read_file")?.conflicted === true);
 check(
-  "…and the newest definition is the one the model gets",
-  tools.get("read_file")?.def.function.description === "read a row from the database",
-  tools.get("read_file")?.def.function.description,
+  "…and then the newest definition is the one the model gets",
+  lenient.tools.get("read_file")?.def.function.description === "read a row from the database",
+  lenient.tools.get("read_file")?.def.function.description,
 );
 
 // ---- publishing is still cheap ----
@@ -142,6 +160,104 @@ check("…and the history is still there", (await countCaps()) > 0, `${await cou
 await publishCapability(client, READ_FILE, A);
 tools = await toolList();
 check("a restarted worker's tool comes back", tools.has("read_file"), [...tools.keys()].join(","));
+
+// ---------------------------------------------------------------------------
+// A crashed fleet's tools stop being offered
+// ---------------------------------------------------------------------------
+//
+// Everything above is about a CLEAN shutdown, which is the case a crash never reaches. A provider
+// that beats (extensions/ts/presence.ts) can be judged dead by a reader instead, which is what
+// makes the tool list reflect who is actually serving rather than everyone who ever started.
+
+{
+  const beating = "agent:beating", crashed = "agent:crashed";
+  const stop = new AbortController();
+  const handle = await announcePresence(client, FLEET_PRESENCE, beating, { signal: stop.signal });
+  await publishCapability(client, def("tracked_tool", "served by a live worker"), beating, undefined, { presence: true });
+  await publishCapability(client, def("orphan_tracked", "served by nobody"), crashed, undefined, { presence: true });
+
+  const filtered = async () => {
+    const view = await liveCapabilities(client);
+    const live = new Set((await livePresence(client, FLEET_PRESENCE)).live.keys());
+    const { entries, unserved } = liveAdvertisements(view.entries, live);
+    return { tools: collapseByTool(entries).tools, unserved };
+  };
+
+  let f = await filtered();
+  check("a beating provider's tool is offered", f.tools.has("tracked_tool"));
+  check("a provider that claims presence and never beats is treated as gone", f.unserved.has("orphan_tracked"), [...f.unserved.keys()].join(","));
+  check("…so its tool is hidden rather than offered", !f.tools.has("orphan_tracked"));
+
+  // The crash: no retirement, no withdrawal, the advertisement still standing.
+  await handle.retire();
+  f = await filtered();
+  check("a fleet that stops beating loses its tools with no withdrawal", !f.tools.has("tracked_tool"), [...f.tools.keys()].join(","));
+  check("…and the session is told which provider went away", f.unserved.get("tracked_tool")?.join(",") === beating);
+  check("…while an untracked provider's tools are untouched", f.tools.has("read_file"), [...f.tools.keys()].join(","));
+
+  stop.abort();
+}
+
+// SHARING A SPACE, and MIGRATING one. Two independent failures the chat hit on a real space, both
+// of which stopped it starting at all rather than degrading.
+//
+// 1. SHARING. `radia team add` extends `artifact` and `capability` with a `team` path and keys
+//    capability by (provider, tool, team). Declaring this app's list flat drops those, which the
+//    runtime refuses outright, so the chat would not start on a space a team had touched.
+{
+  await declareTeamKinds(client);
+  const first = await registerChatKinds(client).then(() => "ok", (e) => String(e).slice(0, 110));
+  check("the chat starts on a space `radia team add` has touched", first === "ok", first);
+  const again = await registerChatKinds(client).then(() => "ok", (e) => String(e).slice(0, 110));
+  check("…and starts again, since a declaration already live must not be re-put", again === "ok", again);
+
+  const rows = await client.queryAll<{ kind: string; contentKey?: string[]; indexedPaths: { path: string }[] }>({ kind: "kind_def" });
+  const newest = new Map<string, { contentKey?: string[]; indexedPaths: { path: string }[] }>();
+  for (const r of rows) if (!newest.has(r.body.kind)) newest.set(r.body.kind, r.body); // newest-first
+  const artifact = newest.get("artifact")!.indexedPaths.map((p) => p.path).sort().join(",");
+  check("…keeping BOTH apps' paths on the kind they share", artifact.includes("team") && artifact.includes("conversationId"), artifact);
+  check(
+    "…and the team's wider content key, which this app alone would have narrowed",
+    newest.get("capability")!.contentKey?.join(",") === "provider,tool,team",
+    newest.get("capability")!.contentKey?.join(","),
+  );
+}
+
+// 2. MIGRATING, which needs a space this build has never touched: a kind of this app's OWN gaining
+//    a `contentKey` in a later build reads as an incompatible change to the declaration an older
+//    space stored. That is acknowledged once, and the SECOND run must then write nothing, because
+//    `supersedes` is not part of the declaration key and re-putting without it collides.
+{
+  const PORT2 = 7829;
+  const old = new Deno.Command(Deno.execPath(), {
+    args: ["run", "-A", "src/main.ts", "dev", "--port", String(PORT2)],
+    stdout: "null",
+    stderr: "inherit",
+  }).spawn();
+  const probe2 = new RadiaClient(`http://127.0.0.1:${PORT2}`);
+  for (let i = 0; i < 100; i++) {
+    try {
+      await probe2.health();
+      break;
+    } catch {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+  const c2 = new RadiaClient(`http://127.0.0.1:${PORT2}`, { token: operatorToken(`http://127.0.0.1:${PORT2}`) });
+  // The chat of an earlier build: `fleet_key` before it became a latest-wins registry.
+  await c2.registerKind({ kind: "fleet_key", indexedPaths: [{ path: "keyId", type: "keyword" }], claimable: false });
+
+  const migrated = await registerChatKinds(c2).then(() => "ok", (e) => String(e).slice(0, 110));
+  check("the chat starts on a space an OLDER build of itself set up", migrated === "ok", migrated);
+  const restarted = await registerChatKinds(c2).then(() => "ok", (e) => String(e).slice(0, 110));
+  check("…and starts again after the acknowledged migration", restarted === "ok", restarted);
+
+  const fk = (await c2.queryAll<{ kind: string; contentKey?: string[] }>({ kind: "kind_def" }))
+    .find((r) => r.body.kind === "fleet_key")!;
+  check("…with this app's own key migration landed", fk.body.contentKey?.join(",") === "keyId", fk.body.contentKey?.join(",") ?? "(none)");
+  old.kill();
+  await old.status;
+}
 
 space.kill();
 await space.status;

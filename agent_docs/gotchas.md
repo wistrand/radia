@@ -216,6 +216,28 @@ as its ABSENCE did: a `kind_def` body carries no `team`, so the pattern matches 
 every declaration. Discovery grants are a separate, deliberately unscoped set (`DISCOVERY_GRANTS`).
 The rule: a scope belongs on kinds that carry DATA, never on the ones that describe them.
 
+- **Declaring a kind another app also declares needs THREE rules, and each one stopped a boot**
+  (`declareKind`, `extensions/ts/team.ts`). A redeclaration REPLACES rather than merges, and
+  `artifact`/`capability`/`workspace` are extended by more than one convention: the chat adds
+  `conversationId`/`owner`, `team.ts` adds `team`. (1) MERGE paths, and keep a live `contentKey`
+  that CONTAINS yours: widening only splits entries, and your records stay visible under it because
+  an absent path is a VALUE (`keyOf`, `src/core/gc.ts`). Narrowing is the collapsing direction and
+  stays refused. (2) SKIP when the merged declaration is already live by `kindDefKey`, or an
+  acknowledged one is re-put without its `supersedes` (not part of the key) and the app starts
+  exactly once. (3) ACKNOWLEDGE only what the server refuses, by attempting first: sending
+  `supersedes` unasked files every ordinary change as a break in the audit. Symptom of getting any
+  of it wrong: `incompatible_redeclaration` at startup, on a space that a team, or an older build of
+  the same app, had touched. Guard: examples/chat/smoke-capability.ts, the sharing and migrating
+  blocks.
+- **A long-running space serves the source it STARTED with, so a client edited today is talking to
+  last week's server.** `deno run src/main.ts dev` caches its modules at process start; a space left
+  up for four days answered `/v0/records/read-one` with the pre-2026-08-28 bare record, and the
+  SDK's `(...).record` was a `TypeError: Cannot read properties of null` with nothing naming the
+  cause. Worse than the crash was the other half: a FOUND record under the old shape has no `record`
+  key, so `?? null` would have reported it as absent. `readOneEnvelope` refuses both and says the
+  space is older than the client. Restart the space. Guard: test/http.test.ts "readOne refuses the
+  pre-envelope response shape".
+
 ### Registries, and reads that must not truncate
 
 **The current set of a keyed kind is `client.registry(kind)`, projected SERVER-side from the key the

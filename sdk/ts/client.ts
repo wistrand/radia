@@ -90,6 +90,32 @@ export class RadiaClientError extends Error {
 }
 
 /**
+ * Read `/v0/records/read-one`'s envelope, and REFUSE the shape that predates it.
+ *
+ * That endpoint used to answer with the bare record, so a no-match serialized to `null` and a match
+ * to an object with no `record` key. Against a space still running that code, `r.record` is a
+ * TypeError on the first read for the null case and, far worse, `undefined` for the second: a found
+ * record would be reported as NO SUCH RECORD, silently, which is the failure this codebase spends
+ * most of its guards on. Neither is worth guessing through, and the cause is never local — it is a
+ * long-running space process holding source older than the client that is talking to it.
+ */
+function readOneEnvelope<T>(
+  r: unknown,
+): { record: RadiaRecord<T> | null; scope?: ReadScope; explain?: string[] } {
+  if (r !== null && typeof r === "object" && "record" in r) {
+    const e = r as { record: RadiaRecord<T> | null; scope?: ReadScope; explain?: string[] };
+    return { record: e.record ?? null, scope: e.scope, explain: e.explain };
+  }
+  throw new RadiaClientError(
+    200,
+    "server_too_old",
+    "this space answered read-one with the pre-2026-08-28 bare-record shape, so it is running " +
+      "older code than this client. Restart the space; a `deno run src/main.ts` process keeps the " +
+      "source it started with",
+  );
+}
+
+/**
  * Did this fail because the credential is over, as opposed to insufficient?
  *
  * The space distinguishes them and so must this: `token_expired` and `run_stopped` mean mint
@@ -555,7 +581,7 @@ export class RadiaClient {
     // callers of `readOne` see what they always saw. `readOneReport` is the one that keeps the
     // scope, which is what tells a null that found nothing from a null that found nothing YOU
     // MAY READ.
-    return (await this.req("POST", "/v0/records/read-one", pattern)).record ?? null;
+    return readOneEnvelope<T>(await this.req("POST", "/v0/records/read-one", pattern)).record;
   }
 
   /**
@@ -569,8 +595,7 @@ export class RadiaClient {
   async readOneReport<T = unknown>(
     pattern: Pattern,
   ): Promise<{ record: RadiaRecord<T> | null; scope?: ReadScope; explain?: string[] }> {
-    const r = await this.req("POST", "/v0/records/read-one", { ...pattern, explain: true });
-    return { record: r.record ?? null, scope: r.scope, explain: r.explain };
+    return readOneEnvelope<T>(await this.req("POST", "/v0/records/read-one", { ...pattern, explain: true }));
   }
 
   /**

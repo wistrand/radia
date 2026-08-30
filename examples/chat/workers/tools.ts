@@ -14,7 +14,7 @@ import { RadiaClient } from "../../../sdk/ts/client.ts";
 import { makeTools, TOOL_SCHEMAS } from "../tools/files.ts";
 import { makeSaveTools, makeShareTools, makeWorkspaceTools, SAVE_SCHEMAS, SHARE_SCHEMAS, WORKSPACE_SCHEMAS } from "../tools/save.ts";
 import { conversationKeys, fleetKeyPair } from "../space/keys.ts";
-import { arg, argAll } from "../util.ts";
+import { arg, argAll, argOn } from "../util.ts";
 import { serveTools } from "../../../extensions/ts/tool-worker.ts";
 
 const url = arg("--url") ?? "http://127.0.0.1:7788";
@@ -52,6 +52,9 @@ const tools = {
 // `retireProviderCapabilities` in `client/fleet.ts` does it by provider.
 await serveTools(client, {
   provider: "agent:chat-tools",
+  // Set by the launcher that beats for this provider (`spawn` in client/fleet.ts), so these
+  // advertisements may be judged stale once it stops. Absent when a worker is started by hand.
+  presence: argOn("--presence"),
   // A tool ACTS on its arguments, so this worker must open them; its answer is sealed under the
   // same key on the way back (plan-encryption.md phase 4). The private half comes from the
   // launcher's environment, never from disk.

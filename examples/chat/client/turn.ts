@@ -11,7 +11,9 @@ import { activeByKey, awaitResult } from "../../../sdk/ts/client.ts";
 import type { ChatMessage, ToolDef } from "../provider/openrouter.ts";
 import type { Thread } from "./thread.ts";
 import { sessionOwner } from "../space/roles.ts";
-import { collapseByTool, liveCapabilities } from "../../../extensions/ts/capability.ts";
+import { collapseByTool, liveAdvertisements, liveCapabilities } from "../../../extensions/ts/capability.ts";
+import { livePresence } from "../../../extensions/ts/presence.ts";
+import { FLEET_PRESENCE } from "../space/kinds.ts";
 import { assertReadable, type ConversationKey, openBody } from "../../../extensions/ts/encrypted.ts";
 import { answerStream, columns, dim, endStatus, ensureLine, holdLine, notice, showArtifact, statusLineOn, trunc, write } from "./ui.ts";
 import { Waiter, waitWake } from "./waiting.ts";
@@ -744,31 +746,60 @@ export class ToolSet {
     if (!view.complete) {
       notice(dim(`[tool list may be incomplete: stopped after ${view.scanned} advertisements]`));
     }
+    // Advertisements whose provider claimed presence and has stopped beating are dropped BEFORE the
+    // collapse, so a dead fleet neither offers tools nobody serves nor argues with a live fleet
+    // about what a name means. Only a provider that opted in can be dropped, so a worker outside
+    // the convention is unaffected.
+    //
+    // UNDEFINED, never an empty set, when the read fails. A session whose principal predates the
+    // `chat_presence` grant gets a 403 here, and an empty set would tell the filter that every
+    // tracked provider is dead: the whole fleet's tools would vanish from a working space, with one
+    // dim line to explain it.
+    let live: Set<string> | undefined;
+    try {
+      const beats = await livePresence(this.client, FLEET_PRESENCE);
+      // A PREFIX is not an answer either. `livePresence` reports `complete: false` when its scan
+      // ceiling stopped the walk or a grant narrowed the read, and the providers it did not reach
+      // are missing from the set — which this filter would read as "dead", dropping the tools of a
+      // running worker and announcing that it stopped.
+      if (beats.complete) live = new Set(beats.live.keys());
+    } catch { /* no grant to read presence, or an older space: police nothing */ }
+    const { entries, unserved } = liveAdvertisements(view.entries, live);
+    for (const [tool, providers] of unserved) {
+      // A tool that vanishes with no explanation reads as a tool that never existed.
+      const seen = `unserved:${providers.join(",")}`;
+      if (this.warned.get(tool) === seen) continue;
+      this.warned.set(tool, seen);
+      notice(dim(`[tool '${tool}' is advertised by ${providers.join(", ")}, which stopped running; hiding it]`));
+    }
     // A capability whose `def` is not a tool definition is skipped rather than passed on (inside
     // `collapseByTool`). One malformed record would otherwise break EVERY turn, since the whole
     // list goes to the model, and publishing is only as trustworthy as the workers holding a
     // `capability: put` grant.
-    const caps = collapseByTool(view.entries);
-    // Replicas of one worker are silent; two DIFFERENT tools under one name are not. The model is
-    // handed one description and either worker may claim the call, so this is the case where what
-    // it was told and what runs can differ.
+    const caps = collapseByTool(entries);
+    // Replicas of one worker are silent; two DIFFERENT tools under one name are not, and such a
+    // name is WITHHELD rather than resolved to the newest. Either provider may claim the call, so
+    // offering one description means the model can be told one thing and get another.
     // ONCE per distinct conflict, not once per refresh. The set is rebuilt on every turn and on
     // every `capability` wakeup, so a standing disagreement printed on every one of them, which
     // buried the conversation it was warning about.
-    for (const [tool, e] of caps) {
-      if (!e.conflicted) {
-        this.warned.delete(tool);
-        continue;
-      }
-      const seen = `${tool}:${e.providers.join(",")}`;
+    for (const tool of caps.tools.keys()) this.warned.delete(tool);
+    for (const [tool, e] of caps.conflicts) {
+      const seen = `conflict:${e.providers.join(",")}`;
       if (this.warned.get(tool) === seen) continue;
       this.warned.set(tool, seen);
-      notice(dim(`[tool '${tool}' is advertised differently by ${e.providers.join(", ")}; using the newest]`));
+      notice(dim(`[tool '${tool}' means different things to ${e.providers.join(" and ")}; withholding it until they agree]`));
     }
-    const tools = [...caps.values()].map((e) => e.def);
+    const tools = [...caps.tools.values()].map((e) => e.def);
     // What this process serves for itself. An advertised tool of the same name WINS, so a fleet
-    // that starts serving one of these takes it over without a change here.
-    for (const def of this.local) if (!caps.has(def.function.name)) tools.push(def);
+    // that starts serving one of these takes it over without a change here. A CONTESTED name is not
+    // a fallback either, though nothing is offering it: these are served through `serveTools`, so
+    // they are CLAIMED like any other call, and offering the session's definition for a name two
+    // workers are still listening on races them for it. A contested name is offered by nobody.
+    for (const def of this.local) {
+      const name = def.function.name;
+      if (!caps.tools.has(name) && !caps.conflicts.has(name)) tools.push(def);
+    }
 
     if (this.conversationId) {
       // `activeByKey`, not `newestByKey`: retirement is dropped by the shared projection, so this
@@ -785,7 +816,12 @@ export class ToolSet {
         // A procedure never shadows a BUILT-IN, whether a worker advertises it or this process
         // serves it: the built-in is the one with something behind it, and a saved name that
         // collided would silently change what a call does.
-        if (caps.has(name) || this.local.some((d) => d.function.name === name)) continue;
+        // A CONTESTED name blocks a procedure too, though nothing offers it: withholding changes
+        // what the model is told, never who may claim a `tool_call`, so those workers are still
+        // listening on that name and a procedure taking it would be claimed by one of them.
+        if (caps.tools.has(name) || caps.conflicts.has(name) || this.local.some((d) => d.function.name === name)) {
+          continue;
+        }
         tools.push({
           type: "function",
           function: {

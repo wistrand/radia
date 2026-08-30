@@ -19,7 +19,7 @@ import { addMember, DEFAULT_TEAM, declareTeamKinds, definitionState, mergeKind, 
 import { configLocation, mcpInvocation, renderMcpConfig, renderMcpInstall } from "../src/surfaces/mcp/config.ts";
 import { ScopeFiller } from "../src/surfaces/mcp/scope.ts";
 import { newer, newestByKey } from "../sdk/ts/registry.ts";
-import { kindDefKey } from "../sdk/ts/wire.ts";
+import { type KindDef, kindDefKey } from "../sdk/ts/wire.ts";
 import { extensionFor, mediaTypeForPath } from "../src/surfaces/media.ts";
 import { readWorkspace, summarizeWorkspaces, writeWorkspace } from "../extensions/ts/workspace.ts";
 
@@ -1062,6 +1062,38 @@ Deno.test("[team] declaring the team's kinds does not clobber another app's arti
   } finally {
     await s.close();
   }
+});
+
+Deno.test("[team] mergeKind keeps a live contentKey that REFINES the declared one", () => {
+  // Two apps on one space declare over the same reserved kind. `extensions/ts/team.ts` keys
+  // `capability` by (provider, tool, team) so one member's tool in two teams is two entries;
+  // `extensions/ts/capability.ts` keys it by (provider, tool). Stating ours flat over theirs is the
+  // COLLAPSING direction — distinct entries fold together and the sweep deletes the losers — so the
+  // runtime refuses it, and the chat could not start at all on a space `radia team add` had
+  // touched. Adopting the wider key only ever SPLITS, and our own records stay visible under it
+  // because an absent path is a value (`keyOf`).
+  const live = {
+    kind: "capability",
+    indexedPaths: [{ path: "tool", type: "keyword" }, { path: "provider", type: "keyword" }, { path: "team", type: "keyword" }],
+    contentKey: ["provider", "tool", "team"],
+  } satisfies KindDef;
+  const mine = {
+    kind: "capability",
+    indexedPaths: [{ path: "tool", type: "keyword" }, { path: "provider", type: "keyword" }],
+    contentKey: ["provider", "tool"],
+  } satisfies KindDef;
+  assertEquals(mergeKind(live, mine).contentKey, ["provider", "tool", "team"], "the refinement is kept");
+  assertEquals(
+    mergeKind(live, mine).indexedPaths.map((p) => p.path).sort(),
+    ["provider", "team", "tool"],
+    "and the path it rests on comes with it",
+  );
+
+  // NARROWING is not the same move: a live key we do not contain is somebody else's identity, not a
+  // refinement of ours, and adopting it silently is how a merge starts losing records.
+  assertEquals(mergeKind({ ...live, contentKey: ["digest"] }, mine).contentKey, ["provider", "tool"], "unrelated key: ours stands");
+  assertEquals(mergeKind({ ...live, contentKey: ["provider", "tool"] }, mine).contentKey, ["provider", "tool"], "equal: unchanged");
+  assertEquals(mergeKind(live, { ...mine, contentKey: undefined }).contentKey, undefined, "no key of our own: nothing to refine");
 });
 
 Deno.test("[team] mergeKind is additive on paths and states everything else", () => {
