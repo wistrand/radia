@@ -13,7 +13,7 @@
  *  CalVer as semver: `YYYY.M.COUNTER`, the month unpadded (semver refuses a leading zero) and the
  *  counter restarting at 0 each month. The number is a release stamp, not a compatibility claim;
  *  compatibility lives in `API_VERSION` below. */
-export const VERSION = "2026.8.2";
+export const VERSION = "2026.8.3";
 
 /** The frozen wire contract's version: the `/v0` path prefix and the `api` field of `/v0/health`.
  *  Distinct from `VERSION` on purpose, and it moves far more slowly: the implementation may ship
