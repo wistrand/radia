@@ -527,11 +527,11 @@ export async function referencedDigests(host: GcHost): Promise<Set<string>> {
   }
   return live;
 }
-/** A fresh set of counters, so the space does not have to spell the shape out. */
 /** Rows one amortized pass may delete: small enough that the write paying for it feels a few
  *  milliseconds, not a collection. A backlog bigger than this drains across later triggers. */
 const AMORTIZED_BATCH = 256;
 
+/** A fresh set of counters, so the space does not have to spell the shape out. */
 export function newSweepState(): SweepState {
   return { writesSinceSweep: 0, amortizedSweepRunning: false, writesSinceCompact: new Map(), compactingKind: new Set() };
 }

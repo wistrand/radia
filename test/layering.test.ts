@@ -235,29 +235,59 @@ Deno.test("[layering] every coordination call on a Space is in the ledger, with 
   // bump the count, or write the reason a grant check is deliberately absent. The receiver is
   // matched by the conventional name `space`; the construction guard above is what keeps instances
   // from existing under other names outside the allowlisted births.
-  const LEDGER: Record<string, Record<string, number>> = {
-    // artifact reads pass through ONE gate (Space.artifactReadGate): access read once, a verdict
-    // per record, 404 for foreign-or-missing so an id's existence never leaks
-    "src/server/handlers/artifacts.ts": { artifactReadGate: 3 },
-    // put's check and the reads' composition run INSIDE Space (phase 2): queryAs / readOneAs /
-    // registryOfAs return what they applied, so the wire keeps reporting its narrowing
-    "src/server/handlers/records.ts": { put: 1, queryAs: 1, readOneAs: 1, registryOfAs: 1 },
-    // take's grant COMPOSES inside Space.take (phase 2); settles are owner-bound and ack's
-    // RESULT is authorized inside Space.ack (space.ts, "Emitting a result IS a put")
-    "src/server/handlers/leases.ts": { take: 1, ack: 1, nack: 1, release: 1, renew: 1 },
-    // scope derived in core (Space.scopeWatch), the one verb that already moved enforcement in
-    "src/server/handlers/watches.ts": { createWatch: 1 },
+  // TWO ledgers since `Space.as(principal)` became the authorized API. RAW verbs are the
+  // runtime's own, attribution-only doors; a handler holding a principal has no business calling
+  // one, so the raw ledger is nearly empty and the handle ledger counts each handler's `as(`.
+  const RAW: Record<string, Record<string, number>> = {
     // provisionObserver: a BOOT-TIME operator write, before any request principal exists. The one
-    // deliberately unauthorized coordination call in src/.
+    // raw coordination call in src/ outside core.
     "src/credentials.ts": { put: 1 },
   };
-  const found: Record<string, Record<string, number>> = {};
+  const HANDLES: Record<string, number> = {
+    "src/server/handlers/records.ts": 4, //  put, query, readOne, registryOf handlers
+    "src/server/handlers/leases.ts": 5, //   take + the four settles
+    "src/server/handlers/watches.ts": 1,
+    "src/server/handlers/artifacts.ts": 6, // upload, three read gates, capability mint, redemption
+  };
+  const foundRaw: Record<string, Record<string, number>> = {};
+  const foundAs: Record<string, number> = {};
   for (const file of await tsFiles(SRC, "src/")) {
     const text = code(await Deno.readTextFile(new URL(file.replace("src/", ""), SRC)));
-    for (const [, verb] of text.matchAll(/\bspace\.(put|take|ack|nack|release|renew|query|queryAs|readOne|readOneAs|registryOf|registryOfAs|artifactReadGate|createWatch|registerKind)\(/g)) {
-      found[file] = found[file] ?? {};
-      found[file][verb] = (found[file][verb] ?? 0) + 1;
+    for (const [, verb] of text.matchAll(/\bspace\.(put|take|ack|nack|release|renew|query|readOne|registryOf|putArtifact|createWatch|registerKind)\(/g)) {
+      foundRaw[file] = foundRaw[file] ?? {};
+      foundRaw[file][verb] = (foundRaw[file][verb] ?? 0) + 1;
+    }
+    const asCount = [...text.matchAll(/\bspace\.as\(/g)].length;
+    if (asCount) foundAs[file] = asCount;
+  }
+  assertEquals(foundRaw, RAW, "a RAW coordination call appeared outside the ledger; use space.as(principal), or ledger why not");
+  assertEquals(foundAs, HANDLES, "a handle site appeared or moved; keep the count honest");
+});
+
+Deno.test("[layering] no doc comment is stranded above another doc comment", async () => {
+  // The edit hazard: inserting a new symbol BETWEEN an existing doc comment and its subject
+  // silently re-attaches the comment to the wrong thing, and nothing type-checks it. Nine stood in
+  // the tree when this was written, each a doc separated from its symbol by a later insertion
+  // (`kindDefKey`'s doc sat on `fnv1a`, `WorkspaceFile`'s on a kind declaration). A `*/` followed
+  // by a `/**` with nothing but blank lines between means the first comment documents NOTHING:
+  // reunite it with its symbol, fold it into the second, or make section prose `//` like a header.
+  const violations: string[] = [];
+  const roots: [URL, string][] = [
+    [SRC, "src/"],
+    [new URL("../sdk/ts/", import.meta.url), "sdk/ts/"],
+    [new URL("../extensions/ts/", import.meta.url), "extensions/ts/"],
+  ];
+  for (const [root, prefix] of roots) {
+    for (const file of await tsFiles(root, prefix)) {
+      const lines = (await Deno.readTextFile(new URL(file.replace(prefix, ""), root))).split("\n");
+      let prev = "";
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line.trim()) continue; // blank lines between the pair do not reunite anything
+        if (/\*\/\s*$/.test(prev) && /^\s*\/\*\*/.test(line)) violations.push(`${file}:${i + 1}`);
+        prev = line;
+      }
     }
   }
-  assertEquals(found, LEDGER, "a coordination call on a Space appeared or moved; authorize it (or ledger why not)");
+  assertEquals(violations, [], "a doc comment ends and another begins with no code between them; the first is orphaned");
 });

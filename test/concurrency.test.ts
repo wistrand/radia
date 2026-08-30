@@ -62,7 +62,7 @@ Deno.test({
       const violations: string[] = [];
       const claimer = async (who: number) => {
         for (let round = 0; round < ROUNDS; round++) {
-          const claimed = await space.take({ pattern: { kind: "task" } }, { leaseSeconds: 30 }, `run:c${who}`);
+          const claimed = await space.take({ pattern: { kind: "task" } }, { ...{ leaseSeconds: 30 }, owner: `run:c${who}` });
           if (!claimed) continue;
           const env = await space.getEnvelope(claimed.record.id);
           const now = await space.now(); // the DB clock, the only one a claim is judged against
@@ -142,8 +142,7 @@ Deno.test({
         while (!stop) {
           const got = await space.take(
             { pattern: { kind: "task", match: { tags: { $each: "noise" } } } },
-            { leaseSeconds: 60 },
-            who,
+            { leaseSeconds: 60, owner: who },
           );
           if (!got) return;
           await space.ack(got.lease, undefined, undefined, who);
@@ -157,8 +156,7 @@ Deno.test({
         while (served.length < MATCHES) {
           const got = await space.take(
             { pattern: { kind: "task", match: { tags: { $each: "rare" } } } },
-            { leaseSeconds: 60 },
-            "run:rare",
+            { leaseSeconds: 60, owner: "run:rare" },
           );
           if (!got) break; // the queue looks empty; the unserved remainder says otherwise
           served.push(got.record.id);

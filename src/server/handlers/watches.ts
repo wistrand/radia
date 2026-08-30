@@ -45,7 +45,7 @@ export async function handleCreateWatch(space: Space, req: Request, principal: s
     //
     // The watch is bound to its creator and carries that principal's author scope: the stream is
     // reached by id alone, and ids are monotonic ULIDs (guessable from any adjacent record).
-    const { watchId } = await space.createWatch(pattern, principal);
+    const { watchId } = await space.as(principal).createWatch(pattern);
     return new Response(JSON.stringify({ watchId }), { status: 201, headers: { "content-type": "application/json" } });
   } catch (e) {
     if (e instanceof RadiaError) return problem(statusFor(e.code, 400), e.code, e.message);

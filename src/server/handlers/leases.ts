@@ -97,7 +97,7 @@ export async function handleTake(space: Space, req: Request, principal: string):
     // pattern narrows to grant ∧ request, a self scope narrows to own records, and the grant's
     // taint barrier intersects the caller's. This handler contributes only what the wire carries.
     const sel: TakeInput = recordId ? { recordId, pattern } : { pattern: pattern! };
-    const result = await space.take(sel, { leaseSeconds, allowTaint: callerAllow }, principal);
+    const result = await space.as(principal).take(sel, { leaseSeconds, allowTaint: callerAllow });
     return ok(result); // {record, lease} or null
   } catch (e) {
     if (e instanceof RadiaError) return problem(e.code === "forbidden" ? 403 : 400, e.code, e.message);
@@ -114,7 +114,7 @@ export async function handleAck(space: Space, req: Request, principal: string): 
   // it a malformed result record fails inside the adapter as a 500 instead of a 400.
   const result = pickResult(j.result);
   if (typeof result === "string") return problem(400, "invalid_body", result);
-  return settle(() => space.ack(lease, result, idemKey(req), principal));
+  return settle(() => space.as(principal).ack(lease, result, idemKey(req)));
 }
 
 export async function handleNack(space: Space, req: Request, principal: string): Promise<Response> {
@@ -123,7 +123,7 @@ export async function handleNack(space: Space, req: Request, principal: string):
   const lease = parseLease(j);
   if (!lease) return problem(400, "invalid_lease", "missing or malformed lease");
   const backoffSeconds = typeof j.backoffSeconds === "number" ? j.backoffSeconds : undefined;
-  return settle(() => space.nack(lease, { backoffSeconds }, idemKey(req), principal));
+  return settle(() => space.as(principal).nack(lease, { backoffSeconds }, idemKey(req)));
 }
 
 export async function handleRelease(space: Space, req: Request, principal: string): Promise<Response> {
@@ -131,7 +131,7 @@ export async function handleRelease(space: Space, req: Request, principal: strin
   if (!j) return problem(400, "invalid_body", "expected a JSON object");
   const lease = parseLease(j);
   if (!lease) return problem(400, "invalid_lease", "missing or malformed lease");
-  return settle(() => space.release(lease, idemKey(req), principal));
+  return settle(() => space.as(principal).release(lease, idemKey(req)));
 }
 
 export async function handleRenew(space: Space, req: Request, principal: string): Promise<Response> {
@@ -140,5 +140,5 @@ export async function handleRenew(space: Space, req: Request, principal: string)
   const lease = parseLease(j);
   if (!lease) return problem(400, "invalid_lease", "missing or malformed lease");
   const leaseSeconds = typeof j.leaseSeconds === "number" && j.leaseSeconds > 0 ? j.leaseSeconds : undefined;
-  return settle(() => space.renew(lease, { leaseSeconds }, idemKey(req), principal));
+  return settle(() => space.as(principal).renew(lease, { leaseSeconds }, idemKey(req)));
 }

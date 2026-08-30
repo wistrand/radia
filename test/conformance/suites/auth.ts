@@ -116,7 +116,7 @@ export const authSuites: Suite[] = [
       // from `createAgentDefinition` and from a definition's own grant list alike.
       const space = new Space(adapter, { operators: ["human:op"] });
       space.registerKind({ kind: "doc", indexedPaths: [{ path: "owner", type: "keyword" }] });
-      const put = (body: Record<string, unknown>) => space.put({ kind: "grant", body }, undefined, "human:op");
+      const put = (body: Record<string, unknown>) => space.put({ kind: "grant", body }, undefined, { author: "human:op" });
 
       await assertRejects(
         () => put({ principal: "agent:w", kind: "doc", operations: ["query"], patern: { owner: "alice" } }),
@@ -335,7 +335,7 @@ export const authSuites: Suite[] = [
     run: async (adapter) => {
       const space = newSpace(adapter); // task
       await space.put({ kind: "task", body: { tag: "t" } });
-      const claimed = await space.take({ pattern: { kind: "task" } }, {}, "run:a", { unchecked: "fixture: lease ownership below the grant layer" }); // owned by run:a
+      const claimed = await space.take({ pattern: { kind: "task" } }, { owner: "run:a" }); // owned by run:a
       assert(claimed);
       // a DIFFERENT run presenting the same VALID lease is fenced out on EVERY settle verb: ack
       // (impersonation) and also nack/release/renew (DoS on someone else's task).
@@ -358,11 +358,11 @@ export const authSuites: Suite[] = [
       // which is true and is not the answer to the question it asked.
       const space = newSpace(adapter);
       await space.put({ kind: "task", body: { tag: "t" } });
-      const first = await space.take({ pattern: { kind: "task" } }, {}, "run:a", { unchecked: "fixture: lease ownership below the grant layer" });
+      const first = await space.take({ pattern: { kind: "task" } }, { owner: "run:a" });
       assert(first);
       assertEquals((await space.nack(first!.lease, { backoffSeconds: 0 }, "k1", "run:a")).status, "ok");
 
-      const second = await space.take({ pattern: { kind: "task" } }, {}, "run:b", { unchecked: "fixture: lease ownership below the grant layer" });
+      const second = await space.take({ pattern: { kind: "task" } }, { owner: "run:b" });
       assert(second, "run:b now owns the record");
       assertEquals(
         (await space.nack(first!.lease, { backoffSeconds: 0 }, "k1", "run:a")).status,
@@ -462,7 +462,7 @@ export const authSuites: Suite[] = [
       ]);
       const { run, runToken } = await space.mintRun(definitionToken);
       await space.put({ kind: "task", body: { tag: "t" } });
-      const held = await space.take({ pattern: { kind: "task" } }, {}, run);
+      const held = await space.take({ pattern: { kind: "task" } }, { owner: run });
       assert(held, "the run holds a lease before the quarantine");
 
       const stopped = await space.stopRun(run, { quarantine: true });
@@ -486,7 +486,7 @@ export const authSuites: Suite[] = [
 
       // seed a task and have the RUN claim it (lease owned by run:*)
       await space.put({ kind: "task", body: { tag: "q" } });
-      const claimed = await space.take({ pattern: { kind: "task", match: { tag: "q" } } }, {}, run);
+      const claimed = await space.take({ pattern: { kind: "task", match: { tag: "q" } } }, { owner: run });
       assert(claimed);
 
       // graceful stop leaves the lease alone; quarantine force-invalidates it
@@ -563,7 +563,7 @@ export const authSuites: Suite[] = [
       ]);
       const { run } = await space.mintRun(definitionToken);
       await space.put({ kind: "task", body: { tag: "t" } });
-      const claimed = await space.take({ pattern: { kind: "task" } }, {}, run);
+      const claimed = await space.take({ pattern: { kind: "task" } }, { owner: run });
       assert(claimed);
 
       const acked = await space.ack(claimed!.lease, { kind: "result", body: { ok: true } });
@@ -595,12 +595,12 @@ export const authSuites: Suite[] = [
       const { run: runB } = await space.mintRun(db);
 
       await space.put({ kind: "task", body: { n: 1 } });
-      const t = await space.take({ pattern: { kind: "task" } }, {}, runA);
+      const t = await space.take({ pattern: { kind: "task" } }, { owner: runA });
       const subAck = await space.ack(t!.lease, { kind: "subtask", body: { n: 1 } });
       assert(subAck.status === "ok" && subAck.resultId);
       assertEquals((await space.getRecord(subAck.resultId!))!.runtimeMeta.delegationContext!.chain, ["agent:a"]);
 
-      const s = await space.take({ pattern: { kind: "subtask" } }, {}, runB);
+      const s = await space.take({ pattern: { kind: "subtask" } }, { owner: runB });
       const resAck = await space.ack(s!.lease, { kind: "result", body: { n: 1 } });
       assert(resAck.status === "ok" && resAck.resultId);
       // the chain accumulates the whole delegation path; b's grant alone suffices for b's own put
@@ -618,7 +618,7 @@ export const authSuites: Suite[] = [
       ]);
       const { run } = await space.mintRun(definitionToken);
       await space.put({ kind: "task", body: { tag: "t" } });
-      const claimed = await space.take({ pattern: { kind: "task" } }, {}, run);
+      const claimed = await space.take({ pattern: { kind: "task" } }, { owner: run });
 
       // emitting the result is blocked: agent:a lacks a put grant for `result`
       assertEquals(await denied(() => space.ack(claimed!.lease, { kind: "result", body: {} })), "forbidden");
@@ -782,99 +782,62 @@ export const authSuites: Suite[] = [
     },
   },
   {
-    name: "put enforces its own grant in core, so an in-process caller cannot claim ungranted",
+    name: "the acting handle enforces; the raw verbs attribute only",
     run: async (adapter) => {
-      // Phase 2 of the authorization-seam work (design-auth.md, "Where each verb is enforced"):
-      // the grant check moved from the HTTP handler into `Space.put`, so the wire and an
-      // in-process caller get the same refusal from ONE implementation, and a body-level rule
-      // reaches records, artifact records and ack results alike.
+      // `Space.as(principal)` is the authorized API: authority is the TYPE a caller holds, not a
+      // per-call parameter (design-auth.md, "Where each verb is enforced"). The raw verbs carry
+      // attribution (`author`, `owner`) and consult no grant, which is what fixtures planting
+      // authorship always meant and what the retired `{unchecked: "why"}` escape existed to say.
       const space = newSpace(adapter);
       await space.put({
         kind: "grant",
-        body: { principal: "agent:scoped", kind: "task", operations: ["put"], pattern: { tag: "mine" } },
+        body: { principal: "agent:scoped", kind: "task", operations: ["put", "take"], pattern: { tag: "mine" } },
       });
+      const acting = space.as("agent:scoped");
 
-      // In scope: committed. Out of scope: refused with the refusal the wire has always used,
-      // which `src/surfaces/mcp/scope.ts` matches on to learn a compartment label.
-      await space.put({ kind: "task", body: { tag: "mine" } }, undefined, "agent:scoped");
+      // WRITE: in scope commits; out of scope is refused with the refusal the wire has always
+      // used, which `src/surfaces/mcp/scope.ts` matches on to learn a compartment label.
+      await acting.put({ kind: "task", body: { tag: "mine" } });
       await assertRejects(
-        () => space.put({ kind: "task", body: { tag: "theirs" } }, undefined, "agent:scoped"),
+        () => acting.put({ kind: "task", body: { tag: "theirs" } }),
         Error,
         "outside the pattern scope of your put grant",
       );
-      // No grant at all is a refusal too, not an attribution convenience.
-      assertEquals(await denied(() => space.put({ kind: "task", body: {} }, undefined, "agent:ungranted")), "forbidden");
+      assertEquals(await denied(() => space.as("agent:none").put({ kind: "task", body: {} })), "forbidden");
 
-      // The named escape for attribution-only writes below the grant layer: it works, and it
-      // REQUIRES a reason, the `unsafeAsPopulation` shape.
-      await space.put({ kind: "task", body: { tag: "planted" } }, undefined, "agent:ungranted", {
-        unchecked: "this suite: authorship without authority",
-      });
-      await assertRejects(
-        () => space.put({ kind: "task", body: {} }, undefined, "agent:ungranted", { unchecked: "" }),
-        Error,
-        "needs a reason",
-      );
+      // The RAW verb plants authorship below the grant layer, and the record says so.
+      const planted = await space.put({ kind: "task", body: { tag: "planted" } }, undefined, { author: "agent:none" });
+      assertEquals((await space.getRecord(planted.id))!.runtimeMeta.createdBy, "agent:none");
 
-      // A privileged principal still passes with no grant: the operator branch is authorize's own.
-      const op = new Space(adapter, { operators: ["human:op"] } as never);
-      await op.loadKinds();
-      await op.put({ kind: "task", body: { tag: "any" } }, undefined, "human:op");
-    },
-  },
-  {
-    name: "take composes its grant in core: pattern, self scope, and the grant's taint barrier",
-    run: async (adapter) => {
-      // Phase 2's second verb (design-auth.md, "Where each verb is enforced"). Four pieces moved
-      // together, and each is asserted here because leaving any one in a handler is a rule that
-      // binds one door: grant ∧ request, `createdBy: self`, the taint intersection, and the
-      // record-id take authorizing on the record's own kind.
-      const space = newSpace(adapter);
-      await space.put({ kind: "grant", body: { principal: "agent:s", kind: "task", operations: ["take"], pattern: { tag: "mine" } } });
+      // CLAIM: the handle composes grant ∧ request, so the scoped principal reaches only its
+      // granted record; naming the other one by id is a miss, not a claim.
       await space.put({ kind: "task", body: { tag: "mine" } });
-      await space.put({ kind: "task", body: { tag: "theirs" } });
-
-      // grant ∧ request: an unscoped in-process take under the scoped principal reaches ONLY the
-      // granted record, and a second take finds nothing rather than the other team's task.
-      const got = await space.take({ pattern: { kind: "task" } }, {}, "agent:s");
+      const theirs = await space.put({ kind: "task", body: { tag: "theirs" } });
+      const got = await acting.take({ pattern: { kind: "task" } });
       assertEquals((got?.record.body as { tag?: string }).tag, "mine");
-      assertEquals(await space.take({ pattern: { kind: "task" } }, {}, "agent:s"), null);
+      assertEquals(await acting.take({ recordId: theirs.id }), null);
+      assertEquals(await denied(() => space.as("agent:none").take({ pattern: { kind: "task" } })), "forbidden");
+      // The RAW take claims freely under an explicit owner: lease ownership, no authority implied.
+      const raw = await space.take({ pattern: { kind: "task", match: { tag: "theirs" } } }, { owner: "run:fixture" });
+      assertEquals(raw?.lease.ownerRun, "run:fixture");
 
-      // record-id: naming the out-of-scope record directly is a miss, not a claim.
-      const theirs = await space.put({ kind: "task", body: { tag: "theirs" } }, "t2");
-      assertEquals(await space.take({ recordId: theirs.id }, {}, "agent:s"), null);
-
-      // The GRANT's taint barrier intersects the caller's: a caller allowing `file` still cannot
-      // claim a tainted record when its grant's scope allows none.
+      // The GRANT's taint barrier intersects the caller's: allowing `file` cannot widen past a
+      // grant whose scope allows none.
       await space.put({
         kind: "grant",
         body: { principal: "agent:clean", kind: "task", operations: ["take"], scope: { taint: "none" } },
       });
-      await space.put({ kind: "task", body: { tag: "dirty" }, taint: ["file"] }, undefined, undefined);
-      const cleanMiss = await space.take({ pattern: { kind: "task", match: { tag: "dirty" } } }, { allowTaint: ["file"] }, "agent:clean");
-      assertEquals(cleanMiss, null, "the grant's barrier must not be widenable by the caller");
-
-      // No grant at all refuses; the named escape needs a reason.
-      assertEquals(await denied(() => space.take({ pattern: { kind: "task" } }, {}, "agent:none")), "forbidden");
-      await assertRejects(
-        () => space.take({ pattern: { kind: "task" } }, {}, "agent:none", { unchecked: "" }),
-        Error,
-        "needs a reason",
-      );
-      assertEquals(
-        await space.take({ pattern: { kind: "task", match: { tag: "dirty" } } }, { allowTaint: ["file"] }, "agent:none", {
-          unchecked: "this suite: lease ownership without authority",
-        }).then((r) => (r?.record.body as { tag?: string })?.tag),
-        "dirty",
-      );
+      await space.put({ kind: "task", body: { tag: "dirty" }, taint: ["file"] });
+      const miss = await space.as("agent:clean").take({ pattern: { kind: "task", match: { tag: "dirty" } } }, { allowTaint: ["file"] });
+      assertEquals(miss, null, "the grant's barrier must not be widenable by the caller");
     },
   },
   {
-    name: "the reads compose their grant in core: queryAs, readOneAs and registryOfAs",
+    name: "the handle's reads compose their grant, and hand back what they applied",
     run: async (adapter) => {
-      // Phase 2's last verbs. The principal-driven reads are distinct entries because the wire
-      // REPORTS its narrowing, so each returns what it applied beside the answer; the grant is
-      // read once and the raw `query` stays the runtime's own read.
+      // Reads are on the handle for the same reason writes are, plus one of their own: the wire
+      // REPORTS its narrowing, so each read returns the applied constraint beside the answer. The
+      // raw `query` stays the runtime's own and answers everything.
       const space = newSpace(adapter);
       space.registerKind({ kind: "cap", indexedPaths: [{ path: "team", type: "keyword" }, { path: "tool", type: "keyword" }], contentKey: ["tool"] });
       await space.put({ kind: "grant", body: { principal: "agent:s", kind: "task", operations: ["query", "read_one"], pattern: { tag: "mine" } } });
@@ -883,30 +846,29 @@ export const authSuites: Suite[] = [
       await space.put({ kind: "task", body: { tag: "theirs" } });
       await space.put({ kind: "cap", body: { team: "a", tool: "x" } });
       await space.put({ kind: "cap", body: { team: "b", tool: "y" } });
+      const acting = space.as("agent:s");
 
-      // grant ∧ request, and the narrowing handed back for the wire to report.
-      const q = await space.queryAs("agent:s", { kind: "task" }, 50);
+      const q = await acting.query({ kind: "task" }, 50);
       assertEquals(q.records.map((r) => (r.body as { tag: string }).tag), ["mine"]);
       assertEquals(q.constraint, [{ tag: "mine" }], "the applied constraint must ride back for describeReadScope");
 
-      const one = await space.readOneAs("agent:s", { kind: "task", match: { tag: "theirs" } });
+      const one = await acting.readOne({ kind: "task", match: { tag: "theirs" } });
       assertEquals(one.record, null, "read_one composes the same wall");
 
-      const reg = await space.registryOfAs("agent:s", "cap");
+      const reg = await acting.registryOf("cap");
       assertEquals(reg.entries.map((r) => (r.body as { tool: string }).tool), ["x"]);
 
-      // Ungranted refuses; the raw read stays the runtime's own and answers everything.
-      assertEquals(await denied(() => space.queryAs("agent:none", { kind: "task" })), "forbidden");
-      assertEquals((await space.query({ kind: "task" }, 50)).length, 2);
+      assertEquals(await denied(() => space.as("agent:none").query({ kind: "task" })), "forbidden");
+      assertEquals((await space.query({ kind: "task" }, 50)).length, 2, "the raw read stays the runtime's own");
     },
   },
   {
     name: "the artifact read gate: one access read, 404 for what must not leak, 403 for scope",
     run: async (adapter) => {
       // The rule the three byte doors (meta/download, download capability, path-capability loop)
-      // share, in core. `not_found` covers missing, non-artifact and out-of-self-scope alike,
-      // because a caller not entitled to a record must not learn its id exists; `forbidden` is only
-      // ever the pattern scope.
+      // share, on the handle. `not_found` covers missing, non-artifact and out-of-self-scope
+      // alike, because a caller not entitled to a record must not learn its id exists; `forbidden`
+      // is only ever the pattern scope.
       const space = newSpace(adapter);
       await space.put({
         kind: "grant",
@@ -920,7 +882,7 @@ export const authSuites: Suite[] = [
       const json = await space.putArtifact(new TextEncoder().encode("{}"), { mediaType: "application/json" });
       const task = await space.put({ kind: "task", body: { tag: "t" } });
 
-      const gate = await space.artifactReadGate("agent:txt");
+      const gate = await space.as("agent:txt").artifactGate();
       assertEquals(gate(await space.getRecord(txt.id)), "ok");
       assertEquals(gate(await space.getRecord(json.id)), "forbidden", "a pattern miss is nameable");
       assertEquals(gate(await space.getRecord(task.id)), "not_found", "a non-artifact must read as absent");
@@ -928,11 +890,11 @@ export const authSuites: Suite[] = [
 
       // Self scope: a runtime-written artifact is FOREIGN to agent:own, and foreign reads as
       // absent, never as refused, or the gate is an existence oracle.
-      const own = await space.artifactReadGate("agent:own");
+      const own = await space.as("agent:own").artifactGate();
       assertEquals(own(await space.getRecord(txt.id)), "not_found");
 
       // No grant at all refuses at the access read, before any record is looked at.
-      assertEquals(await denied(() => space.artifactReadGate("agent:none")), "forbidden");
+      assertEquals(await denied(() => space.as("agent:none").artifactGate()), "forbidden");
     },
   },
 ];

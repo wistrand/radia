@@ -308,6 +308,37 @@ export type TakeInput =
   | { pattern: Pattern }
   | { recordId: string; pattern?: Pattern };
 
+/** A read's answer plus WHAT WAS APPLIED to produce it, so the wire can report its narrowing. */
+export interface ScopedRead {
+  pattern: Pattern;
+  constraint: Record<string, unknown>[] | null;
+  createdBy?: string[];
+}
+
+/**
+ * The space bound to one principal: every verb consults that principal's grants. Obtained from
+ * `Space.as(principal)`; holding one is holding the AUTHORIZED API, so a caller cannot skip a
+ * check per call. The raw verbs on `Space` are the runtime's own, attribution-only counterparts.
+ */
+export interface ActingSpace {
+  readonly principal: string;
+  put(req: PutRequest, idempotencyKey?: string): Promise<{ id: string }>;
+  take(sel: TakeInput, opts?: TakeOptions): Promise<TakeResult | null>;
+  ack(lease: Lease, result?: PutRequest, idempotencyKey?: string): Promise<AckResult>;
+  nack(lease: Lease, opts?: { backoffSeconds?: number }, idempotencyKey?: string): Promise<SettleResult>;
+  release(lease: Lease, idempotencyKey?: string): Promise<SettleResult>;
+  renew(lease: Lease, opts?: TakeOptions, idempotencyKey?: string): Promise<RenewResult>;
+  createWatch(request: Pattern): Promise<{ watchId: string }>;
+  putArtifact(bytes: Uint8Array, meta: ArtifactMeta, idempotencyKey?: string): Promise<{ id: string; digest: string; size: number }>;
+  /** The pre-payload half of an artifact write: may this principal put a record shaped like `body`?
+   *  Throws `forbidden` when there is no put grant at all. */
+  mayPut(kind: string, body: unknown): Promise<boolean>;
+  query<T = unknown>(pattern: Pattern, limit?: number, page?: Page): Promise<{ records: RadiaRecord<T>[] } & ScopedRead>;
+  readOne(pattern: Pattern): Promise<{ record: RadiaRecord | null } & ScopedRead>;
+  registryOf(kind: string, match?: Record<string, unknown>): Promise<{ entries: RadiaRecord[]; complete: boolean; scanned: number; constraint: Record<string, unknown>[] | null; createdBy?: string[] }>;
+  artifactGate(): Promise<(rec: RadiaRecord | null | undefined) => "ok" | "not_found" | "forbidden">;
+}
+
 export interface TakeOptions {
   leaseSeconds?: number;
   /** Sensitive consumer: the labels a candidate may carry. Undefined = no barrier of the caller's
@@ -854,8 +885,6 @@ export class Space {
     return this.storage.now();
   }
 
-  /** `principal` is the RESOLVED caller (server-assigned `created_by` + idempotency scope); it
-   *  defaults to the space's own identity for in-process/operator callers. */
   /**
    * The put-grant check both write paths share: `put` runs it eagerly, `ack` defers it to storage
    * so an idempotent replay skips it (audit package W5). ONE implementation, so a body-level rule
@@ -874,26 +903,32 @@ export class Space {
     }
   }
 
+  /**
+   * The RUNTIME's own write. No grant is consulted: authority lives on the handle `as(principal)`
+   * returns, and the ledger in `test/layering.test.ts` names every raw call in `src/`. `author` is
+   * ATTRIBUTION only (whose name `created_by` carries), which is what fixtures planting authorship
+   * always meant and what the retired `{unchecked: "why"}` escape existed to say.
+   */
   async put(
     req: PutRequest,
     idempotencyKey?: string,
-    principal?: string,
-    /** `unchecked` skips the grant check WITH A REASON, the `unsafeAsPopulation` shape: for
-     *  attribution-only writes below the grant layer (conformance suites planting authorship).
-     *  Absent principal means the runtime's own write and is ledgered by `test/layering.test.ts`. */
-    opts: { unchecked?: string } = {},
+    opts: { author?: string } = {},
   ): Promise<{ id: string }> {
-    // EAGER, unlike ack's deferred check: the handler authorized before calling, so a put RETRY
-    // after a narrowed grant has always answered 403 rather than replaying, and moving the check
-    // must not change that. Enforced whenever a principal is named, so an in-process caller gets
-    // the same answer the wire gives.
-    if (principal !== undefined) {
-      if (opts.unchecked !== undefined) {
-        if (!opts.unchecked) throw new Error("put({unchecked}) needs a reason: say why the grant check does not apply");
-      } else {
-        await this.checkPutGrant(principal, req.kind, req.body, "record");
-      }
-    }
+    return await this.putEnforced(req, idempotencyKey, undefined, opts.author);
+  }
+
+  /** Both put doors: the handle passes `checkedFor` (enforced, and the author), the raw verb only
+   *  `author`; with neither, `created_by` defaults to the space's own identity. EAGER, unlike
+   *  ack's deferred check: a put RETRY after a narrowed grant has always answered 403 rather than
+   *  replaying, and the wire behavior must not change. */
+  private async putEnforced(
+    req: PutRequest,
+    idempotencyKey: string | undefined,
+    checkedFor: string | undefined,
+    author?: string,
+  ): Promise<{ id: string }> {
+    if (checkedFor !== undefined) await this.checkPutGrant(checkedFor, req.kind, req.body, "record");
+    const principal = checkedFor ?? author;
     const declared = this.validateReservedBody(req); // throws RadiaError before anything commits
     // Refused before anything commits, and what an ACKNOWLEDGED break costs is carried onto the
     // event, since a break nobody refused is one only the log can still report.
@@ -1186,8 +1221,6 @@ export class Space {
     );
   }
 
-  /** Reflect a committed declaration in THIS process's registry (other instances re-read it
-   *  through `compileFresh`). */
   /**
    * Which LIVE patterns a proposed declaration would stop compiling
    * (agent_docs/plan-schema-versioning.md phase 3).
@@ -1281,6 +1314,8 @@ export class Space {
     return broken;
   }
 
+  /** Reflect a committed declaration in THIS process's registry (other instances re-read it
+   *  through `compileFresh`). */
   private async adoptKind(def: KindDef): Promise<void> {
     this.kinds.register(def, await this.declarationCount(def.kind));
     await this.prepareStorageFor(def);
@@ -1530,25 +1565,33 @@ export class Space {
     return this.blobs.name;
   }
 
-  private get artifactHost(): ArtifactHost {
+  /** `checkedFor` decides which put door the artifact's RECORD write goes through: the handle's
+   *  (grant-checked) or the runtime's own. The port's `principal` slot stays attribution. */
+  private artifactHostFor(checkedFor?: string): ArtifactHost {
     return {
       blobs: this.blobs,
       maxArtifactBytes: this.ctx.maxArtifactBytes,
       getRecord: (id) => this.storage.getRecord(id),
       now: () => this.storage.now(),
-      put: (req, idem, principal) => this.put(req, idem, principal),
+      put: (req, idem, principal) => this.putEnforced(req, idem, checkedFor, checkedFor ?? principal),
       putRaw: (req, idem, opts) => this.putRaw(req, idem, opts),
       query: (pattern, limit, page, scope) => this.query(pattern, limit, page, scope),
     };
   }
 
+  private get artifactHost(): ArtifactHost {
+    return this.artifactHostFor();
+  }
+
+  /** The RUNTIME's own artifact write: `author` is attribution, no grant consulted. The enforced
+   *  door is `as(principal).putArtifact`. */
   putArtifact(
     bytes: Uint8Array,
     meta: ArtifactMeta,
     idempotencyKey?: string,
-    principal?: string,
+    author?: string,
   ): Promise<{ id: string; digest: string; size: number }> {
-    return putArtifact(this.artifactHost, bytes, meta, idempotencyKey, principal);
+    return putArtifact(this.artifactHost, bytes, meta, idempotencyKey, author);
   }
 
   readArtifact(
@@ -1601,7 +1644,72 @@ export class Space {
   }
 
   /**
-   * Matching records ordered by the pattern, capped at `limit`.
+   * THE ENFORCED API. `as(principal)` binds the principal ONCE and returns a handle whose every
+   * verb consults grants; the raw verbs on Space stay the runtime's own, with attribution-only
+   * parameters. The split ends the per-call discipline that the retired `{unchecked: "why"}`
+   * escape demanded: a caller cannot pick the wrong mode per call, because the mode is the type it
+   * holds. Handlers hold a handle; the ledger in `test/layering.test.ts` keeps raw verbs out of
+   * them. Same idiom as `ToolContext.caller()` and `readFilter`: bind once, use many.
+   *
+   * A closure factory rather than a class, so the handle reaches Space's private internals with
+   * no new access surface. Reads return WHAT THEY APPLIED beside the answer, because the wire
+   * reports its narrowing (a read that narrows silently makes a scoped caller confidently wrong).
+   */
+  as(principal: string): ActingSpace {
+    return {
+      principal,
+      put: (req, idempotencyKey) => this.putEnforced(req, idempotencyKey, principal),
+      take: (sel, opts = {}) => this.takeEnforced(sel, opts, principal),
+      ack: (lease, result, idempotencyKey) => this.ack(lease, result, idempotencyKey, principal),
+      nack: (lease, opts, idempotencyKey) => this.nack(lease, opts, idempotencyKey, principal),
+      release: (lease, idempotencyKey) => this.release(lease, idempotencyKey, principal),
+      renew: (lease, opts, idempotencyKey) => this.renew(lease, opts, idempotencyKey, principal),
+      createWatch: (request) => this.createWatch(request, principal),
+      putArtifact: (bytes, meta, idempotencyKey) =>
+        putArtifact(this.artifactHostFor(principal), bytes, meta, idempotencyKey, principal),
+      mayPut: async (kind, body) => {
+        const constraint = await this.authorize(principal, "put", kind);
+        return !constraint || this.bodyMatchesGrant(kind, body, constraint);
+      },
+      query: async <T = unknown>(pattern: Pattern, limit = 100, page?: Page) => {
+        const { constraint, createdBy } = await this.readAccess(principal, "query", pattern.kind);
+        const scoped = constraint ? { ...pattern, match: combineMatch(pattern.match, constraint) } : pattern;
+        const records = await this.query<T>(scoped, limit, page, createdBy ? { createdBy } : undefined);
+        return { records, pattern: scoped, constraint, createdBy };
+      },
+      readOne: async (pattern: Pattern) => {
+        const { constraint, createdBy } = await this.readAccess(principal, "read_one", pattern.kind);
+        const scoped = constraint ? { ...pattern, match: combineMatch(pattern.match, constraint) } : pattern;
+        const record = await this.readOne(scoped, createdBy ? { createdBy } : undefined);
+        return { record, pattern: scoped, constraint, createdBy };
+      },
+      registryOf: async (kind, match) => {
+        const { constraint, createdBy } = await this.readAccess(principal, "query", kind);
+        const scoped = constraint ? combineMatch(match, constraint) : match;
+        const out = await this.registryOf(kind, scoped, createdBy ? { createdBy } : undefined);
+        return { ...out, constraint, createdBy };
+      },
+      /**
+       * The artifact READ rule: access read once, a verdict per record, for the three doors bytes
+       * leave through (meta/download, the download capability, the path capability's entry loop).
+       * `not_found` covers missing, non-artifact AND out-of-self-scope alike, because a caller not
+       * entitled to a record must not learn its id exists; `forbidden` is only ever the pattern
+       * scope. A capability is a bearer URL that outlives the check, so the gate runs BEFORE mint.
+       */
+      artifactGate: async () => {
+        const { constraint, createdBy } = await this.readAccess(principal, "read_one", ARTIFACT);
+        return (rec: RadiaRecord | null | undefined) => {
+          if (!rec || rec.kind !== ARTIFACT || !this.authorAllows(createdBy, rec)) return "not_found";
+          if (constraint && !this.bodyMatchesGrant(ARTIFACT, rec.body, constraint)) return "forbidden";
+          return "ok";
+        };
+      },
+    };
+  }
+
+  /**
+   * Matching records ordered by the pattern, capped at `limit`. The RUNTIME's own read; the
+   * grant-composed twin is `as(principal).query`.
    *
    * `page` is a KEYSET cursor over record id (`after` exclusive, `dir` to walk backwards): the
    * stable way to paginate a space that is still being written to, and the only way to ask for the
@@ -1610,54 +1718,6 @@ export class Space {
    * the whole sort key plus the oracle's type rules, so combining them is rejected rather than
    * silently resolved one way.
    */
-  /**
-   * The principal-driven read: `query` with the caller's grant COMPOSED in core, the same move
-   * `put` and `take` made (design-auth.md, "Where each verb is enforced"). A distinct entry rather
-   * than a parameter on `query`, because the wire REPORTS its narrowing (`describeReadScope`: a
-   * read that narrows silently makes a scoped caller confidently wrong), so this returns what it
-   * applied alongside the records, and the grant is read exactly once. `query` itself stays the
-   * runtime's own unauthorized read; the ledger in `test/layering.test.ts` pins the handlers here.
-   */
-  async queryAs<T = unknown>(
-    principal: string,
-    pattern: Pattern,
-    limit = 100,
-    page?: Page,
-  ): Promise<{ records: RadiaRecord<T>[]; pattern: Pattern; constraint: Record<string, unknown>[] | null; createdBy?: string[] }> {
-    const { constraint, createdBy } = await this.readAccess(principal, "query", pattern.kind);
-    const scoped = constraint ? { ...pattern, match: combineMatch(pattern.match, constraint) } : pattern;
-    const records = await this.query<T>(scoped, limit, page, createdBy ? { createdBy } : undefined);
-    return { records, pattern: scoped, constraint, createdBy };
-  }
-
-  /**
-   * The artifact READ rule, in one place: access read once, verdict per record, for the three
-   * doors bytes leave through (meta/download, the download capability, the path capability's
-   * entry loop). `not_found` covers missing, non-artifact AND out-of-self-scope alike, because a
-   * caller not entitled to a record must not learn its id exists; `forbidden` is only ever the
-   * pattern scope, which is safe to name since the caller could already see the record's kind.
-   * A capability is a bearer URL that outlives this check, so the gate runs BEFORE one is minted.
-   */
-  async artifactReadGate(principal: string): Promise<(rec: RadiaRecord | null | undefined) => "ok" | "not_found" | "forbidden"> {
-    const { constraint, createdBy } = await this.readAccess(principal, "read_one", ARTIFACT);
-    return (rec) => {
-      if (!rec || rec.kind !== ARTIFACT || !this.authorAllows(createdBy, rec)) return "not_found";
-      if (constraint && !this.bodyMatchesGrant(ARTIFACT, rec.body, constraint)) return "forbidden";
-      return "ok";
-    };
-  }
-
-  /** `readOne`, principal-driven: same shape and reasons as `queryAs`, under the `read_one` op. */
-  async readOneAs(
-    principal: string,
-    pattern: Pattern,
-  ): Promise<{ record: RadiaRecord | null; pattern: Pattern; constraint: Record<string, unknown>[] | null; createdBy?: string[] }> {
-    const { constraint, createdBy } = await this.readAccess(principal, "read_one", pattern.kind);
-    const scoped = constraint ? { ...pattern, match: combineMatch(pattern.match, constraint) } : pattern;
-    const record = await this.readOne(scoped, createdBy ? { createdBy } : undefined);
-    return { record, pattern: scoped, constraint, createdBy };
-  }
-
   async query<T = unknown>(pattern: Pattern, limit = 100, page?: Page, scope?: StatsScope): Promise<RadiaRecord<T>[]> {
     const compiled = await this.compileFresh(pattern);
     if (page && (page.after || page.dir) && compiled.orderBy?.length) {
@@ -1876,9 +1936,6 @@ export class Space {
     return this.kinds.list();
   }
 
-  /** Claim work under a fenced lease. Returns the record + lease, or null if none is claimable.
-   *  The lease is owned by the claiming `principal` (a `run:*`, so a stopped run's leases can be
-   *  quarantined); defaults to the space's run id for in-process/operator callers. */
   /** INTERSECTION, not union: a caller may narrow what it is willing to receive and may never widen
    *  past what its grants permit, so `undefined` (no barrier) on either side falls through to the
    *  other and two lists meet in the middle. */
@@ -1888,41 +1945,42 @@ export class Space {
     return caller.filter((l) => grant.includes(l));
   }
 
-  async take(
+  /** Claim work under a fenced lease: the record + lease, or null if none is claimable. The
+   *  RUNTIME's own claim, so no grant composes; authority composes on `as(principal)`'s take.
+   *  `owner` is LEASE OWNERSHIP only (a `run:*`, so a stopped run's leases can be quarantined),
+   *  defaulting to the space's run id. */
+  async take(sel: TakeInput, opts: TakeOptions & { owner?: string } = {}): Promise<TakeResult | null> {
+    return await this.takeEnforced(sel, opts, undefined, opts.owner);
+  }
+
+  /** Both take doors. For the handle, four pieces compose together, because leaving any one out
+   *  binds one door: grant ∧ request into the pattern, a self scope to the caller's own records,
+   *  the GRANT's taint barrier intersected with the caller's (narrow yes, widen never), and a
+   *  record-id take authorized on the record's own kind with the constraint synthesized as a
+   *  pattern the record must satisfy. */
+  private async takeEnforced(
     sel: TakeInput,
-    opts: TakeOptions = {},
-    principal?: string,
-    /** Same escape as `put`: skip the grant composition WITH A REASON, for suites planting lease
-     *  ownership below the grant layer. Absent principal is the runtime's own claim, ledgered. */
-    authz: { unchecked?: string } = {},
+    opts: TakeOptions,
+    checkedFor: string | undefined,
+    owner?: string,
   ): Promise<TakeResult | null> {
-    // ENFORCED HERE, like `put` (design-auth.md, "Where each verb is enforced"): the grant does not
-    // refuse after selection, it COMPOSES into it. Four pieces move together, because leaving any
-    // one in a handler is a rule that binds one door: the pattern narrows to grant ∧ request, a
-    // self scope narrows to the caller's own records, the GRANT's taint barrier intersects the
-    // caller's (a caller may narrow what it accepts, never widen past its grants), and a record-id
-    // take authorizes on the record's own kind with the constraint synthesized as a pattern the
-    // record must satisfy.
     let pattern = sel.pattern;
     let createdBy = opts.createdBy;
     let allow = opts.allowTaint;
-    if (principal !== undefined) {
-      if (authz.unchecked !== undefined) {
-        if (!authz.unchecked) throw new Error("take({unchecked}) needs a reason: say why the grant does not compose");
-      } else {
-        const recordId = "recordId" in sel ? sel.recordId : undefined;
-        let kind = pattern?.kind;
-        if (!kind && recordId) kind = (await this.storage.getRecord(recordId))?.kind;
-        if (kind) {
-          const access = await this.readAccess(principal, "take", kind);
-          if (access.constraint) {
-            pattern = { kind, match: combineMatch(pattern?.match, access.constraint), orderBy: pattern?.orderBy };
-          }
-          createdBy = access.createdBy ?? createdBy;
-          allow = Space.intersectAllow(allow, access.allowTaint);
+    if (checkedFor !== undefined) {
+      const recordId = "recordId" in sel ? sel.recordId : undefined;
+      let kind = pattern?.kind;
+      if (!kind && recordId) kind = (await this.storage.getRecord(recordId))?.kind;
+      if (kind) {
+        const access = await this.readAccess(checkedFor, "take", kind);
+        if (access.constraint) {
+          pattern = { kind, match: combineMatch(pattern?.match, access.constraint), orderBy: pattern?.orderBy };
         }
+        createdBy = access.createdBy ?? createdBy;
+        allow = Space.intersectAllow(allow, access.allowTaint);
       }
     }
+    const principal = checkedFor ?? owner;
     const spec: LeaseSpec = {
       leaseId: newUlid(),
       ownerRun: principal ?? this.ctx.runId,

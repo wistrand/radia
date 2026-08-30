@@ -617,7 +617,7 @@ Deno.test("http: the digest orients an investigator, and scopes the part that is
       { principal: "agent:w", kind: "interest", operations: ["put", "query"] },
     ]);
     const { run, runToken } = await space.mintRun(definitionToken);
-    await space.put({ kind: "interest", body: { kind: "note" } }, undefined, run);
+    await space.put({ kind: "interest", body: { kind: "note" } }, undefined, { author: run });
     await space.put({ kind: "interest", body: { kind: "note", match: { topic: "other" } } });
 
     // Grouped as one edge per (kind, agent): the operator's two interests come from two different

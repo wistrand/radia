@@ -557,9 +557,9 @@ export const gcSuites: Suite[] = [
 
       // Interests: one from the live run, one from the stopped run, one from a person. Liveness is
       // the interest registry's key, so only the stopped run's entry is litter.
-      await space.put({ kind: "interest", body: { kind: "job", match: {} } }, undefined, run, { unchecked: "fixture: plants authorship below the grant layer" });
-      await space.put({ kind: "interest", body: { kind: "job", match: {} } }, undefined, stopped, { unchecked: "fixture: plants authorship below the grant layer" });
-      await space.put({ kind: "interest", body: { kind: "job", match: {} } }, undefined, "human:alice", { unchecked: "fixture: plants authorship below the grant layer" });
+      await space.put({ kind: "interest", body: { kind: "job", match: {} } }, undefined, { author: run });
+      await space.put({ kind: "interest", body: { kind: "job", match: {} } }, undefined, { author: stopped });
+      await space.put({ kind: "interest", body: { kind: "job", match: {} } }, undefined, { author: "human:alice" });
 
       const r = await space.gc();
       assert((r.compaction?.byKind["agent_run"] ?? 0) >= 2, "the superseded run records go");
