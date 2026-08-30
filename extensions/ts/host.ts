@@ -183,8 +183,17 @@ export function treeCache(reader: RadiaClient, opts: { max?: number; dir?: strin
     const rows = await reader.queryNewest<any>({ kind: "workspace", match: { treeDigest: digest } }, 1);
     if (rows.length === 0) throw new Error(`no workspace manifest for ${digest}`);
     const root = await Deno.makeTempDir({ prefix: "radia-tree-", ...(opts.dir ? { dir: opts.dir } : {}) });
-    // deno-lint-ignore no-explicit-any
-    await materialize(reader, rows[0].body, root);
+    try {
+      // deno-lint-ignore no-explicit-any
+      await materialize(reader, rows[0].body, root);
+    } catch (e) {
+      // The directory exists from here on, and a rejected promise is never walked by the eviction
+      // or `clear` paths below, so a failure part way through a fetch would leak the partial tree
+      // with nothing left holding its name. One failed materialisation per retry, every few
+      // seconds, is a disk filling up because a disk filled up.
+      await Deno.remove(root, { recursive: true }).catch(() => {});
+      throw e;
+    }
     return root;
   };
   return {
@@ -201,6 +210,21 @@ export function treeCache(reader: RadiaClient, opts: { max?: number; dir?: strin
       // otherwise both materialise into different directories, and the loser's would leak.
       const root = build(digest);
       entries.set(digest, { root, used: ++clock });
+      // A FAILED build must not be remembered. Caching the promise is what makes concurrent claims
+      // share one materialisation, and it also caches a REJECTION: one transient artifact read or
+      // a server blip would otherwise be served to every later caller for that digest. LRU does not
+      // save it, because a hit bumps `used`, so the poisoned entry is the most recently used one
+      // and never the eviction victim; in the deployment this is written for (`max` covers a
+      // rotation, a rollback and a spare, with one digest hot) nothing evicts it at all. The host
+      // treats the rejection as transient and nacks with a 5s backoff, so the effect was a
+      // permanent nack loop for that agent until the process restarted.
+      //
+      // Compared by IDENTITY, never by key alone: by the time this runs, a later miss may already
+      // have replaced the entry with a fresh build, and deleting by key would evict a healthy
+      // materialisation because an older attempt failed.
+      root.catch(() => {
+        if (entries.get(digest)?.root === root) entries.delete(digest);
+      });
       while (entries.size > max) {
         const oldest = [...entries.entries()].sort((a, b) => a[1].used - b[1].used)[0];
         entries.delete(oldest[0]);

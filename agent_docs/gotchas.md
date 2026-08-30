@@ -1641,6 +1641,21 @@ caught and reported as `TEAMS: ANY`. Same limit applies to reading `radia permis
 
 ### Executing model-written code
 
+**A cache that stores a PROMISE stores its REJECTION too.** `treeCache` (`extensions/ts/host.ts`)
+caches the promise so concurrent claims for one digest share one materialisation, and cached one
+transient artifact-read failure forever: every later caller got the same rejected promise. LRU did
+not save it, because a hit bumps `used`, so the poisoned entry was the most recently used and never
+the eviction victim. The host reads such a failure as transient and nacks with a 5s backoff, so a
+blip became a permanent nack loop for that agent until the process restarted. Evict on rejection,
+comparing by IDENTITY (`entries.get(k)?.root === root`), or a stale failure deletes a healthy
+rebuild. Guard: two cases in `extensions/conformance/broker.test.ts`, both proved red.
+
+**A build that creates a directory before it can fail must remove it on the way out.** The same
+function did `makeTempDir` then `materialize`, and a mid-fetch failure left a partial tree nothing
+could reach: eviction and `clear` both walk the promise, and a rejected one resolves to no path to
+remove. Paired with the retry above it leaked a directory every 5 seconds, so an ENOSPC made ENOSPC
+worse.
+
 **Killing a child does not end `child.output()`; a GRANDCHILD holding the pipe does that.**
 `output()` resolves when stdout CLOSES, not when the process dies, so a SIGKILL on a wrapper script
 reaps the wrapper and leaves the read blocked on whatever it spawned. Measured at 60s against a

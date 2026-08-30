@@ -11,12 +11,12 @@
 // the shape `sandbox.ts` already uses, and it is the reason the line about real protected
 // data waits for this phase rather than the one before it.
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { RadiaClient, type RadiaRecord } from "../../sdk/ts/client.ts";
 import { BROKER_API, brokeredInvoker, declareBrokerSandbox, dryRunEntrypoint, labelsForJail } from "../ts/broker.ts";
 import { BINDING, declareBinding, treeCache, type TreeCache, WorkspaceHost } from "../ts/host.ts";
 import { declareExecRequest, EXEC_REQUEST, promote } from "../ts/promotion.ts";
-import { materialize, readWorkspace, writeWorkspace } from "../ts/workspace.ts";
+import { materialize, readWorkspace, sha256Hex, treeDigestOf, writeWorkspace } from "../ts/workspace.ts";
 import { declareSandbox } from "../ts/sandbox-registry.ts";
 import { bootSpace, uniq } from "./space.ts";
 
@@ -265,6 +265,94 @@ Deno.test("[broker] a retried attempt's writes dedupe, so at-least-once does not
       "the retry's write is a replay, not a second record",
     );
   });
+});
+
+/**
+ * A reader that stands in for a space having a bad moment.
+ *
+ * `treeCache` only ever calls two methods on its reader, so a stub is the whole surface: the
+ * manifest query and the per-file artifact fetch. `failures` counts down, which is what makes the
+ * failure TRANSIENT and therefore what a retry is entitled to recover from.
+ */
+async function flakyReader(
+  opts: { failQuery?: number; failArtifact?: number } = {},
+): Promise<{ reader: RadiaClient; builds: () => number }> {
+  let queryLeft = opts.failQuery ?? 0;
+  let artifactLeft = opts.failArtifact ?? 0;
+  let builds = 0;
+  // A REAL manifest, not a shape that looks like one: `materialize` re-hashes every artifact it
+  // fetches and refuses a manifest whose entry claims a digest the bytes do not have. A stub with
+  // no `digest` fails there instead of where the case is aiming, which is a test that goes red for
+  // its own reason and proves nothing about the code under it.
+  const content = new TextEncoder().encode("export default async () => null;\n");
+  const digest = await sha256Hex(content);
+  const manifest = {
+    name: "flaky",
+    files: [{ path: "main.ts", artifactId: "a1", digest, size: content.byteLength, mode: "100644" }],
+  };
+  const reader = {
+    // deno-lint-ignore no-explicit-any
+    queryNewest: (_pattern: unknown, _n: number): Promise<any[]> => {
+      builds++;
+      if (queryLeft-- > 0) return Promise.reject(new Error("connection reset"));
+      return treeDigestOf(manifest.files as never).then((treeDigest) => [{ body: { ...manifest, treeDigest } }]);
+    },
+    getArtifact: (_id: string): Promise<Uint8Array> => {
+      if (artifactLeft-- > 0) return Promise.reject(new Error("artifact read failed"));
+      return Promise.resolve(content);
+    },
+  } as unknown as RadiaClient;
+  return { reader, builds: () => builds };
+}
+
+Deno.test("[broker] a failed materialisation is not cached, so the next claim retries it", async () => {
+  // The cache stores a PROMISE, which is what lets concurrent claims for one digest share a single
+  // materialisation. It therefore also stores a REJECTION unless something removes it, and a
+  // rejected entry is served to every later caller for that digest. Nothing rescues it: a hit bumps
+  // `used`, so the poisoned entry is the most recently used and never the LRU victim, and the host
+  // reads the rejection as transient and nacks with a 5s backoff. One artifact read failing turned
+  // into a permanent nack loop for that agent until the process restarted.
+  const dir = await Deno.makeTempDir({ prefix: "radia-treecache-" });
+  try {
+    const { reader, builds } = await flakyReader({ failQuery: 1 });
+    const cache = treeCache(reader, { dir });
+
+    await assertRejects(() => cache.root("d"), Error, "connection reset");
+    // The claim under test. Without the self-eviction this rejects again with the SAME error, and
+    // `builds()` stays at 1 because nothing ever called the reader a second time.
+    const root = await cache.root("d");
+    assert(root.startsWith(dir), `expected a tree under ${dir}, got ${root}`);
+    assertEquals(builds(), 2, "the second call must rebuild, not replay the first failure");
+    assertEquals(cache.stats.hits, 0, "a failed entry must not answer as a hit");
+    await cache.clear();
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("[broker] a failed materialisation leaves no tree behind", async () => {
+  // `build` creates the directory and THEN fetches into it, so a failure part way through leaves a
+  // partial tree that neither eviction nor `clear` can reach: both walk the promise, and a rejected
+  // promise resolves to nothing to remove. Under the retry loop above that is one leaked directory
+  // per attempt, which is a disk filling up because a disk filled up.
+  const dir = await Deno.makeTempDir({ prefix: "radia-treecache-" });
+  try {
+    const { reader } = await flakyReader({ failArtifact: 1 });
+    const cache = treeCache(reader, { dir });
+
+    await assertRejects(() => cache.root("d"), Error, "artifact read failed");
+    assertEquals(
+      [...Deno.readDirSync(dir)].map((e) => e.name),
+      [],
+      "the half-materialised tree outlived the failure that produced it",
+    );
+    // And the digest is still usable afterwards, which is the pair of properties together.
+    const root = await cache.root("d");
+    assert(root.startsWith(dir));
+    await cache.clear();
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
 });
 
 Deno.test("[broker] a warm tree is reused, and a new digest is never served from a warm one", async () => {
