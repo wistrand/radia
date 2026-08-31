@@ -358,7 +358,7 @@ export function showOutput(out: unknown): string {
 async function showToolReply(
   client: RadiaClient,
   thread: Thread,
-  call: { id: string; function: { name: string; arguments: string } },
+  call: { id: string; function: { name: string; arguments?: string } },
   tools: ToolSet,
   onToolWait?: ToolWaitHook,
 ): Promise<void> {
