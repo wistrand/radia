@@ -100,6 +100,19 @@ Deno.test("[encrypted] no marker this build can read, and that is the phase-1 co
   assertReadable(undefined, "here");
 });
 
+Deno.test("[encrypted] a PRIMITIVE body is a misuse, loud rather than a silent pass", () => {
+  // The footgun this closes: `encMarker` answers `undefined` for a non-object, so reaching for the
+  // field instead of the whole body disabled the check at exactly the call that meant to do it.
+  // A missing body is legitimate and still passes; a primitive never is.
+  assertReadable(undefined, "here");
+  assertReadable(null, "here");
+  for (const bad of ["ciphertext", 42, true]) {
+    const e = assertThrows(() => assertReadable(bad, "toMessage"), TypeError) as TypeError;
+    assert(e.message.includes("toMessage"), "the reader is named");
+    assert(e.message.includes("not a record body"), e.message);
+  }
+});
+
 Deno.test("[encrypted] READABLE is empty in the SOURCE, not merely for the markers we sample", async () => {
   // The case above samples two markers, so it already fails if either is added to the set. It
   // cannot catch a FUTURE marker being added, and emptiness is the invariant rather than the
