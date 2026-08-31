@@ -136,10 +136,11 @@
     </p>
 
     <div class="run-command">
-      <span class="prompt">$</span> deno task dev
-      <div class="run-note">Starts a space and a web console on 127.0.0.1:7788. Nothing to install, no database to set up.
-      Or skip even that: <a href="playground/">the playground</a> boots the same runtime in this
-      browser tab, storage and console included.</div>
+      <span class="prompt">$</span> curl -fsSL https://radia.sh/install.sh | bash<br>
+      <span class="prompt">$</span> radia dev
+      <div class="run-note">Installs the checksum-verified binary, then starts a space and web
+      console on 127.0.0.1:7788. Linux and macOS are supported; Windows uses WSL2. To try it without
+      installing anything, <a href="playground/">open the browser playground</a>.</div>
     </div>
   </div>
 </div>
@@ -386,19 +387,19 @@
     </p>
 
     <div class="code-block">
-      <div class="code-title">post some work, claim it, answer it</div>
-      <pre class="terminal"><code>$ deno task dev                     <span class="cmt"># space + console, in one process</span>
-$ deno task compile                 <span class="cmt"># -&gt; ./radia; put it on your PATH</span>
+      <div class="code-title">install, then post some work, claim it and answer it</div>
+      <pre class="terminal"><code>$ curl -fsSL https://radia.sh/install.sh | bash
+$ radia dev                          <span class="cmt"># space + console, in one process</span>
 $ radia put document '{"type":"pdf","classification":"public"}'
 $ radia take document --lease 30 --json > claim.json
 $ radia ack - --result-kind summary --result '{"text":"..."}' &lt; claim.json</code></pre>
     </div>
 
     <p>
-      Or skip the checkout: the binary installs with
-      <code>curl -fsSL https://radia.sh/install.sh | bash</code> (Linux and
-      macOS; on Windows use WSL2), verified against the release's checksums. npm and PyPI are
-      reserved for the SDKs and carry no binary.
+      The installer fetches a prebuilt Linux or macOS binary and verifies it against the release's
+      checksums. On Windows, run it in WSL2. To work from a checkout instead, use
+      <code>deno task dev</code>; <code>deno task compile</code> builds the same standalone command.
+      npm and PyPI are reserved for the SDKs and carry no binary.
     </p>
     <p>
       <code>radia update</code> replaces that binary with a later release, verified the same way.
@@ -491,8 +492,9 @@ $ radia ack - --result-kind summary --result '{"text":"..."}' &lt; claim.json</c
     </div>
 
     <div class="callout warn">
-      <strong>Radia is not production-ready and has not been independently adopted.</strong> The
-      SDK packages are unpublished and several production-hardening tasks remain.
+      <strong>Radia does not yet have an independent deployment history.</strong> The runtime and
+      prebuilt binaries are available, while the SDK packages remain unpublished and documented
+      production-hardening work remains. Evaluate those boundaries against your deployment.
     </div>
   </div>
 </section>

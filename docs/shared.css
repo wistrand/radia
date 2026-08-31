@@ -195,6 +195,8 @@ figcaption {
   line-height: 1.5;
 }
 
+.diagram-toggle { display: none; }
+
 /* SVG text defaults, so diagrams inherit the page's typography. */
 svg text { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace; font-size: 12px; }
 svg .label { fill: var(--text); }
@@ -326,12 +328,54 @@ footer {
   pre { font-size: 0.78rem; padding: 12px; }
   nav .links { gap: 14px; font-size: 0.82rem; }
 
-  /* Dense diagrams keep readable labels instead of shrinking a 760-unit canvas to phone width. */
-  figure { padding: 14px; }
-  figure svg { min-width: 620px; }
-  figcaption {
+  /* A 760-unit diagram is either illegible when shrunk or cumbersome when forced to scroll.
+     Lead with its summary on a phone and leave the full drawing available on demand. */
+  figure {
+    padding: 14px 16px;
+    overflow-x: hidden;
+  }
+
+  figure .diagram-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    border: 0;
+    background: transparent;
+    color: var(--accent);
+    cursor: pointer;
+    font: 600 0.78rem/1.4 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+  }
+
+  figure .diagram-toggle::before {
+    content: "+";
+    width: 1.1em;
+    font-size: 1rem;
+  }
+
+  figure.diagram-open .diagram-toggle::before { content: "−"; }
+  figure .diagram-toggle + svg { display: none; }
+
+  figure.diagram-open {
+    overflow-x: auto;
+  }
+
+  figure.diagram-open .diagram-toggle + svg {
+    display: block;
+    min-width: 620px;
+    margin-top: 12px;
+  }
+
+  figure figcaption {
+    margin-top: 0;
+  }
+
+  figure .diagram-toggle + svg + figcaption {
+    margin-top: 10px;
+  }
+
+  figure.diagram-open .diagram-toggle + svg + figcaption {
     position: sticky;
     left: 0;
-    width: calc(100vw - 76px);
+    width: calc(100vw - 80px);
   }
 }
