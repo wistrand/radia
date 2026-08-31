@@ -86,11 +86,13 @@ const npcGrants = (npc: string, roomId: string): Grant[] => [
  * into anything else.
  *
  * FOG OF WAR IS NOT ENFORCED, and this is where you would look for it. Reads are scoped to the
- * world, not the room, because a grant pattern is static and a player's room changes every move: a
- * `{roomId}` pattern would have to be rewritten on every step. So a curious player can query a room
- * they are not standing in. The alternative is per-recipient event fan-out
- * (agent_docs/plan-mud.md), which is enforceable and costs N records per room event; this example
- * ships the honest cheap version and says so.
+ * world, not the room. A `{roomId}` read grant cannot work: it binds the read to the player's
+ * mutable POSITION, so it would be rewritten every move, and grant history is capped at 256 and
+ * never compacted (a hard stop, not a nuisance). The enforceable version pushes the position onto
+ * the WRITE side instead: a static `{recipient: <player>}` grant plus narrator fan-out, so movement
+ * changes what the narrator writes, never what the player is granted. agent_docs/plan-mud.md,
+ * "Fog of war", has the full design and why binding position to the credential is the wrong fix.
+ * This example ships the honest world-scoped read and says so.
  */
 export function playerGrants(actor: string, worldId = WORLD_ID): Grant[] {
   return [
