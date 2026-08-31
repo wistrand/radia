@@ -1,3 +1,27 @@
+/* Dense illustrations are summaries first on narrow screens. The full SVG remains one tap away. */
+(function () {
+  document.querySelectorAll('figure > svg').forEach(function (svg, index) {
+    var figure = svg.parentElement;
+    if (!figure || !figure.querySelector('figcaption')) return;
+
+    var button = document.createElement('button');
+    var diagramId = svg.id || 'docs-diagram-' + (index + 1);
+    svg.id = diagramId;
+    button.type = 'button';
+    button.className = 'diagram-toggle';
+    button.setAttribute('aria-controls', diagramId);
+    button.setAttribute('aria-expanded', 'false');
+    button.textContent = 'View diagram';
+    figure.insertBefore(button, svg);
+
+    button.addEventListener('click', function () {
+      var open = figure.classList.toggle('diagram-open');
+      button.setAttribute('aria-expanded', String(open));
+      button.textContent = open ? 'Hide diagram' : 'View diagram';
+    });
+  });
+})();
+
 /* Sidebar scroll spy. Highlights the section currently under the top of the viewport. */
 (function () {
   var links = document.querySelectorAll('.sidebar a');

@@ -101,5 +101,6 @@ The repository is the authority; these pages summarize it.
 ## Status
 
 All of M0 plus a growing M1 slice is built, on SQLite, PGlite and Postgres behind a frozen wire
-contract checked against the router in both directions. Not production ready. No second user. The
-npm and pip packaging is built but unpublished, so today this runs from a checkout.
+contract checked against the router in both directions. Checksum-verified release binaries install
+through `curl -fsSL https://radia.sh/install.sh | bash`; source checkouts are also supported. There
+is no independent deployment history yet, and the built npm and pip packages are unpublished.

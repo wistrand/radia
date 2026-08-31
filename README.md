@@ -14,10 +14,10 @@ that conceptual lineage. Radia Perlman is not affiliated with or an endorser of 
 
 > **Status:** The coordination kernel, authorization stack, event chain, flow mining, resource
 > limits, three storage adapters, web console, CLI, MCP adapter and TypeScript/Python SDKs are
-> implemented. Radia is not production-ready, the SDK packages are unpublished and the project has no
-> independent adoption. See [the milestone plan](agent_docs/plan-milestones.md) for implemented and
-> remaining work and [the audit record](agent_docs/plan-audit-remediation.md) for known security
-> boundaries.
+> implemented, and checksum-verified release binaries are available. The project has no independent
+> deployment history yet, the SDK registry packages are unpublished and documented hardening work
+> remains. See [the milestone plan](agent_docs/plan-milestones.md) for implemented and remaining work
+> and [the audit record](agent_docs/plan-audit-remediation.md) for known security boundaries.
 
 ```mermaid
 flowchart LR
@@ -77,10 +77,11 @@ deno task test:lab          # recorded agent-harness runs replayed against this 
 deno task bench             # throughput, latency percentiles, scaling curves; see bench/README.md
 ```
 
-**The `radia` command.** Examples below use `radia <verb>` for the CLI. Nothing installs it for you,
-so pick one:
+**The `radia` command.** Examples below use `radia <verb>` for the CLI. Install the checksum-verified
+release binary, or run it from source:
 
 ```bash
+curl -fsSL https://radia.sh/install.sh | bash
 deno run -A src/main.ts <verb>   # from source, no build (what the tasks above do)
 deno task compile                # → ./radia, a self-contained binary; then ./radia <verb>
 ```
