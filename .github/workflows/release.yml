@@ -41,6 +41,12 @@ jobs:
             exit 1
           fi
 
+      # The release workflow runs on tag pushes, which the ci workflow's branch filter never
+      # matches, so nothing else stands between a red tree and published assets. The full matrix
+      # already ran for the same commit's branch push; this refuses the tag when the tree does not
+      # even type-check (v2026.8.4 shipped exactly that way, broken in examples/).
+      - run: deno task check
+
       - run: deno task release
 
       - name: gzip the binaries and write the sums
