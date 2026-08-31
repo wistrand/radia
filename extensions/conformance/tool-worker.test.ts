@@ -202,14 +202,15 @@ Deno.test("[tool-worker] an encrypted call opens for the tool and seals on the w
       signal: stop.signal,
     });
     try {
-      // EXACTLY what the turn worker writes for an encrypted conversation: `args` is the model's
-      // raw argument string, still sealed, copied from the assistant message without being read
-      // (extensions/ts/turn.ts). The marker rides along so this worker knows to open it.
+      // EXACTLY what the turn worker writes for an encrypted conversation: the sealed argument
+      // string lives under `argsSealed` (the plaintext `args` name is absent), copied from the
+      // assistant message's `function.argumentsSealed` without being read (extensions/ts/turn.ts,
+      // the sealed-field rename). The marker rides along so this worker knows to open it.
       const call = await c.put({
         kind: "tool_call",
         body: {
           tool: "edit",
-          args: await encryptText(key, JSON.stringify({ path: "/secret" })),
+          argsSealed: await encryptText(key, JSON.stringify({ path: "/secret" })),
           enc: ENC_V1,
           conversationId: "c1",
         },

@@ -425,6 +425,34 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 /**
+ * Where a sealed value lives: `content` -> `contentSealed`, so a reader that never imported this
+ * convention finds `body.content` ABSENT rather than a base64 string it forwards as prose. That
+ * reaches a THIRD PARTY the `assertReadable` wall cannot, because a check in a module binds only
+ * code that imports the module, while the record's SHAPE reaches anyone who reads the space
+ * ([plan-sealed-field-shape.md](../../agent_docs/plan-sealed-field-shape.md)). Derived from the
+ * field name, so `ENCRYPTED_FIELDS` stays the one declaration and no second table maps the two.
+ */
+const sealedName = (field: string): string => `${field}Sealed`;
+
+/**
+ * The ciphertext for one sealed field, from the new name or the old one, or undefined.
+ *
+ * The fallback is PERMANENT, not a migration window: records are immutable, so a conversation
+ * sealed before this rename must still open. A record carrying BOTH is refused rather than guessed
+ * at, since two ciphertexts for one field means it was written two ways.
+ */
+function sealedValue(body: Record<string, unknown>, field: string): string | undefined {
+  const fresh = body[sealedName(field)];
+  const legacy = body[field];
+  const hasFresh = typeof fresh === "string";
+  const hasLegacy = typeof legacy === "string";
+  if (hasFresh && hasLegacy) {
+    throw new Error(`sealed body carries both ${field} and ${sealedName(field)}; it was written two ways`);
+  }
+  return hasFresh ? (fresh as string) : hasLegacy ? (legacy as string) : undefined;
+}
+
+/**
  * The nonce for one write.
  *
  * A KEYED write derives it: HKDF over the DEK with the idempotency key as info. Deterministic, so a
@@ -478,22 +506,35 @@ export async function decryptText(key: ConversationKey, packed: string): Promise
  *
  * A `null`/absent field stays as it is: an assistant message with no content carries none, and
  * encrypting the absence would invent a value the reader then has to un-invent.
+ *
+ * The return is `Record<string, unknown>`, NOT the input `T`: the sealed body is a different shape
+ * (`content` gone, `contentSealed` added), so typing it as `T` would let a caller read
+ * `sealed.content` and get `undefined` with no complaint. That is the runtime footgun the rename
+ * closes; the type refuses to promise a field the seal removed. Callers write this body, they do
+ * not field-access it, so the opaque type costs them nothing.
  */
-export async function sealBody<T extends Record<string, unknown>>(
-  body: T,
+export async function sealBody(
+  body: Record<string, unknown>,
   kind: string,
   key: ConversationKey,
   idempotencyKey?: string,
-): Promise<T> {
+): Promise<Record<string, unknown>> {
   const fields = ENCRYPTED_FIELDS[kind];
   if (!fields) return body;
   const out: Record<string, unknown> = { ...body, [ENC_FIELD]: ENC_V1 };
+  // Each sealed field MOVES to its `<name>Sealed` twin: the plaintext name is deleted, so a raw
+  // reader of `body.content` gets `undefined` rather than ciphertext. The marker still says "sealed"
+  // for readers that DO import the convention; the rename is what serves those that do not.
   for (const f of fields.text ?? []) {
-    if (typeof body[f] === "string") out[f] = await encryptText(key, body[f] as string, idempotencyKey);
+    if (typeof body[f] === "string") {
+      out[sealedName(f)] = await encryptText(key, body[f] as string, idempotencyKey);
+      delete out[f];
+    }
   }
   for (const f of fields.json ?? []) {
     if (body[f] !== undefined && body[f] !== null) {
-      out[f] = await encryptText(key, JSON.stringify(body[f]), idempotencyKey);
+      out[sealedName(f)] = await encryptText(key, JSON.stringify(body[f]), idempotencyKey);
+      delete out[f];
     }
   }
   // The one NESTED case, and it is nested because the turn worker must keep routing on what
@@ -503,14 +544,14 @@ export async function sealBody<T extends Record<string, unknown>>(
   if (kind === "message" && Array.isArray(body.tool_calls)) {
     out.tool_calls = await sealToolCalls(body.tool_calls as ToolCallish[], key, idempotencyKey);
   }
-  return out as T;
+  return out;
 }
 
 /** The shape this file needs from a tool call. Structural rather than imported, so `turn.ts` and
  *  this one do not depend on each other. */
 interface ToolCallish {
   id?: string;
-  function?: { name?: string; arguments?: string };
+  function?: { name?: string; arguments?: string; argumentsSealed?: string };
 }
 
 async function sealToolCalls(
@@ -525,12 +566,14 @@ async function sealToolCalls(
       out.push(c);
       continue;
     }
-    // The per-call index joins the idempotency key, or two calls in one round would derive one
-    // nonce under one DEK.
-    out.push({
-      ...c,
-      function: { ...c.function, arguments: await encryptText(key, args, idempotencyKey && `${idempotencyKey}#${i}`) },
-    });
+    // `arguments` MOVES to `argumentsSealed`, the nested twin of the flat rename: the turn worker
+    // copies this blob into a `tool_call` without a key, so it must read the sealed name there too
+    // (`extensions/ts/turn.ts`). The per-call index joins the idempotency key, or two calls in one
+    // round would derive one nonce under one DEK.
+    const fn = { ...c.function } as { name?: string; arguments?: string; argumentsSealed?: string };
+    fn.argumentsSealed = await encryptText(key, args, idempotencyKey && `${idempotencyKey}#${i}`);
+    delete fn.arguments;
+    out.push({ ...c, function: fn });
   }
   return out;
 }
@@ -551,21 +594,35 @@ export async function openBody<T extends Record<string, unknown>>(
   const out: Record<string, unknown> = { ...body };
   delete out[ENC_FIELD];
   const fields = ENCRYPTED_FIELDS[kind];
+  // Restore the ORIGINAL name, so everything downstream of `openBody` still reads `content`: the
+  // rename is invisible past this boundary. `sealedValue` takes the new field or the old one, so a
+  // record sealed before the rename opens unchanged, and the `<name>Sealed` twin is dropped.
   for (const f of fields?.text ?? []) {
-    if (typeof body[f] === "string") out[f] = await decryptText(key, body[f] as string);
+    const packed = sealedValue(body, f);
+    if (packed !== undefined) {
+      out[f] = await decryptText(key, packed);
+      delete out[sealedName(f)];
+    }
   }
   for (const f of fields?.json ?? []) {
-    if (typeof body[f] === "string") out[f] = JSON.parse(await decryptText(key, body[f] as string));
+    const packed = sealedValue(body, f);
+    if (packed !== undefined) {
+      out[f] = JSON.parse(await decryptText(key, packed));
+      delete out[sealedName(f)];
+    }
   }
   if (kind === "message" && Array.isArray(body.tool_calls)) {
     const opened: ToolCallish[] = [];
     for (const c of body.tool_calls as ToolCallish[]) {
-      const args = c.function?.arguments;
-      opened.push(
-        typeof args === "string"
-          ? { ...c, function: { ...c.function, arguments: await decryptText(key, args) } }
-          : c,
-      );
+      const packed = c.function?.argumentsSealed ?? c.function?.arguments;
+      if (typeof packed !== "string") {
+        opened.push(c);
+        continue;
+      }
+      const fn = { ...c.function } as { name?: string; arguments?: string; argumentsSealed?: string };
+      fn.arguments = await decryptText(key, packed);
+      delete fn.argumentsSealed;
+      opened.push({ ...c, function: fn });
     }
     out.tool_calls = opened;
   }
