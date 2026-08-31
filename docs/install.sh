@@ -5,7 +5,7 @@
 # Downloads one compiled binary from the GitHub release, checks it against the release's own
 # SHA256SUMS, and puts it in ~/.local/bin. No compiler, no Deno, no root.
 #
-#   RADIA_VERSION=v2026.8.4     install that release instead of the latest
+#   RADIA_VERSION=v2026.8.5     install that release instead of the latest
 #   RADIA_INSTALL_DIR=/opt/bin  install somewhere else
 #   RADIA_BASE_URL=https://...  fetch the assets from a mirror rather than the GitHub release
 #
