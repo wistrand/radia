@@ -55,8 +55,21 @@ export function encMarker(body: unknown): string | undefined {
 /**
  * Refuse a body this reader cannot decrypt. `where` names the READER, because the useful half of
  * the report is which component stopped, not that some body was encrypted.
+ *
+ * A PRIMITIVE is a misuse, not a plaintext body, and it is the misuse this guard exists to make
+ * loud: `encMarker` reads `enc` off an object and answers `undefined` for anything else, so
+ * `assertReadable(body.content, …)` — reaching for the field you care about rather than the whole
+ * body — passed silently and left the ciphertext check disabled at exactly the call that meant to
+ * do it. `undefined`/`null` still pass, because a missing body is legitimate; a string, number or
+ * boolean never is, so it throws a programming error rather than an `EncryptedBodyError`.
  */
 export function assertReadable(body: unknown, where: string): void {
+  if (body !== undefined && body !== null && typeof body !== "object") {
+    throw new TypeError(
+      `${where}: assertReadable was given a ${typeof body}, not a record body. ` +
+        `Pass the whole body; a field off it (\`body.content\`) skips the encryption check silently.`,
+    );
+  }
   const marker = encMarker(body);
   if (marker !== undefined && !READABLE.has(marker)) throw new EncryptedBodyError(marker, where);
 }
