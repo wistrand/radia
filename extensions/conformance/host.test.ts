@@ -706,3 +706,23 @@ Deno.test("[host] the RESULT body carries the binding's stamp, so a compartment 
     assertEquals(result.body.team, "alpha", "the host stamps what the binding declared, from the claimed record");
   });
 });
+
+Deno.test("[host] a binding whose entrypoint traverses out of the tree is refused, before materialisation", async () => {
+  await withSpace(async ({ operator, credential }) => {
+    // A binding's entrypoint never meets `validateEntrypoint` (that runs on workspace write
+    // paths, for the manifest's default), and module loading is not bounded by the jail's read
+    // permissions, so the invoker must refuse it by name. The digest has NO manifest on purpose:
+    // failing with "no workspace manifest" instead of this message means the check ran after the
+    // materialisation it exists to precede.
+    const TIER = uniq("prod");
+    const credentials = { "agent:traverser": await credential("agent:traverser") };
+    await promote(operator, { digest: D1, tier: TIER, pins: [{ principal: "agent:traverser", operations: ["take"] }] });
+    await bind(operator, "agent:traverser", D1, "../evil.ts");
+    const req = await operator.put({ kind: EXEC_REQUEST, body: { workspace: D1, tier: TIER, job: "escape" } });
+
+    const host = new WorkspaceHost({ base: url, credentials, reader: operator, invoke: sandboxInvoker(operator) });
+    const outcomes = (await host.tick()).filter((o) => (o as { recordId?: string }).recordId === req.id);
+    assertEquals(outcomes.map((o) => o.status), ["failed"], JSON.stringify(outcomes));
+    assertStringIncludes((outcomes[0] as { error?: string }).error ?? "", "is not allowed");
+  });
+});

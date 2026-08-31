@@ -445,6 +445,11 @@ export interface HostOptions {
 export function sandboxInvoker(reader: RadiaClient, opts: { timeoutMs?: number; cache?: TreeCache } = {}): Invoker {
   const cache = opts.cache ?? treeCache(reader);
   return async (ctx) => {
+    // A binding's entrypoint arrives verbatim from `radia bind`; `validateEntrypoint` runs only on
+    // workspace WRITE paths, for the manifest's own default. Module loading is not bounded by the
+    // jail's read permissions (architecture-jail-confinement.md), so refuse traversal before it
+    // becomes an import, and before paying for a materialisation.
+    validatePath(ctx.binding.entrypoint);
     const root = await cache.root(ctx.binding.workspaceDigest);
     {
       // A SECOND ARGUMENT THAT EXPLAINS ITSELF. Space access is opt-in (`Binding.brokered`), and

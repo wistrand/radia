@@ -153,6 +153,17 @@ runs nothing. The binding is the escalation root, so the grant-side pin is the s
 disagreement case was not predicted by the design and is the hijack the two locks exist to
 prevent, wearing the shape of a misconfiguration.
 
+**The pin names the tree, never the file.** The entrypoint sits outside both locks: outside the
+tree digest by design ([plan-executors.md](plan-executors.md) D2), and outside the grant's pattern
+because a pattern matches the REQUEST record, which carries `workspace` and cannot carry an
+entrypoint the caller does not know. So a `binding: put` holder re-points an agent between files
+of the pinned tree with no rotation, effective on the next claim, and `rollback` restores only
+the digest side. Two consequences: promotion review covers the WHOLE tree, never the promoted
+entrypoint's import graph, since any file in the tree is one binding write away from being the
+program; and "what is prod running" is `pins` plus `bindings` together. The entrypoint must still
+resolve INSIDE the tree: both invokers refuse traversal (`validatePath` in `sandboxInvoker` and
+`runBrokered`), because module loading is not bounded by the jail's read permissions.
+
 ## The compartment
 
 A COMPARTMENT, not a quarantine: the agents doing the work are inside it. An inspector that has

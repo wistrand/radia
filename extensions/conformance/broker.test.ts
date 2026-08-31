@@ -858,3 +858,20 @@ Deno.test("[broker] a host DECLARES what its code may call, so the API is a reco
   assertEquals(body.api?.calls.length, BROKER_API.calls.length);
   assertStringIncludes(JSON.stringify(body.api), "{kind, match}");
 });
+
+Deno.test("[broker] a traversing entrypoint is refused before any boot is written", async () => {
+  // `runBrokered` takes the entrypoint verbatim, from a binding or a dry-run caller, and the same
+  // guard as the unbrokered invoker's applies: module loading is not bounded by the jail's read
+  // permissions, so a `..` would import code from outside the tree wherever no confiner runs.
+  const record = { id: "01TRAVERSE", kind: EXEC_REQUEST, body: {} } as unknown as RadiaRecord;
+  const root = await Deno.makeTempDir();
+  try {
+    await assertRejects(
+      () => dryRunEntrypoint({ root, entrypoint: "../evil.ts", record }),
+      Error,
+      "is not allowed",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});

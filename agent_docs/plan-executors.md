@@ -48,7 +48,10 @@ arriving on stdin whose answer is stdout, versus a module imported by a boot pro
   WHICH FILES; re-pointing an entry would otherwise be a new digest and therefore a new promotion.
   A `binding` carries its own and stays authoritative for an agent, so the manifest's is a default.
   Being outside the digest has a consequence that bit immediately: the entrypoint has to join the
-  dedupe check and the content key, or changing only the entrypoint is a silent no-op.
+  dedupe check and the content key, or changing only the entrypoint is a silent no-op. The other
+  consequence lands on review: a pinned digest does not fix which file runs, so promotion review
+  covers the whole tree ([architecture-workspace-agents.md](architecture-workspace-agents.md),
+  "The pin names the tree, never the file").
 - **D3. A procedure IS a workspace.** It was a lone code artifact, which is a shape that cannot
   grow: one file, JavaScript whatever it contained, no versions to read back, no export, nothing an
   agent could be bound to. As a tree it inherits all of that, and promoting a script to a tool
