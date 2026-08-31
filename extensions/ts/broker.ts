@@ -486,6 +486,11 @@ async function runBrokered(
 ): Promise<{ kind: string; body: unknown }> {
   {
     assertHostCanRun(spec); // also reached by `dryRunEntrypoint`, which the invoker above bypasses
+    // A binding's entrypoint arrives verbatim from `radia bind`; `validateEntrypoint` runs only on
+    // workspace WRITE paths, for the manifest's own default. Module loading is not bounded by the
+    // jail's read permissions (architecture-jail-confinement.md), so a `..` here would import code
+    // from outside the tree wherever no confiner runs.
+    validatePath(entrypoint);
     const runtime = RUNTIMES[spec?.language ?? "javascript"];
     if (!runtime) throw new Error(`no broker shim for language '${spec?.language}': add one to RUNTIMES`);
     // The boot program is PER RECORD (it carries the claimed record), so it cannot live in the
