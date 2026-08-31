@@ -1,8 +1,18 @@
 # Plan: a sealed field is a DIFFERENT field, so a naive reader fails loudly
 
-**Status: PLANNED 2026-08-30.** Nothing built. Claims about current behaviour were verified against
-source the same day. Prerequisite reading: [plan-encryption.md](plan-encryption.md), which this
-does not revise; it changes one shape inside it.
+**Status: BUILT 2026-08-31** (`extensions/ts/encrypted.ts`: `sealBody`/`openBody`/`sealToolCalls`
+move each sealed field to its `<name>Sealed` twin; `extensions/ts/turn.ts` copies `argsSealed`;
+`extensions/conformance/encrypted.test.ts`). Prerequisite reading: [plan-encryption.md](plan-encryption.md), which this does not revise; it changes one shape inside it.
+
+What the build taught, beyond the plan: (1) `sealBody`'s return type became `Record<string, unknown>`
+rather than the input `T`, because the sealed body is a DIFFERENT shape and typing it as `T` would
+let a caller read `sealed.content` and get `undefined` with no complaint. (2) The turn worker was
+the one non-`encrypted.ts` write site the "opaque copy" glossed: it copies the sealed blob by field
+name, so the nested `function.arguments` -> `function.argumentsSealed` rename reached it. (3) The
+fail-loud claim is TWO-tier and softer than first written: a reader doing `body.content` gets
+`undefined` (loud), but `body.content ?? ""` gets `""` (quiet-empty). Both beat forwarding base64,
+and the confidential ciphertext never leaves under the field everyone reads, but it is robustness
+rather than a confidentiality fix (the ciphertext was already unreadable).
 
 ## The problem, and why it is not the one the audits found
 
@@ -100,18 +110,20 @@ population the first one cannot reach, and the two do not overlap: `assertReadab
 readers who import the convention, and the field name protects readers who do not. Neither is
 sufficient and neither substitutes for the other.
 
-Two smaller items from the same review, deliberately kept separate because they are independent:
+Two smaller items from the same review were kept separate because they are independent:
 
-- **`assertReadable` should reject a PRIMITIVE body.** `encMarker` returns `undefined` for a
-  non-object, so `assertReadable(body.content, …)` passes silently, and reaching for the field you
-  care about is the natural misuse. `undefined` and `null` must keep passing (a missing body is
-  legitimate, asserted in `extensions/conformance/encrypted.test.ts`); a string or a number never
-  is. Published API, so this is a shipped footgun rather than an internal one.
-- **A grep guard over this repo's own readers**, in the shape of `test/registrycost.test.ts`: a
-  module reading a body of an `ENCRYPTED_FIELDS` kind either asserts or appears in a named
-  exemption list. Two entries on day one, both legitimate: the turn worker, which copies a sealed
-  blob and must NOT assert, and `examples/chat/web/app.ts`, whose conversation-level gate is a
-  second mechanism worth recording as one.
+- **`assertReadable` rejects a PRIMITIVE body. BUILT 2026-08-31.** `encMarker` returned `undefined`
+  for a non-object, so `assertReadable(body.content, …)` passed silently, and reaching for the field
+  you care about is the natural misuse. It now throws a `TypeError` naming the reader; `undefined`
+  and `null` still pass (a missing body is legitimate). Published API, so this was a shipped footgun.
+- **A grep guard over this repo's own readers: REJECTED on measurement.** The plan was a
+  `test/registrycost.test.ts`-shaped guard (a reader of an `ENCRYPTED_FIELDS` kind asserts or is
+  exempt). Measured 2026-08-31: a field-NAME grep flags ~40 files, almost all reading a same-named
+  but UNRELATED field (`openrouter.ts`'s provider `.delta`, `sandbox.ts`'s process `.stdout`,
+  `broker.ts`'s `.args`), so it would drown in exemptions. Those guards key on a SYMBOL or a call
+  shape (`activeByKey(query(...))`), never on a generic word, and `.content` is a word that means a
+  dozen things. A sound version would need dataflow, not grep. The rename above is the robust
+  substitute and reaches third parties a grep never could.
 
 ## Rejected
 

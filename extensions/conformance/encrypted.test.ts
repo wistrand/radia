@@ -22,6 +22,7 @@ import {
   assertReadable,
   type ConversationKey,
   decryptText,
+  encryptText,
   openBody,
   sealBody,
   encMarker,
@@ -67,6 +68,10 @@ function keyPair(i: number): Promise<FleetKeyPair> {
  *  only there to name whose machine it is when something is refused. */
 const asPerson = (principal: string, k: { keyId: string; privateKey: string }) =>
   ({ kind: "person", principal, keyId: k.keyId, privateKey: k.privateKey }) as const;
+
+/** A tool call as it looks on a SEALED assistant message: `arguments` is gone, `argumentsSealed`
+ *  carries the ciphertext. Widened from the plaintext fixture so the rename assertions type-check. */
+type SealedCall = { id?: string; type?: string; function: { name?: string; arguments?: string; argumentsSealed?: string } };
 
 const row = (index: number, role: string, content: string, enc?: string): ThreadRow =>
   ({ index, role, content, ...(enc ? { enc } : {}) }) as ThreadRow;
@@ -391,24 +396,27 @@ Deno.test("[encrypted] a KEYED re-put is byte-identical, so a retry replays inst
   // runtime error for something the runtime got right.
   const a = await sealBody(body, "message", key, "turn:01ABC");
   const b = await sealBody(body, "message", key, "turn:01ABC");
-  assertEquals(a.content, b.content, "same key, same body: byte-identical ciphertext");
+  // The ciphertext lives under `contentSealed`, and the plaintext name is GONE, which is the whole
+  // point: a reader of `body.content` finds nothing rather than base64 (the sealed-field rename).
+  assertEquals(a.content, undefined, "the plaintext field name is absent on a sealed body");
+  assertEquals(a.contentSealed, b.contentSealed, "same key, same body: byte-identical ciphertext");
 
   // …and distinct across writes, or two records would share a nonce under one DEK.
   const other = await sealBody(body, "message", key, "turn:01XYZ");
-  assert(a.content !== other.content, "a different idempotency key is a different nonce");
+  assert(a.contentSealed !== other.contentSealed, "a different idempotency key is a different nonce");
 
   // An UNKEYED write is random: there is no replay to match, and randomness is the stronger default.
   const r1 = await sealBody(body, "message", key);
   const r2 = await sealBody(body, "message", key);
-  assert(r1.content !== r2.content, "unkeyed writes do not repeat a nonce");
+  assert(r1.contentSealed !== r2.contentSealed, "unkeyed writes do not repeat a nonce");
 
   // Determinism must not leak equality between DIFFERENT plaintexts sharing a key…
   const different = await sealBody({ ...body, content: "other text" }, "message", key, "turn:01ABC");
-  assert(different.content !== a.content);
+  assert(different.contentSealed !== a.contentSealed);
   // …nor make identical plaintexts recognisable across records, which fully deterministic
   // encryption would. Different writes, different keys, different ciphertext.
-  assert(other.content !== a.content);
-  assertEquals(await decryptText(key, String(a.content)), "same text");
+  assert(other.contentSealed !== a.contentSealed);
+  assertEquals(await decryptText(key, String(a.contentSealed)), "same text");
 });
 
 Deno.test("[encrypted] the stream is sealed too, and each kind seals only its own fields", async () => {
@@ -416,7 +424,8 @@ Deno.test("[encrypted] the stream is sealed too, and each kind seals only its ow
   const chunk = await sealBody({ callId: "x", conversationId: "c1", index: 0, delta: "hel" }, "llm_chunk", key);
   assertEquals(chunk.callId, "x", "the watermark and its routing stay clear");
   assertEquals(chunk.index, 0);
-  assert(!String(chunk.delta).includes("hel"));
+  assertEquals(chunk.delta, undefined, "the plaintext name is gone; a raw reader sees nothing, not base64");
+  assert(!String(chunk.deltaSealed).includes("hel"), "and the ciphertext carries no plaintext");
   assertEquals((await openBody(chunk, "llm_chunk", key)).delta, "hel");
 
   // A kind with nothing declared is untouched, marker included: sealing a key record would make the
@@ -443,7 +452,7 @@ Deno.test("[encrypted] the wrong conversation's key does not open a body", async
   await assertRejects(() => openBody(sealed, "message", theirs));
   // Tampering fails the same way: AES-GCM authenticates, so a flipped byte is a refusal and never
   // a plausible-looking different answer.
-  const bytes = atob(String(sealed.content)).split("");
+  const bytes = atob(String(sealed.contentSealed)).split("");
   bytes[bytes.length - 1] = String.fromCharCode(bytes[bytes.length - 1].charCodeAt(0) ^ 1);
   await assertRejects(() => decryptText(mine, btoa(bytes.join(""))));
 });
@@ -456,12 +465,32 @@ Deno.test("[encrypted] a JSON field round-trips as its VALUE, not as a string of
   // the same shape. A codec that returned the string would make every reader parse defensively.
   for (const output of [{ rows: [1, 2], note: "hi" }, "plain", 42, ["a"], true] as unknown[]) {
     const sealed = await sealBody({ callId: "c", ok: true, output }, "tool_result", key);
-    assert(typeof sealed.output === "string", "on the wire it is ciphertext");
+    assertEquals(sealed.output, undefined, "the plaintext field name is gone");
+    assert(typeof sealed.outputSealed === "string", "on the wire it is ciphertext under the sealed name");
     assertEquals((await openBody(sealed, "tool_result", key)).output, output);
   }
   // A text field keeps phase 3's format: sealed as itself, not as JSON of itself.
   const msg = await sealBody({ role: "user", content: "hi" }, "message", key);
-  assertEquals(await decryptText(key, String(msg.content)), "hi");
+  assertEquals(await decryptText(key, String(msg.contentSealed)), "hi");
+});
+
+Deno.test("[encrypted] openBody reads the OLD shape, and refuses a body written both ways", async () => {
+  const key = await conversationKey();
+  // OLD shape: ciphertext under the plaintext name, no `*Sealed` twin. A conversation sealed before
+  // the rename must still open, and forever, because records are immutable. This is the fallback in
+  // `sealedValue`, not a migration window.
+  const legacy = { role: "user", content: await encryptText(key, "hi"), enc: ENC_V1 };
+  assertEquals((await openBody(legacy, "message", key)).content, "hi");
+
+  // BOTH names present is a body written two ways: refused rather than guessed, since there is no
+  // right answer to "which ciphertext is the content".
+  const both = {
+    role: "user",
+    content: await encryptText(key, "a"),
+    contentSealed: await encryptText(key, "b"),
+    enc: ENC_V1,
+  };
+  await assertRejects(() => openBody(both, "message", key), Error, "written two ways");
 });
 
 Deno.test("[encrypted] tool ARGUMENTS seal inside the assistant message, leaving routing readable", async () => {
@@ -471,7 +500,7 @@ Deno.test("[encrypted] tool ARGUMENTS seal inside the assistant message, leaving
     { id: "call_2", type: "function", function: { name: "run_js", arguments: '{"code":"1+1"}' } },
   ];
   const sealed = await sealBody({ role: "assistant", content: null, tool_calls: calls }, "message", key);
-  const out = sealed.tool_calls as typeof calls;
+  const out = sealed.tool_calls as SealedCall[];
 
   // What the TURN WORKER routes on has to survive in the clear, or it needs a key — and the design
   // rests on it not needing one.
@@ -479,8 +508,10 @@ Deno.test("[encrypted] tool ARGUMENTS seal inside the assistant message, leaving
   assertEquals(out.map((c) => c.function.name), ["read_file", "run_js"]);
   assert(!JSON.stringify(out).includes("/secret"), "the arguments are not");
   assert(!JSON.stringify(out).includes("1+1"));
+  // The plaintext name is gone one level down too; the ciphertext is under `argumentsSealed`.
+  assert(out.every((c) => c.function.arguments === undefined), "no plaintext arguments on a sealed call");
   // Two calls in one round must not share a nonce under one DEK.
-  assert(out[0].function.arguments !== out[1].function.arguments);
+  assert(out[0].function.argumentsSealed !== out[1].function.argumentsSealed);
 
   const opened = (await openBody(sealed, "message", key)).tool_calls as typeof calls;
   assertEquals(opened.map((c) => c.function.arguments), calls.map((c) => c.function.arguments));
@@ -495,8 +526,8 @@ Deno.test("[encrypted] the same idempotency key seals two tool calls differently
   const body = { role: "assistant", tool_calls: calls };
   const one = await sealBody(body, "message", key, "turn:K");
   const two = await sealBody(body, "message", key, "turn:K");
-  const a = (one.tool_calls as typeof calls).map((c) => c.function.arguments);
-  const b = (two.tool_calls as typeof calls).map((c) => c.function.arguments);
+  const a = (one.tool_calls as SealedCall[]).map((c) => c.function.argumentsSealed);
+  const b = (two.tool_calls as SealedCall[]).map((c) => c.function.argumentsSealed);
   assertEquals(a, b, "a keyed re-put is byte-identical, calls included, so a retry replays");
   assert(a[0] !== a[1], "…while IDENTICAL arguments in one round still differ, so no nonce repeats");
 });

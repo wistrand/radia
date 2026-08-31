@@ -64,7 +64,11 @@ const DEFAULT_KINDS: TurnKinds = { message: "message", llmCall: "llm_call", tool
 export interface ToolCall {
   id: string;
   type?: string;
-  function: { name: string; arguments: string };
+  // `arguments` is the plaintext string in an unencrypted conversation; `argumentsSealed` is the
+  // ciphertext twin the inference worker writes when a key is applied (`extensions/ts/encrypted.ts`,
+  // the sealed-field rename). Exactly one is present, and the turn worker copies whichever WITHOUT
+  // opening it, which is what keeps this component key-free.
+  function: { name: string; arguments?: string; argumentsSealed?: string };
 }
 
 /** A transcript record, in the fields the chain routes on. */
@@ -315,7 +319,12 @@ export async function runTurnWorker(
       kind: k.toolCall,
       body: {
         tool: call.function.name,
-        args: sealed ? call.function.arguments : parseArgs(call.function.arguments),
+        // Sealed: copy the ciphertext to `argsSealed`, the flat twin of `function.argumentsSealed`,
+        // so the `tool_call` is in the sealed shape and the tool worker opens it by `openBody`.
+        // Plain: parse the arguments as before. Never both.
+        ...(sealed
+          ? { argsSealed: call.function.argumentsSealed }
+          : { args: parseArgs(call.function.arguments ?? "") }),
         ...(sealed ? { enc: sealed } : {}),
         conversationId: m.conversationId,
         owner: m.owner,
