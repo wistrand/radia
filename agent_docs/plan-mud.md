@@ -156,19 +156,74 @@ Players enrol through `POST /v0/sessions/oidc` holding zero grants;
 `extensions/ts/enrolment.ts` (`sweepEnrolments`, `watchEnrolments`) is the shared "everyone the IdP
 vouches for may play" policy, parameterised by this app's grant set.
 
-**Fog of war is not expressible with grants as they exist.** A grant pattern is static and a
-player's room changes every move, so `{roomId: "tavern"}` on `event: query` would have to be
-rewritten per step. Two options, and the example ships the first:
+**Fog of war: read-side room scoping is inexpressible; fog of war itself is not.** The distinction
+is the finding, and the shipped example blurs it. A grant matches record CONTENT against a static
+pattern, so which side of an operation the discriminator lives on decides everything:
 
-- Scope `event` reads to `{worldId}` and say in the README that a determined player can query rooms
-  they are not standing in.
-- Fan out per-recipient `event{recipient}` records from the narrator and scope each player's grant
-  to `{worldId, recipient: <their principal>}`. Enforceable, and it costs N records per room event.
+- **WRITE works.** An NPC's `event: put` is pinned to `{roomId, actor}` (`examples/mud/roles.ts`),
+  so speaking elsewhere or in another's name is refused by `bodyMatchesGrant` with nothing in the
+  app checking. It works because the room is IN THE RECORD being written.
+- **READ fails.** "Events of the room I am standing in" binds the read to the READER'S mutable
+  position, which is not in the record and not a constant. `{roomId}` on `event: query` would have
+  to be rewritten every move.
 
-**Never scope a player's grants with `createdBy: "self"`.** Events are authored by narrator and NPC
-workers, so self-scope hides exactly what the player needs to see. This is the gap
-[research-app-lessons.md](research-app-lessons.md) records both existing apps hitting
-independently.
+Grant rotation per move is not a nuisance, it is a HARD STOP. Per-room read grants count against
+`maxGrantRecordsPerPrincipalKind` (256, `src/core/space.ts`) for the (player, `event`) pair, and
+`GRANT` is `NEVER_COMPACT` (`src/core/gc.ts`), so the count is HISTORY no sweep clears. An identical
+revisit ABSORBS (`grantKey` includes the pattern, body compared by hash), but correct fog must
+RETIRE the old room's grant on leave, and a retirement is another uncompactable record, so a few
+hundred room-changes wedge the player at `too_many_grants` (429), permanently. The runtime's own
+hint for this reads "a changing pattern, most likely".
+
+**The better way is not a grant trick: push the position-dependence to the WRITE side, where the
+runtime already works, and give the reader a grant that never changes.**
+
+- Player grant: `event: query` scoped `{worldId, recipient: <player principal>}`, STATIC, issued
+  once at enrolment. No 256, because MOVEMENT CHANGES THE WRITER'S BEHAVIOUR, NEVER THE READER'S
+  GRANT. The `audience` field already on `event` (today a DISPLAY convention, "room" or a
+  principal) becomes the enforced `recipient`.
+- The narrator writes one `event{recipient}` per current occupant. Occupancy is NOT a per-event
+  read: it watches `presence` (the `{worldId, actor}` content-keyed registry) as a reactor loop and
+  holds room -> occupants in memory, reconciled on the tick, so the per-event cost is N WRITES and
+  no read.
+- Room STATE (who and what is here) has the SAME fog: a `presence` read scoped to `{worldId}` leaks
+  other rooms. So it is fan-out too, or a per-player `view{recipient}` record (content-keyed, one
+  per player, compacted) read under the same static self-scope. View for "what is here", the event
+  feed for "what just happened".
+
+Three constraints keep fan-out honest, and "enforceable" alone hides them:
+
+- **ONE trusted author.** An NPC's grant pins `{roomId, actor}` but cannot pin `recipient`, which
+  is dynamic, so a recipient-addressed event from an NPC could reach a player in another room.
+  Constraining the writer's recipient set is the SAME unexpressible dynamic-membership problem one
+  level up, so all event emission funnels through a single trusted author (the narrator) and NPCs
+  emit INTENTS. That changes the phase-1 "an NPC writes `event` directly" contract.
+- **The guarantee is TWO layers.** The grant HARD-enforces "a player reads only what is addressed
+  to them"; WHO the narrator addresses is eventually-consistent off its presence-watch, so a player
+  who just left may receive a beat or two more until the watch catches up. The hard half is the one
+  that matters (no player can bypass it to read another's stream); the soft half is only the
+  narrator's accuracy.
+- **Idempotency is per RECIPIENT.** Fan-out from one command writes N events, so the key is
+  `evt:<causedBy>:<recipient>`; a per-command key would write the first recipient and conflict the
+  rest on redelivery. The player's `presence: query {worldId}` grant is part of the same leak and
+  goes too, replaced by the `view` fan-out.
+
+Cost is not the objection it reads as: room events are human-paced and occupancy is small, so a
+50-player room is 50 writes per utterance at typing speed, nothing for a runtime benched in
+thousands/sec. It is all kinds, patterns, grants and a worker: an ELEMENT, not a new generator
+([design-algebra.md](design-algebra.md)), expressible today with no kernel change.
+
+**Never bind position to the credential.** The shortcut is `roomId` on the `agent_run` body and a
+scope reading it back (zero extra reads, the run is already resolved). Reject it for a rule that
+generalises past this app: visibility-gating reader state (position, inventory, faction, health) is
+HIGH-CHURN, and the auth path is the one place high-churn state must not live. It is the hot read
+that must stay flat, and a re-put OUTRANKS a `retired: true` tombstone, so a move-write would revive
+a stopped run and blow a hole in offboarding. Position is world state; the credential is authority.
+
+**Never scope a player's grants with `createdBy: "self"`** either. Events are authored by narrator
+and NPC workers, so self-scope hides exactly what the player needs to see, which is why the
+`recipient` fan-out above scopes on an addressed field rather than on authorship. This is the gap
+[research-app-lessons.md](research-app-lessons.md) records both existing apps hitting independently.
 
 **Keycloak needs an edit for a new port.** `docker/keycloak/realm-radia.json` registers redirect
 URIs and web origins for 7788, 8081 and 8082 only, and the import runs once per fresh Keycloak
@@ -192,7 +247,7 @@ registries to newest-per-key, and offboarding a player or an NPC as `radia runs 
 | No `$ne`, `$nin`, `$not`, `$prefix`, `$regex`     | `src/core/matching.ts`. "Everyone in the room except me" is not expressible; filter client-side or model positively. |
 | `readOne(pattern)` matches BODIES, not ids        | `sdk/ts/client.ts`. Every entity carries its identity in its own body. |
 | Record bodies have no erasure path                | Player prose is user content. Declare `defaultRetentionSeconds` on `command`/`event` or the world is permanent. |
-| Ops plane has no per-move tier                     | Three tiers now (`observe` / self / grant PATTERN, architecture-ops-tiers.md). A player's grants are world-scoped, so the pattern tier covers per-record reads; a per-ROOM scope is still not expressible, for the same reason fog of war is not. |
+| Per-move / per-room READ scope                     | Not expressible: it binds a read to mutable READER state (position), not to record content. Push it to the WRITE side, a static `{recipient}` grant plus narrator fan-out (see Fog of war). The ops read tiers (`observe` / self / grant PATTERN, architecture-ops-tiers.md) are world-scoped for the same reason. |
 | Browser connection budget                         | Six per origin, shared across tabs. One stream maximum.                |
 | Registry growth                                   | `contentKey` on `presence`/`fact`/`room` is what bounds a per-move log. |
 
