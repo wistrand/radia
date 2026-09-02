@@ -38,7 +38,7 @@ import {
   type WorkspaceManifest,
   writeWorkspace,
 } from "./workspace.ts";
-import { runCode } from "./sandbox.ts";
+import { clip, runCode } from "./sandbox.ts";
 import { EXEC_REQUEST } from "./promotion.ts";
 
 /** What code an agent runs. A latest-wins registry entry keyed by `agent`. */
@@ -505,9 +505,9 @@ export function sandboxInvoker(
         ...(opts.confine ? { confine: opts.confine } : {}),
         timeoutMs: opts.timeoutMs ?? 10_000,
       });
-      // The TAIL of stderr: the useful line of a stack trace is its last, and a program that
-      // logged before it died pushes the cause off the front.
-      if (!run.ok) throw new Error(`entrypoint failed (exit ${run.exitCode}): ${run.stderr.slice(-400)}`);
+      // BOTH ENDS of stderr (`clip`): JavaScript puts the cause on the FIRST line and the stack
+      // below it, and a tail-only slice dropped "not brokered" on macOS, whose frames run longer.
+      if (!run.ok) throw new Error(`entrypoint failed (exit ${run.exitCode}): ${clip(run.stderr)}`);
       // A marker, not "the last line": an entrypoint that logs is normal, and picking its chatter
       // as the result is the kind of bug that only shows up on the day something logs.
       const line = run.stdout.split("\n").find((l) => l.startsWith(mark));

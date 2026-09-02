@@ -44,7 +44,7 @@
 // and each was proved against a planted regression.
 
 import type { RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
-import { bwrapArgs, denoRuntime, denoSandbox, jailArgs, type ProbeResult, type RunOptions, type SandboxApi, type SandboxSpec } from "./sandbox.ts";
+import { bwrapArgs, clip, denoRuntime, denoSandbox, jailArgs, jailCacheDir, type ProbeResult, type RunOptions, type SandboxApi, sandboxExecProfile, type SandboxSpec, seatbeltPythonProfile } from "./sandbox.ts";
 import { declareSandbox, listSandboxes, verifySandbox } from "./sandbox-registry.ts";
 import { INPUT_DIR, type InvokeContext, type Invoker, outputStamp, treeCache, type TreeCache } from "./host.ts";
 import { validatePath } from "./workspace.ts";
@@ -368,7 +368,7 @@ export async function resolveSandbox(
  * Refuse a jail this process cannot build, rather than downgrading to one it can.
  *
  * A `web-worker` spec is served in a BROWSER (extensions/ts/sandbox-web.ts), where an opaque
- * origin and a CSP are the boundary. This host builds a Deno or bwrap process, so running that
+ * origin and a CSP are the boundary. This host builds a Deno, bwrap or sandbox-exec process, so running that
  * code here would execute it under the wrong guarantees while the record still advertised the
  * browser's. Same reading as the host's `digest_mismatch`: two halves that disagree are a refusal,
  * never a best effort. One function, two call sites (the invoker and `runBrokered`), because the
@@ -401,8 +401,8 @@ export async function declareBrokerSandbox(
     timeoutMs?: number;
     networkTarget?: string;
     /** The confiner the host will run brokered claims under, so the record declares (and the probe
-     *  tests) the jail that actually serves. Only bubblewrap: the broker has no Seatbelt spawn. */
-    confine?: "bubblewrap";
+     *  tests) the jail that actually serves: bubblewrap on Linux, Seatbelt on macOS. */
+    confine?: "bubblewrap" | "sandbox-exec";
     /** Probe results the CALLER already measured for this same jail construction, in this process
      *  (`selectJavascriptJail` builds and probes exactly the jail `confine` names, roots empty).
      *  Passing them skips a second identical probe pass, which was half of `radia host`'s startup
@@ -564,28 +564,25 @@ async function runBrokered(
       // advertising `importsConfined: true`, and module loading is not bounded by the jail's read
       // permissions, so that one silent loss opens the host's own files to a dynamic import.
       const confine = spec?.confiner && spec.confiner !== "none" ? spec.confiner : opts.run?.confine;
-      if (confine === "sandbox-exec") {
-        // UNBUILT, not impossible: the ingredients for a Seatbelt spawn exist (`sandboxExecProfile`
-        // is exported, `jailArgs` covers the FIFO control dir's write root, writes ride the
-        // profile's `(allow default)` gated by Deno's own flags), so the branch is ~20 lines
-        // mirroring the bwrap one below. It is missing because macOS confinement ships only
-        // VERIFIED ON A REAL MAC (architecture-jail-confinement.md: the probe failed its first
-        // real Mac boot on a getcwd trap only hardware surfaces, and FIFOs under a profile are
-        // that kind of detail). Until then brokered bindings on a Mac run the plain jail and SAY
-        // so; write the branch under the boot probe, never ahead of it.
+      if ((confine === "sandbox-exec" || spec?.isolation === "sandbox-exec") && Deno.build.os !== "darwin") {
         throw new Error(
-          `sandbox '${spec?.name ?? "(host option)"}' needs the sandbox-exec confiner and this broker has no ` +
-            "Seatbelt spawn: refusing rather than running unconfined. Declare a bubblewrap-confined " +
-            "sandbox, or relax the binding to one whose claims this host can deliver.",
+          `sandbox '${spec?.name ?? "(host option)"}' needs sandbox-exec, which only macOS has: ` +
+            "refusing rather than running unconfined. Declare a bubblewrap-confined sandbox, or " +
+            "relax the binding to one whose claims this host can deliver.",
         );
       }
-      const confined = spec?.isolation === "bubblewrap" || confine === "bubblewrap";
+      const confined = spec?.isolation === "bubblewrap" || spec?.isolation === "sandbox-exec" ||
+        confine === "bubblewrap" || confine === "sandbox-exec";
       if (spec?.importsConfined && !confined) {
         throw new Error(
           `sandbox '${spec.name}' claims importsConfined with no confiner this broker can build: ` +
             "refusing rather than running unconfined under a record that says otherwise.",
         );
       }
+      // The Seatbelt jail's cache, per process (`RunOptions.cacheDir`: a cache the jail can write
+      // and not read corrupts the machine's). Resolved above the spawn because the profile
+      // read-allows it and the env names it, and those two must not disagree.
+      const cacheDir = confine === "sandbox-exec" && spec?.isolation !== "sandbox-exec" ? jailCacheDir() : undefined;
       const child = spec?.isolation === "bubblewrap"
         ? new Deno.Command("bwrap", {
           args: bwrapArgs({
@@ -595,6 +592,25 @@ async function runBrokered(
             cwd,
             ...(spec.network ? { unshare: ["--unshare-pid", "--unshare-ipc", "--unshare-uts"] } : {}),
           }),
+          stdin: "piped",
+          stdout: "piped",
+          stderr: "piped",
+          clearEnv: true,
+          env: { HOME: "/tmp", PATH: "/usr/bin:/bin" },
+        }).spawn()
+        : spec?.isolation === "sandbox-exec"
+        // Seatbelt IS the isolation here, not a confiner over one: the interpreter (Python) brings
+        // no permission model for the profile to sit under, so this is the deny-default shape
+        // (`seatbeltPythonProfile`), never the Deno one. The FIFO pair rides the same roots as
+        // under bwrap: the control dir is in both lists, and a FIFO is only file-read/file-write.
+        ? new Deno.Command("/usr/bin/sandbox-exec", {
+          cwd,
+          args: [
+            "-p",
+            seatbeltPythonProfile({ readRoots, writeRoots, cwd }),
+            spec.runtime || "python3",
+            bootPath,
+          ],
           stdin: "piped",
           stdout: "piped",
           stderr: "piped",
@@ -619,6 +635,33 @@ async function runBrokered(
           stderr: "piped",
           clearEnv: true,
           env: { HOME: "/tmp", PATH: "/usr/bin:/bin" },
+        }).spawn()
+        : confine === "sandbox-exec"
+        // The jail, unchanged, under the Seatbelt profile: same division of labour as `spawnDeno`'s
+        // branch (net, env, run and write stay denied by Deno's own flags; the profile only bounds
+        // reads, which is the module-loading hole). The cwd is always set here (the output or input
+        // dir, else the tree), so the getcwd trap that broke the probe's first Mac boot cannot bite.
+        ? new Deno.Command("/usr/bin/sandbox-exec", {
+          cwd,
+          args: [
+            "-p",
+            sandboxExecProfile({
+              readRoots,
+              denoDir: denoRuntime().slice(0, denoRuntime().lastIndexOf("/")) || "/usr/bin",
+              cwd,
+              ...(cacheDir ? { cacheDir } : {}),
+            }),
+            denoRuntime(),
+            ...jailArgs({ ...opts.run, readRoots, writeRoots }, opts.run?.memoryMb ?? 256, bootPath),
+          ],
+          stdin: "piped",
+          stdout: "piped",
+          stderr: "piped",
+          clearEnv: true,
+          // DENO_DIR explicitly, never HOME-derived: writes ride the profile's `(allow default)`
+          // while reads do not, which is exactly the asymmetry that corrupts a cache. With none,
+          // Deno falls back to memory: slower and safe.
+          env: { HOME: "/tmp", PATH: "/usr/bin:/bin", ...(cacheDir ? { DENO_DIR: cacheDir } : {}) },
         }).spawn()
         : new Deno.Command(denoRuntime(), {
           cwd,
@@ -647,23 +690,6 @@ async function runBrokered(
       await Deno.remove(ctlDir, { recursive: true }).catch(() => {});
     }
   }
-}
-
-/**
- * Keep BOTH ENDS of a diagnostic, because which end carries the message depends on the language.
- *
- * A tail-only clip was the first answer and it is right for Python, where the exception message is
- * the LAST line of a traceback. It is wrong for JavaScript, where `error: Uncaught ...` is the FIRST
- * line and the frames below it are the part nobody needs: 600 characters of `file:///tmp/...`
- * stack pushed the real cause off the front, and the failure read as an exit code with no reason.
- * That is the same shape as the bug where two caps at opposite ends lost the cause between them.
- * The two ends are sized for what each has to catch, not split evenly: the head only needs a first
- * line, the tail needs a message that sits ABOVE a stack (an even split starved it and dropped the
- * cause of a flood).
- */
-function clip(text: string, head = 300, tail = 700): string {
-  if (text.length <= head + tail) return text;
-  return `${text.slice(0, head)}\n…\n${text.slice(-tail)}`;
 }
 
 /** How long the host keeps reading a quiet pipe after the child has exited. The host holds a write

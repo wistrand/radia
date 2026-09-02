@@ -2169,17 +2169,6 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           `host: UNCONFINED (${why}): module loading can read past the jail's roots. ` +
             `Pass --require-confinement to refuse instead of falling back`,
         );
-      } else if (jail.confine === "sandbox-exec" && !has(argv, "--no-broker")) {
-        // The plain invoker runs under Seatbelt, but the broker has no Seatbelt spawn, so a
-        // BROKERED binding here would run unconfined while the posture line says otherwise. Under
-        // --require-confinement that contradiction is a refusal; otherwise it is named.
-        if (requireConfinement) {
-          throw new UsageError(
-            "--require-confinement with brokered bindings needs a confiner the broker can build, and " +
-              "it has no Seatbelt spawn: pass --no-broker, or bind a bubblewrap sandbox record.",
-          );
-        }
-        console.error("host: brokered bindings run UNCONFINED here: the broker has no Seatbelt spawn (plain runs are confined)");
       }
       // Brokered by default: it is the invoker that leaves the entrypoint no way to reach the API,
       // which is what makes containment structural rather than this process's discipline.
@@ -2192,7 +2181,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       const plain = sandboxInvoker(client, { timeoutMs, ...(jail.confine ? { confine: jail.confine } : {}) });
       const brokered = brokeredInvoker(client, {
         timeoutMs,
-        ...(jail.confine === "bubblewrap" ? { run: { confine: jail.confine } } : {}),
+        ...(jail.confine ? { run: { confine: jail.confine } } : {}),
       });
       const invoke = (ctx: Parameters<typeof plain>[0]) =>
         (forceBroker || ctx.binding.brokered) && !has(argv, "--no-broker") ? brokered(ctx) : plain(ctx);
@@ -2215,18 +2204,15 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           timeoutMs,
           networkTarget: new URL(client.base).host,
           // The record declares the jail brokered claims will ACTUALLY run under, and the probe
-          // tests that one. Only bubblewrap reaches the broker; see the posture check above.
-          ...(jail.confine === "bubblewrap" ? { confine: jail.confine } : {}),
+          // tests that one.
+          ...(jail.confine ? { confine: jail.confine } : {}),
           // The posture selection above already probed THIS jail construction, so hand the
           // evidence over rather than paying a second identical probe pass (it was half the
-          // startup cost). Bubblewrap-confined: the confined probe held, so the evidence is the
-          // empty failure list. Unconfined: the bare jail's own failures. macOS is the one case
-          // where the declared (bare) spec is not the one the selection probed, so it probes itself.
-          ...(jail.confine === "bubblewrap"
+          // startup cost). Confined: the confined probe held, so the evidence is the empty
+          // failure list. Unconfined: the bare jail's own failures.
+          ...(jail.confine
             ? { probed: [] }
-            : !jail.confine
-            ? { probed: jail.refusedBecause.map((f) => ({ claim: f.claim, held: false, ...(f.detail ? { detail: f.detail } : {}) })) }
-            : {}),
+            : { probed: jail.refusedBecause.map((f) => ({ claim: f.claim, held: false, ...(f.detail ? { detail: f.detail } : {}) })) }),
         })
           .then(({ refusedBecause }) => {
             for (const f of refusedBecause) {
