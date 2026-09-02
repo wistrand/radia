@@ -173,7 +173,7 @@
         <text x="555" y="265" text-anchor="middle" class="muted">Vault</text>
         <path d="M 555 246 L 555 226" class="flow" marker-end="url(#target-arrow)"/>
       </svg>
-      <figcaption>The number of secrets is unchanged. The number of processes that hold one falls, and the callers express authority as a permitted request rather than as possession.</figcaption>
+      <figcaption>The number of secrets is unchanged. The number of processes that hold one falls.</figcaption>
     </figure>
 
     <div class="callout">
@@ -266,7 +266,7 @@
     <p>
       The process exchanges its durable bootstrap credential for a short-lived run token. The
       durable credential can mint runs but cannot perform ordinary operations, so it is never the
-      acting credential. Read the containment honestly: minting is a single call, so a leaked
+      acting credential. Still, minting is a single call, so a leaked
       bootstrap credential is one hop from the agent's full authority. What the split buys is a
       short-lived acting credential, one minting handle to revoke, and a record of every mint.
     </p>
@@ -431,7 +431,7 @@
       authority rather than to assume Radia makes them harmless.
     </div>
     <div class="callout">
-      <strong>This is where containment improves.</strong> Continue when every legitimate caller
+      <strong>You gain containment.</strong> Continue when every legitimate caller
       operation is expressible through a concrete request kind and the old credential has actually
       been removed from the caller's deployment, diagnostics and recovery path.
     </div>
@@ -571,7 +571,7 @@
         <text x="700" y="110" text-anchor="middle" class="muted">reads bounded</text>
         <text x="700" y="130" text-anchor="middle" class="muted">by both</text>
       </svg>
-      <figcaption>An intersection can only narrow. A capability the caller does not hold cannot be delegated, so the caller needs its own grant on the kind being read.</figcaption>
+      <figcaption>The caller reaches one tenant and the worker reaches all of them; the run minted for work on the caller's behalf carries only the overlap.</figcaption>
     </figure>
 
     <p>
@@ -582,8 +582,8 @@
 
     <div class="callout warn">
       <strong>An intersection narrows; it never grants.</strong> A delegated run cannot contain a
-      capability the caller lacks. <a href="authorization.html#delegation">See delegated authority
-      &rarr;</a>
+      capability the caller lacks, so the caller needs its own grant on the kind being read.
+      <a href="authorization.html#delegation">See delegated authority &rarr;</a>
     </div>
     <div class="callout">
       <strong>Use delegation only for genuine on-behalf-of operations.</strong> A worker acting only

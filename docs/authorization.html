@@ -510,10 +510,10 @@ summary    put                 own records only</code></pre>
       </li>
       <li>
         There is no cross-origin access, so a browser page on another origin cannot call the API and
-        every web application fronts the space with a small relay instead. That absence is
-        deliberate and load-bearing rather than unfinished: content agents generate is served from
-        its own isolated origin, and "no cross-origin request is permitted" is exactly what makes
-        rendering a hostile artifact safe without conditions. The relay costs a page of code, holds
+        every web application fronts the space with a small relay instead. That absence is what
+        makes rendering a hostile artifact safe: content agents generate is served from its own
+        isolated origin, and an origin that cannot reach the API cannot exfiltrate through
+        it. The relay costs a page of code, holds
         no credential, and forwards the space's own refusals rather than answering for it.
       </li>
       <li>
