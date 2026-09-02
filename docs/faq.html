@@ -246,10 +246,24 @@
     <h3>What is Radia's deployment status?</h3>
     <p>
       The complete M0 runtime and a growing M1 surface are implemented, with three storage adapters,
-      conformance suites, SDKs, runnable applications and checksum-verified release binaries. There
-      is no independent deployment history yet, the SDK registry packages are unpublished and
-      documented production-hardening work remains. Start with the supported binary installer or a
+      conformance suites, SDKs, runnable applications and a checksum-verified release carrying the
+      binaries and both SDK packages. There is no independent deployment history yet, and documented
+      production-hardening work remains. Start with the supported binary installer or a
       source checkout, and evaluate those boundaries for the workload you intend to run.
+    </p>
+
+    <h3>How do I install the SDKs?</h3>
+    <p>
+      From the GitHub release, by pinned URL. Each release attaches the npm tarball
+      (<code>radia-&lt;version&gt;.tgz</code>) and the Python wheel
+      (<code>radia_space-&lt;version&gt;-py3-none-any.whl</code>) beside the binaries, listed in the
+      same <code>SHA256SUMS</code>; the <a href="index.html#start">landing page carries the install
+      lines</a>. npm records the URL and an integrity hash in the lockfile; pip verifies against the
+      release when the URL ends in <code>#sha256=&lt;digest&gt;</code> from that file. Both
+      packages carry zero dependencies, so the install contacts no registry at all. Publishing to
+      npm or PyPI is deferred rather than ruled out: the large registry compromises of 2025 and
+      2026 began at maintainer publish credentials, which a release asset does not add. A registry
+      package wearing these names today is therefore not this project.
     </p>
 
     <h3>How is it licensed?</h3>

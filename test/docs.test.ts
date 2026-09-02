@@ -263,3 +263,80 @@ Deno.test("docs: llms.txt lists every page, and every page is reachable from the
     "llms.txt links a page that does not exist",
   );
 });
+
+Deno.test("docs: SDK install URLs pin this build's version and name assets the release uploads", async () => {
+  // The SDKs publish as release assets rather than to npm/PyPI (design-storage.md "Distribution"),
+  // so an install line is a URL carrying the version twice and an asset filename release.yml
+  // constructs. Three parties must agree: the documented URL, the version this checkout stamps
+  // (deno.json, rewritten by `deno task bump`), and the packing steps in the workflow. A URL that
+  // survives a bump un-stamped hands the reader last release's SDK from this release's docs.
+  const version =
+    (JSON.parse(await Deno.readTextFile(new URL("../deno.json", import.meta.url))) as { version: string }).version;
+  const release = await Deno.readTextFile(new URL("../scripts/build-release.sh", import.meta.url));
+  const workflow = await Deno.readTextFile(new URL("../.github/workflows/release.yml", import.meta.url));
+  const readme = await Deno.readTextFile(new URL("../sdk/README.md", import.meta.url));
+  const llms = await Deno.readTextFile(join(docsDir, "llms.txt"));
+
+  // Asset names derive from the names the build script stamps into the packages, not from
+  // literals here: `npm pack` writes <name>-<version>.tgz, and the wheel filename is the
+  // distribution name with `-` as `_` (scripts/build-wheel.py).
+  const npmName = release.match(/"name": "([a-z][a-z-]*)"/)?.[1];
+  const pipName = release.match(/^name = "([a-z][a-z-]*)"$/m)?.[1];
+  assert(npmName && pipName, "could not read the package names from scripts/build-release.sh");
+  const expected = new Set([`${npmName}-${version}.tgz`, `${pipName.replaceAll("-", "_")}-${version}-py3-none-any.whl`]);
+
+  const texts = [
+    ...pages.map((p) => ({ name: p.name, text: p.html })),
+    { name: "llms.txt", text: llms },
+    { name: "sdk/README.md", text: readme },
+  ];
+  const seen = new Set<string>();
+  for (const { name, text } of texts) {
+    for (const m of text.matchAll(/releases\/download\/v(\d[\d.]*)\/([A-Za-z0-9_.-]+)/g)) {
+      assertEquals(m[1], version, `${name} pins release v${m[1]}, but this checkout is ${version}`);
+      assert(
+        expected.has(m[2]),
+        `${name} names asset ${m[2]}, which the release does not upload (it uploads ${[...expected].join(", ")})`,
+      );
+      seen.add(m[2]);
+    }
+    // The tagged-source import Deno users take is a version pin too.
+    for (const m of text.matchAll(/raw\.githubusercontent\.com\/[^/\s]+\/radia\/v(\d[\d.]*)\//g)) {
+      assertEquals(m[1], version, `${name} pins tag v${m[1]} for raw imports, but this checkout is ${version}`);
+    }
+  }
+  assertEquals(seen, expected, "not every packed SDK asset has a documented install line");
+
+  // The workflow must pack what those URLs promise, or the docs point at assets that never upload.
+  assert(workflow.includes("npm pack"), "release.yml no longer packs the npm tarball the docs point at");
+  assert(workflow.includes("build-wheel.py"), "release.yml no longer builds the wheel the docs point at");
+});
+
+Deno.test("docs: the SDK packages the install URLs point at are dependency-free", async () => {
+  // The site claims zero dependencies, and the install story rests on it: with no dependency
+  // tree, a pinned-URL install fetches nothing from npm or PyPI at all. A bare-specifier import
+  // added to sdk/ts or extensions/ts would falsify the claim and break the staged package, whose
+  // consumers have nothing to resolve it against. Comments are stripped first because prose like
+  // `"nothing yet" from "cancelled"` matches an import-shaped regex (sdk/ts/await.ts).
+  const release = await Deno.readTextFile(new URL("../scripts/build-release.sh", import.meta.url));
+  assert(!release.includes('"dependencies"'), "the npm package.json heredoc grew a dependencies field");
+  assert(release.includes("dependencies = []"), "the pyproject heredoc no longer declares zero dependencies");
+
+  let scanned = 0;
+  for (const dir of ["sdk/ts", "extensions/ts"]) {
+    for await (const e of Deno.readDir(new URL(`../${dir}/`, import.meta.url))) {
+      if (!e.isFile || !e.name.endsWith(".ts")) continue;
+      const text = (await Deno.readTextFile(new URL(`../${dir}/${e.name}`, import.meta.url)))
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/^\s*\/\/.*$/gm, "");
+      for (const [, spec] of text.matchAll(/from\s+"([^"]+)"/g)) {
+        assert(
+          spec.startsWith("."),
+          `${dir}/${e.name} imports "${spec}", a bare specifier the dependency-free package cannot resolve`,
+        );
+      }
+      scanned++;
+    }
+  }
+  assert(scanned > 10, `scanned only ${scanned} SDK/extension files; the directory walk is broken`);
+});

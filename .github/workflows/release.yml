@@ -7,9 +7,14 @@
 # One job, no matrix: `deno compile --target` cross-compiles, so one runner produces all four
 # (Linux and macOS, x64 and arm64; native Windows is unsupported, WSL2 runs the Linux binary).
 #
-# The npm and pip SDK packages `deno task release` also stages are NOT published here. Publishing
-# to a registry needs credentials and an account decision; attaching files to a release needs
-# neither.
+# The npm and pip SDK packages `deno task release` stages publish here too, as RELEASE ASSETS
+# rather than registry uploads: radia-<version>.tgz (`npm pack`) and
+# radia_space-<version>-py3-none-any.whl (`scripts/build-wheel.py`, stdlib only), covered by the
+# same SHA256SUMS and installed by pinned URL. No registry account or credential exists to
+# compromise; registry publishing is deferred, not ruled out (design-storage.md "Distribution"
+# has the reasons and the trusted-publishing re-entry path). A published SDK asset is never
+# re-uploaded: npm lockfile integrity and pip
+# `#sha256` pins break retroactively, so a bad asset means a new release, not a clobber.
 
 name: release
 
@@ -48,6 +53,18 @@ jobs:
       - run: deno task check
 
       - run: deno task release
+
+      # Both SDK packages are smoke-installed before upload: a malformed tarball or wheel RECORD
+      # otherwise surfaces at the user's install, where nothing here can see it. The wheel builder
+      # is stdlib-only, so this step fetches nothing from PyPI.
+      - name: pack the SDKs
+        run: |
+          mkdir -p dist/assets
+          (cd dist/npm/radia && npm pack --pack-destination ../../assets)
+          python3 scripts/build-wheel.py dist/pypi dist/assets
+          npm install --prefix /tmp/npm-smoke "$PWD"/dist/assets/radia-*.tgz
+          python3 -m pip install --quiet --no-deps --no-index --target /tmp/pip-smoke dist/assets/radia_space-*.whl
+          PYTHONPATH=/tmp/pip-smoke python3 -c "import radia; radia.RadiaClient; radia.ext"
 
       - name: gzip the binaries and write the sums
         run: |
