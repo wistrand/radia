@@ -9,7 +9,8 @@
 //
 // STRUCTURAL ONLY, on purpose. Nothing here matches wording, because a test that fails when a
 // sentence is rephrased gets deleted the third time it cries wolf. What it extracts is the parts of
-// the page that are mechanically checkable: CLI verbs, import specifiers, links, external hosts.
+// the page that are mechanically checkable: CLI verbs, import specifiers, links, external hosts,
+// pinned release-asset URLs, the packages' dependency-freedom, and the playground page's API calls.
 
 import { assert, assertEquals } from "@std/assert";
 import { dirname, fromFileUrl, join } from "@std/path";

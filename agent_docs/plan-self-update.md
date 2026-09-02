@@ -33,6 +33,8 @@ Three facts shape everything below:
 
 **Sign `SHA256SUMS`, never the assets.** That file already covers every target and is already
 fetched by both consumers, so one signature carries the whole release whatever the target count.
+Since 2026-09-02 it also lists the SDK packages (release assets installed by pinned URL,
+architecture-surfaces.md "Distribution"), so the same one signature would cover them unchanged.
 The asset is `SHA256SUMS.sig`, one line, `<kid> <base64 signature>`.
 
 **The public key names itself, and an unknown key is a ROTATION rather than damage.** `kid` is

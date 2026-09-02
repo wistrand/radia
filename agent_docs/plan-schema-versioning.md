@@ -73,7 +73,10 @@ contract; the declaring record's id would not.
 adding a sortable path already indexed, changing `usage`, changing `defaultRetentionSeconds`.
 INCOMPATIBLE: removing an indexed or sortable path, changing `contentKey`, flipping `claimable`
 either way. A `retired: true` marker is EXEMPT: it withdraws the kind and carries no contract, so it
-drops every path by construction.
+drops every path by construction. The exemption's ADOPTION half shipped 2026-09-02: both write
+paths used to register the tombstone (a TypeError AFTER commit, so a bare retire answered 500 and
+a fresh instance's `refreshKind` 500'd every query naming the kind). `adoptKind` and `refreshKind`
+now REMOVE from the process registry, and `test/conformance/suites/kinds.ts` retires bare.
 An incompatible redeclaration is refused unless the write acknowledges what it supersedes.
 PRESENCE of `supersedes` is what acknowledges, `null` included, which is the convention
 `createAgentDefinition({supersedes})` already uses and the only thing sayable about a RESERVED kind,

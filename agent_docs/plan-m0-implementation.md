@@ -72,7 +72,8 @@ The install path: the plan's `npx radia dev` / `pipx run` shape was SUPERSEDED o
 before any publish. The binary installs only via `curl | sh` (`docs/install.sh` + the release
 workflow), npm and pip carry the SDKs with no binary inside, and native Windows is unsupported
 (WSL2 runs the Linux binary). The `curl | sh` path is VERIFIED end to end against the published
-`v2026.8.0` release (same day); the SDK packages remain unpublished.
+`v2026.8.0` release (same day). Since 2026-09-02 the SDK packages are release assets on the same
+tag, installed by pinned URL; nothing publishes to npm or PyPI (design-storage.md "Distribution").
 
 Two storage rules the phases produced (`src/storage/`):
 - `ack` with a result appends the successor's own `put` event. Without it the record exists
@@ -308,7 +309,8 @@ the console, the vendored bundle, and its own CLI.
 **Since verified (2026-08-30):** the install path end to end, in its superseded shape (`curl | sh`
 for the binary, SDK-only npm/pip; see "Current state" above): the `v2026.8.0` release built all
 four targets in CI and the installer ran against it. **Still not verified:** the non-Linux-x64
-binaries at runtime, and the SDK packages, which remain unpublished.
+binaries at runtime, and the SDK release assets, whose packing (added 2026-09-02, smoke-installed
+by the workflow before upload) first runs on the next `v*` tag.
 
 ## Open questions
 
