@@ -764,6 +764,16 @@ export class KindRegistry {
     });
   }
 
+  /** Withdraw a kind from this process's view, mirroring what `loadKinds` computes from a
+   *  `retired: true` tombstone (activeByKey drops it). Reserved kinds never arrive here (their
+   *  tombstone is refused by `assertReservedCompatible` before commit); refusing again keeps a
+   *  planted one from unregistering machinery the runtime compiles against. */
+  remove(kind: string): void {
+    if (kind === KIND_DEF || META_RESERVED_BY_KIND.has(kind)) return;
+    this.#defs.delete(kind);
+    this.#versions.delete(kind);
+  }
+
   get(kind: string): KindDef | undefined {
     return this.#defs.get(kind);
   }

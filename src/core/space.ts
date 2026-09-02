@@ -1301,8 +1301,15 @@ export class Space {
   }
 
   /** Reflect a committed declaration in THIS process's registry (other instances re-read it
-   *  through `compileFresh`). */
+   *  through `compileFresh`). A RETIREMENT is reflected by REMOVAL: registering the tombstone
+   *  crashed on its absent `indexedPaths` AFTER the commit, so a retire that succeeded answered
+   *  500, and the old declaration stayed live on this instance until restart while `loadKinds`
+   *  everywhere else already drops it. */
   private async adoptKind(def: KindDef): Promise<void> {
+    if (isRetired(def)) {
+      this.kinds.remove(def.kind);
+      return;
+    }
     this.kinds.register(def, await this.declarationCount(def.kind));
     await this.prepareStorageFor(def);
   }
@@ -2986,6 +2993,13 @@ export class Space {
       return false; // a storage error here must surface as the ORIGINAL compile error, not as this
     }
     if (rows.length === 0) return false;
+    if (isRetired(rows[0].body)) {
+      // The newest declaration is a WITHDRAWAL: drop anything stale this process holds and report
+      // no improvement, so the caller's unknown_kind stands. Registering the tombstone was a
+      // TypeError, which answered 500 to every query naming a retired kind on a fresh instance.
+      this.kinds.remove(kind);
+      return false;
+    }
     let def: KindDef;
     try {
       def = this.kindDefFromBody(rows[0].body);

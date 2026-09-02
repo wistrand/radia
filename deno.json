@@ -27,6 +27,7 @@
     "profile": "deno run --allow-read --allow-write --allow-env --allow-net --allow-run bench/profile.ts",
     "demo": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run examples/pipeline/demo.ts",
     "demo:ci": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run examples/pipeline/demo.ts --once",
+    "demo:py": "python3 examples/pipeline-py/demo.py",
     "stress": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run examples/stress/stress.ts",
     "lab": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run scripts/agent-lab/run.ts",
     "lab-report": "deno run --allow-read --allow-write --allow-env scripts/agent-lab/report.ts",

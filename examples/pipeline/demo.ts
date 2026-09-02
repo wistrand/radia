@@ -80,13 +80,13 @@ try {
   ];
   void agents;
 
-  const job = await client.put({ kind: "job", body: { text: "the quick brown fox" } });
-  await client.put({ kind: "task", body: { op: "reverse", input: "radia" } });
+  const job = await client.put({ kind: "pipeline_job", body: { text: "the quick brown fox" } });
+  await client.put({ kind: "pipeline_task", body: { op: "reverse", input: "radia" } });
   console.log(`[coordinator] posted job ${job.id.slice(-6)} + standalone reverse task\n`);
 
   let summary = null;
   for (let i = 0; i < 60 && !summary; i++) {
-    summary = await client.readOne<{ text: string }>({ kind: "summary", match: { jobId: job.id } });
+    summary = await client.readOne<{ text: string }>({ kind: "pipeline_summary", match: { jobId: job.id } });
     if (!summary) await sleep(200);
   }
 

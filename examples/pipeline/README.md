@@ -4,7 +4,9 @@ This deterministic example exercises content routing, competitive claims, fan-ou
 lineage through the public HTTP API. It requires no model provider.
 
 A planner fans a `job` out into per-word `task`s, two workers claim only the ops they can handle,
-and an aggregator reads the `result` facts and emits one `summary`.
+and an aggregator reads the `result` facts and emits one `summary`. The declared kind names carry
+a `pipeline_` prefix (the stress example's convention), so the demo can share a space with other
+applications without colliding with their `task` or `job`.
 
 ```mermaid
 flowchart LR
@@ -42,7 +44,7 @@ then shuts the space down. CI uses it as a wire-contract integration test.
 ## What it demonstrates
 
 - **Content-routed coordination, no routing table.** `worker upper` and `worker reverse`
-  each claim only `{kind:task, match:{op:...}}` that matches their tool.
+  each claim only `{kind:pipeline_task, match:{op:...}}` that matches their tool.
 - **Fan-out / fan-in.** The planner splits a `job` into per-word `task`s (fan-out); workers
   emit `result` facts; the aggregator reads them and emits one `summary` (fan-in).
 - **Leases + at-least-once**, idempotent aggregation (`summary:<jobId>` key), the
@@ -73,7 +75,7 @@ its lineage.
 |------|------|
 | `tools.ts` | deterministic tools keyed by `op` |
 | `kinds.ts` | registers the demo kinds |
-| `worker.ts` | claims `{kind:task, match:{op}}`, runs the tool, emits a `result` |
+| `worker.ts` | claims `{kind:pipeline_task, match:{op}}`, runs the tool, emits a `result` |
 | `planner.ts` | claims a `job`, fans out into `task`s |
 | `aggregator.ts` | reads `result`s, emits a `summary` when a job is complete |
 | `coordinator.ts` | seeds a job + a standalone task, reads outcomes |

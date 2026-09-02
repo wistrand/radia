@@ -14,14 +14,14 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export function plannerLoop(client: RadiaClient, signal?: AbortSignal, log?: (m: string) => void, paceMs = 0): Promise<void> {
   return agentLoop<{ text: string }>(client, {
     name: "planner",
-    patterns: [{ kind: "job" }],
+    patterns: [{ kind: "pipeline_job" }],
     signal,
     log,
     handle: async (job, c) => {
       const words = tools.split(job.body.text) as string[];
       for (let i = 0; i < words.length; i++) {
         await c.put({
-          kind: "task",
+          kind: "pipeline_task",
           body: { op: "upper", input: words[i], jobId: job.id, index: i, total: words.length },
           parentIds: [job.id],
         });

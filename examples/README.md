@@ -1,12 +1,13 @@
 # Radia examples
 
-Five runnable applications exercise different parts of the public API. Each directory contains its
-own setup and source guide. The Keycloak configuration in
+The runnable applications here exercise different parts of the public API. Each directory contains
+its own setup and source guide. The Keycloak configuration in
 [`../docker/keycloak/`](../docker/keycloak/) is a local deployment recipe, not an example.
 
 | Example | What it shows | Needs a key? |
 |---------|---------------|--------------|
 | [`pipeline/`](pipeline/) | Fan-out and fan-in through records, competitive claims, leases and lineage. | no |
+| [`pipeline-py/`](pipeline-py/) | The same pipeline on the Python SDKs, plus presence-policed capabilities and seed-and-wait through the extension bindings. | no |
 | [`stress/`](stress/) | Retry churn, dead letters and abandoned leases for inspecting the console under load. | no |
 | [`analysis/`](analysis/) | A web application whose stages are keyed by dataset, input digest and code digest. | no |
 | [`mud/`](mud/) | A shared world where NPCs are principals with their own grants, not branches in a game loop. | no |
@@ -16,6 +17,7 @@ own setup and source guide. The Keycloak configuration in
 deno task dev      # a space + web console at http://127.0.0.1:7788
 
 deno task demo     # pipeline: planner + workers + aggregator against that space
+deno task demo:py  # the same pipeline on the Python SDKs (the space needs --ext)
 deno task stress   # stress:   fill the space with waves of activity
 deno task mud -- --player alice   # mud: a scripted world; run the play command it prints
 
@@ -26,8 +28,9 @@ RADIA_CHAT_TOKEN=<token> deno task chat   #       plus OPENROUTER_API_KEY
 Authentication is required by default. `radia dev` provisions the operator credential used to
 bootstrap the pipeline and stress examples. Chat sessions run as separately logged-in principals.
 
-Every example coordinates through the public `/v0` API using the TypeScript SDK and shared
-[`extensions`](../extensions/README.md). Runtime internals are not part of the application surface.
+Every example coordinates through the public `/v0` API using the SDKs (TypeScript, and Python in
+`pipeline-py/`) and shared [`extensions`](../extensions/README.md). Runtime internals are not part
+of the application surface.
 
 Two non-coordination exceptions exist:
 [`operator.ts`](operator.ts) reads the local credential file (`src/credentials.ts`) to get the

@@ -360,7 +360,7 @@ return { kind: "report", body: { text: "rolled up " + summaries.length + " summa
       // code), which is what it always meant.
       const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(code)))]
         .slice(0, 6).map((b) => b.toString(16).padStart(2, "0")).join("");
-      const before = (await client.query({ kind: "report" }, 1, { dir: "desc" }))[0]?.id;
+      const before = (await client.readNewest({ kind: "report" }))?.id;
       const result = await jail.serveFrames(jail.spawnWebWorkerJail(source), { record: trigger, client }, {
         timeoutMs: 15_000,
         keyScope: digest,
@@ -369,7 +369,7 @@ return { kind: "report", body: { text: "rolled up " + summaries.length + " summa
         labels: [],
         stamp: { producedBy: "playground-web-worker" },
       });
-      const report = (await client.query({ kind: "report" }, 1, { dir: "desc" }))[0];
+      const report = await client.readNewest({ kind: "report" });
       if (report) lastId = report.id;
       const parents = report?.runtimeMeta?.parentIds?.length ?? 0;
       const replayed = report && before === report.id;
@@ -381,13 +381,13 @@ return { kind: "report", body: { text: "rolled up " + summaries.length + " summa
     };
 
     /** The newest summary, which is both the input the snippet rolls up and the trigger it is
-     *  keyed to. `dir: "desc"` is load-bearing: the default is oldest-first, and an oldest trigger
-     *  never changes, so every later run reuses one key. Falls back to a document so a first run
-     *  still has a real record to descend from. */
+     *  keyed to. `readNewest` is load-bearing: an oldest trigger never changes, so every later
+     *  run would reuse one key. Falls back to a document so a first run still has a real record
+     *  to descend from. */
     const newestTrigger = async () => {
-      const [summary] = await client.query({ kind: "summary" }, 1, { dir: "desc" });
+      const summary = await client.readNewest({ kind: "summary" });
       if (summary) return { id: summary.id, kind: "summary", body: summary.body ?? {} };
-      let doc = (await client.query({ kind: "document" }, 1, { dir: "desc" }))[0];
+      let doc = await client.readNewest({ kind: "document" });
       if (!doc) doc = await client.put({ kind: "document", body: { type: "scan", file: "jail-input.png" } });
       return { id: doc.id, kind: "document", body: doc.body ?? {} };
     };
@@ -399,11 +399,11 @@ return { kind: "report", body: { text: "rolled up " + summaries.length + " summa
       try {
         // The snippet DERIVES from summaries, so give the worker its moment rather than racing it:
         // a first-time visitor would otherwise roll up nothing and learn nothing from it.
-        if ((await client.query({ kind: "summary" }, 1, { dir: "desc" })).length === 0) {
-          if ((await client.query({ kind: "document" }, 1, { dir: "desc" })).length === 0) {
+        if (!await client.readNewest({ kind: "summary" })) {
+          if (!await client.readNewest({ kind: "document" })) {
             await client.put({ kind: "document", body: { type: "scan", file: "jail-input.png" } });
           }
-          for (let i = 0; i < 12 && (await client.query({ kind: "summary" }, 1, { dir: "desc" })).length === 0; i++) {
+          for (let i = 0; i < 12 && !await client.readNewest({ kind: "summary" }); i++) {
             status.textContent = "waiting for a worker to summarise a document…";
             await new Promise((r) => setTimeout(r, 400));
           }
