@@ -287,13 +287,35 @@ implementation can be rewritten behind the stable OpenAPI protocol later. See
 [plan-m0-implementation.md](plan-m0-implementation.md) for the runtime rationale and build
 plan.
 
-Install decision (2026-08-30): the binary's ONLY supported install is `curl | sh`
-(`docs/install.sh`, fetching release assets published by `.github/workflows/release.yml`).
-npm and pip are reserved for the SDKs, because agent developers split across both ecosystems:
-the npm package is the TS SDK plus `extensions/` as source, the pip package the Python SDK,
-and neither carries a binary or launcher. Native Windows is unsupported; WSL2 runs the Linux
-binary. The earlier launcher-package plan (`npx radia dev` / `pipx run radia dev`) was built
-and dropped before anything was published.
+Install decision (2026-08-30; SDK channel 2026-09-02): the binary's ONLY supported install is
+`curl | sh` (`docs/install.sh`, fetching release assets published by
+`.github/workflows/release.yml`). The SDK packages are assets on the same release, not registry
+uploads for now: `npm pack` of the staged TS SDK + `extensions/` source, and a wheel from
+`scripts/build-wheel.py` (stdlib only, so the release path fetches nothing from PyPI; a wheel
+rather than an sdist so user installs fetch no build backend either). Installs pin the release
+URL, pip verifiable with `#sha256=<digest>` from the same SHA256SUMS; `test/docs.test.ts` holds
+the documented URLs to the version and asset names, and `deno task bump` stamps them. Both
+packages are DEPENDENCY-FREE (also guarded there: no bare-specifier import in `sdk/ts` or
+`extensions/ts`, `dependencies = []` in the pyproject), so a pinned-URL install contacts no
+registry at all. A published
+SDK asset is never re-uploaded (npm lockfile integrity and pip hash pins break retroactively), and
+`radia`/`radia-space` stay unregistered on the registries, so a package wearing those names there
+is not this project. Neither package carries a binary or launcher. Native Windows is unsupported;
+WSL2 runs the Linux binary. The earlier launcher-package plan (`npx radia dev` /
+`pipx run radia dev`) was built and dropped before anything was published.
+
+Registry publishing is DEFERRED, not forsworn (researched 2026-09-02). The 2025-26 mass
+compromises all started at publish credentials, not package content: the Shai-Hulud worm
+(2025-09) republished packages under phished maintainer accounts, its ChainDrop successor (2026)
+hit 1,300+ npm package versions carrying ~2B monthly downloads (keyv, flat-cache), and the
+2026-03 axios compromise was a maintainer account takeover; PyPI's parallel is typosquats plus
+account takeover. A registry entry is a second trust root plus a MUTABLE-LATEST channel
+(`npm install radia` resolves whatever a compromised account publishes next), while a pinned
+release URL has no auto-update path to poison, and today radia.sh, the assets and CI sit under
+ONE GitHub root (plan-self-update.md's finding). The re-entry path when discoverability becomes
+worth it: OIDC trusted publishing from the release workflow (npm revoked all classic tokens
+2025-12-09 and now pushes publishers there), no long-lived token, same root, URL installs
+unchanged. Until then the names are squattable on the registries, which the FAQ states.
 
 **That "later" was settled on 2026-08-04: the kernel stays through M1, and the question reopens only
 on evidence** — see [plan-milestones.md](plan-milestones.md) "Decided" for what counts as evidence

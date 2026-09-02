@@ -1,12 +1,15 @@
 // Set every version string for a release, and print the git commands that ship it.
 //
 // The scheme is CalVer as semver, `YYYY.M.COUNTER` (src/version.ts): month unpadded because
-// semver refuses a leading zero, counter restarting at 0 each month. Three files carry the
-// string and must agree (test/tasks.test.ts guards the first two):
+// semver refuses a leading zero, counter restarting at 0 each month. Five files carry the
+// string and must agree (test/tasks.test.ts guards the first two, test/docs.test.ts the
+// pinned SDK install URLs):
 //
 //   deno.json        what build-release.sh stamps onto every package
 //   src/version.ts   what the compiled binary reports
 //   docs/install.sh  the RADIA_VERSION example in the installer header
+//   docs/index.html  the pinned SDK install URLs on the landing page
+//   sdk/README.md    the pinned SDK install URLs and the tagged raw import
 //
 //   deno task bump              # next version for the current month (UTC clock)
 //   deno task bump 2026.9.3     # set exactly this version instead
@@ -48,6 +51,20 @@ const edits = [
   { path: "deno.json", pattern: /("version":\s*")[^"]+(")/, replace: `$1${next}$2` },
   { path: "src/version.ts", pattern: /(export const VERSION = ")[^"]+(";)/, replace: `$1${next}$2` },
   { path: "docs/install.sh", pattern: /(RADIA_VERSION=v)[\d.]+/, replace: `$1${next}` },
+  // The SDK install URLs pin a release: the tag and the asset filename both carry the version,
+  // more than once per file, so these patterns are global (String.replace rewrites every match).
+  // ONE entry per file: the write loop replaces over the original text, so a second entry for the
+  // same path would discard the first edit.
+  {
+    path: "docs/index.html",
+    pattern: /(releases\/download\/v|radia\/v|radia-|radia_space-)(\d{4}\.\d{1,2}\.\d+)/g,
+    replace: `$1${next}`,
+  },
+  {
+    path: "sdk/README.md",
+    pattern: /(releases\/download\/v|radia\/v|radia-|radia_space-)(\d{4}\.\d{1,2}\.\d+)/g,
+    replace: `$1${next}`,
+  },
 ];
 const texts = new Map<string, string>();
 for (const e of edits) {

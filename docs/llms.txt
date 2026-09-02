@@ -89,7 +89,7 @@ barriers rather than complete information-flow control.
 
 ## Where the source of truth lives
 
-The repository is the authority; these pages summarize it.
+The repository is the authority; these pages summarize it: https://github.com/wistrand/radia
 
 - `README.md` for build and run
 - `CLAUDE.md` for the routing map, invariants and conventions
@@ -103,4 +103,8 @@ The repository is the authority; these pages summarize it.
 All of M0 plus a growing M1 slice is built, on SQLite, PGlite and Postgres behind a frozen wire
 contract checked against the router in both directions. Checksum-verified release binaries install
 through `curl -fsSL https://radia.sh/install.sh | bash`; source checkouts are also supported. There
-is no independent deployment history yet, and the built npm and pip packages are unpublished.
+is no independent deployment history yet. The npm and pip SDK packages attach to each release
+(https://github.com/wistrand/radia/releases) as assets (`radia-<version>.tgz`,
+`radia_space-<version>-py3-none-any.whl`), installed by pinned URL and listed in the release's
+SHA256SUMS. Both carry zero dependencies, so an install contacts no registry; publishing to npm
+or PyPI is deferred for now, and the pinned URL is the supported install.

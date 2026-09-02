@@ -9,6 +9,23 @@ to keep in sync. Measured on four minimal journeys (a task/result pair, a regist
 correlated request, a registry you discover): 9 imports across 9 module paths became 4 across 1,
 and `contentKey` had not been reachable from the client at all.
 
+## Install
+
+The packages are GitHub release assets, installed by pinned URL, and both carry zero
+dependencies, so an install fetches nothing from any registry. Publishing to npm or PyPI is
+deferred for now ([design-storage.md "Distribution"](../agent_docs/design-storage.md) has the
+reasons); the release's `SHA256SUMS` lists both files:
+
+```sh
+npm install https://github.com/wistrand/radia/releases/download/v2026.9.0/radia-2026.9.0.tgz
+pip install https://github.com/wistrand/radia/releases/download/v2026.9.0/radia_space-2026.9.0-py3-none-any.whl
+```
+
+The URL is the pin: npm records it with an integrity hash in the lockfile, and pip verifies
+against the release when the URL carries `#sha256=<digest>` from `SHA256SUMS` (satisfies
+`--require-hashes`). Deno apps skip the tarball and import the tagged sources directly:
+`https://raw.githubusercontent.com/wistrand/radia/v2026.9.0/sdk/ts/mod.ts`.
+
 `ts/wire.ts` defines the frozen wire vocabulary and pure functions that clients and the server must
 compute identically. The runtime imports these definitions; the SDK imports nothing from `src/`.
 `test/layering.test.ts` enforces that direction for value and type imports.

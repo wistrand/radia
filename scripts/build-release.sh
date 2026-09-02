@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Build per-OS `radia` binaries and stage the SDK packages (Phase 7).
 #
-# Distribution shape (decided 2026-08-30): the BINARY installs only via `curl | sh`
-# (`docs/install.sh`, downloading the release assets `.github/workflows/release.yml` publishes).
-# npm and PyPI carry the SDKs and nothing else: no launcher, no bundled binary. Native Windows is
-# unsupported; WSL2 runs the Linux binary.
+# Distribution shape (decided 2026-08-30, SDK channel 2026-09-02): the BINARY installs only via
+# `curl | sh` (`docs/install.sh`, downloading the release assets `.github/workflows/release.yml`
+# publishes). The SDK packages staged below publish as assets on the SAME release, installed by
+# pinned URL (release.yml packs dist/npm with `npm pack` and dist/pypi with
+# scripts/build-wheel.py); nothing goes to npm or PyPI for now (deferred, not forsworn:
+# design-storage.md "Distribution"), and no package carries a launcher or binary. Native Windows
+# is unsupported; WSL2 runs the Linux binary.
 #
 #   ./scripts/build-release.sh              # every target
 #   ./scripts/build-release.sh host         # only this machine's target (fast local check)
@@ -135,5 +138,5 @@ PY
 echo
 echo "staged:"
 echo "  $OUT/bin/     compiled binaries (gzipped into release assets by .github/workflows/release.yml)"
-echo "  $OUT/npm/     radia: TS SDK + extensions, no binary (npm publish)"
-echo "  $OUT/pypi/    radia-space (imports as radia): Python SDK, no binary (build + twine upload)"
+echo "  $OUT/npm/     radia: TS SDK + extensions, no binary (release.yml: npm pack -> release asset)"
+echo "  $OUT/pypi/    radia-space (imports as radia): Python SDK, no binary (release.yml: scripts/build-wheel.py -> release asset)"
