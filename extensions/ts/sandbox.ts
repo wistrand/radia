@@ -154,10 +154,18 @@ async function readCapped(stream: ReadableStream<Uint8Array>, cap: number): Prom
  * READ is the one capability that can be granted, and only to explicit roots. Write is granted
  * only when a caller names a directory. NET, ENV, RUN, FFI and SYS are denied whatever any caller
  * passes, which is what makes a brokered channel the only way out of the jail.
+ *
+ * Every root rides in BOTH SPELLINGS, literal and resolved, wherever they differ. Deno checks the
+ * literal strings given here, while the child's RELATIVE paths resolve against the kernel-resolved
+ * cwd, and on macOS every temp dir sits behind a symlink (/var -> /private/var): granting only the
+ * literal spelling denied `Deno.writeFile("out.bin")` in an outDir cwd on a real Mac, and a
+ * `denyRead` naming only one spelling would leave the file READABLE through the other, which is why
+ * the expansion covers the deny list rather than only the allows.
  */
 export function jailArgs(opts: RunOptions, memoryMb: number, entry: string): string[] {
-  const readRoots = opts.readRoots ?? [];
-  const denyRead = opts.denyRead ?? [];
+  const readRoots = withResolved(opts.readRoots ?? []);
+  const denyRead = withResolved(opts.denyRead ?? []);
+  const writeRoots = withResolved(opts.writeRoots ?? []);
   return [
     "run",
     "--no-prompt", // a denied permission fails; it never waits for a human that isn't there
@@ -178,10 +186,42 @@ export function jailArgs(opts: RunOptions, memoryMb: number, entry: string): str
     ...(entry === "-" ? ["--ext=js"] : []), // stdin has no filename, so the dialect must be stated
     `--v8-flags=--max-old-space-size=${memoryMb}`,
     ...(readRoots.length ? [`--allow-read=${readRoots.join(",")}`] : []),
-    ...(opts.writeRoots?.length ? [`--allow-write=${opts.writeRoots.join(",")}`] : []),
+    ...(writeRoots.length ? [`--allow-write=${writeRoots.join(",")}`] : []),
     ...(denyRead.length ? [`--deny-read=${denyRead.join(",")}`] : []),
     entry,
   ];
+}
+
+/**
+ * Keep BOTH ENDS of a diagnostic, because which end carries the message depends on the language.
+ *
+ * A tail-only clip was the first answer and it is right for Python, where the exception message is
+ * the LAST line of a traceback. It is wrong for JavaScript, where `error: Uncaught ...` is the FIRST
+ * line and the frames below it are the part nobody needs: 600 characters of `file:///tmp/...`
+ * stack pushed the real cause off the front, and the failure read as an exit code with no reason.
+ * That is the same shape as the bug where two caps at opposite ends lost the cause between them.
+ * The two ends are sized for what each has to catch, not split evenly: the head only needs a first
+ * line, the tail needs a message that sits ABOVE a stack (an even split starved it and dropped the
+ * cause of a flood). Lives here because both the broker and the plain invoker owe their callers
+ * the same rule: on macOS the longer `/private/var` stack frames pushed "not brokered" clean out
+ * of the plain invoker's tail-only window.
+ */
+export function clip(text: string, head = 300, tail = 700): string {
+  if (text.length <= head + tail) return text;
+  return `${text.slice(0, head)}\n…\n${text.slice(-tail)}`;
+}
+
+/** Each path plus its resolved spelling where the two differ (see `jailArgs`). A path that cannot
+ *  be resolved is kept as given: absent, it grants and denies nothing. */
+function withResolved(paths: string[]): string[] {
+  const out = [...paths];
+  for (const p of paths) {
+    try {
+      const r = Deno.realPathSync(p);
+      if (r !== p && !out.includes(r)) out.push(r);
+    } catch { /* absent or unreadable: nothing to add */ }
+  }
+  return out;
 }
 
 /**
@@ -258,9 +298,12 @@ export function sandboxExecProfile(opts: { readRoots?: string[]; denoDir: string
  * Returning undefined is a real outcome, not a failure to handle later: a worker holding write
  * access to exactly one directory cannot make a temp dir anywhere else, and the caller then runs
  * with the cache disabled rather than with a corrupting one.
+ *
+ * Exported for the broker's Seatbelt spawn, which builds the same confined jail from its own
+ * `Deno.Command` and owes it the same cache or it corrupts the same way.
  */
 let processCacheDir: string | null | undefined;
-function jailCacheDir(given?: string): string | undefined {
+export function jailCacheDir(given?: string): string | undefined {
   if (given) return given;
   if (processCacheDir === undefined) {
     try {

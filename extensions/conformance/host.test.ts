@@ -215,7 +215,10 @@ Deno.test("[host] a module printing its own result marker cannot steer the parse
   });
 });
 
-const hasBwrap = await new Deno.Command("bwrap", { args: ["--version"], stdout: "null", stderr: "null" })
+// Through `sh` rather than spawning `bwrap` itself: a missing binary's spawn rejection leaks past
+// `.catch` as a dangling promise on macOS and kills the whole runner (broker.test.ts's `which`
+// carries the same shape for the same reason).
+const hasBwrap = await new Deno.Command("sh", { args: ["-c", "command -v bwrap"], stdout: "null", stderr: "null" })
   .output().then((o) => o.success).catch(() => false);
 
 Deno.test({

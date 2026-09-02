@@ -18,7 +18,7 @@ import { BINDING, declareBinding, treeCache, type TreeCache, WorkspaceHost } fro
 import { declareExecRequest, EXEC_REQUEST, promote } from "../ts/promotion.ts";
 import { materialize, readWorkspace, sha256Hex, treeDigestOf, writeWorkspace } from "../ts/workspace.ts";
 import { declareSandbox } from "../ts/sandbox-registry.ts";
-import { denoSandbox } from "../ts/sandbox.ts";
+import { denoSandbox, macosPython, seatbeltPythonSandbox } from "../ts/sandbox.ts";
 import { bootSpace, uniq } from "./space.ts";
 
 const PORT = 7823;
@@ -454,6 +454,48 @@ Deno.test({
       // …and the brokered write went through as the AGENT, exactly as it does from JavaScript.
       const notes = await operator.queryNewest<{ tag: string }>({ kind: "note", match: { tag: "from-python" } }, 5);
       assertEquals(notes[0].body.tag, "from-python");
+      const perms = await operator.permissions(notes[0].runtimeMeta.createdBy) as { subject: string };
+      assertEquals(perms.subject, agent);
+    });
+  },
+});
+
+Deno.test({
+  name: "[broker] a PYTHON entrypoint speaks the same frames, jailed by Seatbelt",
+  ignore: Deno.build.os !== "darwin" || !macosPython(),
+  fn: async () => {
+    await withSpace(async ({ operator, hostFor, agent }) => {
+      // The bubblewrap case above, on the macOS branch: Seatbelt IS the isolation here (Python
+      // brings no permission model for a confiner to sit under), so the broker must build the
+      // deny-default profile, and the FIFO pair has to work under it. Runs only on a real Mac.
+      await declareSandbox(operator, { ...seatbeltPythonSandbox(), name: "py-seatbelt" });
+      const host = await hostFor(
+        [
+          "import json, urllib.request",
+          "def main(record, space):",
+          "    tried = {}",
+          "    try:",
+          `        urllib.request.urlopen(${JSON.stringify(url)} + "/v0/health", timeout=2); tried["net"] = "reached"`,
+          '    except Exception as e: tried["net"] = type(e).__name__',
+          '    space.put({"kind": "note", "body": {"tag": "from-seatbelt-python"}})',
+          '    return {"kind": "exec_result", "body": {"tag": "py:" + record["body"]["job"], "tried": tried}}',
+          "",
+        ].join("\n"),
+        { sandbox: { language: "python", network: false } },
+      );
+
+      const outcomes = await host.tick();
+      assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
+      const results = await operator.queryNewest<{ tag: string; tried: Record<string, string> }>({ kind: "exec_result" }, 5);
+      assertEquals(results[0].body.tag, "py:j", "the Python entrypoint's return value is the result");
+
+      // The escape probe AGAIN, for this backend: deny-default allows no socket, so urlopen never
+      // reaches the space and the failure surfaces as URLError.
+      const tried = results[0].body.tried;
+      assertEquals(tried.net, "URLError", `a Seatbelt jail must not reach the space: ${tried.net}`);
+
+      const notes = await operator.queryNewest<{ tag: string }>({ kind: "note", match: { tag: "from-seatbelt-python" } }, 5);
+      assertEquals(notes[0].body.tag, "from-seatbelt-python");
       const perms = await operator.permissions(notes[0].runtimeMeta.createdBy) as { subject: string };
       assertEquals(perms.subject, agent);
     });
@@ -946,12 +988,15 @@ Deno.test("[broker] a sandbox claiming confinement the broker cannot build is re
       Error,
       "importsConfined",
     );
-    // A Seatbelt confiner: a real record on a Mac, and a spawn this broker has on no platform.
-    await assertRejects(
-      () => dryRunEntrypoint({ root, entrypoint: "main.ts", record, spec: denoSandbox({ confine: "sandbox-exec" }) }),
-      Error,
-      "sandbox-exec",
-    );
+    // A Seatbelt confiner off macOS: the broker HAS a Seatbelt spawn now, but only macOS has the
+    // binary, so everywhere else the spec is still refused rather than downgraded.
+    if (Deno.build.os !== "darwin") {
+      await assertRejects(
+        () => dryRunEntrypoint({ root, entrypoint: "main.ts", record, spec: denoSandbox({ confine: "sandbox-exec" }) }),
+        Error,
+        "sandbox-exec",
+      );
+    }
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -987,6 +1032,46 @@ Deno.test({
         entrypoint: "main.ts",
         record,
         spec: denoSandbox({ confine: "bubblewrap" }),
+        timeoutMs: 30_000,
+      });
+      assertEquals((dry.result.body as { imports: string }).imports, "blocked", "the record's confiner must actually run");
+    } finally {
+      await Deno.remove(root, { recursive: true });
+      await Deno.remove(outside, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name: "[broker] the Seatbelt confiner is DELIVERED to a brokered run, and closes the import hole",
+  ignore: Deno.build.os !== "darwin",
+  fn: async () => {
+    // The bubblewrap DELIVERED case, on the macOS branch: same canary (a JSON file outside every
+    // root, reachable from the plain jail because module loading ignores the read permissions),
+    // denied by the profile's `(deny file-read*)` rather than by a mount namespace. Runs only on a
+    // real Mac, which is the rule macOS confinement ships under.
+    const record = { id: "01SEATBELT", kind: EXEC_REQUEST, body: {} } as unknown as RadiaRecord;
+    const root = await Deno.makeTempDir();
+    const outside = await Deno.makeTempDir();
+    const canary = `${outside}/canary.json`;
+    await Deno.writeTextFile(canary, JSON.stringify({ reached: true }));
+    try {
+      await Deno.writeTextFile(
+        `${root}/main.ts`,
+        `export default async () => {
+          try {
+            await import(${JSON.stringify(`file://${canary}`)}, { with: { type: "json" } });
+            return { kind: "exec_result", body: { imports: "REACHED" } };
+          } catch {
+            return { kind: "exec_result", body: { imports: "blocked" } };
+          }
+        };\n`,
+      );
+      const dry = await dryRunEntrypoint({
+        root,
+        entrypoint: "main.ts",
+        record,
+        spec: denoSandbox({ confine: "sandbox-exec" }),
         timeoutMs: 30_000,
       });
       assertEquals((dry.result.body as { imports: string }).imports, "blocked", "the record's confiner must actually run");

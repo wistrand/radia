@@ -234,6 +234,11 @@ Traps for the implementer, all hit during verification:
   root it was GIVEN", which runs a real subprocess under that grant and FAILS ON LINUX TOO, because
   Deno checks the literal path on both platforms. A macOS-discovered bug with a cross-platform
   guard, which is the shape to aim for.
+- The same symlink bites the CHILD's relative paths: the kernel reports the cwd RESOLVED, so a
+  jailed `Deno.writeFile("out.bin")` in an output-tree cwd resolves to `/private/var/…` while
+  `--allow-write` named `/var/…`, and was denied on a real Mac (2026-09-02, the broker
+  verification). `jailArgs` therefore grants every root in BOTH spellings, `denyRead` included,
+  because a deny naming one spelling leaves the file readable through the other.
 - The profile above bounds READS ONLY, so a jailed Deno still WRITES its global caches
   (`~/Library/Caches/deno/*_cache_v2`, written regardless of `--no-remote`), and
   writable-but-unreadable SQLite corrupts them for the whole machine (`SQLITE_IOERR_SHORT_READ`
@@ -357,23 +362,29 @@ has to find out whether a confiner actually holds.
 confiner by default (`selectJavascriptJail`), so the fallback to the plain jail is the loud
 exception rather than the silent posture the deployment surface shipped with.
 
-**PLANNED, blocked on a real Mac: a Seatbelt spawn for the BROKER.** `runBrokered` has bubblewrap
-and plain-Deno branches only, so on macOS the plain invoker and the chat's jail are confined while
-a brokered binding is not; since 2026-09-02 that gap is loud (a spec claiming `sandbox-exec` is
-refused, `radia host` warns, `--require-confinement` refuses) instead of silent. The ingredients
-exist (`sandboxExecProfile` exported, `jailArgs` covers the FIFO control dir, writes ride the
-profile's `(allow default)` under Deno's flags), so the branch is ~20 lines mirroring the bwrap
-one. It waits because macOS confinement ships only verified on real hardware (the probe's first
-Mac boot failed on the getcwd trap, and FIFOs under a profile are that kind of detail): write it
-under the boot probe, prove the probe red against a weakened profile, then drop the refusal.
-It refuses EVERYTHING rather than declining one tool: a procedure is code execution too, so serving
-those while withholding `run_javascript` would honour the letter of the flag and none of its intent.
-Guarded in `smoke-runners.ts`, with the failing condition made honestly (a worker launched
-`--allow-run=deno` cannot spawn `bwrap`, so nothing can confine however capable the host is).
-The guard is BOUNDED on purpose. The regression it exists for is a flag that is read and never acted
-on, and that shape leaves the worker RUNNING: waiting on it would hang the suite rather than fail
-it, which is the least useful way for a test to be right. Planted, it now fails in 20s saying "the
-flag was read and ignored".
+`--require-confinement` refuses EVERYTHING rather than declining one tool: a procedure is code
+execution too, so serving those while withholding `run_javascript` would honour the letter of the
+flag and none of its intent. Guarded in `smoke-runners.ts`, with the failing condition made
+honestly (a worker launched `--allow-run=deno` cannot spawn `bwrap`, so nothing can confine however
+capable the host is). The guard is BOUNDED on purpose: the regression it exists for is a flag that
+is read and never acted on, and that shape leaves the worker RUNNING, so waiting on it would hang
+the suite rather than fail it. Planted, it fails in 20s saying "the flag was read and ignored".
+
+**BUILT (2026-09-02), verified on the Mac it waited for: the broker's Seatbelt spawn.**
+`runBrokered` grew both macOS branches: the Deno jail under `sandboxExecProfile` (the shared
+per-process `jailCacheDir` in both the profile and `DENO_DIR`; the cwd is always set here, so the
+getcwd trap cannot bite) and Python under `seatbeltPythonProfile` (`isolation: "sandbox-exec"`:
+Seatbelt IS the isolation there). The FIFO pair needs nothing new: a FIFO is only
+file-read/file-write and the control dir rides the same root lists as under bwrap. Off macOS a
+`sandbox-exec` spec is still refused, never downgraded. Shipped under this plan's own rule: the
+darwin-gated "Seatbelt confiner is DELIVERED" case was proven RED against a weakened profile (deny
+dropped, canary REACHED) before it passed, the brokered-Python case runs beside it, `radia host`
+now hands Seatbelt to brokered bindings (its "no Seatbelt spawn" warning and refusal are deleted),
+and `deno task test:extensions` passes whole on macOS 26.4.1 (arm64, Deno 2.9.5). Verifying
+surfaced two pre-existing defects, both fixed cross-platform: the literal-spelling permission
+grants (the `jailArgs` bullet in phase 4's trap list) and the plain invoker's tail-only stderr
+clip, which dropped "not brokered" under the Mac's longer stack frames (`clip` now lives in
+`sandbox.ts` and both invokers share it).
 
 ## Open questions
 
