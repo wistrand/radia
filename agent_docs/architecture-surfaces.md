@@ -477,7 +477,11 @@ model can report a stuck lease and do nothing about it.
 `deno task release` compiles four targets (Linux and macOS, x64 and arm64; native Windows is
 unsupported, WSL2 runs the Linux binary) and stages the SDK packages: `dist/npm/radia` (TS SDK +
 `extensions/` as source) and `dist/pypi` (the Python SDK, published as `radia-space` since the bare
-PyPI name is taken; it still imports as `radia`). Neither carries a binary or launcher:
+PyPI name is taken; it still imports as `radia`). Since 2026-09-02 both publish as RELEASE ASSETS
+on the same tag: `release.yml` packs them (`npm pack` + `scripts/build-wheel.py`, stdlib only) into
+the same `SHA256SUMS`, installs pin the release URL, and nothing goes to npm or PyPI (deferred, not
+forsworn: [design-storage.md](design-storage.md) "Distribution" has the reasons and the
+trusted-publishing re-entry path). Neither carries a binary or launcher:
 the binary's one supported install is `curl | sh` (`docs/install.sh`, downloading the gzipped
 release assets `.github/workflows/release.yml` attaches to a `v*` tag and verifying them against
 the release's `SHA256SUMS`; `test/docs.test.ts` holds the target list, the asset names and the

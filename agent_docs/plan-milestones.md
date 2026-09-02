@@ -76,8 +76,9 @@ context, lease renewed internally), the **Python SDK** at parity (stdlib only), 
 local credentials, and `deno task release` (per-OS binaries + SDK-only npm/pip packages).
 The binary installs only via `curl | sh` (`docs/install.sh`; decided 2026-08-30, replacing the
 launcher-package plan), native Windows is unsupported (WSL2 runs the Linux binary), and the
-path is live: `v2026.8.0` is released and the installer verified against it. The SDK packages
-are still unpublished.
+path is live: `v2026.8.0` is released and the installer verified against it. Since 2026-09-02 the
+SDK packages attach to each release as assets, installed by pinned URL; the registries stay unused
+([design-storage.md](design-storage.md) "Distribution").
 Full per-phase record in
 [plan-m0-implementation.md](plan-m0-implementation.md).
 

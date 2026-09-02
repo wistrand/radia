@@ -80,6 +80,12 @@
       The four programs do not import or address one another. Their integration consists of the
       kinds and patterns they publish to the shared space.
     </p>
+    <p>
+      The same pipeline runs on the Python SDKs: <code>python3 examples/pipeline-py/demo.py</code>
+      against a space started with <code>--ext</code>. Its workers also advertise their ops as
+      presence-policed capabilities, so a worker that dies takes its tool out of discovery when
+      its beat ages out.
+    </p>
 
     <figure>
       <svg viewBox="0 0 760 250" role="img" aria-label="A job splitting into pieces, each handled separately, then collected into one summary">
