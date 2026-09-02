@@ -15,7 +15,7 @@ export function workerLoop(client: RadiaClient, op: string, signal?: AbortSignal
   if (!tools[op]) throw new Error(`unknown tool op: ${op}`);
   return agentLoop<{ input: unknown; jobId?: string; index?: number; total?: number }>(client, {
     name: `worker:${op}`,
-    patterns: [{ kind: "task", match: { op } }],
+    patterns: [{ kind: "pipeline_task", match: { op } }],
     signal,
     log,
     handle: async (rec) => {
@@ -24,7 +24,7 @@ export function workerLoop(client: RadiaClient, op: string, signal?: AbortSignal
       const output = tools[op](b.input);
       // Result is a fact linked to its task (ack sets parent_ids = [task]).
       return {
-        kind: "result",
+        kind: "pipeline_result",
         body: { op, output, jobId: b.jobId, index: b.index, total: b.total },
       };
     },

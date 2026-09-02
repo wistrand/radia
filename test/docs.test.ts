@@ -312,6 +312,34 @@ Deno.test("docs: SDK install URLs pin this build's version and name assets the r
   assert(workflow.includes("build-wheel.py"), "release.yml no longer builds the wheel the docs point at");
 });
 
+Deno.test("docs: the playground page calls only client and jail-space methods that exist", async () => {
+  // docs/playground/index.html is COMMITTED page code driving the SDK the bundle ships, but
+  // nothing held it to the client's surface: when bare `query(pattern, limit)` was removed
+  // (plan-bounded-reads), the page kept calling it and every "run in the jail" click answered
+  // "client.query is not a function". The method set is an over-approximation (any 2-indented
+  // member of client.ts counts), which errs toward missing a typo, never toward crying wolf.
+  const page = await Deno.readTextFile(join(docsDir, "playground", "index.html"));
+  const clientSrc = await Deno.readTextFile(new URL("../sdk/ts/client.ts", import.meta.url));
+  const methods = new Set([...clientSrc.matchAll(/^ {2}(?:async )?(\w+)\s*[<(]/gm)].map((m) => m[1]));
+  assert(methods.has("put") && methods.has("readNewest"), "failed to extract RadiaClient's methods");
+  for (const m of page.matchAll(/\bclient\.(\w+)\(/g)) {
+    assert(methods.has(m[1]), `playground/index.html calls client.${m[1]}(), which RadiaClient does not have`);
+  }
+
+  // The jail snippet on the page speaks the BROKER's space shim, a normative surface with its
+  // own vocabulary; hold the page to the shim the broker actually serves.
+  const broker = await Deno.readTextFile(new URL("../extensions/ts/broker.ts", import.meta.url));
+  const shim = broker.match(/const space = \{([\s\S]*?)\};/);
+  assert(shim, "could not find the broker's jail-space shim in extensions/ts/broker.ts");
+  const jailMethods = new Set([...shim[1].matchAll(/(\w+):/g)].map((m) => m[1]));
+  for (const m of page.matchAll(/\bspace\.(\w+)\(/g)) {
+    assert(
+      jailMethods.has(m[1]),
+      `playground/index.html's jail snippet calls space.${m[1]}(), which the broker shim does not offer`,
+    );
+  }
+});
+
 Deno.test("docs: the SDK packages the install URLs point at are dependency-free", async () => {
   // The site claims zero dependencies, and the install story rests on it: with no dependency
   // tree, a pinned-URL install fetches nothing from npm or PyPI at all. A bare-specifier import

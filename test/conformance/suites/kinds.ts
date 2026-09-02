@@ -436,4 +436,39 @@ export const kindSuites: Suite[] = [
       );
     },
   },
+  {
+    name: "a bare retirement withdraws the kind on every path, and a redeclaration revives it",
+    run: async (adapter) => {
+      // The natural tombstone carries NO indexedPaths (`radia put kind_def '{"kind":x,
+      // "retired":true}'` sends exactly that), and registering it threw a TypeError AFTER the
+      // commit: the retire succeeded but answered 500, the kind stayed live in this process until
+      // restart, and on a fresh instance `refreshKind` turned every query naming the kind into a
+      // 500 instead of unknown_kind. The padded `indexedPaths: []` tombstone above never hit any
+      // of it, which is why this case retires bare.
+      const space = new Space(adapter);
+      await space.put({ kind: "kind_def", body: { kind: "ephemeral", indexedPaths: [{ path: "t", type: "keyword" }] } });
+      await space.put({ kind: "ephemeral", body: { t: "x" } });
+      await space.put({ kind: "kind_def", body: { kind: "ephemeral", retired: true } });
+      assertEquals(
+        await errorCode(() => space.query({ kind: "ephemeral" }, 5)),
+        "unknown_kind",
+        "the writing instance must unregister a retired kind, not keep routing it",
+      );
+
+      // A fresh instance computes the same absence from the log: loadKinds drops the tombstone,
+      // and refreshKind reports "no improvement" rather than registering it.
+      const restarted = new Space(adapter);
+      await restarted.loadKinds();
+      assertEquals(
+        await errorCode(() => restarted.query({ kind: "ephemeral" }, 5)),
+        "unknown_kind",
+        "a fresh instance must answer unknown_kind for a retired kind, not crash on its tombstone",
+      );
+
+      // A re-put after a withdrawal REVIVES (the registry rule), and the revived kind still reads
+      // the records written before the retirement.
+      await space.put({ kind: "kind_def", body: { kind: "ephemeral", indexedPaths: [{ path: "t", type: "keyword" }] } });
+      assertEquals((await space.query({ kind: "ephemeral", match: { t: "x" } }, 5)).length, 1);
+    },
+  },
 ];

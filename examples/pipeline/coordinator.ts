@@ -23,15 +23,15 @@ export async function seedAndAwait(client: RadiaClient, text: string): Promise<v
   await registerDemoKinds(client);
 
   // A job to be planned + fanned out, and a standalone task that only worker:reverse matches.
-  const job = await client.put({ kind: "job", body: { text } });
-  await client.put({ kind: "task", body: { op: "reverse", input: "radia" } });
+  const job = await client.put({ kind: "pipeline_job", body: { text } });
+  await client.put({ kind: "pipeline_task", body: { op: "reverse", input: "radia" } });
   console.log(`[coordinator] posted job ${job.id.slice(-6)} ("${text}") + a standalone reverse task`);
 
-  const summary = await pollFor(() => client.readOne<{ text: string }>({ kind: "summary", match: { jobId: job.id } }));
+  const summary = await pollFor(() => client.readOne<{ text: string }>({ kind: "pipeline_summary", match: { jobId: job.id } }));
   if (summary) console.log(`[coordinator] job summary: "${summary.body.text}"`);
   else console.log(`[coordinator] no summary yet (are the planner/workers/aggregator running?)`);
 
-  const reversed = await pollFor(() => client.readOne<{ output: string }>({ kind: "result", match: { op: "reverse" } }));
+  const reversed = await pollFor(() => client.readOne<{ output: string }>({ kind: "pipeline_result", match: { op: "reverse" } }));
   if (reversed) console.log(`[coordinator] standalone reverse -> "${reversed.body.output}"`);
 }
 
