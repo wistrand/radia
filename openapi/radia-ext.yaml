@@ -1,0 +1,556 @@
+openapi: 3.1.0
+info:
+  title: Radia extension bindings
+  version: 0.1.0
+  description: >
+    HTTP bindings for the extension conventions (workspaces, capabilities, presence, promotion,
+    bindings, compartment audit, and a seed-and-wait for claimable work), served by
+    `radia serve-ext` or co-hosted at `/ext/` with `radia dev|serve --ext`. This spec is NOT
+    frozen: unlike `radia.yaml`, these routes are versioned per extension (the `/v1/` path
+    segment) and evolve with the binary, so pin the binary version, not this file. The spec
+    DESCRIBES the served routes and never generates them; `test/extopenapi.test.ts` holds it to
+    the route table in `src/surfaces/extserve.ts` in both directions, request fields included
+    (agent_docs/plan-extension-http.md).
+
+    Every request except `GET /ext/health` authenticates with `Authorization: Bearer <token>`,
+    where the token is a run token used as-is or a definition token the facade exchanges for the
+    caller. The facade holds no credential of its own: every operation runs under the caller's
+    authority against `/v0`, so authorization failures are the space's answers relayed. Unknown
+    request-body fields are refused BY NAME (400), never dropped: a misspelled field that narrows
+    would otherwise widen. Request bodies are capped at 32 MiB (413). CORS is permissive
+    (Bearer-only auth, no cookies), and every response is `cache-control: no-store`.
+servers:
+  - url: /ext
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      summary: The served extensions and their versions. No authentication.
+      security: []
+      responses:
+        "200":
+          description: '`{ok: true, service: "radia-ext", extensions: {name: version}}`.'
+  /workspace/v1/workspaces:
+    get:
+      summary: Every live workspace, latest-wins per name, with fork detection. Reports `complete`.
+      parameters:
+        - name: conversationId
+          in: query
+          schema: { type: string }
+        - name: scope
+          in: query
+          description: JSON object of scalars; bounds the read to one compartment.
+          schema: { type: string }
+      responses:
+        "200":
+          description: "`{workspaces, complete, scanned}` (`summarizeWorkspaces`)."
+    post:
+      summary: Store a tree. Content-keyed on the tree digest; an identical re-write dedupes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceWrite"
+      responses:
+        "200":
+          description: "`{id, treeDigest, files, deduped, forked, entrypoint?}`."
+  /workspace/v1/workspaces/{name}:
+    get:
+      summary: The current manifest for a name, or 404.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+        - name: conversationId
+          in: query
+          schema: { type: string }
+        - name: scope
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: The manifest plus its record id.
+  /workspace/v1/workspaces/{name}/files/{path}:
+    get:
+      summary: One file's bytes. `path` may contain slashes.
+      description: >
+        Served under the main-origin paint rule: raster images, audio and video inline,
+        everything else `content-disposition: attachment`, always `nosniff` under a
+        no-privilege CSP. The file's sha256 rides in `x-radia-digest`.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+        - name: path
+          in: path
+          required: true
+          description: >
+            The file's path within the tree; MAY contain slashes. OpenAPI path parameters match
+            one segment, so a strict code generator may treat this as single-segment: send a
+            multi-segment path as-is or percent-encode the slashes (`a%2Fb.txt`) — the facade
+            decodes the whole path before matching, so both reach the same file.
+          schema: { type: string }
+        - name: conversationId
+          in: query
+          schema: { type: string }
+        - name: scope
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: The bytes, under the file's media type.
+  /workspace/v1/workspaces/{name}/edit:
+    post:
+      summary: Edits, additions and removals as ONE new version. Validates everything, then writes once.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceEdit"
+      responses:
+        "200":
+          description: "`{id, treeDigest, files, changed, added, removed, preview, forked}`."
+  /workspace/v1/declare:
+    post:
+      summary: Declare the `workspace` kind (setup; needs `kind_def:put`).
+      responses:
+        "200":
+          description: "`{declared: \"workspace\"}`."
+  /workspace/v1/digest:
+    post:
+      summary: The normative tree digest over a caller-supplied file list, for verification.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Digest"
+      responses:
+        "200":
+          description: "`{treeDigest: \"t1:<hex>\"}`."
+  /capability/v1/declare:
+    post:
+      summary: Declare the `capability` kind with its contentKey (setup).
+      responses:
+        "200":
+          description: "`{declared: \"capability\"}`."
+  /capability/v1/publish:
+    post:
+      summary: Advertise one tool. Handles the supersede and revive anchors server-side.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CapabilityPublish"
+      responses:
+        "200":
+          description: "`{published: <tool name>}`."
+  /capability/v1/retire:
+    post:
+      summary: Withdraw one advertisement (a `retired` successor; the audit trail survives).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CapabilityRetire"
+      responses:
+        "200":
+          description: "`{retired: <tool name>}`."
+  /capability/v1/tools:
+    get:
+      summary: The one-name-per-tool list a model can be handed, optionally policed by presence.
+      description: >
+        Presence policing FAILS OPEN: a view the caller could not get polices nothing and is
+        reported as `policed: false`, because a failed read must not strip a working fleet's
+        tool list.
+      parameters:
+        - name: scope
+          in: query
+          schema: { type: string }
+        - name: presenceKind
+          in: query
+          schema: { type: string }
+        - name: ttlMs
+          in: query
+          schema: { type: number }
+        - name: refreshMs
+          in: query
+          schema: { type: number }
+        - name: onConflict
+          in: query
+          description: '`withhold` (default) or `newest`.'
+          schema: { type: string }
+      responses:
+        "200":
+          description: "`{tools, conflicts, unserved, complete, scanned, presence?}`."
+  /presence/v1/declare:
+    post:
+      summary: Declare a presence kind (no contentKey, retention 4x the TTL; setup).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PresenceDeclare"
+      responses:
+        "200":
+          description: "`{kind, ttlMs, refreshMs, defaultRetentionSeconds}`."
+  /presence/v1/beat:
+    post:
+      summary: One beat, keyed per refresh window, so a repeat inside a window replays.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PresenceBeat"
+      responses:
+        "200":
+          description: "`{ok: true, refreshMs}`; call again each `refreshMs`."
+  /presence/v1/retire:
+    post:
+      summary: Say this instance stopped serving the subject (a windowed tombstone).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PresenceRetire"
+      responses:
+        "200":
+          description: "`{ok: true}`."
+  /presence/v1/live:
+    get:
+      summary: Who is alive now, bounded by relevance (the TTL horizon), with `complete`.
+      parameters:
+        - name: kind
+          in: query
+          required: true
+          schema: { type: string }
+        - name: subject
+          in: query
+          schema: { type: string }
+        - name: ttlMs
+          in: query
+          schema: { type: number }
+        - name: refreshMs
+          in: query
+          schema: { type: number }
+        - name: maxScan
+          in: query
+          schema: { type: number }
+      responses:
+        "200":
+          description: "`{live: {subject: [instances]}, scanned, complete}`."
+  /turn/v1/seed:
+    post:
+      summary: Put a record and optionally wait for a result descended from it.
+      description: >
+        Work ENTERS the space and a worker claims it; HTTP carries the record in and the result
+        out. On a wait failure the response still carries `seedId` (the seed is written), so the
+        retry is `GET result`, never a duplicating re-seed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TurnSeed"
+      responses:
+        "200":
+          description: "`{seedId, result?}`; `{seedId, result: null, timedOut: true}` on timeout."
+  /turn/v1/result:
+    get:
+      summary: Long-poll for a result descended from a seed. `timeoutMs` 0 checks once.
+      parameters:
+        - name: seed
+          in: query
+          required: true
+          schema: { type: string }
+        - name: kind
+          in: query
+          required: true
+          schema: { type: string }
+        - name: timeoutMs
+          in: query
+          schema: { type: number }
+      responses:
+        "200":
+          description: "`{seedId, result}` or `{seedId, result: null, timedOut: true}`."
+  /permissions/v1/scopes:
+    get:
+      summary: Which pattern-scope fields the caller's own grants bind, per kind.
+      description: >
+        DISCOVERY, never a fill: patterns union every grant on a kind whatever operation it
+        permits, so which one to pass as a write's `scope` stays the caller's choice. The
+        stateless replacement for the MCP adapter's learned-from-refusal label.
+      responses:
+        "200":
+          description: "`{principal, subject, scopes: [{kind, operations, patterns, …}], note}`."
+  /promotion/v1/declare:
+    post:
+      summary: Declare the `exec_request` kind (setup).
+      responses:
+        "200":
+          description: "`{declared: \"exec_request\"}`."
+  /promotion/v1/pins:
+    get:
+      summary: What a principal is pinned to on a tier, read from the grants that enforce it.
+      parameters:
+        - name: principal
+          in: query
+          required: true
+          schema: { type: string }
+        - name: tier
+          in: query
+          required: true
+          schema: { type: string }
+        - name: kind
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: "`{principal, tier, digests}`; two digests mean a rotation in flight."
+  /promotion/v1/promote:
+    post:
+      summary: Pin a tier to a digest (grant first, then retire the old pin). Operator-only by relay.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Promote"
+      responses:
+        "200":
+          description: "`{digest, tier, granted, retired}`."
+  /promotion/v1/rollback:
+    post:
+      summary: The same operation pointed backwards, named for the audit trail.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Promote"
+      responses:
+        "200":
+          description: "`{digest, tier, granted, retired}`."
+  /host/v1/declare:
+    post:
+      summary: Declare the `binding` kind (setup). Bindings themselves are written by deployment.
+      responses:
+        "200":
+          description: "`{declared: \"binding\"}`."
+  /host/v1/bindings:
+    get:
+      summary: Every live binding, latest-wins per agent.
+      parameters:
+        - name: agent
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: "`{bindings: [{agent, workspaceDigest, entrypoint, …}]}`."
+  /compartment/v1/audit:
+    get:
+      summary: Who can get data OUT of a compartment, from the grants that decide it.
+      parameters:
+        - name: inside
+          in: query
+          required: true
+          description: Comma-separated compartment kinds.
+          schema: { type: string }
+        - name: field
+          in: query
+          description: The pattern field membership is scoped by (default `compartment`).
+          schema: { type: string }
+      responses:
+        "200":
+          description: "`{crossers, unscopedArtifact, opsPowers, caveats}`; caveats always populated."
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: A run token, or a definition token the facade exchanges for the caller.
+  schemas:
+    WorkspaceWrite:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: { type: string }
+        owner:
+          type: string
+          description: Defaults to the caller's durable name.
+        conversationId: { type: string }
+        files:
+          type: object
+          additionalProperties: { type: string }
+          description: path -> text contents. Bytes go in `filesBase64`.
+        filesBase64:
+          type: object
+          additionalProperties: { type: string }
+        attach:
+          type: object
+          additionalProperties: { type: string }
+          description: path -> an artifact id that already exists; no bytes move.
+        modes:
+          type: object
+          additionalProperties: { type: string, enum: ["100644", "100755"] }
+        ignore:
+          type: array
+          items: { type: string }
+        entrypoint: { type: string }
+        basedOn: { type: string }
+        taint:
+          type: array
+          items: { type: string }
+        meta:
+          type: object
+          description: Scalar app fields stamped on every artifact and the manifest.
+        scope:
+          type: object
+          description: Scalar fields bounding the predecessor lookup AND labelling the write.
+    WorkspaceEdit:
+      type: object
+      additionalProperties: false
+      properties:
+        conversationId: { type: string }
+        edits:
+          type: array
+          items:
+            type: object
+            description: One change; content form (`oldString`) or range form (`startLine`…). See `WorkspaceEdit` in extensions/ts/workspace.ts.
+        add:
+          type: object
+          additionalProperties: { type: string }
+        addBase64:
+          type: object
+          additionalProperties: { type: string }
+        attach:
+          type: object
+          additionalProperties: { type: string }
+        modes:
+          type: object
+          additionalProperties: { type: string, enum: ["100644", "100755"] }
+        remove:
+          type: array
+          items: { type: string }
+        entrypoint: { type: string }
+        meta: { type: object }
+        scope: { type: object }
+    Digest:
+      type: object
+      additionalProperties: false
+      required: [files]
+      properties:
+        files:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string }
+              digest: { type: string }
+              mode: { type: string, enum: ["100644", "100755"] }
+    CapabilityPublish:
+      type: object
+      additionalProperties: false
+      required: [def]
+      properties:
+        def:
+          type: object
+          description: 'A ToolDef: `{type: "function", function: {name, description, parameters}}`.'
+        provider: { type: string }
+        scope: { type: object }
+        presence:
+          type: boolean
+          description: Only for a provider something actually beats for.
+    CapabilityRetire:
+      type: object
+      additionalProperties: false
+      required: [tool, provider]
+      properties:
+        tool: { type: string }
+        provider: { type: string }
+        supersedes: { type: string }
+        scope: { type: object }
+    PresenceDeclare:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind: { type: string }
+        ttlMs: { type: number }
+        refreshMs: { type: number }
+    PresenceBeat:
+      type: object
+      additionalProperties: false
+      required: [kind, subject, instance]
+      properties:
+        kind: { type: string }
+        ttlMs: { type: number }
+        refreshMs: { type: number }
+        subject: { type: string }
+        instance: { type: string }
+    PresenceRetire:
+      type: object
+      additionalProperties: false
+      required: [kind, subject, instance]
+      properties:
+        kind: { type: string }
+        ttlMs: { type: number }
+        refreshMs: { type: number }
+        subject: { type: string }
+        instance: { type: string }
+    TurnSeed:
+      type: object
+      additionalProperties: false
+      required: [kind, body]
+      properties:
+        kind: { type: string }
+        body: {}
+        key:
+          type: string
+          description: Idempotency key; a retried seed replays instead of duplicating.
+        parentIds:
+          type: array
+          items: { type: string }
+        clientMeta: { type: object }
+        availableAt: { type: string }
+        deadlineAt: { type: string }
+        retentionUntil: { type: string }
+        taint:
+          type: array
+          items: { type: string }
+        result:
+          type: object
+          description: '`{kind, timeoutMs?}`: wait for a record of this kind descended from the seed.'
+    Promote:
+      type: object
+      additionalProperties: false
+      required: [digest, tier, pins]
+      properties:
+        digest: { type: string }
+        tier: { type: string }
+        pins:
+          type: array
+          items:
+            type: object
+            properties:
+              principal: { type: string }
+              operations:
+                type: array
+                items: { type: string }
+        kind: { type: string }

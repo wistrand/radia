@@ -288,7 +288,13 @@ runtime gained (`ServerOptions.mount`, a `{prefix, handler}` pair that refuses `
 the entry point wires the surface's handler in as a VALUE, the runtime forwards the prefix and
 learns nothing, and the mounted facade still relays `/v0` over loopback rather than touching
 `Space`. Default port when standalone is 7791, since 7788+7789 are a space's two ports and
-git-serve holds 7790.
+git-serve holds 7790. The route groups are workspace, capability, presence, turn (seed-and-wait),
+promotion, host bindings, compartment audit, and `permissions/v1/scopes`, which surfaces the
+caller's own pattern-scope fields so a stateless app can pass `scope` explicitly instead of
+learning the label from a refusal the way the MCP adapter does. `test/extserve.test.ts` is the
+guard: every case runs an operation through the binding OR the direct TS API and verifies it
+through the other, and its python3-gated case drives `sdk/py/radia_ext.py`, the zero-choreography
+Python wrapper the pip package ships as `radia.ext`.
 
 The **workspace-agent verbs** (`promote`/`rollback`/`pins`/`bind`/`bindings`/`host`/`compartment`)
 are the same move a third time, and the best illustration of what "a surface may import a
