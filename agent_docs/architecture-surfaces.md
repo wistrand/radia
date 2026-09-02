@@ -278,6 +278,18 @@ leaves a server only SIGKILL can stop; use the abort-signal shape `radia dev` al
 `exit` outside `src/main.ts` is not allowed. And a space binds TWO ports (`--port` and the artifact
 origin at `port + 1`), so the obvious neighbouring default collided with it every time.
 
+`serve-ext` is the same slot generalised (`src/surfaces/extserve.ts`,
+[plan-extension-http.md](plan-extension-http.md)): the extension conventions bound as HTTP routes
+under `/ext/{extension}/v1/…`, for apps in languages the TS extensions cannot reach. It holds ZERO
+credentials: every request runs under the caller's own Bearer token, run or definition (the SDK
+exchanges the latter on its first refusal), so the facade adds no authority. The same routes
+co-host on the space's own port with `radia dev|serve --ext`, through the one generic hook the
+runtime gained (`ServerOptions.mount`, a `{prefix, handler}` pair that refuses `/v0/` and `/ui/`):
+the entry point wires the surface's handler in as a VALUE, the runtime forwards the prefix and
+learns nothing, and the mounted facade still relays `/v0` over loopback rather than touching
+`Space`. Default port when standalone is 7791, since 7788+7789 are a space's two ports and
+git-serve holds 7790.
+
 The **workspace-agent verbs** (`promote`/`rollback`/`pins`/`bind`/`bindings`/`host`/`compartment`)
 are the same move a third time, and the best illustration of what "a surface may import a
 convention" buys: promotion is a grant rotation and a binding is a record, so all seven compose

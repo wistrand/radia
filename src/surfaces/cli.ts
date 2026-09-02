@@ -17,6 +17,7 @@ import { newestByKey, unsafeAsPopulation } from "../../sdk/ts/registry.ts";
 import { exportWorkspaceGit } from "../../extensions/ts/git.ts";
 import { buildThreadSpans, postTraces, recordSpans, toResourceSpans, traceIdOf } from "../../extensions/ts/otlp.ts";
 import { basicPassword, gitHandler } from "../../extensions/ts/git-http.ts";
+import { bearerClientFor, extHandler } from "./extserve.ts";
 import { summarizeWorkspaces } from "../../extensions/ts/workspace.ts";
 import { declareExecRequest, pinnedDigests, promote } from "../../extensions/ts/promotion.ts";
 import { BINDING, type Binding, declareBinding, type Outcome, readBindings, sandboxInvoker, WorkspaceHost } from "../../extensions/ts/host.ts";
@@ -140,6 +141,14 @@ Workspaces (a convention, not a runtime concept: see extensions/)
                                       Read-only; push is refused. Authenticate with a
                                       definition token as the HTTP password, so a clone reads
                                       what that principal can and \`radia revoke\` stops it
+  serve-ext [--port <n>] [--host <h>] serve the extension conventions over HTTP, for apps in
+                                      languages the TS extensions cannot reach: workspace
+                                      read/write, capability publish + tool discovery, presence
+                                      beats, and a seed-and-wait for claimable work. Holds no
+                                      credential: every request runs under the caller's own
+                                      Bearer token (agent_docs/plan-extension-http.md). The same
+                                      routes co-host on the space's own port with
+                                      \`radia dev --ext\` / \`radia serve --ext\`
 
 Workspace agents (a workspace digest as a principal's code; also a convention, see extensions/)
   promote <digest> --tier <t> --pin <principal>:<op,op>…  [--kind <k>]
@@ -1964,6 +1973,47 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           : `  git clone http://you:$(radia login <principal> --compact-definition)@127.0.0.1:${port}/<workspace>.git`,
       );
       console.log(`  radia workspaces  lists what is there. Read-only: push is refused.`);
+      const unlisten = onShutdown(() => stopping.abort());
+      try {
+        await server.finished;
+      } finally {
+        unlisten();
+      }
+      return 0;
+    }
+
+    case "serve-ext": {
+      // The extension conventions over HTTP (agent_docs/plan-extension-http.md): a client that
+      // happens to listen, like `git-serve`. ZERO credentials held: every request relays the
+      // CALLER's own Bearer token, so the facade adds no authority and revocation stays the
+      // space's. The routes are a binding of the extension contract, never the frozen `/v0` one.
+      const port = Number(flag(argv, "--port") ?? 7791);
+      const handler = extHandler(
+        bearerClientFor(client.base),
+        (entry) => {
+          // 401 is HTTP Basic's opening move over on git-serve; here it is simply a caller that
+          // must authenticate, and 404s are the caller's to read. Print what indicates a problem
+          // on THIS side of the relay.
+          if (entry.status >= 400 && entry.status !== 401 && entry.status !== 404) {
+            console.error(`  ${entry.status} ${entry.method} ${entry.path}`);
+          }
+        },
+      );
+      const stopping = new AbortController();
+      let server;
+      try {
+        server = serve({ port, hostname: flag(argv, "--host") ?? "127.0.0.1", signal: stopping.signal }, handler);
+      } catch (e) {
+        if ((e as Error).name === "AddrInUse" || /already in use/i.test((e as Error).message ?? "")) {
+          console.error(`error: port ${port} is already in use. Pick another with --port <n>.`);
+          return 1;
+        }
+        throw e;
+      }
+      console.log(`extension bindings on http://127.0.0.1:${port}  (reading ${client.base})`);
+      console.log(`  GET /health names the extensions and versions; routes are /ext/<extension>/v1/…`);
+      console.log(`  every request needs Authorization: Bearer <token> — a run token, or a definition`);
+      console.log(`  token this process exchanges for the caller. Nothing runs under its own credential.`);
       const unlisten = onShutdown(() => stopping.abort());
       try {
         await server.finished;

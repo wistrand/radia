@@ -22,6 +22,7 @@ import {
   saveCredential,
 } from "./credentials.ts";
 import { runCli } from "./surfaces/cli.ts";
+import { bearerClientFor, extHandler } from "./surfaces/extserve.ts";
 import { runMcp } from "./surfaces/mcp/server.ts";
 import { flag, has, optionalFlag } from "./flags.ts";
 import { defaultBlobDir, defaultDbPath, defaultKekPath, defaultSealPath, ensureParent, radiaDir } from "./paths.ts";
@@ -43,12 +44,14 @@ const USAGE = `radia <command>
 
   dev [--port <n>] [--host <addr>] [--storage pglite|sqlite|postgres] [--db [path|url]]
       [--blobs <dir|memory|s3://bucket/prefix>[,<read-only origin>…]]
-      [--blob-kek [file]] [--seal-key [file]] [--auth required|open]
+      [--blob-kek [file]] [--seal-key [file]] [--auth required|open] [--ext]
       [--artifact-port <n>] [--max-scan-rows <n>] [--event-retention <seconds>]
       [--max-put-delay <seconds>] [--max-record-bytes <n>]
       [--oidc-issuer <url> --oidc-audience <client-id>]
       Run an embedded space + web console. Everything it writes goes under ./.radia
       (RADIA_DIR moves it); bare --db and --blob-kek take their defaults from there.
+      --ext co-hosts the extension bindings (the \`serve-ext\` routes) at /ext on this
+      same port, still under each caller's own Bearer token.
   serve --db <path|url> [--config <file>] [--host <addr>] [--port <n>] [--console]
         [--operator-token-file <path>] [everything \`dev\` takes]
       The same space, a deployment's posture: no credential file, no token on stdout, no
@@ -343,7 +346,31 @@ async function runSpace(args: string[], posture: Posture): Promise<number> {
       // public so the page can bootstrap in required mode, and whether that route exists on a
       // reachable interface is a deployment's decision rather than ours.
       const withConsole = serving ? has(args, "--console") : true;
-      ({ finished } = startServer({ port, space, host, authRequired, artifactPort, console: withConsole, signal: stopping.signal }));
+      // `--ext` co-hosts the extension bindings at /ext/ on this same port: the handler `radia
+      // serve-ext` binds alone, handed to the server as a VALUE, so the runtime forwards the
+      // prefix and learns nothing. It stays an ordinary `/v0` client relaying each caller's own
+      // Bearer token over loopback; nothing runs under this process's credential
+      // (agent_docs/plan-extension-http.md).
+      // The relay base is this same process over loopback: the family's own loopback for a
+      // wildcard bind, and brackets around a literal IPv6 address, or every relayed fetch dies on
+      // the malformed `http://::1:7788`.
+      const relayHost = host === "0.0.0.0" ? "127.0.0.1" : host === "::" ? "::1" : host;
+      const relayBase = `http://${relayHost.includes(":") ? `[${relayHost}]` : relayHost}:${port}`;
+      const mount = has(args, "--ext")
+        ? {
+          prefix: "/ext/",
+          handler: extHandler(bearerClientFor(relayBase), (entry) => {
+            // The runtime LOGS and a mounted surface has no terminal of its own. A 401 is a caller
+            // that must authenticate and a 404 is a caller's typo; everything else that failed is
+            // this process's to report.
+            if (entry.status >= 400 && entry.status !== 401 && entry.status !== 404) {
+              log[entry.status >= 500 ? "warn" : "info"](`ext ${entry.status} ${entry.method} ${entry.path}`);
+            }
+          }),
+        }
+        : undefined;
+      ({ finished } = startServer({ port, space, host, authRequired, artifactPort, console: withConsole, signal: stopping.signal, ...(mount ? { mount } : {}) }));
+      if (mount) log.info(`extension bindings mounted at /ext (same routes as \`radia serve-ext\`; caller Bearer tokens only)`);
     } catch (e) {
       // A taken port is the most likely restart failure, so it gets the unreachable-space
       // message's shape: what happened, the likely cause, both ways out, exit 1.

@@ -260,6 +260,25 @@ export async function livePresence(
 }
 
 /**
+ * One beat, now, for a caller that keeps no timer: an HTTP facade relaying a stateless client, a
+ * cron tick. Windowed exactly as `announcePresence`'s scheduler beats, so the two interleave and a
+ * repeat inside a window replays rather than appending. What it cannot carry is the backward-clock
+ * guard, which is process state: a caller beating on a clock that steps back replays an old window
+ * until the clock catches up, and `MIN_BEATS_PER_TTL` is the tolerance for that.
+ */
+export function beatPresence(
+  client: RadiaClient,
+  spec: PresenceSpec,
+  who: { subject: string; instance: string },
+  now = Date.now(),
+): Promise<{ id: string }> {
+  return client.put(
+    { kind: spec.kind, body: { ...who } satisfies PresenceBody },
+    beatKey(spec, who.subject, who.instance, Math.floor(now / spec.refreshMs)),
+  );
+}
+
+/**
  * Say this instance has stopped serving `subject`, without deciding anything else.
  *
  * For an instance that beats on SEVERAL subjects and only asks the last-one-out question about one
