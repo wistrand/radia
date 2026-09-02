@@ -18,6 +18,7 @@ import { BINDING, declareBinding, treeCache, type TreeCache, WorkspaceHost } fro
 import { declareExecRequest, EXEC_REQUEST, promote } from "../ts/promotion.ts";
 import { materialize, readWorkspace, sha256Hex, treeDigestOf, writeWorkspace } from "../ts/workspace.ts";
 import { declareSandbox } from "../ts/sandbox-registry.ts";
+import { denoSandbox } from "../ts/sandbox.ts";
 import { bootSpace, uniq } from "./space.ts";
 
 const PORT = 7823;
@@ -874,4 +875,124 @@ Deno.test("[broker] a traversing entrypoint is refused before any boot is writte
   } finally {
     await Deno.remove(root, { recursive: true });
   }
+});
+
+Deno.test("[broker] what the code READS through the broker flows into what it writes", async () => {
+  await withSpace(async ({ operator, hostFor, agent }) => {
+    // The laundering hole, closed: a brokered `read_one` used to leave no lineage at all, so a
+    // classified record could be read in the jail and rewritten clean. Now the answer is a forced
+    // parent of every later write AND of the result, labels riding both ways.
+    const host = await hostFor(`
+      export default async (record, space) => {
+        const secret = await space.readOne({ kind: "note", match: { tag: "classified-src" } });
+        await space.put({ kind: "note", body: { tag: "derived-from-read" } });
+        return { kind: "exec_result", body: { saw: secret.id } };
+      };
+    `);
+    const src = await operator.put({ kind: "note", body: { tag: "classified-src" }, taint: ["file"] });
+    await operator.grant(agent, "note", ["read_one"]);
+
+    const outcomes = await host.tick();
+    assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
+
+    const derived = (await operator.queryNewest<{ tag: string }>({ kind: "note", match: { tag: "derived-from-read" } }, 1))[0];
+    assert(derived.runtimeMeta.parentIds.includes(src.id), `the read is a forced parent: ${JSON.stringify(derived.runtimeMeta.parentIds)}`);
+    assert(derived.runtimeMeta.taint.includes("file"), `the read's labels are raised: ${JSON.stringify(derived.runtimeMeta.taint)}`);
+
+    const result = (await operator.queryNewest<{ saw?: string }>({ kind: "exec_result" }, 10)).find((r) => r.body.saw === src.id)!;
+    assert(result, "the result landed");
+    assert(result.runtimeMeta.parentIds.includes(src.id), `the result carries the read too: ${JSON.stringify(result.runtimeMeta.parentIds)}`);
+    assert(result.runtimeMeta.taint.includes("file"), `and its labels: ${JSON.stringify(result.runtimeMeta.taint)}`);
+  });
+});
+
+Deno.test("[broker] a query page raises its labels without becoming a parent list", async () => {
+  await withSpace(async ({ operator, hostFor, agent }) => {
+    // The asymmetry, asserted from both sides: parents name records consumed singly, so a page's
+    // rows contribute their LABELS (closed, bounded) and never their ids. The barrier cannot be
+    // washed by reading through a query instead of a read_one; lineage for a page stays approximate.
+    const host = await hostFor(`
+      export default async (record, space) => {
+        const rows = await space.query({ kind: "note", match: { tag: "page-classified" } }, 10);
+        await space.put({ kind: "note", body: { tag: "derived-from-page", rows: rows.length } });
+        return { kind: "exec_result", body: { rows: rows.length } };
+      };
+    `);
+    const src = await operator.put({ kind: "note", body: { tag: "page-classified" }, taint: ["net"] });
+    await operator.grant(agent, "note", ["query"]);
+
+    const outcomes = await host.tick();
+    assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
+
+    const derived = (await operator.queryNewest<{ tag: string; rows: number }>({ kind: "note", match: { tag: "derived-from-page" } }, 1))[0];
+    assertEquals(derived.body.rows, 1, "the page reached the code");
+    assert(derived.runtimeMeta.taint.includes("net"), `the page's labels are raised: ${JSON.stringify(derived.runtimeMeta.taint)}`);
+    assert(!derived.runtimeMeta.parentIds.includes(src.id), "a page's rows are labels, not parents");
+  });
+});
+
+Deno.test("[broker] a sandbox claiming confinement the broker cannot build is refused, never downgraded", async () => {
+  // The web-worker rule (`assertHostCanRun`) applied to the confiner axis. The pre-fix spawn
+  // matched only `isolation: "bubblewrap"` and never read `confiner`, so a binding resolved to the
+  // `deno-confined` record ran in the PLAIN jail while the record went on advertising
+  // `importsConfined: true` — and module loading is not bounded by the jail's read permissions.
+  const record = { id: "01CONFINER", kind: EXEC_REQUEST, body: {} } as unknown as RadiaRecord;
+  const root = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${root}/main.ts`, `export default async () => ({ kind: "exec_result", body: {} });\n`);
+    // A record claiming confined imports with no confiner this spawn can deliver.
+    await assertRejects(
+      () => dryRunEntrypoint({ root, entrypoint: "main.ts", record, spec: { ...denoSandbox({}), importsConfined: true } }),
+      Error,
+      "importsConfined",
+    );
+    // A Seatbelt confiner: a real record on a Mac, and a spawn this broker has on no platform.
+    await assertRejects(
+      () => dryRunEntrypoint({ root, entrypoint: "main.ts", record, spec: denoSandbox({ confine: "sandbox-exec" }) }),
+      Error,
+      "sandbox-exec",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test({
+  name: "[broker] the deno-confined record's confiner is DELIVERED, not merely not-refused",
+  ignore: !hasBwrap,
+  fn: async () => {
+    // The other half of the refusal above: a spec naming a confiner this spawn CAN build must get
+    // it, from the record alone with no host option. The canary is the import-hole probe's: a JSON
+    // file outside every root, reachable from the plain jail (the measured finding in
+    // architecture-jail-confinement.md) and nonexistent inside the mount namespace.
+    const record = { id: "01DELIVERED", kind: EXEC_REQUEST, body: {} } as unknown as RadiaRecord;
+    const root = await Deno.makeTempDir();
+    const outside = await Deno.makeTempDir();
+    const canary = `${outside}/canary.json`;
+    await Deno.writeTextFile(canary, JSON.stringify({ reached: true }));
+    try {
+      await Deno.writeTextFile(
+        `${root}/main.ts`,
+        `export default async () => {
+          try {
+            await import(${JSON.stringify(`file://${canary}`)}, { with: { type: "json" } });
+            return { kind: "exec_result", body: { imports: "REACHED" } };
+          } catch {
+            return { kind: "exec_result", body: { imports: "blocked" } };
+          }
+        };\n`,
+      );
+      const dry = await dryRunEntrypoint({
+        root,
+        entrypoint: "main.ts",
+        record,
+        spec: denoSandbox({ confine: "bubblewrap" }),
+        timeoutMs: 30_000,
+      });
+      assertEquals((dry.result.body as { imports: string }).imports, "blocked", "the record's confiner must actually run");
+    } finally {
+      await Deno.remove(root, { recursive: true });
+      await Deno.remove(outside, { recursive: true });
+    }
+  },
 });

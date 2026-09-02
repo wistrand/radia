@@ -19,6 +19,7 @@ export const VALUELESS = new Set([
   "--json",
   "--brokered",
   "--broker",
+  "--require-confinement",
   "--untainted",
   "--help",
   "-h",

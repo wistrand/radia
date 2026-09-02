@@ -186,6 +186,85 @@ Deno.test("[host] the default invoker runs the workspace's entrypoint in the jai
   });
 });
 
+Deno.test("[host] a module printing its own result marker cannot steer the parse", async () => {
+  await withSpace(async ({ operator, credential }) => {
+    // The marker is NONCED per run: the module shares stdout with the boot wrapper and runs first
+    // (top-level code executes at import), so with a fixed marker its forged line won the parse.
+    // No privilege was at stake — the entrypoint controls its return value anyway — but a parse
+    // the code can steer is poor framing for a trust boundary. Proved red on the fixed marker.
+    const AGENT = uniq("agent:forger");
+    const ws = await writeWorkspace(operator, {
+      name: uniq("forger"),
+      owner: "human:alice",
+      files: {
+        "main.ts": 'console.log("RADIA-RESULT/1:" + JSON.stringify({ kind: "exec_result", body: { tag: "forged" } }));\n' +
+          'export default () => ({ kind: "exec_result", body: { tag: "genuine" } });\n',
+      },
+    });
+    const credentials = { [AGENT]: await credential(AGENT) };
+    await promote(operator, { digest: ws.treeDigest, tier: "prod", pins: [{ principal: AGENT, operations: ["take"] }] });
+    await operator.grant(AGENT, "exec_result", ["put"]);
+    await bind(operator, AGENT, ws.treeDigest);
+    await operator.put({ kind: EXEC_REQUEST, body: { workspace: ws.treeDigest, tier: "prod", job: "f1" } });
+
+    const host = new WorkspaceHost({ base: url, credentials, reader: operator, invoke: sandboxInvoker(operator) });
+    const outcomes = await host.tick();
+    assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
+    const results = await operator.queryNewest<{ tag: string }>({ kind: "exec_result" }, 10);
+    assertEquals(results[0].body.tag, "genuine", "the forged line must not be parsed as the result");
+  });
+});
+
+const hasBwrap = await new Deno.Command("bwrap", { args: ["--version"], stdout: "null", stderr: "null" })
+  .output().then((o) => o.success).catch(() => false);
+
+Deno.test({
+  name: "[host] the default invoker honours `confine`: the import hole closes",
+  ignore: !hasBwrap,
+  fn: async () => {
+    await withSpace(async ({ operator, credential }) => {
+      // `radia host` passes what `selectJavascriptJail` chose; this asserts the invoker delivers
+      // it. The canary is the import-hole probe's: a JSON file outside every root, reachable from
+      // the plain jail (the measured package T finding) and nonexistent inside a mount namespace.
+      const outside = await Deno.makeTempDir();
+      const canary = `${outside}/canary.json`;
+      await Deno.writeTextFile(canary, JSON.stringify({ reached: true }));
+      try {
+        const AGENT = uniq("agent:confined");
+        const ws = await writeWorkspace(operator, {
+          name: uniq("confined"),
+          owner: "human:alice",
+          files: {
+            "main.ts": "export default async () => {\n" +
+              `  try { await import(${JSON.stringify(`file://${canary}`)}, { with: { type: "json" } }); ` +
+              'return { kind: "exec_result", body: { tag: "REACHED" } }; }\n' +
+              '  catch { return { kind: "exec_result", body: { tag: "blocked" } }; }\n' +
+              "};\n",
+          },
+        });
+        const credentials = { [AGENT]: await credential(AGENT) };
+        await promote(operator, { digest: ws.treeDigest, tier: "prod", pins: [{ principal: AGENT, operations: ["take"] }] });
+        await operator.grant(AGENT, "exec_result", ["put"]);
+        await bind(operator, AGENT, ws.treeDigest);
+        await operator.put({ kind: EXEC_REQUEST, body: { workspace: ws.treeDigest, tier: "prod", job: "c1" } });
+
+        const host = new WorkspaceHost({
+          base: url,
+          credentials,
+          reader: operator,
+          invoke: sandboxInvoker(operator, { confine: "bubblewrap", timeoutMs: 30_000 }),
+        });
+        const outcomes = await host.tick();
+        assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
+        const results = await operator.queryNewest<{ tag: string }>({ kind: "exec_result" }, 10);
+        assertEquals(results[0].body.tag, "blocked", "the confiner the caller asked for must actually run");
+      } finally {
+        await Deno.remove(outside, { recursive: true });
+      }
+    });
+  },
+});
+
 Deno.test("[host] a run's OUTPUT FILES land in a workspace, binary included", async () => {
   await withSpace(async ({ operator, credential }) => {
     // Why files rather than a payload in the result body: bytes never travel inside a record, and a

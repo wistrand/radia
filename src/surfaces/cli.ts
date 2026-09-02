@@ -21,6 +21,7 @@ import { summarizeWorkspaces } from "../../extensions/ts/workspace.ts";
 import { declareExecRequest, pinnedDigests, promote } from "../../extensions/ts/promotion.ts";
 import { BINDING, type Binding, declareBinding, type Outcome, readBindings, sandboxInvoker, WorkspaceHost } from "../../extensions/ts/host.ts";
 import { brokeredInvoker, declareBrokerSandbox } from "../../extensions/ts/broker.ts";
+import { selectJavascriptJail } from "../../extensions/ts/exec-tool.ts";
 import { auditCompartment } from "../../extensions/ts/compartment.ts";
 import { addMember, DEFAULT_TEAM, declareTeamKinds, type MemberRemoval, type ObserveChange, readDefinition, removeMember, TEAM_FIELD, teamRoster } from "../../extensions/ts/team.ts";
 import { configLocation, type Harness, mcpInvocation, renderMcpConfig, renderMcpInstall } from "./mcp/config.ts";
@@ -153,12 +154,14 @@ Workspace agents (a workspace digest as a principal's code; also a convention, s
                                       without a matching pin: both locks must agree
   bindings                            every live binding
   host --agent <principal>=<token>… [--agents -] [--once] [--interval <ms>]
-       [--broker] [--timeout <ms>] [--lease <s>] [--request-kind <k>]
+       [--broker] [--require-confinement] [--timeout <ms>] [--lease <s>] [--request-kind <k>]
                                       run bound agents' code AS them: holds each definition
                                       token, mints each run, claims under it. Code reaches the
                                       space only if its BINDING asked to be brokered, and then
-                                      only through the host. \`--agents -\` takes a JSON map on
-                                      stdin, which keeps tokens out of \`ps\`
+                                      only through the host. The jail runs under the platform
+                                      confiner where the probe holds; --require-confinement
+                                      refuses to serve where it does not. \`--agents -\` takes a
+                                      JSON map on stdin, which keeps tokens out of \`ps\`
   compartment --inside <kind,kind> [--field <f>] [--expect <p,p>]
                                       who can get data OUT: crossers granted both sides, plus
                                       the two doors that are not grants (unscoped artifact
@@ -2094,6 +2097,38 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         return usage("host --agent <principal>=<definition-token> [--agent …] | host --agents - (a JSON map on stdin)");
       }
       const timeoutMs = Number(flag(argv, "--timeout") ?? 15_000);
+      // CONFINED where the host can be, because this verb's whole business is model-written code:
+      // unconfined, module loading reaches any file this user can read, past the jail's read roots
+      // (architecture-jail-confinement.md). The chat's exec worker has run this selection since
+      // package T; the deployment surface must not be weaker than the example. Probed, never
+      // assumed; a failed probe falls back LOUDLY, or refuses under --require-confinement.
+      const requireConfinement = has(argv, "--require-confinement");
+      const jail = await selectJavascriptJail({ networkTarget: new URL(client.base).host, timeoutMs });
+      if (!jail.confine) {
+        const why = jail.unconfinedBecause.map((f) => `${f.claim}${f.detail ? ` (${f.detail})` : ""}`).join("; ") || "unknown";
+        if (requireConfinement) {
+          throw new UsageError(
+            `no confiner holds on this host (${why}), and --require-confinement is set: refusing to run ` +
+              `workspace code in the plain jail, whose read permissions do not bound module loading. ` +
+              `Install bubblewrap (Linux); macOS has sandbox-exec built in.`,
+          );
+        }
+        console.error(
+          `host: UNCONFINED (${why}): module loading can read past the jail's roots. ` +
+            `Pass --require-confinement to refuse instead of falling back`,
+        );
+      } else if (jail.confine === "sandbox-exec" && !has(argv, "--no-broker")) {
+        // The plain invoker runs under Seatbelt, but the broker has no Seatbelt spawn, so a
+        // BROKERED binding here would run unconfined while the posture line says otherwise. Under
+        // --require-confinement that contradiction is a refusal; otherwise it is named.
+        if (requireConfinement) {
+          throw new UsageError(
+            "--require-confinement with brokered bindings needs a confiner the broker can build, and " +
+              "it has no Seatbelt spawn: pass --no-broker, or bind a bubblewrap sandbox record.",
+          );
+        }
+        console.error("host: brokered bindings run UNCONFINED here: the broker has no Seatbelt spawn (plain runs are confined)");
+      }
       // Brokered by default: it is the invoker that leaves the entrypoint no way to reach the API,
       // which is what makes containment structural rather than this process's discipline.
       // PER BINDING, not per host. Code gets no space access unless its own binding asked for it,
@@ -2102,8 +2137,11 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       // fleet whose bindings predate the field; `--no-broker` is now the default and stays accepted
       // so nothing that passes it breaks.
       const forceBroker = has(argv, "--broker");
-      const plain = sandboxInvoker(client, { timeoutMs });
-      const brokered = brokeredInvoker(client, { timeoutMs });
+      const plain = sandboxInvoker(client, { timeoutMs, ...(jail.confine ? { confine: jail.confine } : {}) });
+      const brokered = brokeredInvoker(client, {
+        timeoutMs,
+        ...(jail.confine === "bubblewrap" ? { run: { confine: jail.confine } } : {}),
+      });
       const invoke = (ctx: Parameters<typeof plain>[0]) =>
         (forceBroker || ctx.binding.brokered) && !has(argv, "--no-broker") ? brokered(ctx) : plain(ctx);
       // WHAT THE CODE MAY CALL, as a record, before anything is claimed. The jail's guarantees were
@@ -2121,7 +2159,23 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         // A failed CLAIM is loud and does not stop the host: an operator whose jail is weaker than
         // advertised needs to know now, and a host that refuses to start leaves the work unclaimed
         // by anything. A failed WRITE is a warning only, since the record is documentation.
-        await declareBrokerSandbox(client, { timeoutMs, networkTarget: new URL(client.base).host })
+        await declareBrokerSandbox(client, {
+          timeoutMs,
+          networkTarget: new URL(client.base).host,
+          // The record declares the jail brokered claims will ACTUALLY run under, and the probe
+          // tests that one. Only bubblewrap reaches the broker; see the posture check above.
+          ...(jail.confine === "bubblewrap" ? { confine: jail.confine } : {}),
+          // The posture selection above already probed THIS jail construction, so hand the
+          // evidence over rather than paying a second identical probe pass (it was half the
+          // startup cost). Bubblewrap-confined: the confined probe held, so the evidence is the
+          // empty failure list. Unconfined: the bare jail's own failures. macOS is the one case
+          // where the declared (bare) spec is not the one the selection probed, so it probes itself.
+          ...(jail.confine === "bubblewrap"
+            ? { probed: [] }
+            : !jail.confine
+            ? { probed: jail.refusedBecause.map((f) => ({ claim: f.claim, held: false, ...(f.detail ? { detail: f.detail } : {}) })) }
+            : {}),
+        })
           .then(({ refusedBecause }) => {
             for (const f of refusedBecause) {
               console.error(`host: SANDBOX CLAIM NOT HELD: ${f.claim}${f.detail ? ` (${f.detail})` : ""}`);
@@ -2155,7 +2209,8 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
               ? "plain jail, no space access"
               : forceBroker
               ? "brokered for every binding (--broker)"
-              : "plain jail unless a binding asks to be brokered"),
+              : "plain jail unless a binding asks to be brokered") +
+            (jail.confine ? `, confined by ${jail.confine}` : ", UNCONFINED"),
         );
         console.log(`  reading ${client.base}. A bound agent with no matching pin claims nothing; radia bindings, radia pins <a> --tier <t>`);
       }

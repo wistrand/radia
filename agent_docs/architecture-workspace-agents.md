@@ -240,6 +240,13 @@ Two properties follow, and they are the reason this is not "FaaS on a tuple spac
   and stamps the compartment field on everything the entrypoint emits. The writer never gets to
   say. Forcing the claimed record as a parent does more than preserve labels: the runtime then
   computes `foreign` itself, because the output is derived from a record another principal wrote.
+  DYNAMIC READS are forced the same way (`InvokeContext.observed`, 2026-09-02; before that, a
+  brokered `read_one` left no lineage at all, the laundering hole the conformance suite named):
+  a `read_one` answer becomes a parent of every later write and of the result, and the labels on
+  anything answered — query pages included — are raised on them. A page's rows contribute labels
+  only, never parents: the label set is closed and bounded where a 500-row parent list is neither,
+  so provenance for a query stays approximate while the BARRIER (what `scope.taint` enforces)
+  cannot be washed by reading through a query instead of a `read_one`.
 - **Effectively-once, by construction.** With no egress but the broker, the host derives
   idempotency keys from `(claimed record id, output ordinal)`, so a retried attempt's puts
   dedupe. Bounded by `idempotencyRetentionSeconds` (7 days), not forever. This sentence
@@ -261,7 +268,13 @@ every rule above is applied host-side.
 side never learns which language asked. The jail comes from the `sandbox` RECORD a binding's
 `sandboxPattern` resolves to (`resolveSandbox`): Deno is safe by ABSENCE of flags, bubblewrap by
 PRESENCE of them and runs any interpreter. Conflating the two is how "python means bubblewrap"
-becomes a rule nobody wrote down.
+becomes a rule nobody wrote down. A resolved record's guarantees are DELIVERED or the pairing is
+refused, never downgraded: a `web-worker` spec is refused (`assertHostCanRun`), a Deno spec's
+`confiner` is spawned (the record alone puts the jail under bubblewrap), and a spec claiming
+`importsConfined` or a confiner this spawn cannot build (Seatbelt) is refused in `runBrokered`.
+It was not always: the spawn once matched only `isolation: "bubblewrap"`, so a binding resolved
+to `deno-confined` ran in the PLAIN jail while the record advertised confinement
+(2026-09-02 external review; `extensions/conformance/broker.test.ts` holds both halves).
 
 **Code reaches the space only when its BINDING asked to.** `Binding.brokered` is off by default, so
 an entrypoint takes `(record)` and can reach nothing until a deployment says otherwise
@@ -409,7 +422,11 @@ Shipped: the `binding` kind (D3: no `contentKey`, so it never compacts) and
 cases stay independent of execution and how phase 5 replaces the default with the brokered one.
 The default materialises the tree and runs the entrypoint in the Deno jail with the record
 interpolated: read-only, no network, result returned rather than written, and the host acks it as
-the agent.
+the agent. `radia host` puts that jail under the platform CONFINER where the probe holds
+(`selectJavascriptJail`, the chat exec worker's selection, 2026-09-02), because the permission
+jail alone does not bound module loading; a failed probe falls back loudly, and
+`--require-confinement` turns the fallback into a refusal. The result line is NONCED per run,
+so the module sharing the boot wrapper's stdout cannot print a line the parser takes for it.
 Answered: one host serving two agents produces results authored by BOTH agents, each carrying its
 own delegation chain, with the host holding no identity in the space; a binding whose agent holds
 no grant reports `refused` and leaves the work claimable; a granted digest with no binding does

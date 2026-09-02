@@ -1442,6 +1442,7 @@ Deno.test({ name: "sandbox: bubblewrap runs another language, and describes what
   const spec = bwrapSandbox({ command: ["python3", "-"], language: "python", name: "py" });
   assertEquals(spec.isolation, "bubblewrap");
   assertEquals(spec.language, "python");
+  assertEquals(spec.memoryMb, 0, "runBwrap sets no rlimit, so 0 (unbounded, stated) like the web backend");
 
   const r = await runBwrap("print(6*7)", { command: ["python3", "-"] });
   assert(r.ok, `bwrap python failed: ${r.stderr}`);
@@ -2245,6 +2246,7 @@ Deno.test("sandbox: the Python spec says Seatbelt IS its isolation, not a confin
   assertEquals(spec.language, "python");
   assertEquals(spec.network, false);
   assertEquals(spec.processes, false);
+  assertEquals(spec.memoryMb, 0, "runSeatbelt sets no rlimit, so 0 (unbounded, stated) like the web backend");
 });
 
 Deno.test({

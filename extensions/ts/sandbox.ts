@@ -547,7 +547,9 @@ export interface SandboxSpec {
   processes: boolean;
   env: boolean;
   /** The heap cap, in MB. `0` means UNBOUNDED and is stated rather than omitted: no browser
-   *  exposes a per-worker limit, so the web backend cannot bound this axis and says so. */
+   *  exposes a per-worker limit, so the web backend cannot bound this axis and says so, and the
+   *  bwrap/Seatbelt runners set no rlimit, so they say so too. Only the Deno jail enforces one
+   *  (`--max-old-space-size`, V8 old space only; the file header states that cap's limits). */
   memoryMb: number;
   timeoutMsMax: number;
   runtime: string;
@@ -646,7 +648,7 @@ export async function runBwrap(source: string | null, opts: BwrapOptions): Promi
 export function bwrapSandbox(
   opts: BwrapOptions & { name?: string; language?: string },
 ): SandboxSpec {
-  const { timeoutMs, memoryMb } = { ...DEFAULTS, ...opts };
+  const { timeoutMs } = { ...DEFAULTS, ...opts };
   return {
     name: opts.name ?? "bwrap",
     // A mount namespace bounds every read, module loading included: an unbound path does not exist
@@ -665,7 +667,10 @@ export function bwrapSandbox(
     writablePaths: ["/", "/tmp", ...(opts.writeRoots ?? [])],
     processes: true, // a namespace jail does not stop fork/exec the way a permission model does
     env: true,
-    memoryMb,
+    // UNBOUNDED, and stated: `runBwrap` enforces the timeout and the output cap and no rlimit, so
+    // a number here would be a machine-readable claim nothing enforces, which is the exact failure
+    // this record shape exists to avoid. Enforce one before declaring one.
+    memoryMb: 0,
     timeoutMsMax: timeoutMs,
     runtime: opts.command.join(" "),
   };
@@ -829,7 +834,7 @@ export function macosPython(): string | undefined {
 export function seatbeltPythonSandbox(
   opts: RunOptions & { name?: string; interpreter?: string } = {},
 ): SandboxSpec {
-  const { timeoutMs, memoryMb } = { ...DEFAULTS, ...opts };
+  const { timeoutMs } = { ...DEFAULTS, ...opts };
   return {
     name: opts.name ?? "python-seatbelt",
     language: "python",
@@ -841,7 +846,10 @@ export function seatbeltPythonSandbox(
     writablePaths: opts.writeRoots ?? [],
     processes: false,
     env: false,
-    memoryMb,
+    // UNBOUNDED, and stated: `runSeatbelt` enforces the timeout and the output cap and no rlimit
+    // (macOS ignores RLIMIT_AS anyway), so declaring a number here would claim what nothing
+    // enforces. Same rule as `bwrapSandbox`.
+    memoryMb: 0,
     timeoutMsMax: timeoutMs,
     runtime: opts.interpreter ?? macosPython() ?? "python3",
   };
@@ -961,10 +969,13 @@ export async function probeSandbox(
     }
   }
 
-  const out: ProbeResult[] = [];
   try {
-  for (const a of attempts) {
-    if (!a.onlyIf) continue; // nothing claimed, nothing to disprove
+  // CONCURRENT, one jailed spawn per claim exactly as before: the attempts are independent
+  // processes whose only shared input is the canary, written once above and only read. Sequential,
+  // six spawns cost ~330ms of `radia host` startup; concurrent they cost the slowest one (~90ms,
+  // measured). Result order follows the attempt list, not completion order.
+  const probeOne = async (a: { claim: keyof typeof js; onlyIf: boolean }): Promise<ProbeResult | undefined> => {
+    if (!a.onlyIf) return undefined; // nothing claimed, nothing to disprove
 
     // THE NETWORK CLAIM NEEDS A TARGET THAT IS KNOWN TO BE LISTENING, and the caller supplies it.
     //
@@ -978,18 +989,16 @@ export async function probeSandbox(
     // So: no target, no verdict. Unverified is a FAILED claim, never a pass. The space's own address
     // is the natural argument — every worker can already reach it, and it is always listening.
     if (a.claim === "network" && !opts.networkTarget) {
-      out.push({
+      return {
         claim: "network",
         held: false,
         detail: "no networkTarget was supplied, so 'no network' could not be tested; pass a " +
           "host:port this process can already reach (the space's own address will do)",
-      });
-      continue;
+      };
     }
 
     if (a.claim === "imports" && canaryProblem) {
-      out.push({ claim: "imports", held: false, detail: canaryProblem });
-      continue;
+      return { claim: "imports", held: false, detail: canaryProblem };
     }
     const program = wrap(src[a.claim].replace("__CANARY__", canary ?? "/nonexistent"));
     const r = seatbeltPython
@@ -1024,17 +1033,16 @@ export async function probeSandbox(
     const escaped = r.stdout.includes("ESCAPED");
     const held = r.stdout.includes("held");
     if (!escaped && !held) {
-      out.push({
+      return {
         claim: a.claim,
         held: false,
         detail: `the probe did not complete (${r.timedOut ? "timed out" : `exit ${r.exitCode}`}), so the ` +
           `claim is unverified rather than proven${r.stderr ? `: ${r.stderr.slice(0, 200)}` : ""}`,
-      });
-      continue;
+      };
     }
-    out.push({ claim: a.claim, held: !escaped, ...(escaped ? { detail: "the operation succeeded inside the jail" } : {}) });
-  }
-  return out;
+    return { claim: a.claim, held: !escaped, ...(escaped ? { detail: "the operation succeeded inside the jail" } : {}) };
+  };
+  return (await Promise.all(attempts.map(probeOne))).filter((r): r is ProbeResult => r !== undefined);
   } finally {
     if (canaryDir) await Deno.remove(canaryDir, { recursive: true }).catch(() => {});
   }

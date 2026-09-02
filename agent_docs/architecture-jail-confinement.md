@@ -353,6 +353,19 @@ Default OFF, because an unconfined jail is what every host had until the confine
 turning it off silently would break working setups. Forwarded by `fleet.ts` from
 `RADIA_CHAT_REQUIRE_CONFINEMENT`, so it is the operator's call and the worker is the only thing that
 has to find out whether a confiner actually holds.
+`radia host` carries the same flag since 2026-09-02 and goes one step further: it TRIES the
+confiner by default (`selectJavascriptJail`), so the fallback to the plain jail is the loud
+exception rather than the silent posture the deployment surface shipped with.
+
+**PLANNED, blocked on a real Mac: a Seatbelt spawn for the BROKER.** `runBrokered` has bubblewrap
+and plain-Deno branches only, so on macOS the plain invoker and the chat's jail are confined while
+a brokered binding is not; since 2026-09-02 that gap is loud (a spec claiming `sandbox-exec` is
+refused, `radia host` warns, `--require-confinement` refuses) instead of silent. The ingredients
+exist (`sandboxExecProfile` exported, `jailArgs` covers the FIFO control dir, writes ride the
+profile's `(allow default)` under Deno's flags), so the branch is ~20 lines mirroring the bwrap
+one. It waits because macOS confinement ships only verified on real hardware (the probe's first
+Mac boot failed on the getcwd trap, and FIFOs under a profile are that kind of detail): write it
+under the boot probe, prove the probe red against a weakened profile, then drop the refusal.
 It refuses EVERYTHING rather than declining one tool: a procedure is code execution too, so serving
 those while withholding `run_javascript` would honour the letter of the flag and none of its intent.
 Guarded in `smoke-runners.ts`, with the failing condition made honestly (a worker launched
