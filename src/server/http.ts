@@ -55,6 +55,17 @@ export interface ServerOptions {
    *  unauthenticated route on a reachable interface is a surface it wants. Off does not remove a
    *  vulnerability; it removes a surface nobody asked for. */
   console?: boolean;
+  /** A co-hosted handler for ONE path prefix outside the wire contract. The runtime forwards any
+   *  request under `prefix` and learns nothing about what it serves (the entry point wires
+   *  `radia dev|serve --ext` through this). `/v0/` and `/ui/` are refused as prefixes, so a mount
+   *  can never shadow the frozen contract or the console's assets. */
+  mount?: Mount;
+}
+
+export interface Mount {
+  /** `/name/` form: leading and trailing slash, one lowercase segment. */
+  prefix: string;
+  handler: (req: Request) => Response | Promise<Response>;
 }
 
 /** The dev UI, loaded once at startup. Single file (see src/ui/index.html); the only asset it
@@ -125,6 +136,7 @@ export function startServer(opts: ServerOptions): { finished: Promise<void> } {
     opts.space,
     withConsole ? loadUi() : "<!doctype html><title>radia</title><p>The web console is not served here. Start with <code>--console</code> to enable it.</p>",
     opts.authRequired ?? false,
+    opts.mount,
   );
   const { finished } = bind({ port: opts.port, hostname, signal: opts.signal }, handler, "the space");
   // The startup line names which side of every either/or you got, and that must not regress
@@ -143,9 +155,10 @@ export function startServer(opts: ServerOptions): { finished: Promise<void> } {
   // there is no credential here to steal, and a capability names one artifact and expires.
   if (opts.artifactPort !== undefined) {
     // Tell the space where to point capability URLs. Loopback is reachable as-is; a wildcard bind
-    // has no single public name, so 127.0.0.1 is the honest default for a local console.
-    const advertised = hostname === "0.0.0.0" ? "127.0.0.1" : hostname;
-    opts.space.artifactOrigin = `http://${advertised}:${opts.artifactPort}`;
+    // has no single public name, so the family's loopback is the honest default for a local
+    // console. A literal IPv6 address needs brackets in a URL, or the port reads as more address.
+    const advertised = hostname === "0.0.0.0" ? "127.0.0.1" : hostname === "::" ? "::1" : hostname;
+    opts.space.artifactOrigin = `http://${advertised.includes(":") ? `[${advertised}]` : advertised}:${opts.artifactPort}`;
     const bytes = makeArtifactHandler(opts.space);
     bind({ port: opts.artifactPort, hostname, signal: opts.signal }, bytes, "the artifact origin");
     log.info(`artifact origin http://${hostname}:${opts.artifactPort} (capability URLs only, isolated from the console)`);
@@ -307,10 +320,26 @@ const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"
  * artifact's disposition) are exactly the ones a Space-level test cannot reach, and binding a real
  * port to check them buys nothing but flakes. See `test/http.test.ts`.
  */
-export function makeHandler(space: Space, ui: string, authRequired: boolean) {
+export function makeHandler(space: Space, ui: string, authRequired: boolean, mount?: Mount) {
+  // Validated at CONSTRUCTION, not per request: a bad prefix is a wiring error and should stop the
+  // process before it serves anything. One lowercase segment keeps the namespace legible, and the
+  // two refusals keep a mount from shadowing the frozen contract or the console's assets.
+  if (mount) {
+    if (!/^\/[a-z][a-z0-9-]*\/$/.test(mount.prefix)) {
+      throw new Error(`mount prefix must be '/name/' (one lowercase segment), got '${mount.prefix}'`);
+    }
+    if (mount.prefix === "/v0/" || mount.prefix === "/ui/") {
+      throw new Error(`mount prefix '${mount.prefix}' would shadow a runtime route`);
+    }
+  }
   return async function handler(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const route = `${req.method} ${url.pathname}`;
+
+    // A mounted prefix is the co-hosted handler's whole namespace: forwarded before any runtime
+    // dispatch, authorization included, because the runtime does not know what it serves and the
+    // mounted surface authenticates its own callers (as a `/v0` client, with their tokens).
+    if (mount && url.pathname.startsWith(mount.prefix)) return await mount.handler(req);
 
     try {
     // Minting a run reads its DEFINITION token directly (a def token isn't a coordination
