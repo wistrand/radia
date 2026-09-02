@@ -19,6 +19,11 @@
 //   2. IT CANNOT LAUNDER LINEAGE EITHER. A direct put omitting `parent_ids` is the documented way
 //      taint is lost; every brokered put gets the CLAIMED RECORD prepended as a parent, so the
 //      classification of the work flows into whatever the code writes whether it says so or not.
+//      DYNAMIC READS flow the same way (`InvokeContext.observed`): a `read_one` answer becomes a
+//      forced parent of every later write and of the result, and the union of labels on anything
+//      answered — query pages included — is raised on them. A page's ROWS are labels, not parents:
+//      the label set is closed and bounded where a 500-row parent list is neither, and the barrier
+//      (what `scope.taint` enforces) is the half that must not leak.
 //   3. EFFECTIVELY-ONCE, BY CONSTRUCTION. With no egress but the broker, the host derives each
 //      put's idempotency key from `(claimed record id, output ordinal)`, so a retried attempt's
 //      writes dedupe instead of doubling. Bounded by `idempotencyRetentionSeconds`, not forever.
@@ -232,11 +237,14 @@ export const BROKER_API: SandboxApi = {
       call: "space.query(pattern, limit) -> record[]",
       description:
         "Read records. `pattern` is ONE object, {kind, match}, e.g. {kind: 'note', match: {topic: 'x'}}; " +
-        "`match` is nested, not spread. Returns the records themselves, an array.",
+        "`match` is nested, not spread. Returns the records themselves, an array. Classification " +
+        "labels on anything returned are raised on everything you write afterwards.",
     },
     {
       call: "space.readOne(pattern) -> record | null",
-      description: "The single best match, same pattern shape.",
+      description:
+        "The single best match, same pattern shape. What it returns becomes a data PARENT of " +
+        "everything you write afterwards, labels included: what you read flows into what you write.",
     },
     {
       call: "space.put({kind, body}) -> {id}",
@@ -388,10 +396,27 @@ function assertHostCanRun(spec: SandboxSpec | null): void {
  */
 export async function declareBrokerSandbox(
   client: RadiaClient,
-  opts: { name?: string; timeoutMs?: number; networkTarget?: string } = {},
+  opts: {
+    name?: string;
+    timeoutMs?: number;
+    networkTarget?: string;
+    /** The confiner the host will run brokered claims under, so the record declares (and the probe
+     *  tests) the jail that actually serves. Only bubblewrap: the broker has no Seatbelt spawn. */
+    confine?: "bubblewrap";
+    /** Probe results the CALLER already measured for this same jail construction, in this process
+     *  (`selectJavascriptJail` builds and probes exactly the jail `confine` names, roots empty).
+     *  Passing them skips a second identical probe pass, which was half of `radia host`'s startup
+     *  cost. EVIDENCE, not trust: pass only results from probing the same confine on this host,
+     *  never an empty array to silence the check. */
+    probed?: ProbeResult[];
+  } = {},
 ): Promise<{ id: string; refusedBecause: ProbeResult[] }> {
   const spec: SandboxSpec = {
-    ...denoSandbox({ ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}), name: opts.name ?? "brokered-host" }),
+    ...denoSandbox({
+      ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
+      ...(opts.confine ? { confine: opts.confine } : {}),
+      name: opts.name ?? "brokered-host",
+    }),
     // The roots are PER CLAIM (a boot dir, a control dir, the tree, maybe an output dir), so the
     // declaration states the ones a caller can reason about rather than inventing a fixed list.
     readonlyPaths: [],
@@ -407,12 +432,13 @@ export async function declareBrokerSandbox(
   // cannot tell an isolated jail from an offline machine. Failures are RETURNED rather than thrown:
   // the caller decides whether an unproven jail is worth serving, exactly as `selectJavascriptJail`
   // hands `refusedBecause` back to its launcher.
-  const refusedBecause = opts.networkTarget
-    ? await verifySandbox(spec, {
-      networkTarget: opts.networkTarget,
-      ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
-    })
-    : [];
+  const refusedBecause = opts.probed ??
+    (opts.networkTarget
+      ? await verifySandbox(spec, {
+        networkTarget: opts.networkTarget,
+        ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
+      })
+      : []);
   const { id } = await declareSandbox(client, spec);
   return { id, refusedBecause };
 }
@@ -483,7 +509,7 @@ async function runBrokered(
   spec: SandboxSpec | null,
   ctx: InvokeContext,
   opts: BrokerOptions,
-): Promise<{ kind: string; body: unknown }> {
+): Promise<{ kind: string; body: unknown; parentIds?: string[]; taint?: string[] }> {
   {
     assertHostCanRun(spec); // also reached by `dryRunEntrypoint`, which the invoker above bypasses
     // A binding's entrypoint arrives verbatim from `radia bind`; `validateEntrypoint` runs only on
@@ -531,6 +557,35 @@ async function runBrokered(
       // are independent, and conflating them is how "python means bubblewrap" becomes a rule
       // nobody wrote down. Both spawns leave stdin free, which is what the broker needs and what
       // `runCode`/`runBwrap` cannot give it.
+      //
+      // A Deno spec's CONFINER is delivered or the pairing is refused, never downgraded: the
+      // web-worker rule (`assertHostCanRun`) applied to the confiner axis. Without this, a binding
+      // resolved to the `deno-confined` record ran in the PLAIN jail while the record went on
+      // advertising `importsConfined: true`, and module loading is not bounded by the jail's read
+      // permissions, so that one silent loss opens the host's own files to a dynamic import.
+      const confine = spec?.confiner && spec.confiner !== "none" ? spec.confiner : opts.run?.confine;
+      if (confine === "sandbox-exec") {
+        // UNBUILT, not impossible: the ingredients for a Seatbelt spawn exist (`sandboxExecProfile`
+        // is exported, `jailArgs` covers the FIFO control dir's write root, writes ride the
+        // profile's `(allow default)` gated by Deno's own flags), so the branch is ~20 lines
+        // mirroring the bwrap one below. It is missing because macOS confinement ships only
+        // VERIFIED ON A REAL MAC (architecture-jail-confinement.md: the probe failed its first
+        // real Mac boot on a getcwd trap only hardware surfaces, and FIFOs under a profile are
+        // that kind of detail). Until then brokered bindings on a Mac run the plain jail and SAY
+        // so; write the branch under the boot probe, never ahead of it.
+        throw new Error(
+          `sandbox '${spec?.name ?? "(host option)"}' needs the sandbox-exec confiner and this broker has no ` +
+            "Seatbelt spawn: refusing rather than running unconfined. Declare a bubblewrap-confined " +
+            "sandbox, or relax the binding to one whose claims this host can deliver.",
+        );
+      }
+      const confined = spec?.isolation === "bubblewrap" || confine === "bubblewrap";
+      if (spec?.importsConfined && !confined) {
+        throw new Error(
+          `sandbox '${spec.name}' claims importsConfined with no confiner this broker can build: ` +
+            "refusing rather than running unconfined under a record that says otherwise.",
+        );
+      }
       const child = spec?.isolation === "bubblewrap"
         ? new Deno.Command("bwrap", {
           args: bwrapArgs({
@@ -546,10 +601,11 @@ async function runBrokered(
           clearEnv: true,
           env: { HOME: "/tmp", PATH: "/usr/bin:/bin" },
         }).spawn()
-        : opts.run?.confine === "bubblewrap"
+        : confine === "bubblewrap"
         // The jail inside a mount namespace, for the reason `RunOptions.confine` states: the
         // permission model does not bound module loading, and this is the code path that runs
-        // model-written entrypoints against real data.
+        // model-written entrypoints against real data. Reached by the record's own `confiner` as
+        // well as the host option, so a `deno-confined` binding gets what its record declares.
         ? new Deno.Command("bwrap", {
           args: bwrapArgs({
             command: [denoRuntime(), ...jailArgs({ ...opts.run, readRoots, writeRoots }, opts.run?.memoryMb ?? 256, bootPath)],
@@ -573,7 +629,17 @@ async function runBrokered(
           clearEnv: true,
           env: { HOME: Deno.env.get("HOME") ?? "/tmp", PATH: "/usr/bin:/bin" },
         }).spawn();
-      return await serve(child, pipes, ctx, opts);
+      const result = await serve(child, pipes, ctx, opts);
+      // The RESULT rides the same rule as the brokered writes: the run's dynamic reads become the
+      // ack's parents beside the materialised inputs (the host merges; the server adds the claimed
+      // record itself) and the observed labels ride as a raise.
+      const seen = ctx.observed;
+      if (!seen || (seen.ids.length === 0 && seen.labels.length === 0)) return result;
+      return {
+        ...result,
+        ...(seen.ids.length ? { parentIds: seen.ids } : {}),
+        ...(seen.labels.length ? { taint: seen.labels } : {}),
+      };
     } finally {
       pipes?.req.close();
       pipes?.resp.close();
@@ -753,10 +819,11 @@ async function perform(
       const body = { ...(req.body as Record<string, unknown> ?? {}), ...(opts.stamp ?? {}) };
       const declared = Array.isArray(req.taint) ? req.taint.map(String) : [];
       // Lineage the code does not get to omit, labels it does not get to withhold. The materialised
-      // inputs are forced alongside the claimed record: what the code READ flows into what it wrote.
-      const forced = [ctx.record.id, ...(ctx.inputIds ?? [])];
+      // inputs are forced alongside the claimed record, and so is everything the run has READ
+      // through the broker so far (`ctx.observed`): what the code read flows into what it wrote.
+      const forced = [...new Set([ctx.record.id, ...(ctx.inputIds ?? []), ...(ctx.observed?.ids ?? [])])];
       const parentIds = [...forced, ...(Array.isArray(req.parentIds) ? req.parentIds.map(String) : []).filter((p) => !forced.includes(p))];
-      const taint = [...new Set([...declared, ...(opts.labels ?? [])])];
+      const taint = [...new Set([...declared, ...(opts.labels ?? []), ...(ctx.observed?.labels ?? [])])];
       const out = await ctx.client.put(
         { kind: req.kind, body, parentIds, ...(taint.length ? { taint } : {}) },
         brokerKey(ctx, opts, nextOrdinal()),
@@ -768,17 +835,30 @@ async function perform(
       if (!pattern || typeof pattern.kind !== "string") throw new Error("query needs a pattern with a kind");
       // deno-lint-ignore no-explicit-any
       const p = pattern as any;
+      // Every read is OBSERVED, so the write side can force what the code consumed into what it
+      // writes (property 2 in the header). A `read_one` answer contributes its id AND its labels;
+      // a query page contributes labels only, because parents name records consumed singly while
+      // the label set is closed and bounded, and the barrier is the half that must not leak.
+      const seen = (ctx.observed ??= { ids: [], labels: [] });
+      const note = (rec: { id: string; runtimeMeta: { taint: string[] } }, withId: boolean) => {
+        if (withId && !seen.ids.includes(rec.id)) seen.ids.push(rec.id);
+        for (const l of rec.runtimeMeta.taint) if (!seen.labels.includes(l)) seen.labels.push(l);
+      };
       // `read_one` answers with the RECORD or null, the same shape the SDK call of that name has.
       // It used to answer with a one-element array (or an empty one), so jailed code calling
       // `space.readOne` got back something no other caller of that name gets, on a surface this
       // file declares NORMATIVE (audit package W7).
       if (call.op !== "query") {
-        return { id: call.id, ok: true, result: (await ctx.client.readOne(p)) ?? null };
+        const rec = (await ctx.client.readOne(p)) ?? null;
+        if (rec) note(rec, true);
+        return { id: call.id, ok: true, result: rec };
       }
       // The pattern is the JAIL's, so `order_by` is data. A directional read cannot be combined
       // with it, so honour the pattern's own order when it has one rather than refusing the call.
       const n = Math.min(Number(limit) || 50, 500);
-      return { id: call.id, ok: true, result: p.orderBy?.length ? await ctx.client.queryOrdered(p, n) : await ctx.client.queryOldest(p, n) };
+      const rows = p.orderBy?.length ? await ctx.client.queryOrdered(p, n) : await ctx.client.queryOldest(p, n);
+      for (const r of rows) note(r, false);
+      return { id: call.id, ok: true, result: rows };
     }
     throw new Error(`unsupported op '${call.op}': the broker serves put, query and read_one`);
   } catch (e) {
@@ -822,13 +902,15 @@ export function recordingPerformer(into: Proposal[]): Performer {
       if (bad) return Promise.resolve({ id: call.id, ok: false, error: bad });
       const req = call.args as { kind: string; body?: unknown; parentIds?: unknown; taint?: unknown };
       const ordinal = nextOrdinal();
-      const forced = [ctx.record.id, ...(ctx.inputIds ?? [])];
+      // The same forced-flow expressions as `perform`, so a rehearsal cannot show laxer lineage
+      // than a real run. `observed` stays empty here because a dry run refuses reads.
+      const forced = [...new Set([ctx.record.id, ...(ctx.inputIds ?? []), ...(ctx.observed?.ids ?? [])])];
       const proposal: Proposal = {
         ordinal,
         kind: req.kind,
         body: { ...(req.body as Record<string, unknown> ?? {}), ...(opts.stamp ?? {}) },
         parentIds: [...forced, ...(Array.isArray(req.parentIds) ? req.parentIds.map(String) : []).filter((p) => !forced.includes(p))],
-        taint: [...new Set([...(Array.isArray(req.taint) ? req.taint.map(String) : []), ...(opts.labels ?? [])])],
+        taint: [...new Set([...(Array.isArray(req.taint) ? req.taint.map(String) : []), ...(opts.labels ?? []), ...(ctx.observed?.labels ?? [])])],
         idempotencyKey: brokerKey(ctx, opts, ordinal),
       };
       into.push(proposal);

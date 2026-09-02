@@ -119,7 +119,9 @@ export interface Binding {
  * broker's pipe channel exists to prevent (a partial write swallowing a frame, then a deadlock
  * waiting on a reply that can never come) has no reply to wait on here. The worst case is a
  * corrupted result line, reported as "produced no result". Printable and versioned so a person can
- * read it in a diagnostic and say it out loud; `\x01radia:` was neither.
+ * read it in a diagnostic and say it out loud; `\x01radia:` was neither. The PREFIX only: each run
+ * appends a nonce (see `sandboxInvoker`), so the module sharing this stdout cannot print a line
+ * the parser would take for the wrapper's.
  */
 export const RESULT_MARK = "RADIA-RESULT/1:";
 
@@ -262,11 +264,18 @@ export interface InvokeContext {
    *  behalf adds them as PARENTS, the same forced-lineage rule as the claimed record: what the
    *  code read flows into what it wrote whether it says so or not. */
   inputIds?: string[];
+  /** What the run READ through the broker, maintained by `brokerPerformer` and consumed by the
+   *  write side: `read_one` answers become forced parents of every later write and of the result,
+   *  and the union of taint labels on anything answered (query pages included) is raised on them.
+   *  Per-run state on a per-run object; hosts never construct it. */
+  observed?: { ids: string[]; labels: string[] };
 }
 
 /** How the entrypoint is run. Pluggable because the identity properties above are independent of
- *  it, and because phase 5 replaces the default with the brokered one. */
-export type Invoker = (ctx: InvokeContext) => Promise<{ kind: string; body: unknown }>;
+ *  it, and because phase 5 replaces the default with the brokered one. A result may carry the
+ *  lineage and labels the run OBSERVED (`InvokeContext.observed`); the host merges them into the
+ *  ack rather than trusting the body to mention them. */
+export type Invoker = (ctx: InvokeContext) => Promise<{ kind: string; body: unknown; parentIds?: string[]; taint?: string[] }>;
 
 export type Outcome =
   | { agent: string; status: "idle" }
@@ -442,7 +451,17 @@ export interface HostOptions {
  * Read-only, no network, cwd inside the tree. The entrypoint cannot reach the space: it returns a
  * value, and the host writes it under the agent's identity.
  */
-export function sandboxInvoker(reader: RadiaClient, opts: { timeoutMs?: number; cache?: TreeCache } = {}): Invoker {
+export function sandboxInvoker(
+  reader: RadiaClient,
+  opts: {
+    timeoutMs?: number;
+    cache?: TreeCache;
+    /** The OS confiner to put the jail under. Unconfined, module loading reaches past the read
+     *  roots (architecture-jail-confinement.md), so a host running other people's code should pass
+     *  what `selectJavascriptJail` chose; `radia host` does. */
+    confine?: "bubblewrap" | "sandbox-exec";
+  } = {},
+): Invoker {
   const cache = opts.cache ?? treeCache(reader);
   return async (ctx) => {
     // A binding's entrypoint arrives verbatim from `radia bind`; `validateEntrypoint` runs only on
@@ -460,13 +479,19 @@ export function sandboxInvoker(reader: RadiaClient, opts: { timeoutMs?: number; 
       const denied = `new Proxy({}, { get(_t, prop) { throw new Error(` +
         `"this binding is not brokered, so the entrypoint has no space access: tried space." + String(prop) + ` +
         `". Add it with \`radia bind <agent> --brokered\` if this code needs to read or write the space."); } })`;
+      // NONCED per run: the module shares stdout with this wrapper and runs first, so a fixed
+      // marker let it print a forged result line ahead of the real one. No privilege was at stake
+      // (the entrypoint controls its return value anyway, and the host's stamps still win), but a
+      // parse the code can steer is poor framing for a trust boundary. The nonce travels only in
+      // the boot program, which arrives on stdin, so the module has no way to read it back.
+      const mark = `${RESULT_MARK}${crypto.randomUUID()}:`;
       const boot = `const record = ${JSON.stringify(ctx.record)};\n` +
         `const space = ${denied};\n` +
         // ABSOLUTE, not `./`: a program fed on stdin resolves a relative import against the CWD,
         // and the cwd is the output tree whenever there is one.
         `const mod = await import(${JSON.stringify(`file://${root}/${ctx.binding.entrypoint}`)});\n` +
         `const out = await mod.default(record, space);\n` +
-        `console.log(${JSON.stringify(RESULT_MARK)} + JSON.stringify(out ?? null));\n`;
+        `console.log(${JSON.stringify(mark)} + JSON.stringify(out ?? null));\n`;
       const run = await runCode(boot, {
         // The OUTPUT tree is the working directory when there is one, so `writeFile("chart.png")`
         // lands in it with nothing passed to the entrypoint and nothing language-specific; a run
@@ -477,6 +502,7 @@ export function sandboxInvoker(reader: RadiaClient, opts: { timeoutMs?: number; 
         readRoots: [root, ...(ctx.outDir ? [ctx.outDir] : []), ...(ctx.inputDir ? [ctx.inputDir] : [])],
         // Writable, and `root` never is: see `Binding.outputWorkspace`.
         ...(ctx.outDir ? { writeRoots: [ctx.outDir] } : {}),
+        ...(opts.confine ? { confine: opts.confine } : {}),
         timeoutMs: opts.timeoutMs ?? 10_000,
       });
       // The TAIL of stderr: the useful line of a stack trace is its last, and a program that
@@ -484,9 +510,9 @@ export function sandboxInvoker(reader: RadiaClient, opts: { timeoutMs?: number; 
       if (!run.ok) throw new Error(`entrypoint failed (exit ${run.exitCode}): ${run.stderr.slice(-400)}`);
       // A marker, not "the last line": an entrypoint that logs is normal, and picking its chatter
       // as the result is the kind of bug that only shows up on the day something logs.
-      const line = run.stdout.split("\n").find((l) => l.startsWith(RESULT_MARK));
+      const line = run.stdout.split("\n").find((l) => l.startsWith(mark));
       if (!line) throw new Error("entrypoint produced no result");
-      return JSON.parse(line.slice(RESULT_MARK.length)) as { kind: string; body: unknown };
+      return JSON.parse(line.slice(mark.length)) as { kind: string; body: unknown };
     }
   };
 }
@@ -601,7 +627,11 @@ export class WorkspaceHost {
         // refused, which is the same rule the broker states and the reason the code cannot lie
         // about what it touched.
         const stamped = stampResult(result, outputStamp(binding, claimed.record));
-        const acked = await client.ack(claimed.lease, inputIds.length ? { ...stamped, parentIds: inputIds } : stamped);
+        // MERGED, not replaced: the invoker's own parents are the run's dynamic reads
+        // (`InvokeContext.observed`), and overwriting them with the inputs was how a brokered
+        // `read_one` once left no lineage at all. The server adds the claimed record itself.
+        const parents = [...new Set([...(stamped.parentIds ?? []), ...inputIds])];
+        const acked = await client.ack(claimed.lease, parents.length ? { ...stamped, parentIds: parents } : stamped);
         out.push({
           agent: binding.agent,
           status: "acked",

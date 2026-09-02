@@ -321,7 +321,11 @@ justifying.
 fork bomb is not expressible. Under bwrap and containers it is, and PID limits are separate flags
 (`--unshare-pid` plus an rlimit) from the memory and timeout the current runner sets. A sandbox
 record that says `memoryMb` and `timeoutMsMax` and nothing about process count describes a jail
-weaker than the one it replaced.
+weaker than the one it replaced. And `memoryMb` states only what a runner ENFORCES: `runBwrap` and
+`runSeatbelt` set no rlimit, so their specs say `0` (unbounded, stated), the web backend's rule;
+only the Deno jail declares a number (`--max-old-space-size`, V8 old space only). A declared cap
+nothing enforces was shipped once (2026-09-02 external review) and is the exact failure the
+probed-record shape exists to avoid.
 
 ## Borrow the vocabulary that exists
 

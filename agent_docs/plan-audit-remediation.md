@@ -62,9 +62,41 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | ~~W~~ | ~~Third audit: SDK parity, audit-event integrity, two orderings of "newest"~~ | ~~P1/P2~~ | **CLOSED 2026-08-22** (14 findings; 5 guards proved red) |
 
 **Every package is closed**, T included (2026-08-06; this line said otherwise until
-2026-08-30). Closed lessons are rules in
+2026-08-30) and Z (2026-09-02, external review, closed same day). Closed lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
+
+## Package Z: an external review of v2026.8.5 (2026-09-02), CLOSED 2026-09-02
+
+An outside reviewer traced attack paths against the tagged release; most findings re-derived
+documented decisions, two were P1 and both are one class: **a machine-readable sandbox claim the
+code did not deliver**, in the subsystem whose doctrine is verify-before-serve. Its P2/P3 residue
+landed the same day, each guard proved red: `radia host` tries the platform confiner by default
+and grew `--require-confinement`; brokered dynamic reads flow into lineage (`read_one` → forced
+parent, any read's labels raised; `InvokeContext.observed`); and the non-brokered result marker
+is nonced per run so the module sharing stdout cannot steer the parse.
+
+### Z1. The brokered host ignored a resolved sandbox record's confiner (P1), FIXED
+
+`runBrokered` chose its backend on `spec?.isolation === "bubblewrap"` alone and never read
+`confiner`/`importsConfined`, and `radia host` never sets `opts.run.confine`; so a binding resolved
+to the `deno-confined` record (declared by the chat exec worker and `exec-tool.ts` wherever the
+probe passes) ran in the PLAIN Deno jail while the record advertised `importsConfined: true`. The
+plain jail's module-loading hole (package T) then reaches any JSON/module the host user can read.
+Fix: the record's `confiner` is now spawned (bubblewrap), and a claim this spawn cannot build
+(Seatbelt, or `importsConfined` with no confiner) is refused, the `assertHostCanRun` rule on a
+second axis. Guards: `broker.test.ts` "refused, never downgraded" + "DELIVERED, not merely
+not-refused" (canary import; bwrap-gated). VERIFIED in source; both guards proved RED against the
+planted pre-fix spawn (spec.confiner unread, throws disabled), then green on the fix.
+
+### Z2. `bwrapSandbox`/`seatbeltPythonSandbox` declared a `memoryMb` nothing enforces (P1), FIXED
+
+`runBwrap`/`runSeatbelt` consume only the timeout and the output cap (no rlimit anywhere in
+`sandbox.ts`), yet both specs published `memoryMb` from `DEFAULTS`, and `probeSandbox` has no
+memory claim to catch it. Fix: both specs now say `0` (unbounded, stated), the web backend's rule;
+only the Deno jail keeps a number, because `--max-old-space-size` enforces one. Asserted beside the
+existing spec-honesty cases in `workspace.test.ts`. Enforce a real rlimit before ever declaring a
+number again ([design-execution.md](design-execution.md), "Exhaustion has more dimensions").
 
 ## Package Y: the fourth audit (2026-08-29), CLOSED 2026-08-29
 
