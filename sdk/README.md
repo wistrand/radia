@@ -13,6 +13,13 @@ and `contentKey` had not been reachable from the client at all.
 compute identically. The runtime imports these definitions; the SDK imports nothing from `src/`.
 `test/layering.test.ts` enforces that direction for value and type imports.
 
+The EXTENSION conventions (workspaces, capabilities, presence, promotion) reach non-TS apps over
+HTTP rather than through an SDK port: `radia serve-ext`, or `--ext` on `dev`/`serve`, serves them
+as routes, and [`py/radia_ext.py`](py/radia_ext.py) (imported as `radia.ext` from pip) is the thin
+Python client. Zero choreography client-side by design: the fork checks, publish anchors and digest
+hashing stay in the reference implementation
+([agent_docs/plan-extension-http.md](../agent_docs/plan-extension-http.md)).
+
 | | TypeScript | Python |
 |-|------------|--------|
 | Path        | [`ts/`](ts/): import `mod.ts`; behind it `wire.ts`, `registry.ts`, `await.ts`, `client.ts`, `loop.ts` | [`py/radia.py`](py/radia.py) |

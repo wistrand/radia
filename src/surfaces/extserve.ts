@@ -41,6 +41,9 @@ import {
   type ToolDef,
 } from "../../extensions/ts/capability.ts";
 import { beatPresence, livePresence, presenceKind, presenceSpec, retirePresence } from "../../extensions/ts/presence.ts";
+import { declareExecRequest, EXEC_REQUEST, type Pin, pinnedDigests, promote, rollback } from "../../extensions/ts/promotion.ts";
+import { declareBinding, readBindings } from "../../extensions/ts/host.ts";
+import { auditCompartment } from "../../extensions/ts/compartment.ts";
 import { UsageError } from "../platform.ts";
 
 export interface ExtServeLog {
@@ -100,7 +103,78 @@ const BASE_HEADERS: Record<string, string> = { ...CORS, "cache-control": "no-sto
 const PAINT_SAFE = /^(?:image\/(?:png|jpe?g|gif|webp|avif|bmp|x-icon)|audio\/[a-z0-9.+-]+|video\/[a-z0-9.+-]+)$/i;
 
 /** What `GET /health` advertises, and the one place the route set states its versions. */
-const EXTENSIONS = { workspace: "v1", capability: "v1", presence: "v1", turn: "v1" } as const;
+export const EXTENSIONS = {
+  workspace: "v1",
+  capability: "v1",
+  presence: "v1",
+  turn: "v1",
+  permissions: "v1",
+  promotion: "v1",
+  host: "v1",
+  compartment: "v1",
+} as const;
+
+export interface ExtRoute {
+  method: "GET" | "POST";
+  /** Under `/ext/`. `{param}` is one path segment; `{param...}` matches across slashes. */
+  path: string;
+  /** POST body fields, verbatim the `rejectUnknownFields` allowlist (absent: no body is read). */
+  fields?: readonly string[];
+  /** Query parameters the route reads. */
+  query?: readonly string[];
+}
+
+/**
+ * ONE statement of the route set, with four consumers: the dispatch below takes every POST
+ * allowlist from it (`fieldsOf`, which throws on a missing entry, so a route the table forgot
+ * fails its first use), and `test/extopenapi.test.ts` holds `openapi/radia-ext.yaml` to it in
+ * both directions, fields included. The spec DESCRIBES this table; it never generates routes.
+ */
+export const EXT_ROUTES: readonly ExtRoute[] = [
+  { method: "GET", path: "workspace/v1/workspaces", query: ["conversationId", "scope"] },
+  {
+    method: "POST",
+    path: "workspace/v1/workspaces",
+    fields: ["name", "owner", "conversationId", "files", "filesBase64", "attach", "modes", "ignore", "entrypoint", "basedOn", "taint", "meta", "scope"],
+  },
+  { method: "GET", path: "workspace/v1/workspaces/{name}", query: ["conversationId", "scope"] },
+  { method: "GET", path: "workspace/v1/workspaces/{name}/files/{path...}", query: ["conversationId", "scope"] },
+  {
+    method: "POST",
+    path: "workspace/v1/workspaces/{name}/edit",
+    fields: ["conversationId", "edits", "add", "addBase64", "attach", "modes", "remove", "entrypoint", "meta", "scope"],
+  },
+  { method: "POST", path: "workspace/v1/declare" },
+  { method: "POST", path: "workspace/v1/digest", fields: ["files"] },
+  { method: "POST", path: "capability/v1/declare" },
+  { method: "POST", path: "capability/v1/publish", fields: ["def", "provider", "scope", "presence"] },
+  { method: "POST", path: "capability/v1/retire", fields: ["tool", "provider", "supersedes", "scope"] },
+  { method: "GET", path: "capability/v1/tools", query: ["scope", "presenceKind", "ttlMs", "refreshMs", "onConflict"] },
+  { method: "POST", path: "presence/v1/declare", fields: ["kind", "ttlMs", "refreshMs"] },
+  { method: "POST", path: "presence/v1/beat", fields: ["kind", "ttlMs", "refreshMs", "subject", "instance"] },
+  { method: "POST", path: "presence/v1/retire", fields: ["kind", "ttlMs", "refreshMs", "subject", "instance"] },
+  { method: "GET", path: "presence/v1/live", query: ["kind", "subject", "ttlMs", "refreshMs", "maxScan"] },
+  {
+    method: "POST",
+    path: "turn/v1/seed",
+    fields: ["kind", "body", "key", "parentIds", "clientMeta", "availableAt", "deadlineAt", "retentionUntil", "taint", "result"],
+  },
+  { method: "GET", path: "turn/v1/result", query: ["seed", "kind", "timeoutMs"] },
+  { method: "GET", path: "permissions/v1/scopes" },
+  { method: "POST", path: "promotion/v1/declare" },
+  { method: "GET", path: "promotion/v1/pins", query: ["principal", "tier", "kind"] },
+  { method: "POST", path: "promotion/v1/promote", fields: ["digest", "tier", "pins", "kind"] },
+  { method: "POST", path: "promotion/v1/rollback", fields: ["digest", "tier", "pins", "kind"] },
+  { method: "POST", path: "host/v1/declare" },
+  { method: "GET", path: "host/v1/bindings", query: ["agent"] },
+  { method: "GET", path: "compartment/v1/audit", query: ["inside", "field"] },
+];
+
+function fieldsOf(path: string): readonly string[] {
+  const r = EXT_ROUTES.find((r) => r.method === "POST" && r.path === path);
+  if (!r?.fields) throw new Error(`EXT_ROUTES has no POST ${path} with fields`);
+  return r.fields;
+}
 
 const DEFAULT_WAIT_MS = 30_000;
 const MAX_WAIT_MS = 120_000;
@@ -180,6 +254,11 @@ function errorParts(e: unknown): { status: number; title: string; detail: string
   }
   if (e instanceof UsageError) return { status: 400, title: "bad_request", detail: e.message };
   if (e instanceof BodyTooLarge) return { status: 413, title: "payload_too_large", detail: e.message };
+  // `queryAll` refuses to truncate a server-side walk past its page ceiling. That is a data-volume
+  // refusal on this side of the relay, never the caller's request being wrong.
+  if (e instanceof Error && e.message.startsWith("queryAll:")) {
+    return { status: 502, title: "read_exhaustion", detail: e.message };
+  }
   if (e instanceof TypeError || e instanceof RangeError || e instanceof SyntaxError) {
     return { status: 500, title: "internal", detail: e.message };
   }
@@ -199,7 +278,12 @@ function errorResponse(e: unknown): Response {
  * would look up and supersede across every compartment the caller can read
  * (agent_docs/plan-bounded-reads.md). Refused NAMING the field and the fields the route has.
  */
-function rejectUnknownFields(b: Record<string, unknown>, allowed: readonly string[], where: string): void {
+function rejectUnknownFields(b: unknown, allowed: readonly string[], where: string): asserts b is Record<string, unknown> {
+  // Guarded here so a sub-value sent as a string is "must be a JSON object", not the char-index
+  // riddle Object.keys makes of one ("does not have '0', '1', …").
+  if (typeof b !== "object" || b === null || Array.isArray(b)) {
+    throw new UsageError(`${where} must be a JSON object`);
+  }
   const unknown = Object.keys(b).filter((k) => !allowed.includes(k));
   if (unknown.length) {
     throw new UsageError(
@@ -346,10 +430,10 @@ export function extHandler(
       return json(200, { ok: true, service: "radia-ext", extensions: EXTENSIONS });
     }
 
-    const route = path.match(/^\/ext\/(workspace|capability|presence|turn)\/v1\/(.+)$/);
+    const route = path.match(/^\/ext\/(workspace|capability|presence|turn|permissions|promotion|host|compartment)\/v1\/(.+)$/);
     if (!route) {
       log(404);
-      return problem(404, "not_found", "expected /health or /ext/{workspace|capability|presence|turn}/v1/…");
+      return problem(404, "not_found", "expected /health, or /ext/<extension>/v1/… for one of: " + Object.keys(EXTENSIONS).join(", "));
     }
     const [, extension, rest] = route;
 
@@ -402,11 +486,7 @@ async function dispatch(
       }
       if (post && rest === "workspaces") {
         const b = await body();
-        rejectUnknownFields(
-          b,
-          ["name", "owner", "conversationId", "files", "filesBase64", "attach", "modes", "ignore", "entrypoint", "basedOn", "taint", "meta", "scope"],
-          "POST workspaces",
-        );
+        rejectUnknownFields(b, fieldsOf("workspace/v1/workspaces"), "POST workspaces");
         const input: WriteInput = {
           name: requireString(b.name, "name"),
           // The caller's durable name when none is given: the same identity `note.to` addresses.
@@ -451,11 +531,7 @@ async function dispatch(
       const edit = rest.match(/^workspaces\/([^/]+)\/edit$/);
       if (post && edit) {
         const b = await body();
-        rejectUnknownFields(
-          b,
-          ["conversationId", "edits", "add", "addBase64", "attach", "modes", "remove", "entrypoint", "meta", "scope"],
-          "POST workspaces/{name}/edit",
-        );
+        rejectUnknownFields(b, fieldsOf("workspace/v1/workspaces/{name}/edit"), "POST workspaces/{name}/edit");
         if (b.edits !== undefined && (!Array.isArray(b.edits) || b.edits.some((e) => typeof e !== "object" || e === null))) {
           throw new UsageError("'edits' must be an array of edit objects");
         }
@@ -491,7 +567,7 @@ async function dispatch(
         // Verification, not authoring: the normative `treeDigestOf` over a caller-supplied file
         // list, so an app can CHECK a digest without reimplementing the hash.
         const b = await body();
-        rejectUnknownFields(b, ["files"], "POST digest");
+        rejectUnknownFields(b, fieldsOf("workspace/v1/digest"), "POST digest");
         if (!Array.isArray(b.files)) throw new UsageError("'files' must be an array of {path, digest, mode?}");
         const files: WorkspaceFile[] = b.files.map((f: unknown, i: number) => {
           const e = f as Record<string, unknown>;
@@ -518,7 +594,7 @@ async function dispatch(
       }
       if (post && rest === "publish") {
         const b = await body();
-        rejectUnknownFields(b, ["def", "provider", "scope", "presence"], "POST publish");
+        rejectUnknownFields(b, fieldsOf("capability/v1/publish"), "POST publish");
         const def = b.def as ToolDef;
         if (def?.type !== "function" || typeof def.function?.name !== "string") {
           throw new UsageError("'def' must be a ToolDef: {type: \"function\", function: {name, description, parameters}}");
@@ -534,7 +610,7 @@ async function dispatch(
       }
       if (post && rest === "retire") {
         const b = await body();
-        rejectUnknownFields(b, ["tool", "provider", "supersedes", "scope"], "POST retire");
+        rejectUnknownFields(b, fieldsOf("capability/v1/retire"), "POST retire");
         await retireCapability(
           client,
           requireString(b.tool, "tool"),
@@ -596,7 +672,7 @@ async function dispatch(
         });
       if (post && rest === "declare") {
         const b = await body();
-        rejectUnknownFields(b, ["kind", "ttlMs", "refreshMs"], "POST declare");
+        rejectUnknownFields(b, fieldsOf("presence/v1/declare"), "POST declare");
         const s = specFrom(b);
         const def = presenceKind(s);
         await client.registerKind(def);
@@ -604,7 +680,7 @@ async function dispatch(
       }
       if (post && rest === "beat") {
         const b = await body();
-        rejectUnknownFields(b, ["kind", "ttlMs", "refreshMs", "subject", "instance"], "POST beat");
+        rejectUnknownFields(b, fieldsOf("presence/v1/beat"), "POST beat");
         const s = specFrom(b);
         const who = { subject: requireString(b.subject, "subject"), instance: requireString(b.instance, "instance") };
         await beatPresence(client, s, who);
@@ -612,7 +688,7 @@ async function dispatch(
       }
       if (post && rest === "retire") {
         const b = await body();
-        rejectUnknownFields(b, ["kind", "ttlMs", "refreshMs", "subject", "instance"], "POST retire");
+        rejectUnknownFields(b, fieldsOf("presence/v1/retire"), "POST retire");
         await retirePresence(client, specFrom(b), {
           subject: requireString(b.subject, "subject"),
           instance: requireString(b.instance, "instance"),
@@ -635,16 +711,103 @@ async function dispatch(
       break;
     }
 
+    case "permissions": {
+      if (get && rest === "scopes") {
+        // Which pattern-scope fields the caller's own grants bind, per kind: the DISCOVERABLE
+        // form of the label the MCP adapter learns from a refusal (`src/surfaces/mcp/scope.ts`),
+        // for a stateless caller with no process to learn in. Discovery, never a fill: `patterns`
+        // unions every grant on a kind whatever operation it permits (architecture-teams.md), so
+        // which one to stamp on a write stays the caller's decision.
+        const who = await client.health();
+        const perms = await client.permissions(who.principal);
+        const scopes = perms.kinds
+          .filter((k) => k.patterns.length > 0)
+          .map((k) => ({
+            kind: k.kind,
+            operations: k.operations,
+            patterns: k.patterns,
+            // Carried through so a discovered scope on a grant that authorizes NOTHING explains
+            // the refusal that follows anyway, instead of reading as working access.
+            ...(k.kindNotDeclared ? { kindNotDeclared: true as const } : {}),
+            ...(k.readsScopedToSelf ? { readsScopedToSelf: true as const } : {}),
+          }));
+        return json(200, {
+          principal: perms.principal,
+          subject: perms.subject,
+          scopes,
+          note: "patterns union every grant on a kind whatever operation it permits; which to pass as a write's scope is the caller's choice",
+        });
+      }
+      break;
+    }
+
+    case "promotion": {
+      if (post && rest === "declare") {
+        await declareExecRequest(client);
+        return json(200, { declared: EXEC_REQUEST });
+      }
+      if (get && rest === "pins") {
+        const principal = url.searchParams.get("principal");
+        const tier = url.searchParams.get("tier");
+        if (!principal || !tier) throw new UsageError("'principal' and 'tier' are required");
+        const kind = url.searchParams.get("kind") ?? undefined;
+        const digests = await pinnedDigests(client, { principal, tier, ...(kind ? { kind } : {}) });
+        return json(200, { principal, tier, digests });
+      }
+      if (post && (rest === "promote" || rest === "rollback")) {
+        const b = await body();
+        rejectUnknownFields(b, fieldsOf(`promotion/v1/${rest}`), `POST ${rest}`);
+        const digest = requireString(b.digest, "digest");
+        const tier = requireString(b.tier, "tier");
+        if (!Array.isArray(b.pins) || b.pins.length === 0) {
+          throw new UsageError("'pins' must be a non-empty array of {principal, operations}");
+        }
+        const pins: Pin[] = b.pins.map((p, i) => {
+          const e = p as Record<string, unknown>;
+          rejectUnknownFields(e, ["principal", "operations"], `pins[${i}]`);
+          if (!Array.isArray(e.operations) || e.operations.length === 0) {
+            throw new UsageError(`'pins[${i}].operations' must be a non-empty array`);
+          }
+          return { principal: requireString(e.principal, `pins[${i}].principal`), operations: e.operations.map(String) };
+        });
+        const opts = { digest, tier, pins, ...(typeof b.kind === "string" ? { kind: b.kind } : {}) };
+        // One implementation, two routes, exactly as the CLI has two verbs: the audit trail reads
+        // better when the intent is in the path. Grant writes are operator-only, and the relay
+        // keeps that the space's decision: a non-operator caller is refused there, not here.
+        return json(200, rest === "promote" ? await promote(client, opts) : await rollback(client, opts));
+      }
+      break;
+    }
+
+    case "host": {
+      if (post && rest === "declare") {
+        await declareBinding(client);
+        return json(200, { declared: "binding" });
+      }
+      if (get && rest === "bindings") {
+        const agent = url.searchParams.get("agent");
+        const bindings = await readBindings(client);
+        return json(200, { bindings: agent ? bindings.filter((b) => b.agent === agent) : bindings });
+      }
+      break;
+    }
+
+    case "compartment": {
+      if (get && rest === "audit") {
+        const inside = (url.searchParams.get("inside") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+        if (inside.length === 0) throw new UsageError("'inside' is required: comma-separated compartment kinds");
+        const field = url.searchParams.get("field") ?? undefined;
+        return json(200, await auditCompartment(client, { inside, ...(field ? { field } : {}) }));
+      }
+      break;
+    }
+
     case "turn": {
       // Seed-and-wait: work ENTERS through the space and a worker claims it, so coordination is
       // never bypassed; HTTP only carries the record in and the result out.
       if (post && rest === "seed") {
         const b = await body();
-        rejectUnknownFields(
-          b,
-          ["kind", "body", "key", "parentIds", "clientMeta", "availableAt", "deadlineAt", "retentionUntil", "taint", "result"],
-          "POST seed",
-        );
+        rejectUnknownFields(b, fieldsOf("turn/v1/seed"), "POST seed");
         const kind = requireString(b.kind, "kind");
         if (b.body === undefined) throw new UsageError("'body' is required");
         // Everything below is REFUSED-or-relayed, never dropped: `availableAt` silently lost would

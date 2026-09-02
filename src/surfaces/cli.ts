@@ -144,11 +144,13 @@ Workspaces (a convention, not a runtime concept: see extensions/)
   serve-ext [--port <n>] [--host <h>] serve the extension conventions over HTTP, for apps in
                                       languages the TS extensions cannot reach: workspace
                                       read/write, capability publish + tool discovery, presence
-                                      beats, and a seed-and-wait for claimable work. Holds no
-                                      credential: every request runs under the caller's own
-                                      Bearer token (agent_docs/plan-extension-http.md). The same
-                                      routes co-host on the space's own port with
-                                      \`radia dev --ext\` / \`radia serve --ext\`
+                                      beats, a seed-and-wait for claimable work, promotion +
+                                      pins, bindings, compartment audit, and the caller's own
+                                      pattern scopes. Holds no credential: every request runs
+                                      under the caller's own Bearer token
+                                      (agent_docs/plan-extension-http.md; Python wrapper in
+                                      sdk/py/radia_ext.py). The same routes co-host on the
+                                      space's own port with \`radia dev --ext\` / \`radia serve --ext\`
 
 Workspace agents (a workspace digest as a principal's code; also a convention, see extensions/)
   promote <digest> --tier <t> --pin <principal>:<op,op>…  [--kind <k>]

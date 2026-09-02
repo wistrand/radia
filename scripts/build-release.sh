@@ -106,6 +106,7 @@ JSON
 mkdir -p "$OUT/pypi/radia"
 cp LICENSE "$OUT/pypi/LICENSE"
 cp sdk/py/radia.py "$OUT/pypi/radia/client.py"
+cp sdk/py/radia_ext.py "$OUT/pypi/radia/ext.py"
 
 cat > "$OUT/pypi/pyproject.toml" <<TOML
 [build-system]
@@ -128,6 +129,7 @@ TOML
 cat > "$OUT/pypi/radia/__init__.py" <<'PY'
 """Radia: coordination space client SDK."""
 from .client import RadiaClient, RadiaError, agent_loop  # noqa: F401
+from .ext import RadiaExt, RadiaExtError  # noqa: F401
 PY
 
 echo
