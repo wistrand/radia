@@ -108,24 +108,28 @@
       provider signs you in and the space mints an ordinary session from its answer. No token to
       paste, and the session ends when the provider stops vouching for you.</span>
     </div>
-    <div id="signin-operator" style="display:none;margin-top:10px">
-      <button class="btn" onclick="signInOperator()">Sign in as local operator</button>
-      <span class="muted" style="font-size:13px">open mode: this browser then sends no credential and the
-      space answers as the operator, which any curl here already gets. The button exists so that
-      authority is taken visibly, never by default.</span>
+    <div id="signin-operator" style="display:none;margin-top:10px;text-align:center">
+      <div style="margin:14px 0"><button class="btn" onclick="signInOperator()">Sign in as local operator</button></div>
+      <p class="muted" style="font-size:13px;margin:0">This space runs in open mode, so a request with no
+      credential is treated as the operator. The button makes that choice explicit rather than
+      signing you in silently.</p>
     </div>
-    <p class="muted" id="signin-token-lead" style="margin:14px 0 6px">Paste a token:</p>
-    <div class="row">
-      <input id="signin-token" placeholder="radia login human:you --console prints a sign-in link instead" style="flex:1" autocomplete="off" spellcheck="false"
-        onkeydown="if (event.key === 'Enter') { event.preventDefault(); signIn(); }">
-      <button class="btn ghost" onclick="signIn()">Sign in</button>
+    <!-- One wrapper, so a host with no CLI to mint a token (the browser playground) can hide the
+         whole paste path with a single selector rather than four. -->
+    <div id="signin-token-section">
+      <p class="muted" id="signin-token-lead" style="margin:14px 0 6px">Paste a token:</p>
+      <div class="row">
+        <input id="signin-token" placeholder="radia login human:you --console prints a sign-in link instead" style="flex:1" autocomplete="off" spellcheck="false"
+          onkeydown="if (event.key === 'Enter') { event.preventDefault(); signIn(); }">
+        <button class="btn ghost" onclick="signIn()">Sign in</button>
+      </div>
+      <label style="display:block;margin-top:8px;font-size:13px;color:var(--muted)">
+        <input type="checkbox" id="signin-remember" checked style="width:auto"> remember on this browser
+        <span class="muted">(definition tokens only: the durable half can only mint, and revoking it is the off switch)</span>
+      </label>
     </div>
-    <label style="display:block;margin-top:8px;font-size:13px;color:var(--muted)">
-      <input type="checkbox" id="signin-remember" checked style="width:auto"> remember on this browser
-      <span class="muted">(definition tokens only: the durable half can only mint, and revoking it is the off switch)</span>
-    </label>
     <div id="signin-note"></div>
-    <p class="muted" style="margin-bottom:0">Where to get one: <code>radia login human:you</code> mints a
+    <p class="muted" id="signin-where" style="margin-bottom:0">Where to get one: <code>radia login human:you</code> mints a
     person's session and prints both halves (<code>--console</code> prints a link that signs this page in);
     <code>radia dev</code> prints an operator token at startup. A definition token keeps this browser
     signed in indefinitely; a run token lasts a session.</p>

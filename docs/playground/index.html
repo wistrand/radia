@@ -471,7 +471,10 @@ return { kind: "report", body: { text: "rolled up " + summaries.length + " summa
   // credential storage works; a srcdoc iframe has an opaque origin where storage throws).
   const consoleHtml = await (await fetch("./console.html")).text();
   const blitzoom = new URL("vendor/blitzoom.bundle.js", location.href).href;
-  const shim = `<script>
+  // The paste-a-token path is hidden here: there is no CLI in this tab to mint one, so the box and
+  // its "where to get one" hint only send a reader looking for a command that does not exist. The
+  // operator button is the sign-in, and the Auth tab can still mint a person's session from it.
+  const shim = `<style>#signin-token-section, #signin-where { display: none !important; }<\/style><script>
     const orig = window.fetch.bind(window);
     window.fetch = (input, init) => {
       const u = typeof input === "string" ? input : input.url;
