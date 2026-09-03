@@ -39,8 +39,8 @@ a:hover { text-decoration: underline; }
   padding: 0 24px;
 }
 
-h1, h2, h3, .code-title {
-  font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+.code-title {
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
 }
 
 /* Nav */
@@ -56,7 +56,6 @@ nav .container {
 }
 
 nav .brand {
-  font-family: 'JetBrains Mono', monospace;
   font-weight: 700;
   font-size: 1.1rem;
   color: var(--text);
@@ -131,7 +130,7 @@ nav .links { display: flex; gap: 22px; font-size: 0.9rem; align-items: center; }
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 12px 16px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
   font-size: 0.9rem;
   margin-top: 16px;
   display: inline-block;
@@ -237,7 +236,7 @@ pre {
   border-radius: 4px;
   padding: 16px;
   overflow-x: auto;
-  font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
   font-size: 0.85rem;
   line-height: 1.5;
 }
@@ -247,7 +246,7 @@ pre {
 pre.terminal { background: #000; color: #f2f2f4; border-color: #333; }
 
 code {
-  font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
   font-size: 0.88em;
   background: var(--code-bg);
   padding: 1px 5px;
@@ -277,7 +276,7 @@ th, td { padding: 8px 12px; text-align: left; border: 1px solid var(--border); v
 th {
   background: var(--bg-secondary);
   font-weight: 600;
-  font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+  font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
   font-size: 0.8rem;
 }
 
@@ -357,7 +356,7 @@ footer {
     background: transparent;
     color: var(--accent);
     cursor: pointer;
-    font: 600 0.78rem/1.4 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+    font: 600 0.78rem/1.4 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
   }
 
   figure .diagram-toggle::before {
