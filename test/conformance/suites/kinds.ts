@@ -449,8 +449,10 @@ export const kindSuites: Suite[] = [
       await space.put({ kind: "kind_def", body: { kind: "ephemeral", indexedPaths: [{ path: "t", type: "keyword" }] } });
       await space.put({ kind: "ephemeral", body: { t: "x" } });
       await space.put({ kind: "kind_def", body: { kind: "ephemeral", retired: true } });
+      // WITH a predicate: a kind-only pattern compiles for any kind, registered or not, so it is
+      // the path lookup that asks the registry and can answer unknown_kind.
       assertEquals(
-        await errorCode(() => space.query({ kind: "ephemeral" }, 5)),
+        await errorCode(() => space.query({ kind: "ephemeral", match: { t: "x" } }, 5)),
         "unknown_kind",
         "the writing instance must unregister a retired kind, not keep routing it",
       );
@@ -460,7 +462,7 @@ export const kindSuites: Suite[] = [
       const restarted = new Space(adapter);
       await restarted.loadKinds();
       assertEquals(
-        await errorCode(() => restarted.query({ kind: "ephemeral" }, 5)),
+        await errorCode(() => restarted.query({ kind: "ephemeral", match: { t: "x" } }, 5)),
         "unknown_kind",
         "a fresh instance must answer unknown_kind for a retired kind, not crash on its tombstone",
       );
