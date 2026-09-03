@@ -17,14 +17,14 @@ deferred for now ([design-storage.md "Distribution"](../agent_docs/design-storag
 reasons); the release's `SHA256SUMS` lists both files:
 
 ```sh
-npm install https://github.com/wistrand/radia/releases/download/v2026.9.0/radia-2026.9.0.tgz
-pip install https://github.com/wistrand/radia/releases/download/v2026.9.0/radia_space-2026.9.0-py3-none-any.whl
+npm install https://github.com/wistrand/radia/releases/download/v2026.9.1/radia-2026.9.1.tgz
+pip install https://github.com/wistrand/radia/releases/download/v2026.9.1/radia_space-2026.9.1-py3-none-any.whl
 ```
 
 The URL is the pin: npm records it with an integrity hash in the lockfile, and pip verifies
 against the release when the URL carries `#sha256=<digest>` from `SHA256SUMS` (satisfies
 `--require-hashes`). Deno apps skip the tarball and import the tagged sources directly:
-`https://raw.githubusercontent.com/wistrand/radia/v2026.9.0/sdk/ts/mod.ts`.
+`https://raw.githubusercontent.com/wistrand/radia/v2026.9.1/sdk/ts/mod.ts`.
 
 `ts/wire.ts` defines the frozen wire vocabulary and pure functions that clients and the server must
 compute identically. The runtime imports these definitions; the SDK imports nothing from `src/`.
