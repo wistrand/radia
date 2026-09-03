@@ -166,8 +166,9 @@ Deno.test("docs: sidebar labels are the headings they navigate to", () => {
 Deno.test("docs: the site reaches no external host it has not declared", () => {
   // The console vendors and pins its one browser asset. The site does not go that far, but a NEW
   // third-party dependency should be a decision somebody makes rather than one that arrives in a
-  // paste. Google Fonts is the one standing exception; adding another means adding it here.
-  const allowed = ["github.com", "fonts.googleapis.com", "fonts.gstatic.com", "arxiv.org", "radia.sh"];
+  // paste. Google Fonts was dropped 2026-09-03 (every visitor's IP reached Google for a face the
+  // system stack already covers); adding a host means adding it here.
+  const allowed = ["github.com", "arxiv.org", "radia.sh"];
   for (const p of pages) {
     // ATTRIBUTES only. A URL inside a code sample is illustrative (`https://example.com/filing.pdf`)
     // and fetches nothing; what matters is what the browser is told to load or link to.
