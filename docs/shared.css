@@ -197,12 +197,26 @@ figcaption {
 
 .diagram-toggle { display: none; }
 
-/* SVG text defaults, so diagrams inherit the page's typography. */
-svg text { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace; font-size: 12px; }
-svg .label { fill: var(--text); }
-svg .muted { fill: var(--text-secondary); font-size: 11px; }
-svg .box { fill: var(--bg); stroke: var(--border); }
-svg .flow { stroke: var(--border); fill: none; }
+/* Diagram defaults. Text is the page's sans face, never the code face, and carries a halo in the
+   box colour so a label sitting on an arrow knocks the line out under it. A CSS rule beats an SVG
+   presentation attribute whatever its specificity, so the colour and width rules are guarded with
+   :not([attr]) or a diagram's own stroke="#60a5fa" would never render (it did not, for months). */
+svg text {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  paint-order: stroke;
+  stroke: var(--code-bg);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+svg .label { fill: var(--text); font-weight: 600; }
+svg .muted { fill: var(--text-secondary); font-size: 12px; }
+svg .box { stroke-width: 1.5; }
+svg .box:not([fill]) { fill: var(--code-bg); }
+svg .box:not([stroke]) { stroke: #3a3a44; }
+svg .flow { fill: none; }
+svg .flow:not([stroke]) { stroke: var(--text-secondary); }
+svg .flow:not([stroke-width]) { stroke-width: 1.5; }
 
 /* Code blocks */
 .code-block { margin: 20px 0; }
