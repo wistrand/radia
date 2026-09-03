@@ -360,7 +360,9 @@ Storage is Postgres (or embedded SQLite/PGlite for local dev) behind a single ru
 process that owns all concurrency guarantees.
 
 For the full architecture, start with [CLAUDE.md](CLAUDE.md) and the design docs it
-links.
+links. The documentation is structured for coding agents with the
+[structuring-agent-docs](https://github.com/wistrand/structuring-agent-docs) skill: one routing
+entry point, topic files under `agent_docs/`, and a gotchas record beside them.
 
 The illustrated version of this is in [docs/](docs/), which is a static site meant for
 GitHub Pages: [how it works](docs/how-it-works.html), [authorization](docs/authorization.html),

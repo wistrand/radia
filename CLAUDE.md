@@ -463,6 +463,11 @@ live at the top of the relevant `agent_docs/` file, not here.
 
 ## Doc lifecycle
 
+This layout (README for people, this file as the routing entry point, one topic per file under
+`agent_docs/`, gotchas beside them) follows the
+[structuring-agent-docs](https://github.com/wistrand/structuring-agent-docs) skill; reorganise
+docs with it rather than by hand.
+
 Subsystem docs are `design-*` (spec + rationale). Built ones now open with an "M0/M1
 status" note pointing into `src/`; **auth is substantially built (M1)** and its doc carries a
 status note (OIDC shipped 2026-08-11; budgets and the chain-intersection policy stay deferred). Still pure design:
