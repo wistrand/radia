@@ -914,10 +914,10 @@ Deno.test("console: a NARROWED read says so instead of reading as an empty space
   // Every view whose emptiness can be a narrowing must prefer the note to its own "nothing here".
   // Matched on the RENDER expression, not on the message: both strings also appear as static
   // placeholders in the markup, which is what the first version of this test found instead.
-  for (const [view, render] of [["stats", '$("stats").innerHTML = note || '], ["feed", '$("feed-list").innerHTML = note || ']]) {
+  for (const [view, render] of [["pulse", ': note || `<div class="empty">No records yet'], ["feed", '$("feed-list").innerHTML = note || ']]) {
     assert(html.includes(render), `the ${view} view claims emptiness without first offering the scope note`);
   }
-  assert(html.includes("const note = scopeNote(r.data.scope);"), "stats takes the note from its own read");
+  assert(html.includes("const note = scopeNote(d.scope);"), "the pulse takes the note from its own read");
   assert(html.includes("feedScope = r.data.scope"), "the feed keeps the scope its seed reported");
 
   // Diagnostics already said "scoped view"; it must now also name WHICH kinds were left out, which

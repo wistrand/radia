@@ -44,6 +44,8 @@
 
 import { httpRequest } from "../platform.ts";
 import { sha256Hex } from "../core/ids.ts";
+import { RadiaError } from "../core/errors.ts";
+import { getLogger } from "../log.ts";
 import { b64, type BlobCipher, type SealedKey } from "./crypto.ts";
 import type { BlobGcResult, BlobRef, BlobStore, RewrapResult, RetainOptions } from "./blobs.ts";
 import { emptyRewrap, isDigest } from "./blobs.ts";
@@ -54,6 +56,7 @@ const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
 /** The metadata header carrying a `SealedKey` (base64 JSON). S3 returns metadata on GET as well
  *  as HEAD, so a sealed read costs one request rather than two. */
 const KEY_HEADER = "x-amz-meta-radia-key";
+const log = getLogger("storage.s3");
 
 export interface S3Config {
   bucket: string;
@@ -344,23 +347,40 @@ export class S3BlobStore implements BlobStore {
   }
 
   /**
-   * Sign and send. Three fixed attempts on a 5xx or 429, which is the smallest thing that survives
-   * an S3 503 SlowDown; anything past that (jitter, budgets, per-operation policy) is a library and
-   * this is not one. A retried PUT is safe because the store is content-addressed: the same bytes
-   * land at the same key with the same result.
+   * Sign and send. Three fixed attempts on a 5xx, a 429 or a connection failure, which is the
+   * smallest thing that survives an S3 503 SlowDown; anything past that (jitter, budgets,
+   * per-operation policy) is a library and this is not one. A retried PUT is safe because the store
+   * is content-addressed: the same bytes land at the same key with the same result.
+   *
+   * A store that never answers (endpoint down, wrong host, DNS) is `blob_store_unavailable`, a
+   * RadiaError the wire maps to 503, rather than the bare `TypeError: fetch failed` it was: that
+   * surfaced as an unhandled 500 with a stack trace at the first artifact write, which in a space
+   * with SSO is the profile artifact a first sign-in writes, so "SSO is broken" was the symptom of
+   * an S3 container not running.
    */
   private async send(method: string, url: string, headers: Record<string, string>, body?: Uint8Array): Promise<Response> {
     let last: Response | undefined;
+    let failure: unknown;
     for (let attempt = 0; attempt < 3; attempt++) {
-      if (last) {
-        await drain(last);
+      if (attempt > 0) {
+        if (last) await drain(last);
         await new Promise((r) => setTimeout(r, 200 * attempt));
       }
       const signed = await this.sign(method, url, headers, body);
-      last = await httpRequest(url, { method, headers: signed, body: body as unknown as BodyInit | undefined });
+      try {
+        last = await httpRequest(url, { method, headers: signed, body: body as unknown as BodyInit | undefined });
+      } catch (e) {
+        failure = e;
+        last = undefined;
+        continue;
+      }
       if (last.status < 500 && last.status !== 429) return last;
     }
-    return last!;
+    if (last) return last;
+    const host = new URL(url).host;
+    const cause = failure instanceof Error ? (failure.cause instanceof Error ? failure.cause.message : failure.message) : String(failure);
+    log.warn("blob store unreachable", { host, method, cause });
+    throw new RadiaError("blob_store_unavailable", `blob store unreachable at ${host}: ${cause}`);
   }
 
   /** SigV4. The canonical request pins the method, the path, the query, the headers named in

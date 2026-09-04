@@ -57,6 +57,9 @@ export function statusFor(code: string, fallback: number): number {
   // remediation this verb refuses to perform on reference data, and saying so is the point (an
   // empty 200 would read as "nothing to fix").
   if (code === "kind_not_remediable") return 422;
+  // 503: the request was fine and the space is up, but the blob store it needs is not answering.
+  // The same request succeeds once the store is back, and nothing about it needs changing.
+  if (code === "blob_store_unavailable") return 503;
   return fallback;
 }
 
