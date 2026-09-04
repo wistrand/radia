@@ -7,7 +7,7 @@ import type { Space } from "../../core/space.ts";
 import type { GrantDef } from "../../core/kinds.ts";
 import { RadiaError } from "../../core/errors.ts";
 import { problem, rejectUnknown, statusFor } from "../problem.ts";
-import { parseJsonBody } from "../body.ts";
+import { parseJsonBody, readCapped } from "../body.ts";
 
 async function readJson(req: Request): Promise<Record<string, unknown> | null> {
   const j = await parseJsonBody(req); // past the ceiling this THROWS body_too_large, never null
@@ -104,31 +104,11 @@ const MAX_OIDC_BODY_BYTES = 64 * 1024;
  *  "OIDC"). Verification failures are one broad 401: which check failed is for the space's own
  *  tests, never for an anonymous caller. */
 export async function handleOidcSession(space: Space, req: Request): Promise<Response> {
-  // Cap the STREAM, not the content-length header: a chunked body carries no length and this is
-  // the one route where the caller needed no credential to make us read.
-  const reader = req.body?.getReader();
-  let text = "";
-  if (reader) {
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > MAX_OIDC_BODY_BYTES) {
-        await reader.cancel();
-        return problem(413, "body_too_large", `id_token body over ${MAX_OIDC_BODY_BYTES} bytes`);
-      }
-      chunks.push(value);
-    }
-    const all = new Uint8Array(size);
-    let at = 0;
-    for (const c of chunks) {
-      all.set(c, at);
-      at += c.byteLength;
-    }
-    text = new TextDecoder().decode(all);
-  }
+  // Capped on the STREAM (`readCapped`), not on the content-length header: a chunked body carries
+  // no length and this is the one route where the caller needed no credential to make us read.
+  const bytes = await readCapped(req, MAX_OIDC_BODY_BYTES);
+  if (bytes === "too_large") return problem(413, "body_too_large", `id_token body over ${MAX_OIDC_BODY_BYTES} bytes`);
+  const text = new TextDecoder().decode(bytes);
   let j: Record<string, unknown> | null = null;
   try {
     const parsed = JSON.parse(text);
