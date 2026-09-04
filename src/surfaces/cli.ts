@@ -250,10 +250,22 @@ export async function ssoLogin(
     settle = res;
     fail = rej;
   });
+  // The landing page a browser shows after the IdP redirects back. The site's dark ground, its
+  // sans face and the four-record mark, all inline: this listener serves nothing else, so there
+  // is no stylesheet to link and no asset to fetch.
+  const mark = `<svg viewBox="0 0 64 64" width="56" height="56" aria-hidden="true">` +
+    `<g fill="none" stroke="#60a5fa" stroke-width="5"><rect x="6" y="6" width="20" height="20" rx="6"/><rect x="34" y="6" width="20" height="20" rx="6"/><rect x="6" y="34" width="20" height="20" rx="6"/></g>` +
+    `<g fill="none" stroke="#a5b4fc" stroke-width="4.5"><rect x="33" y="33" width="23" height="23" rx="6"/><rect x="38.5" y="38.5" width="12" height="12" rx="3"/></g></svg>`;
   const page = (msg: string) =>
-    new Response(`<!doctype html><meta charset="utf-8"><title>radia</title><body style="font:16px system-ui;padding:2em">${msg}</body>`, {
-      headers: { "content-type": "text/html" },
-    });
+    new Response(
+      `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>radia</title>` +
+        `<body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0e0e11;color:#e8e8ea;` +
+        `font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">` +
+        `<main style="text-align:center;padding:2em">${mark}` +
+        `<div style="font-weight:700;font-size:1.1rem;margin:10px 0 18px">radia</div>` +
+        `<p style="margin:0;color:#9ca3af">${msg}</p></main></body>`,
+      { headers: { "content-type": "text/html" } },
+    );
   const auth = new URL(disco.authorization_endpoint);
   auth.searchParams.set("response_type", "code");
   auth.searchParams.set("client_id", clientId);

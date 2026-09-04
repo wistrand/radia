@@ -17,6 +17,11 @@ deno task dev --db --blobs 's3://radia/blobs?endpoint=http://127.0.0.1:9000'
 deno task dev --db --blobs 's3://radia/blobs?endpoint=http://127.0.0.1:9000,.radia/blobs'
 ```
 
+A space starts without probing the endpoint. If the container is down, the first artifact write or
+read answers `503 blob_store_unavailable` naming the host, and the space logs
+`blob store unreachable`; with SSO on, that first write is the profile artifact a sign-in creates,
+so a failing "Sign in with SSO" is the usual symptom. Records and the event chain are unaffected.
+
 `--blob-kek` works exactly as it does over a directory: the payload is sealed under a per-blob DEK
 wrapped by the space KEK, and only the wrapped DEK moves (into the object's `x-amz-meta-radia-key`
 metadata rather than a `.key` sidecar). The KEK file stays on local disk and never enters the

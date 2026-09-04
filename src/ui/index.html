@@ -35,6 +35,8 @@
   nav button { background: none; border: 0; color: var(--muted); padding: 8px 12px;
     border-radius: 8px; cursor: pointer; font-size: 13px; }
   nav button.active { background: var(--accent); color: var(--accent-ink); }
+  nav .nav-sep { width: 1px; background: var(--line); margin: 6px 6px; }
+  .panel.hl { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); }
   main { padding: 20px; max-width: 1100px; margin: 0 auto; }
   section { display: none; }
   section.active { display: block; }
@@ -77,6 +79,27 @@
   .note { border-radius: 8px; padding: 10px 12px; margin-top: 12px; font-size: 13px; border: 1px solid var(--line); }
   .note.ok { color: var(--ok); } .note.err { color: var(--err); } .note.info { color: var(--info); }
   .empty { color: var(--muted); padding: 18px; text-align: center; }
+  /* Overview pulse: the space at a glance */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+  .tile { background: var(--code); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .tile .n { font-size: 26px; font-weight: 700; line-height: 1.1; }
+  .tile .l { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .tile.avail .n { color: var(--avail); } .tile.leased .n { color: var(--leased); }
+  .tile.consumed .n { color: var(--consumed); } .tile.dead .n { color: var(--dead); }
+  .pulse-strip { margin: 14px 0 4px; }
+  .pulse-strip svg { display: block; width: 100%; height: 56px; }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--muted); }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+  .kindbar { display: grid; grid-template-columns: minmax(90px, 160px) 1fr 52px; gap: 10px; align-items: center;
+    margin: 6px 0; font-size: 13px; }
+  .kindbar .name { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .kindbar .name:hover { color: var(--accent); }
+  .kindbar .bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--code); }
+  .kindbar .bar span { display: block; height: 100%; }
+  .kindbar .tot { text-align: right; color: var(--muted); font-size: 12px; }
+  .who { display: flex; flex-wrap: wrap; gap: 8px; }
+  .who .agent { border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; background: var(--code); font-size: 12px; }
+  .who .agent b { display: block; font-size: 12px; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
   #g-canvas svg text { pointer-events: none; }
@@ -136,21 +159,30 @@
   </div>
 </div>
 <nav id="nav">
-  <button data-tab="overview" class="active">Overview</button>
-  <button data-tab="records">Records</button>
-  <button data-tab="kinds">Kinds</button>
-  <button data-tab="put">Put</button>
-  <button data-tab="query">Query</button>
-  <button data-tab="worker">Worker</button>
-  <button data-tab="feed">Feed</button>
-  <button data-tab="graph">Graph</button>
-  <button data-tab="flows">Flows</button>
-  <button data-tab="space">Space</button>
-  <button data-tab="auth">Auth</button>
+  <!-- Three groups, divided: what is going on (reads), acting as this session (writes), and what
+       the space is made of (declarations and credentials). Ids are the hash routes and appear in
+       the docs, so a label may change and an id may not (`worker` is labelled Take). -->
+  <button data-tab="overview" class="active" title="what is going on right now, and what needs attention">Overview</button>
+  <span class="nav-sep" aria-hidden="true"></span>
+  <button data-tab="records" title="browse and query one kind's records, newest first">Records</button>
+  <button data-tab="feed" title="what happened, in order, grouped by thread">Feed</button>
+  <button data-tab="graph" title="one record's thread: as a waterfall over time, or as a graph">Graph</button>
+  <button data-tab="flows" title="the shapes work takes, mined from lineage rather than declared">Flows</button>
+  <button data-tab="space" title="every record placed by what it is, streamed live">Space</button>
+  <span class="nav-sep" aria-hidden="true"></span>
+  <button data-tab="put" title="write a record as this session">Put</button>
+  <button data-tab="worker" title="claim a record and settle its lease by hand">Take</button>
+  <span class="nav-sep" aria-hidden="true"></span>
+  <button data-tab="kinds" title="declared kinds, their counts, and who listens for each">Kinds</button>
+  <button data-tab="auth" title="definitions, runs and grants; mint a person's session">Auth</button>
 </nav>
 <main>
   <!-- OVERVIEW -->
   <section id="overview" class="active">
+    <div class="panel">
+      <h2>Right now <span class="muted" style="font-weight:normal;font-size:12px" id="pulse-when"></span></h2>
+      <div id="pulse"><div class="empty">loading…</div></div>
+    </div>
     <div class="panel">
       <h2>Space</h2>
       <div id="overview-health" class="muted">loading…</div>
@@ -159,10 +191,6 @@
       <h2>Findings <button class="btn ghost" style="float:right" onclick="loadDoctor()">Refresh</button></h2>
       <div id="doctor"><div class="empty">loading…</div></div>
     </div>
-    <div class="panel">
-      <h2>Records by kind and state <button class="btn ghost" style="float:right" onclick="loadStats()">Refresh</button></h2>
-      <div id="stats"></div>
-    </div>
   </section>
 
   <!-- RECORDS -->
@@ -170,14 +198,30 @@
     <div class="panel">
       <h2>Browse records</h2>
       <div class="row">
-        <div><label>Kind</label><input id="rec-kind" list="kind-list" placeholder="task"></div>
+        <div><label>Kind</label><input id="rec-kind" list="kind-list" placeholder="task" onkeydown="if (event.key === 'Enter') routeRecords()"></div>
         <div style="max-width:120px"><label>Limit</label><input id="rec-limit" type="number" value="50"></div>
         <div style="max-width:160px"><label>Order</label><select id="rec-dir">
           <option value="desc" selected>newest first</option>
           <option value="asc">oldest first</option>
         </select></div>
+        <div style="max-width:170px"><label>State <span class="muted">(envelope)</span></label><select id="rec-state">
+          <option value="" selected>any</option>
+          <option value="available">waiting (available)</option>
+          <option value="leased">being worked on (leased)</option>
+          <option value="consumed">done (consumed)</option>
+          <option value="dead_letter">given up on (dead_letter)</option>
+        </select></div>
       </div>
-      <div class="actions"><button class="btn" onclick="loadRecords()">Load</button></div>
+      <!-- The query playground, folded in: a browse IS a query with no match, and two tabs for one
+           read left the match-and-order half where nobody found it. -->
+      <details id="rec-adv" style="margin-top:8px">
+        <summary class="muted" style="cursor:pointer;font-size:12px">Match and order by (optional)</summary>
+        <label>Match (JSON)</label>
+        <textarea id="rec-match" style="min-height:52px" placeholder='{ "n": { "$gt": 3 } }'></textarea>
+        <label>Order by (JSON array of {path, dir}; replaces newest/oldest)</label>
+        <textarea id="rec-order" style="min-height:44px" placeholder='[ { "path": "n", "dir": "asc" } ]'></textarea>
+      </details>
+      <div class="actions"><button class="btn" onclick="routeRecords()">Load</button></div>
       <div id="rec-msg"></div>
     </div>
     <div class="grid2">
@@ -224,24 +268,6 @@
       <input id="p-idem" placeholder="leave blank for none">
       <div class="actions"><button class="btn" onclick="putRecord()">Put</button></div>
       <div id="p-msg"></div>
-    </div>
-  </section>
-
-  <!-- QUERY -->
-  <section id="query">
-    <div class="panel">
-      <h2>Query playground</h2>
-      <div class="row">
-        <div><label>Kind</label><input id="q-kind" list="kind-list" placeholder="task"></div>
-        <div style="max-width:120px"><label>Limit</label><input id="q-limit" type="number" value="50"></div>
-      </div>
-      <label>Match (JSON, optional)</label>
-      <textarea id="q-match">{ "n": { "$gt": 3 } }</textarea>
-      <label>Order by (JSON array of {path, dir}, optional)</label>
-      <textarea id="q-order" style="min-height:52px">[ { "path": "n", "dir": "asc" } ]</textarea>
-      <div class="actions"><button class="btn" onclick="runQuery()">Run</button></div>
-      <div id="q-msg"></div>
-      <div id="q-results"></div>
     </div>
   </section>
 
@@ -544,7 +570,8 @@ function selectTab(b) {
   stopFeed();
   stopGraphLive();
   stopSpace();
-  if (b.dataset.tab === "overview") { loadHealth(); loadDoctor(); loadStats(); }
+  stopPulse();
+  if (b.dataset.tab === "overview") { loadHealth(); startPulse(); loadDoctor(); }
   if (b.dataset.tab === "kinds") loadKindsTab();
   if (b.dataset.tab === "feed") startFeed();
   if (b.dataset.tab === "graph") loadGraphRoots();
@@ -589,6 +616,7 @@ function navigate(tab, id, params) {
 
 function applyRoute() {
   const r = readRoute();
+  if (r.tab === "query") r.tab = "records"; // the query playground folded into Records; old links still land
   let b = document.querySelector(`#nav button[data-tab="${CSS.escape(r.tab)}"]`);
   if (!b) { b = document.querySelector('#nav button[data-tab="overview"]'); r.id = ""; }
   // Knobs BEFORE the tab, because entering a tab runs its loader and the loader reads these inputs.
@@ -621,9 +649,32 @@ function applyRoute() {
     $("g-view").value = r.params.get("view") === "layers" ? "layers" : "waterfall";
     $("g-down").checked = r.params.get("dir") === "down";
   }
+  // Records: the browse itself travels in the URL (`?kind=task&dir=asc&limit=20&match=…`), so a
+  // link from the Overview's bars, a finding, or a colleague opens the same list. Each knob is
+  // applied only when present, so a bare `#records/<id>` leaves the inputs as they were.
+  const recordsState = ["available", "leased", "consumed", "dead_letter"].includes(r.params.get("state") || "") ? r.params.get("state") : "";
+  const recordsKind = b.dataset.tab === "records" ? (r.params.get("kind") || recordsState) : null;
+  if (recordsKind) {
+    $("rec-kind").value = r.params.get("kind") || "";
+    $("rec-state").value = recordsState;
+    $("rec-dir").value = r.params.get("dir") === "asc" ? "asc" : "desc";
+    const lim = Number(r.params.get("limit"));
+    $("rec-limit").value = String(Number.isFinite(lim) && lim >= 1 ? Math.min(lim, 500) : 50);
+    $("rec-match").value = r.params.get("match") ?? "";
+    $("rec-order").value = r.params.get("order") ?? "";
+    $("rec-adv").open = !!($("rec-match").value || $("rec-order").value);
+  }
+  // Auth: `?agent=` names the card to bring into view, from a listener chip or a routing node.
+  AUTH_FOCUS = b.dataset.tab === "auth" ? (r.params.get("agent") || null) : null;
   selectTab(b);
+  if (recordsKind) loadRecords();
   if (r.id && b.dataset.tab === "records") showDetail(r.id);
   if (r.id && b.dataset.tab === "graph") showGraph(r.id);
+}
+let AUTH_FOCUS = null;
+/** An agent named anywhere (a listener, a routing node) opens its definition, runs and grants. */
+function openAgent(agent) {
+  navigate("auth", "", new URLSearchParams({ agent }));
 }
 
 addEventListener("hashchange", () => {
@@ -631,9 +682,33 @@ addEventListener("hashchange", () => {
   applyRoute();
 });
 
-/** Selecting a record is a navigation, so it is shareable and the back button undoes it. */
+/** The Records browse as URL knobs; empty when no kind is entered. Defaults are omitted so the
+ *  common link stays short. */
+function recordsParams(kind) {
+  const p = new URLSearchParams();
+  const k = (kind ?? $("rec-kind").value).trim();
+  const state = $("rec-state").value;
+  if (!k && !state) return p;
+  if (k) p.set("kind", k);
+  if (state) p.set("state", state);
+  if ($("rec-dir").value === "asc") p.set("dir", "asc");
+  const lim = Number($("rec-limit").value);
+  if (Number.isFinite(lim) && lim >= 1 && lim !== 50) p.set("limit", String(lim));
+  if ($("rec-match").value.trim()) p.set("match", $("rec-match").value.trim());
+  if ($("rec-order").value.trim()) p.set("order", $("rec-order").value.trim());
+  return p;
+}
+/** The Load button: route the browse through the hash, so the list is what the URL says. */
+function routeRecords() {
+  if (!$("rec-kind").value.trim() && !$("rec-state").value) return;
+  const same = "#records?" + recordsParams();
+  if (location.hash === same) return loadRecords(); // a reload of the same view is still a reload
+  navigate("records", "", recordsParams());
+}
+/** Selecting a record is a navigation, so it is shareable and the back button undoes it. The
+ *  browse knobs travel with it, or the link would open the detail beside an empty list. */
 function selectRecord(id) {
-  navigate("records", id);
+  navigate("records", id, recordsParams());
 }
 /** The Flows knobs exist to be varied and compared, which is only possible if a comparison can be
  *  sent to someone. `min` is omitted at its default so the common URL stays short. */
@@ -708,6 +783,8 @@ async function loadHealth() {
     return;
   }
   const d = r.data;
+  // The DB clock is the space's clock; the pulse buckets events against it, not this machine's.
+  if (d.now) DB_SKEW = (Date.parse(d.now) - Date.now()) || 0;
   // Ask the space who this is. A run token reports `run:…` at /v0/health; the SUBJECT (the person
   // or agent whose grants it carries) is what the rest of the console should name.
   const who = await api("GET", "/v0/ops/permissions?principal=" + encodeURIComponent(d.principal || ""));
@@ -773,22 +850,123 @@ async function loadHealth() {
     + `<div><b>DB clock:</b> <span class="mono">${esc(d.now)}</span></div>`
     + `<div><b>Version:</b> <span class="mono">${esc(d.version)}</span> · <b>API:</b> ${esc(d.api)}</div>`;
 }
-async function loadStats() {
-  const r = await api("GET", "/v0/ops/stats");
-  // A session without the observe power cannot reach the plane's reads. Blanking here read as
-  // "empty space", which is the worst answer: it is indistinguishable from a healthy idle one.
-  if (!r.ok) {
-    $("stats").innerHTML = `<div class="note ${r.status === 403 ? "info" : "err"}">${esc(errText(r))}${r.status === 403 ? " — this session holds no observe ops power, so the plane's reads are closed to it. Sign in with the observer credential radia dev provisioned, or have an operator assign one (ops_grant)." : ""}</div>`;
+// ---- pulse: the space at a glance ----
+// A COMPOSITION of two reads the console already makes (GET /v0/ops/digest: kinds, counts by
+// state, live listeners; GET /v0/ops/events?tail=…: the last minutes of activity), rendered as
+// tiles, bars and chips rather than tables. No new server surface and no state of its own: every
+// number is recomputed from the space on each poll, and a kind's bar opens its records.
+let DB_SKEW = 0, pulseTimer = null;
+const PULSE_WINDOW_S = 120, PULSE_BUCKET_S = 2;
+const PULSE_STATES = [
+  ["available", "avail", "waiting to be claimed"],
+  ["leased", "leased", "being worked on"],
+  ["consumed", "consumed", "done"],
+  ["dead_letter", "dead", "given up on"],
+];
+/** Which colour an event takes on the strip: what was written, claimed, answered, or went wrong. */
+function opClass(op) {
+  if (op === "put") return "put";
+  if (op === "take" || op === "renew") return "take";
+  if (op === "ack") return "ack";
+  if (op === "nack" || op === "expire" || op === "dead_letter" || op === "quarantine") return "fail";
+  return "other";
+}
+const OP_COLOR = { put: "var(--avail)", take: "var(--leased)", ack: "var(--ok)", fail: "var(--err)", other: "var(--muted)" };
+function startPulse() { loadPulse(); if (!pulseTimer) pulseTimer = setInterval(loadPulse, 4000); }
+function stopPulse() { if (pulseTimer) { clearInterval(pulseTimer); pulseTimer = null; } }
+async function loadPulse() {
+  const [dg, ev] = await Promise.all([api("GET", "/v0/ops/digest"), api("GET", "/v0/ops/events?tail=500")]);
+  if (!dg.ok) {
+    $("pulse").innerHTML = `<div class="note ${dg.status === 403 ? "info" : "err"}">${esc(errText(dg))}${dg.status === 403 ? " — the overview needs the observe ops power, an operator session, or a self-scoped grant." : ""}</div>`;
     return;
   }
-  const rows = r.data.stats;
-  const note = scopeNote(r.data.scope);
+  renderPulse(dg.data, ev.ok ? (ev.data.events || []) : null);
+  $("pulse-when").textContent = "refreshed " + new Date().toLocaleTimeString();
+}
+function renderPulse(d, events) {
+  const out = [];
+  // Tiles: how much work is in each state, summed over every kind the caller may see.
+  const byState = {};
+  for (const c of d.counts || []) byState[c.state] = (byState[c.state] || 0) + c.count;
+  const agents = new Set((d.interests || []).map((i) => i.agent));
+  const now = Date.now() + DB_SKEW;
+  const recent = events ? events.filter((e) => now - Date.parse(e.ts) <= 60_000) : [];
+  const newest = events && events.length ? events[events.length - 1] : null;
+  const age = newest ? Math.max(0, Math.round((now - Date.parse(newest.ts)) / 1000)) : null;
+  out.push(`<div class="tiles">`
+    + PULSE_STATES.map(([st, cls, label]) => `<div class="tile ${esc(cls)} click" onclick="openState('${esc(st)}')" title="browse every record in this state"><div class="n">${byState[st] || 0}</div><div class="l">${label}</div></div>`).join("")
+    + `<div class="tile click" onclick="navigate('kinds')" title="who listens for what, as a diagram"><div class="n">${agents.size}</div><div class="l">agent${agents.size === 1 ? "" : "s"} listening${d.interestsWithheld ? " (+" + d.interestsWithheld + " withheld)" : ""}</div></div>`
+    + `<div class="tile click" onclick="navigate('feed')" title="the event log, live"><div class="n">${events ? recent.length : "?"}</div><div class="l">${events ? "events in the last minute" : "events not readable here"}</div></div>`
+    + `</div>`);
+  // The strip: the last two minutes in 2s buckets, stacked by what each event was.
+  if (events) {
+    const n = PULSE_WINDOW_S / PULSE_BUCKET_S, w = 600, h = 48, bw = w / n;
+    const buckets = Array.from({ length: n }, () => ({ put: 0, take: 0, ack: 0, fail: 0, other: 0 }));
+    for (const e of events) {
+      const s = (now - Date.parse(e.ts)) / 1000;
+      if (s < 0 || s >= PULSE_WINDOW_S) continue;
+      buckets[n - 1 - Math.floor(s / PULSE_BUCKET_S)][opClass(e.operation)]++;
+    }
+    const max = Math.max(1, ...buckets.map((b) => b.put + b.take + b.ack + b.fail + b.other));
+    let svg = `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-label="events over the last two minutes">`
+      + `<line x1="0" y1="${h - 0.5}" x2="${w}" y2="${h - 0.5}" stroke="var(--line)"/>`;
+    buckets.forEach((b, i) => {
+      let y = h - 1;
+      for (const k of ["put", "take", "ack", "fail", "other"]) {
+        if (!b[k]) continue;
+        const bh = (b[k] / max) * (h - 4);
+        y -= bh;
+        svg += `<rect x="${(i * bw + 0.5).toFixed(1)}" y="${y.toFixed(1)}" width="${(bw - 1).toFixed(1)}" height="${bh.toFixed(1)}" fill="${OP_COLOR[k]}"><title>${b[k]} ${k}</title></rect>`;
+      }
+    });
+    svg += `</svg>`;
+    const quiet = !buckets.some((b) => b.put + b.take + b.ack + b.fail + b.other);
+    out.push(`<div class="pulse-strip">${svg}</div>`
+      + `<div class="legend"><span><i style="background:var(--avail)"></i>written</span><span><i style="background:var(--leased)"></i>claimed</span>`
+      + `<span><i style="background:var(--ok)"></i>answered</span><span><i style="background:var(--err)"></i>handed back, expired or given up</span>`
+      + `<span style="margin-left:auto">${quiet ? "quiet for the last two minutes" : age === null ? "" : "last event " + (age < 2 ? "just now" : age + "s ago")}</span></div>`);
+  }
+  // Work by kind: one bar per kind the caller may see, split by state, opening its records.
+  const perKind = new Map();
+  for (const c of d.counts || []) {
+    const k = perKind.get(c.kind) || { total: 0, states: {} };
+    k.total += c.count;
+    k.states[c.state] = (k.states[c.state] || 0) + c.count;
+    perKind.set(c.kind, k);
+  }
+  const reserved = new Set((d.kinds || []).filter((k) => k.reserved).map((k) => k.kind));
+  const shown = [...perKind].filter(([k]) => !reserved.has(k)).sort((a, b) => b[1].total - a[1].total);
+  const hidden = [...perKind].filter(([k]) => reserved.has(k)).reduce((n, [, v]) => n + v.total, 0);
   // "No records yet" is FALSE for a caller whose kinds are scoped by grant pattern: those are not
-  // counted here at all, and the server says so. Only say the space is empty when nothing narrowed.
-  if (!rows.length) { $("stats").innerHTML = note || `<div class="empty">No records yet.</div>`; return; }
-  $("stats").innerHTML = note + `<table><thead><tr><th>Kind</th><th>State</th><th>Count</th></tr></thead><tbody>`
-    + rows.map((s) => `<tr><td class="mono">${esc(s.kind)}</td><td>${stateBadge(s.state)}</td><td>${s.count}</td></tr>`).join("")
-    + `</tbody></table>`;
+  // counted at all, and the server says so. The note wins over the console's own "nothing here".
+  const note = scopeNote(d.scope);
+  const bars = shown.length
+    ? shown.map(([kind, v]) => {
+      const segs = PULSE_STATES.map(([st, cls]) => v.states[st]
+        ? `<span class="st-${esc(st)} click" style="width:${(100 * v.states[st] / v.total).toFixed(1)}%" title="${esc(String(v.states[st]) + " " + st.replace("_", " ") + ": browse them")}" onclick="event.stopPropagation(); navigate('records', '', new URLSearchParams({ kind: '${esc(kind)}', state: '${esc(st)}' }))"></span>`
+        : "").join("");
+      return `<div class="kindbar"><span class="name mono" onclick="openKindRecords('${esc(kind)}')" title="browse ${esc(kind)} records">${esc(kind)}</span><div class="bar">${segs}</div><span class="tot">${v.total}</span></div>`;
+    }).join("")
+    : note || `<div class="empty">No records yet. Write one from the Put tab, or run an example against this space.</div>`;
+  // Who is here: each live listener and the kinds it will claim, from interest records that count
+  // only while their run does.
+  const who = new Map();
+  for (const i of d.interests || []) {
+    const a = who.get(i.agent) || { kinds: [], runs: 0 };
+    a.kinds.push(i.kind);
+    a.runs = Math.max(a.runs, i.runs);
+    who.set(i.agent, a);
+  }
+  const chips = who.size
+    ? [...who].sort().map(([agent, a]) => `<div class="agent"><b class="click" onclick="openAgent('${esc(agent)}')" title="this agent's definition, runs and grants">${esc(agent)}</b>listens for ${a.kinds.sort().map((k) => `<span class="mono" style="cursor:pointer" onclick="openKindRecords('${esc(k)}')">${esc(k)}</span>`).join(", ")}`
+      + `<span class="muted"> · ${a.runs} live run${a.runs === 1 ? "" : "s"}</span></div>`).join("")
+    : `<div class="empty">Nobody is listening right now. Listeners appear while a worker's agentLoop runs.</div>`;
+  out.push(`<div class="grid2" style="margin-top:14px">`
+    + `<div><h2 style="font-size:13px">Work by kind</h2>${bars}${hidden ? `<div class="muted" style="font-size:12px">${hidden} record${hidden === 1 ? "" : "s"} in the runtime's own kinds (kinds, grants, runs) not shown</div>` : ""}</div>`
+    + `<div><h2 style="font-size:13px">Who is listening</h2><div class="who">${chips}</div>${d.interestsNote ? `<div class="muted" style="font-size:12px">${esc(d.interestsNote)}</div>` : ""}</div>`
+    + `</div>`);
+  if (shown.length) out.push(note);
+  $("pulse").innerHTML = out.join("");
 }
 
 // ---- doctor (the operator's question, answered where the operator looks) ----
@@ -934,8 +1112,10 @@ function renderRouting(d) {
   }
   for (const a of agents) {
     const y = ay.get(a);
-    s += `<rect x="${leftX}" y="${y - nodeH / 2}" width="${nodeW}" height="${nodeH}" rx="7" fill="var(--panel)" stroke="var(--muted)" stroke-width="1.5"/>`
-      + `<text x="${leftX + 10}" y="${y + 4}" font-size="11" fill="var(--ink)">${esc(a).slice(0, 24)}</text>`;
+    s += `<g style="cursor:pointer" onclick="openAgent('${esc(a)}')">`
+      + `<rect x="${leftX}" y="${y - nodeH / 2}" width="${nodeW}" height="${nodeH}" rx="7" fill="var(--panel)" stroke="var(--muted)" stroke-width="1.5"/>`
+      + `<text x="${leftX + 10}" y="${y + 4}" font-size="11" fill="var(--ink)">${esc(a).slice(0, 24)}</text>`
+      + `<title>${esc(a)}: its definition, runs and grants</title></g>`;
   }
   for (const k of kinds) {
     const y = ky.get(k);
@@ -986,9 +1166,11 @@ function renderKindDigest(d) {
 /** A kind node is a question ("what is in it?"), so clicking one is a navigation into the
  *  records browser with the kind prefilled. */
 function openKindRecords(kind) {
-  $("rec-kind").value = kind;
-  navigate("records");
-  loadRecords();
+  navigate("records", "", new URLSearchParams({ kind }));
+}
+/** A state tile on the Overview: every record in that state, whatever its kind. */
+function openState(state) {
+  navigate("records", "", new URLSearchParams({ state }));
 }
 async function loadKinds() {
   const r = await api("POST", "/v0/records/query", { kind: "kind_def", limit: 1000 });
@@ -1078,17 +1260,46 @@ function scopeNote(scope) {
 }
 async function loadRecords() {
   const kind = $("rec-kind").value.trim();
-  if (!kind) return;
+  const state = $("rec-state").value;
+  if (!kind && !state) return;
   await ensureKinds();
+  // A STATE browse reads the ENVELOPE query on the ops plane (`GET /v0/ops/records?state=`), the
+  // same selector `radia doctor` and `remediate` use, so what the Overview's tiles count is what
+  // this lists. Match and order do not apply there: it is ordered by availability, and says so.
+  if (state) {
+    const p = new URLSearchParams({ state, limit: String(Number($("rec-limit").value) || 50) });
+    if (kind) p.set("kind", kind);
+    const r = await api("GET", "/v0/ops/records?" + p);
+    if (!r.ok) {
+      $("rec-list").innerHTML = `<div class="note ${r.status === 403 ? "info" : "err"}">${esc(errText(r))}${r.status === 403 ? " — a state browse reads the ops plane, which needs the observe power, an operator session, or a self-scoped grant. Clear the state to query by content instead." : ""}</div>`;
+      $("rec-msg").innerHTML = "";
+      return;
+    }
+    const rows = r.data.records || [];
+    const recs = rows.map((x) => x.record).filter(Boolean);
+    const hidden = rows.length - recs.length;
+    $("rec-msg").innerHTML = `<div class="muted" style="font-size:12px">${recs.length} record${recs.length === 1 ? "" : "s"} ${esc(state.replace("_", " "))}${kind ? " in " + esc(kind) : ", every kind"}, ordered by when each became claimable`
+      + (hidden ? `; ${hidden} more this session may not read` : "")
+      + ($("rec-match").value.trim() || $("rec-order").value.trim() ? `; match and order by do not apply to a state browse` : "") + `</div>` + scopeNote(r.data.scope);
+    renderRecordList("rec-list", recs, selectRecord, kind ? indexedPathsOf(kind) : []);
+    return;
+  }
   // NEWEST FIRST by default. A bounded read with the default order returns the OLDEST rows, so
   // this browser used to present a long-lived kind's ancient history as "the records" — the exact
   // bounded-read trap gotchas.md calls the most repeated bug in this codebase.
   const dir = $("rec-dir").value === "asc" ? "asc" : "desc";
-  const r = await api("POST", "/v0/records/query", { kind, limit: Number($("rec-limit").value) || 50, dir, explain: true });
+  // The folded-in playground: a match narrows, an order_by replaces the page direction (the two
+  // are not combined on the wire, and the pattern's own order is the one that decides).
+  let match, orderBy;
+  try { match = $("rec-match").value.trim() ? JSON.parse($("rec-match").value) : undefined; }
+  catch (e) { return note("rec-msg", "err", "Match: invalid JSON"); }
+  try { orderBy = $("rec-order").value.trim() ? JSON.parse($("rec-order").value) : undefined; }
+  catch (e) { return note("rec-msg", "err", "Order by: invalid JSON"); }
+  const req = { kind, match, limit: Number($("rec-limit").value) || 50, explain: true };
+  if (orderBy) req.orderBy = orderBy; else req.dir = dir;
+  const r = await api("POST", "/v0/records/query", req);
   if (!r.ok) { $("rec-list").innerHTML = `<div class="note err">${esc(errText(r))}</div>`; $("rec-msg").innerHTML = ""; return; }
-  $("rec-msg").innerHTML = explainNotes(r.data.explain);
-  // The records browser NAVIGATES to a selection; the query playground below renders into its own
-  // panel and stays put, which is why the click handler is a parameter rather than a constant.
+  $("rec-msg").innerHTML = `<div class="muted" style="font-size:12px">${r.data.records.length} record${r.data.records.length === 1 ? "" : "s"}</div>` + explainNotes(r.data.explain);
   renderRecordList("rec-list", r.data.records, selectRecord, indexedPathsOf(kind));
 }
 function renderRecordList(el, records, onClick, paths = []) {
@@ -1119,6 +1330,9 @@ async function showDetail(id, target = "rec-detail") {
     if (r.ok) rec = r.data;
   }
   if (!rec) { $(target).innerHTML = `<div class="empty">record not found</div>`; return; }
+  // A deep link to one record lands beside an empty browse; name its kind so one click lists the
+  // rest. Never overwrite a kind the person typed.
+  if (target === "rec-detail" && !$("rec-kind").value.trim() && rec.kind) $("rec-kind").value = rec.kind;
   const env = await api("GET", "/v0/ops/records/" + encodeURIComponent(id) + "/envelope");
   const e = env.ok ? env.data : null;
   const lin = await api("GET", "/v0/ops/records/" + encodeURIComponent(id) + "/lineage");
@@ -1656,21 +1870,6 @@ function renderWaterfall(el, data) {
 }
 
 // ---- query ----
-async function runQuery() {
-  let match, orderBy;
-  try { match = $("q-match").value.trim() ? JSON.parse($("q-match").value) : undefined; }
-  catch (e) { return note("q-msg", "err", "Match: invalid JSON"); }
-  try { orderBy = $("q-order").value.trim() ? JSON.parse($("q-order").value) : undefined; }
-  catch (e) { return note("q-msg", "err", "Order by: invalid JSON"); }
-  const kind = $("q-kind").value.trim();
-  await ensureKinds();
-  const r = await api("POST", "/v0/records/query",
-    { kind, match, orderBy, limit: Number($("q-limit").value) || 50, explain: true });
-  if (!r.ok) { note("q-msg", "err", errText(r)); $("q-results").innerHTML = ""; return; }
-  $("q-msg").innerHTML = `<div class="note ok">${r.data.records.length} record(s)</div>` + explainNotes(r.data.explain);
-  renderRecordList("q-results", r.data.records, showDetail, indexedPathsOf(kind));
-}
-
 // ---- worker ----
 let heldLease = null;
 async function takeWork() {
@@ -2145,7 +2344,7 @@ async function loadAuth() {
     : `<span class="muted">none</span>`;
 
   const cards = [...agents.entries()].map(([agent, d]) => {
-    return `<div class="panel" style="background:var(--bg)">`
+    return `<div class="panel" style="background:var(--bg)" data-agent="${esc(agent)}">`
       + `<b class="mono">${esc(agent)}</b> <span class="muted mono" style="font-size:11px">token ${esc((d.tokenHash || "").slice(0, 12))}… <span title="only the sha256 hash is stored; the plaintext token is returned once at mint">(hashed)</span></span>`
       + `<div class="tree" style="margin-top:8px"><span class="muted">grants:</span> ${grantChips(grantsBy[agent] || [])}</div>`
       + `<div class="tree" style="margin-top:8px"><span class="muted">run tokens:</span> ${runLines(runsByAgent[agent] || [])}</div>`
@@ -2157,7 +2356,7 @@ async function loadAuth() {
   // silently dropped, which made the one revocable thing about an SSO session unfindable.
   const oidcAgents = Object.keys(runsByAgent).filter((a) => a && !agents.has(a));
   for (const agent of oidcAgents.sort()) {
-    cards.push(`<div class="panel" style="background:var(--bg)">`
+    cards.push(`<div class="panel" style="background:var(--bg)" data-agent="${esc(agent)}">`
       + `<b class="mono">${esc(agent)}</b> <span class="muted" style="font-size:11px">OIDC session (no definition: the IdP re-vouches past the run ceiling)</span>`
       + `<div class="tree" style="margin-top:8px"><span class="muted">grants:</span> ${grantChips(grantsBy[agent] || [])}</div>`
       + `<div class="tree" style="margin-top:8px"><span class="muted">run tokens:</span> ${runLines(runsByAgent[agent] || [])}</div>`
@@ -2173,6 +2372,13 @@ async function loadAuth() {
   }
 
   $("auth-body").innerHTML = cards.length ? cards.join("") : `<div class="empty">No agent definitions yet. Run the chat example: <code>deno task chat</code></div>`;
+  // Arrived from a listener chip or a routing node: bring that principal's card into view. A name
+  // with no card (a stopped run's agent, a scoped read) is said, never silently ignored.
+  if (AUTH_FOCUS) {
+    const card = [...document.querySelectorAll("#auth-body [data-agent]")].find((c) => c.dataset.agent === AUTH_FOCUS);
+    if (card) { card.classList.add("hl"); card.scrollIntoView({ block: "start", behavior: "smooth" }); }
+    else $("auth-body").insertAdjacentHTML("afterbegin", `<div class="note info">no definition or run here for <span class="mono">${esc(AUTH_FOCUS)}</span>: its runs may have ended, or this session may not read them</div>`);
+  }
   renderMint();
 }
 
@@ -2475,7 +2681,6 @@ function start() {
   $("nav").style.display = "";
   document.querySelector("main").style.display = "";
   loadHealth();
-  loadStats();
   loadKinds();
   // The poll is also the expiry detector: a run token dies on its own clock, so nothing else would
   // notice until the next thing you clicked failed.
