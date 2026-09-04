@@ -16,7 +16,7 @@ import { newestByKey, unsafeAsPopulation } from "../../sdk/ts/registry.ts";
 // A SURFACE may import a convention; the runtime may not. See test/layering.test.ts.
 import { exportWorkspaceGit } from "../../extensions/ts/git.ts";
 import { buildThreadSpans, postTraces, recordSpans, toResourceSpans, traceIdOf } from "../../extensions/ts/otlp.ts";
-import { basicPassword, gitHandler } from "../../extensions/ts/git-http.ts";
+import { basicPassword, clientForPassword, gitHandler } from "../../extensions/ts/git-http.ts";
 import { bearerClientFor, extHandler } from "./extserve.ts";
 import { summarizeWorkspaces } from "../../extensions/ts/workspace.ts";
 import { declareExecRequest, pinnedDigests, promote } from "../../extensions/ts/promotion.ts";
@@ -36,6 +36,7 @@ import {
   resolveDefinitionToken,
   resolveToken,
   saveLogin,
+  storedLogin,
   storedObserver,
 } from "../credentials.ts";
 import { flag, flags, has, positional } from "../flags.ts";
@@ -69,7 +70,7 @@ Inspect
   integrity                           verify the event chain; reports the FIRST divergence
   permissions <principal>             what that principal can actually do (the fold over its grants)
   login <principal> [--grant k:ops]… [--compact | --compact-definition]  (--console prints a sign-in LINK for the web console)
-  login --sso [--sso-port <n>]     sign in through the space's OIDC issuer (browser click; no operator, no durable credential)
+  login --sso [--sso-port <n>] [--compact]  sign in through the space's OIDC issuer (browser click; no operator, no durable credential; --compact prints the run token alone)
                                       mint a session for a person, and keep the durable half so
                                       the CLI signs in again by itself. --compact prints the
                                       session token alone; --compact-definition prints the
@@ -137,10 +138,17 @@ Workspaces (a convention, not a runtime concept: see extensions/)
                                       --partial exports what survives an ERASED payload,
                                       naming every omission in the commit that lost it
   git-serve [--port <n>] [--host <h>] [--conversation <id>] [--partial] [--anonymous]
-                                      serve every workspace at /<name>.git for \`git clone\`.
-                                      Read-only; push is refused. Authenticate with a
-                                      definition token as the HTTP password, so a clone reads
-                                      what that principal can and \`radia revoke\` stops it
+                                      serve every workspace at /<name>.git for \`git clone\` and
+                                      \`git push\` (fast-forward only). The HTTP password is a
+                                      definition token (login <principal> --compact-definition)
+                                      or an SSO run token (login --sso --compact), so a clone
+                                      reads what that principal can and \`radia revoke\` or the
+                                      run ceiling stops it
+  git-credential get [--host <h:p>]   git's credential helper: answers with the login this CLI
+                                      holds for its space, so a token never goes in a URL, and
+                                      only for a loopback git-serve (or --host) so it is never
+                                      handed to another server. Configure it for that URL only:
+                                      git config --global credential.http://127.0.0.1:7790.helper '!radia git-credential'
   serve-ext [--port <n>] [--host <h>] serve the extension conventions over HTTP, for apps in
                                       languages the TS extensions cannot reach: workspace
                                       read/write, capability publish + tool discovery, presence
@@ -467,6 +475,13 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         const portFlag = flag(argv, "--sso-port");
         const sso = await ssoLogin(client.base, portFlag ? { port: Number(portFlag) } : {});
         const kept = saveLogin(client.base, { principal: sso.agent, token: sso.runToken, mintedAt: new Date().toISOString() });
+        // `--compact`: the run token and nothing else, for a URL git will store:
+        // `git clone http://you:$(radia login --sso --compact)@host/ws.git`. It lasts to the run
+        // ceiling, which is the whole of what an SSO session has.
+        if (has(argv, "--compact")) {
+          console.log(sso.runToken);
+          return 0;
+        }
         return out(ctx, { principal: sso.agent, run: sso.run, token: sso.runToken, expiresAt: sso.expiresAt }, () =>
           [
             `${sso.agent} signed in as ${sso.run} (expires ${sso.expiresAt}; clients renew it to the run ceiling)`,
@@ -477,7 +492,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           ].join("\n"));
       }
       const [who] = positional(argv, 1);
-      if (!who) return usage("login <principal> [--grant <kind>:<op,op>]… [--compact|--compact-definition|--console] | login --sso [--sso-port <n>]");
+      if (!who) return usage("login <principal> [--grant <kind>:<op,op>]… [--compact|--compact-definition|--console] | login --sso [--sso-port <n>] [--compact]");
       if (!who.startsWith("human:")) return usage("login <principal>  (principal must start with 'human:')");
       const grants = flags(argv, "--grant").map((g) => {
         const [kind, ops] = String(g).split(":");
@@ -1907,6 +1922,55 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       });
     }
 
+    case "git-credential": {
+      // Git's credential helper protocol (`git credential`): git runs `<helper> get|store|erase`
+      // with `key=value` lines on stdin, and reads `key=value` lines back. This answers `get` with
+      // the credential the CLI already holds for its space, so `radia login` (SSO or otherwise) is
+      // done ONCE and `git clone`/`git push` against `radia git-serve` carry no token in the URL.
+      // `store` and `erase` are accepted and do nothing: the credentials file is the store, and a
+      // rejected password is not something to forget, since the fix is `radia login` again.
+      //
+      // Which credential: a person's login for this space, its durable half first (it outlives a
+      // session and cannot read or write by itself), else the run token an SSO sign-in has; else
+      // what the CLI's other verbs would use (`RADIA_TOKEN`, then the credential `radia dev` wrote).
+      // The helper answers for THIS space whichever git-serve fronts it: git's `host` is the git
+      // server's, and nothing maps that back to a space, so `--url` names the space when there are
+      // several.
+      //
+      // ONLY FOR ITS OWN SERVER. Git asks whichever helper its config names, and a helper installed
+      // for every URL would be asked for github.com too, then hand a radia credential to whoever
+      // answers there. So the config line git-serve prints is URL-scoped
+      // (`credential.http://<host>:<port>.helper`), and this refuses anyway: the host git names
+      // must be loopback, or one given with `--host`, or the ask is passed over in silence.
+      const [action] = positional(argv, 1);
+      if (!action) {
+        // A person at a terminal, not git: say how git calls this, since silence read as broken.
+        return usage(
+          "git-credential get   (git runs it; by hand: printf 'protocol=http\\nhost=127.0.0.1:7790\\n\\n' | radia git-credential get)",
+        );
+      }
+      if (action !== "get") return 0; // store and erase: nothing to do, and git expects no output
+      const asked = new TextDecoder().decode(await readAllBytes(stdin()));
+      const field = (k: string) => asked.split("\n").find((l) => l.startsWith(k + "="))?.slice(k.length + 1);
+      const protocol = field("protocol");
+      if (protocol && protocol !== "http" && protocol !== "https") return 0; // not ours; git asks the next helper
+      const host = field("host") ?? "";
+      const allowedHosts = flags(argv, "--host");
+      const loopback = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i;
+      if (!(allowedHosts.length > 0 ? allowedHosts.includes(host) : loopback.test(host))) return 0; // somebody else's host
+      const login = storedLogin(client.base);
+      const password = login?.definitionToken ?? login?.token ?? resolveDefinitionToken(client.base) ?? resolveToken(client.base);
+      if (!password) {
+        console.error(`radia git-credential: no credential for ${client.base}. Run \`radia login --sso\` or \`radia login <principal>\`.`);
+        return 1;
+      }
+      // A Basic user-id may not contain a colon (RFC 7617), and every principal does, so the name
+      // travels with the colon replaced; it is decoration, the server reads only the password.
+      console.log(`username=${(login?.principal ?? "radia").replaceAll(":", "-")}`);
+      console.log(`password=${password}`);
+      return 0;
+    }
+
     case "git-serve": {
       // A CLIENT that happens to listen. It reads workspaces over `/v0` like anything else and the
       // runtime learns nothing about git, which is the same split that made `workspace-git` a verb
@@ -1935,10 +1999,10 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           if (startsFetch) clients.delete(password);
           const cached = clients.get(password);
           if (cached) return cached;
-          // A definition token, so the clone survives its own session: git replays a stored secret
-          // and has no way to renew. The SDK exchanges it for a run token.
-          const fresh = new RadiaClient(client.base, { definitionToken: password });
-          await fresh.ensureCredential(); // throws if the definition is revoked, which is a 401
+          // Either half of a credential: a definition token (exchanged for a run, so the clone
+          // survives its own session) or the run token an SSO sign-in has. `clientForPassword`
+          // throws for anything else, which is a 401.
+          const fresh = await clientForPassword(client.base, password);
           clients.set(password, fresh);
           return fresh;
         },
@@ -1984,9 +2048,11 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       console.log(
         anonymous
           ? `  git clone http://127.0.0.1:${port}/<workspace>.git      (serving as this process; anyone who can reach the port can read)`
-          : `  git clone http://you:$(radia login <principal> --compact-definition)@127.0.0.1:${port}/<workspace>.git`,
+          : `  git config --global credential.http://127.0.0.1:${port}.helper '!radia git-credential'      (once: git then uses your radia login here, and nowhere else)\n` +
+            `  git clone http://127.0.0.1:${port}/<workspace>.git\n` +
+            `  or with a token in the URL: http://you:$(radia login <principal> --compact-definition)@127.0.0.1:${port}/<workspace>.git`,
       );
-      console.log(`  radia workspaces  lists what is there. Read-only: push is refused.`);
+      console.log(`  radia workspaces  lists what is there. git push is accepted fast-forward only; each commit becomes a version.`);
       const unlisten = onShutdown(() => stopping.abort());
       try {
         await server.finished;

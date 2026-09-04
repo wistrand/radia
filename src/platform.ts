@@ -54,6 +54,9 @@ export interface PlatformBackend {
   isStandalone(): boolean;
   readTextFile(path: string | URL): string | undefined;
   writeTextFile(path: string, text: string): void;
+  /** Run `fn` holding an exclusive OS lock on `path` (created if absent), released whatever
+   *  happens inside. Synchronous, for a read-modify-write of a small file shared by processes. */
+  withFileLockSync<T>(path: string, fn: () => T): T;
   appendTextFile(path: string, text: string): void;
   mkdirp(path: string): void;
   removeFile(path: string): void;
@@ -106,6 +109,21 @@ const denoBackend: PlatformBackend = {
     }
   },
   writeTextFile: (path, text) => Deno.writeTextFileSync(path, text),
+  withFileLockSync: (path, fn) => {
+    // A blocking flock, unlike `lockFile` below: the critical section is a few milliseconds of
+    // JSON, and a waiter that gives up would be a writer that drops its entry.
+    const file = Deno.openSync(path, { create: true, read: true, write: true });
+    try {
+      file.lockSync(true);
+      try {
+        return fn();
+      } finally {
+        file.unlockSync();
+      }
+    } finally {
+      file.close();
+    }
+  },
   appendTextFile: (path, text) => Deno.writeTextFileSync(path, text, { append: true }),
   mkdirp: (path) => Deno.mkdirSync(path, { recursive: true }),
   removeFile: (path) => {
@@ -337,6 +355,12 @@ export function readTextFile(path: string | URL): string | undefined {
 /** Write a file, creating parent directories. Throws on failure. Callers decide what that means. */
 export function writeTextFile(path: string, text: string): void {
   backend.writeTextFile(path, text);
+}
+
+/** Run `fn` under an exclusive lock on `path`, for a read-modify-write that several processes may
+ *  attempt at once (the credentials file, which every starting space rewrites). */
+export function withFileLockSync<T>(path: string, fn: () => T): T {
+  return backend.withFileLockSync(path, fn);
 }
 
 /** Append to a file, creating it if absent. For a LOG, which is the only shape that wants this:

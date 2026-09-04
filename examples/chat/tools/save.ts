@@ -18,6 +18,9 @@ import { bytesFrom, mediaTypeFor } from "../util.ts";
 import { editWorkspace, readWorkspace, shareWorkspace, summarizeWorkspaces, writeWorkspace } from "../../../extensions/ts/workspace.ts";
 import type { WorkspaceEdit } from "../../../extensions/ts/workspace.ts";
 
+/** A record id, which is what an artifact reference looks like and what file contents never do. */
+const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
 export function makeSaveTools(client: RadiaClient): Record<string, Tool> {
   return {
     save_content: async (a, ctx?: ToolContext) => {
@@ -182,9 +185,10 @@ function siteHint(paths: string[]): { site?: true; note?: string } {
   };
 }
 
-/** Authors trees as the WORKER (it holds `workspace: put`, which no session does) and READS them as
- *  the caller (`ctx.caller()`). The split is forced rather than chosen: a delegated run is
- *  `worker INTERSECT caller`, so it can never carry an operation the caller lacks. */
+/** Authors trees as the WORKER and READS them as the caller (`ctx.caller()`). The split is forced
+ *  rather than chosen: a delegated run is `worker INTERSECT caller`, and a session's own
+ *  `workspace: put` is bounded to its `{owner}` scope (a person's `git push`), so a tree stored
+ *  for another session can only come from here. */
 export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
   return {
     save_workspace: async (a, ctx?: ToolContext) => {
@@ -199,33 +203,59 @@ export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
       const contents: Record<string, string> = {};
       for (const [path, v] of entries) {
         if (typeof v !== "string") return { error: `file ${JSON.stringify(path)} must be a string` };
+        // The failure this catches shipped: a model put the artifact id generate_image returned
+        // under `files`, the tree gained a 26-byte "penguin.png" holding that id as text, and the
+        // page showed a broken image through three versions. Refused HERE, at the decision, since
+        // a description is read once and a refusal is read when it matters.
+        if (ULID.test(v.trim())) {
+          return {
+            error: `file ${JSON.stringify(path)} holds an artifact id, not contents; that would store the id as text. ` +
+              `Put it under attach: {"${path}": "${v.trim()}"} places the artifact's bytes there.`,
+          };
+        }
         contents[path] = v;
       }
+      const attach = a.attach && typeof a.attach === "object" && !Array.isArray(a.attach)
+        ? Object.fromEntries(Object.entries(a.attach as Record<string, unknown>).map(([k, v]) => [k, String(v).trim()]))
+        : undefined;
+      for (const [path, id] of Object.entries(attach ?? {})) {
+        if (!ULID.test(id)) return { error: `attach ${JSON.stringify(path)} must name an artifact id, got ${JSON.stringify(id)}` };
+      }
       try {
-        // READ as the caller, WRITE as the worker. Authoring a tree is the worker's own capability
-        // (the session holds no `workspace: put`, so a delegated run could never carry it), while
-        // looking at the tree being superseded must be bounded by whoever it belongs to.
+        // READ as the caller, WRITE as the worker: looking at the tree being superseded, and at the
+        // artifacts being attached, must be bounded by whoever they belong to.
         const reader = (await ctx?.caller?.()) ?? client;
         const prev = await readWorkspace(reader, name, ctx?.conversationId);
+        const inTree = (p: string) => p in contents || p in (attach ?? {});
         const w = await writeWorkspace(client, {
           name,
           owner: ctx?.owner ?? "",
           conversationId: ctx?.conversationId,
           files: contents,
+          ...(attach && Object.keys(attach).length ? { attach } : {}),
           // Carried forward when this save does not restate it: a wholesale replace should not
           // silently drop how the project is run.
           ...(typeof a.entrypoint === "string" && a.entrypoint.trim()
             ? { entrypoint: a.entrypoint.trim() }
-            : prev?.entrypoint && prev.entrypoint in contents
+            : prev?.entrypoint && inTree(prev.entrypoint)
             ? { entrypoint: prev.entrypoint }
             : {}),
           basedOn: prev?.id,
         }, reader);
         const paths = w.files.map((f) => f.path);
+        // Sizes, so an id stored as text is VISIBLE in the answer even when nothing refused it: a
+        // "penguin.png" of 26 bytes is a tell a model catches, "files: 2" is not.
+        const bytes: Record<string, number> = {};
+        for (const [path, text] of Object.entries(contents)) bytes[path] = new TextEncoder().encode(text).length;
+        for (const [path, id] of Object.entries(attach ?? {})) {
+          const meta = await reader.artifactMeta(id).catch(() => undefined);
+          if (meta && typeof meta.size === "number") bytes[path] = meta.size;
+        }
         return {
           workspace: name,
           treeDigest: w.treeDigest,
           files: paths,
+          bytes,
           unchanged: w.deduped,
           ...(w.entrypoint ? { entrypoint: w.entrypoint } : {}),
           ...siteHint(paths),
@@ -635,9 +665,14 @@ export const WORKSPACE_SCHEMAS: ToolDef[] = [
         "better off as a loose artifact. Use it for a module and the script that imports it, code " +
         "plus a fixture, a single script the user will keep, anything you expect to fix and re-run. " +
         "Paths are relative (src/main.ts, lib/util.ts); absolute paths, '..', and '.git' are " +
-        "refused. Saving the same name again replaces the tree and keeps the old version addressable, " +
+        "refused. `files` holds TEXT you write; bytes that already exist in the space (an image " +
+        "generate_image returned, an upload, anything with an artifactId) go under `attach` as " +
+        "path -> artifactId, which places the bytes. An artifactId under `files` is refused, " +
+        "because it would store the id as the file's text. " +
+        "Saving the same name again replaces the tree and keeps the old version addressable, " +
         "so an old version is never lost. Iterating on a tree is edit_workspace's job, not this one. " +
-        "Returns {workspace, treeDigest, files, unchanged}; `unchanged: true` means the tree was " +
+        "Returns {workspace, treeDigest, files, bytes, unchanged}, where `bytes` is each file's size: " +
+        "check it, since a 26-byte image is an id stored as text. `unchanged: true` means the tree was " +
         "byte-identical to what was already there and nothing was written. The ONE thing that does " +
         "not belong here is a throwaway calculation whose answer is the output rather than the " +
         "program: pass that to a code runner as `code` and keep nothing. If the reply carries " +
@@ -650,7 +685,14 @@ export const WORKSPACE_SCHEMAS: ToolDef[] = [
           name: { type: "string", description: "A short name for this project, reused to update it." },
           files: {
             type: "object",
-            description: "Path -> file contents. Relative paths only, e.g. {\"src/main.ts\": \"...\"}.",
+            description: "Path -> file contents as TEXT. Relative paths only, e.g. {\"src/main.ts\": \"...\"}. Never an artifactId: that goes under `attach`.",
+          },
+          attach: {
+            type: "object",
+            description:
+              "Path -> artifactId, for bytes that already exist: what generate_image, save_content or " +
+              "an upload returned. The artifact's bytes are placed at that path, e.g. " +
+              "{\"penguin.png\": \"01M1...\"}. Use this for every image and every binary.",
           },
           entrypoint: {
             type: "string",
@@ -658,7 +700,7 @@ export const WORKSPACE_SCHEMAS: ToolDef[] = [
               "The file this project RUNS as, e.g. 'src/main.ts'. Set it for anything meant to be " +
               "run rather than only read: a code runner can then execute the tree with no `code` " +
               "at all, and it is the same file an agent bound to this tree would run. Must be one " +
-              "of the paths in `files`.",
+              "of the paths in `files` or `attach`.",
           },
         },
         required: ["name", "files"],

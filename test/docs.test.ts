@@ -352,6 +352,11 @@ Deno.test("docs: the SDK packages the install URLs point at are dependency-free"
   assert(!release.includes('"dependencies"'), "the npm package.json heredoc grew a dependencies field");
   assert(release.includes("dependencies = []"), "the pyproject heredoc no longer declares zero dependencies");
 
+  // A Node BUILT-IN is resolved by the runtime (Node and Deno alike), never by a registry, so it
+  // keeps the install claim. It is absent in a browser, which is why the exception is per file and
+  // the browser entry below may not reach one. `node:zlib` is the one inflater that reports where
+  // a zlib stream ended, which a packfile needs (extensions/ts/git-pack.ts).
+  const NODE_BUILTINS: Record<string, string[]> = { "extensions/ts/git-pack.ts": ["node:zlib"] };
   let scanned = 0;
   for (const dir of ["sdk/ts", "extensions/ts"]) {
     for await (const e of Deno.readDir(new URL(`../${dir}/`, import.meta.url))) {
@@ -360,6 +365,7 @@ Deno.test("docs: the SDK packages the install URLs point at are dependency-free"
         .replace(/\/\*[\s\S]*?\*\//g, "")
         .replace(/^\s*\/\/.*$/gm, "");
       for (const [, spec] of text.matchAll(/from\s+"([^"]+)"/g)) {
+        if (spec.startsWith("node:") && NODE_BUILTINS[`${dir}/${e.name}`]?.includes(spec)) continue;
         assert(
           spec.startsWith("."),
           `${dir}/${e.name} imports "${spec}", a bare specifier the dependency-free package cannot resolve`,
@@ -369,4 +375,9 @@ Deno.test("docs: the SDK packages the install URLs point at are dependency-free"
     }
   }
   assert(scanned > 10, `scanned only ${scanned} SDK/extension files; the directory walk is broken`);
+  const browserEntry = await Deno.readTextFile(new URL("../extensions/ts/browser.ts", import.meta.url));
+  for (const file of Object.keys(NODE_BUILTINS)) {
+    const name = file.split("/").pop()!;
+    assert(!browserEntry.includes(`./${name}`), `the browser entry imports ${name}, which reaches a Node built-in a tab does not have`);
+  }
 });

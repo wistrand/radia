@@ -475,7 +475,7 @@ $ git clone /tmp/landing.git &amp;&amp; cd landing &amp;&amp; git log --oneline
     </div>
 
     <p>
-      The same projection can be served over read-only Git HTTP:
+      The same projection can be served over Git HTTP, for clone and for push:
     </p>
 
     <div class="code-block">
@@ -483,12 +483,17 @@ $ git clone /tmp/landing.git &amp;&amp; cd landing &amp;&amp; git log --oneline
       <pre class="terminal"><code>$ radia git-serve
 git server on http://127.0.0.1:7790  (reading http://127.0.0.1:7788)
 
-$ git clone http://you:&lt;token&gt;@127.0.0.1:7790/landing-page.git</code></pre>
+$ git config --global credential.http://127.0.0.1:7790.helper '!radia git-credential'
+$ git clone http://127.0.0.1:7790/landing-page.git</code></pre>
     </div>
 
     <p>
-      Git authentication uses a mint-only credential and applies the caller's Radia permissions.
-      Revocation stops subsequent fetches. Push is explicitly unsupported.
+      Git authenticates as you: the credential helper hands git the login this machine already
+      holds, from <code>radia login --sso</code> or <code>radia login</code>, and the server
+      applies that principal's Radia permissions.
+      Revocation stops subsequent fetches. Push is accepted fast-forward only: each pushed commit
+      becomes the next version, a rewritten or merged history is refused, and the commits keep
+      their ids, so a fetch after a push changes nothing.
     </p>
 
     <p>

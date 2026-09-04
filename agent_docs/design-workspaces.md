@@ -2,17 +2,19 @@
 
 How a multi-file working tree lives in a space, and the relationship to git.
 
-> **Status: BUILT, bar push.** Phases 0-12 of [plan-workspaces.md](plan-workspaces.md): the
+> **Status: BUILT, push included (2026-09-04).** Phases 0-13 of [plan-workspaces.md](plan-workspaces.md): the
 > `workspace` kind and its per-file artifacts, `treeDigest`, `basedOn`, write-time path validation,
 > content-keyed writes, safe materialisation (lexical revalidation plus a realpath containment check
 > per file, with the tree's labels on the manifest so one parent edge speaks for the whole tree),
 > write-back, fork detection, `check` attestations, editing in place, attachment, serving a tree over
-> one path capability, git export, and `git clone` over HTTP (`radia git-serve`, both protocols).
+> one path capability, git export, `git clone` over HTTP (`radia git-serve`, both protocols), and
+> `git push` into it, fast-forward only.
 > Measured, a manifest caps at ~6 300 files against the 1 MiB record limit, which settles the
 > dependency question below in favour of an artifact beside the manifest.
 >
-> What stays refused is IMPORT, and `git push` with it, for the reason under "Git" below. The open
-> questions at the end are the only design work left.
+> What stays refused is importing HISTORY: a push hands over trees, never git objects, and a
+> rewritten or merged branch is turned away. See "Git" below. The open questions at the end are the
+> only design work left.
 >
 > A workspace and a second LANGUAGE are the same project: a multi-file tree needs an entrypoint
 > declaration, and that is per-language. Read [design-execution.md](design-execution.md) with this.
@@ -153,25 +155,61 @@ negotiation) and is not needed for export.
 repository's description carries the list, so the gap travels with the artifact rather than living
 in a console line. One commit per manifest version, `basedOn` as the parent chain, every
 head a branch, the sha1 recomputed and discarded. Trailers (`Radia-Workspace`, `Radia-Tree-Digest`,
-`Radia-Based-On`) lead each commit back to the record it came from. A BARE repository, so `git
+`Radia-Based-On`, `Radia-Created-By`) lead each commit back to the record it came from. The author
+line is the durable principal BEHIND `created_by` (since 2026-09-04): for a run, the agent the run
+record names, or the person a delegated run acted for, both server-written, so the line stays
+provenance; never the manifest's `owner`, which a client submits and travels as `Radia-Owner`. The
+read is one `agent_run` query per run and fails soft to the run id for a reader who may not make
+it, so ids are deterministic per reader's view. A BARE repository, so `git
 clone` does the checkout: a working copy needs a valid `.git/index`, and emitting one wrong produces
 a repository where `git status` lies.
 
 So git is a PROJECTION: emit a loose-object repository on demand, one commit per attempt, the chain
 as history, and a person can `git log`, `git diff` and `git bisect` an agent's debugging session
 with tooling they already have. Nothing downstream may depend on it being current or complete.
-Export only, because import means accepting trees whose history git can rewrite, which reopens the
-mutability problem from the outside.
+Importing HISTORY stays refused, because it means accepting a store whose past git can rewrite, which
+reopens the mutability problem from the outside. Importing TREES does not, and that is what a push
+is (next paragraph but one).
 
 **Over HTTP as well as onto disk** (Phase 12, `extensions/ts/git-http.ts` + `git-pack.ts`, run with
 `radia git-serve`). Same objects, same builder: `buildWorkspaceRepo` returns them in memory and the
 disk export and the server are two sinks, so neither reimplements the correspondence. Both git
 protocols are served (the dumb one needs no protocol code, because the export's own files ARE its
-surface; the smart one turns a 96-object clone from 98 requests into 2), and `git push` is refused
-in words rather than by 404, because it is the import decision arriving from the outside.
+surface; the smart one turns a 96-object clone from 98 requests into 2).
 
-Authorization is the CALLER's: a definition token is the HTTP password, the server exchanges it per
-fetch, and a clone reads exactly the workspaces and artifacts that principal could read. That was
+**`git push` is accepted, fast-forward only** (BUILT 2026-09-04, `extensions/ts/git-push.ts`, with
+the pack reader in `git-pack.ts`; it inflates with `node:zlib`, the one inflater available that
+reports where a stream ended and checks its trailer, since the Web `DecompressionStream` does
+neither, measured). The rules are a protected branch's, and they are what keeps the two structural
+reasons above intact:
+
+- Each pushed commit's TREE becomes the next version through `writeWorkspace`, chained by `basedOn`
+  onto the version the branch tip was. The space receives sha256 artifacts and a manifest; no git
+  object id is stored as anything but the bytes below, and every id the pack claims is recomputed
+  from the object before it is trusted.
+- A non-fast-forward, a merge commit, a new or deleted branch, a symlink, a submodule and a commit
+  that changes no file are each refused in the `ng` line git prints beside the ref. There is no
+  merge because nothing here needs one: the person rebases onto the branch and pushes again, and a
+  fork is still made only by `basedOn`, never by a push.
+- The commit's bytes ride on the version (`WorkspaceManifest.git.raw`), so the re-export reproduces
+  the pusher's own ids and `git fetch` after `git push` changes nothing. That is the difference
+  between a write-back and a round trip, and it is checked rather than assumed: a stored commit is
+  reproduced only while it names exactly the tree and parent the export computes (an erased entry
+  moves the tree), and otherwise the synthesised commit stands in. A successor never inherits it.
+- Local commit messages therefore survive verbatim on pushed versions; the Radia trailers are what a
+  version written any other way carries instead.
+- A chain is written oldest first and is NOT atomic: a push refused at its third commit has recorded
+  the first two, the `ng` line says so, and because their ids round-trip the advertised tip is then
+  the second commit, so the remainder fast-forwards once the third is fixed. Two pushes racing on
+  one branch both land, as a FORK, which is what `forksOf` reports for concurrent writers everywhere:
+  detected, never merged. Artifacts a refused version already uploaded stay as unreferenced records,
+  the same residue `writeWorkspace` leaves when its manifest put is refused.
+
+Authorization is the CALLER's: the HTTP password is a definition token, which the server exchanges
+per fetch, or the run token an SSO sign-in has, which is used as it is until its run ceiling; `radia
+git-credential` is the git credential helper that supplies whichever the machine's login holds, so
+nobody types one. Either way a clone reads exactly the workspaces and artifacts that principal could
+read, and a push writes as them. That was
 the phase's real blocker rather than the protocol: git persists a static secret and cannot renew,
 which made a durable, mint-only credential a prerequisite (see
 [design-auth.md](design-auth.md), "The durable half").

@@ -55,10 +55,15 @@ if (suites.length === 0) {
 
 let failed = 0;
 const started = Date.now();
+// Every suite spawns a space, and a spawned `dev` writes its operator credential where the CLI
+// reads it: the person's own `~/.radia/credentials.json` unless told otherwise. Told otherwise,
+// once, for every child: a real developer's operator entry was lost to a race between these.
+const credentials = `${Deno.makeTempDirSync({ prefix: "radia-chat-smoke-" })}/credentials.json`;
 for (const suite of suites) {
   console.log(`\n── ${suite.name} ${"─".repeat(Math.max(0, 60 - suite.name.length))}\n   ${suite.about}\n`);
   const cmd = new Deno.Command(Deno.execPath(), {
     args: ["run", "-A", new URL(`./${suite.file}`, import.meta.url).pathname],
+    env: { RADIA_CREDENTIALS: credentials },
     stdout: "piped",
     stderr: "piped",
   });

@@ -642,6 +642,16 @@ useful one, which is why a cheap scenario's race is wider than its work.
   because it IS implemented. The spec now states the supported set beside it, checked against the
   compiler.
 
+- **Refuse at the decision, not only in the description.** A chat session (2026-09-04, SSO, fast
+  tier) put the artifact id `generate_image` returned under `save_workspace`'s `files`, which holds
+  TEXT: the tree gained a 26-byte `penguin.png` holding the id, three versions shipped a broken
+  image, and the tool's answer said `files: 2` each time. The image tool's description already said
+  to use `attach`; it was read once, not at the moment of the call. `save_workspace` now has
+  `attach`, refuses an id under `files` naming the fix, and answers with each file's size, so the
+  tell is in the reply. The same session's summary of what had happened was invented until the
+  person contradicted it, with `list_workspaces` and `read_workspace` available and unused: the
+  "retrieve rather than recall" disposition is what that needs, not another tool.
+
 ## Read before
 
 Writing a tool description or a kind `usage` string, adding a lab scenario, or explaining why an

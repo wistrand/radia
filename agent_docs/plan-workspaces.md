@@ -9,7 +9,8 @@ digest as the identity of a PRINCIPAL rather than of a document, promotion as a 
 pinned to that digest, and a generic host that runs any binding under the hosted agent's own run
 token. Designed, nothing built, and it opens with the three enforcement gaps its own review found.
 
-> **Status: Phases 0-12 DONE** (12 is `git clone` over HTTP, `radia git-serve`). Phase 11
+> **Status: Phases 0-13 DONE** (12 is `git clone` over HTTP, `radia git-serve`; 13 is `git push`
+> into it, fast-forward only, see §12.4). Phase 11
 > (serving a tree) was built earlier and VERIFIED on
 > 2026-08-04: 11.0 decided (single-process capabilities), 11.1 and 11.2 shipped
 > (`Space.mintPathCapability`, `POST /v0/capabilities`, `GET /v0/w/<cap>/<path>` on the isolated
@@ -89,7 +90,7 @@ Each is scoped to answer its question. Do not merge them.
 | 9 | The read side **(done)** | What does an agent do when it cannot read? | — |
 | 10 | Editing in place | Does the immutable version model survive fine-grained change? | 3, 5 |
 | 11 | Serving a tree **(done)** | Can a tree be VIEWED without the runtime learning what a tree is? | 2 |
-| 12 | Serving git over HTTP **(done, bar push)** | Is a clone URL worth a server, once a credential can outlive it? | — |
+| 12 | Serving git over HTTP **(done; push too, §12.4)** | Is a clone URL worth a server, once a credential can outlive it? | — |
 
 **Phases 0-5 need no new isolation mechanism.** Every model stress worth finding is reachable with
 the Deno sandbox that already exists. Multi-language execution adds a large security surface and NO
@@ -1094,12 +1095,22 @@ that carried it. And the wrong content type on the advertisement makes git aband
 which in the good case is merely slow and silent — hence the assertion that a clone makes two
 requests and fetches no loose objects.
 
-#### 12.4 Never: receive-pack
+#### 12.4 receive-pack: BUILT 2026-09-04 as phase 13, fast-forward only
 
-Push means READING packfiles (delta chains, the half Phase 8 avoided), and it reopens export-only
-from the outside — a decision resting on SHA-1 staying out of the attestation chain and on git
-history being rewritable while records are not. Refuse it with a message naming `edit_workspace`,
-rather than a 404 that reads like a missing feature.
+This section said "never", on two grounds: push means READING packfiles (delta chains, the half
+Phase 8 avoided), and it reopens export-only from the outside, a decision resting on SHA-1 staying
+out of the attestation chain and on git history being rewritable while records are not. The first
+was cost and was smaller than feared: a pack reader with both delta forms in `git-pack.ts`, inflating
+through `node:zlib`, whose synchronous inflate reports the input it consumed (a ~250-line decoder
+was written for that property first, then measured against the built-in and deleted). The second
+does not reach a push that imports TREES: each commit becomes a version
+through `writeWorkspace`, ids are recomputed from bytes, and a rewritten or merged history is
+refused, so nothing rewritable becomes storage of record. What made it worth building is that a
+person with a clone then needs no verb: `git push` is the write-back. The rules and the one
+non-obvious piece (the commit bytes ride on the version so ids round-trip) are in
+[design-workspaces.md](design-workspaces.md), "Git", and the contract is the push case in
+`extensions/conformance/git.test.ts`, which drives the real binary through a push, a force-push, a
+merge, an empty commit and a symlink.
 
 #### 12.5 Five things decided before 12.1, not during
 

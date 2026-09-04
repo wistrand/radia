@@ -53,6 +53,7 @@ export function browserBackend(opts: BrowserBackendOptions = {}): Partial<Platfo
     osName: () => "browser",
     readTextFile: readText,
     writeTextFile: writeText,
+    withFileLockSync: (_path, fn) => fn(), // one tab, one writer: nothing to lock against
     appendTextFile: (path, text) => writeText(path, (readText(path) ?? "") + text),
     mkdirp: () => {},
     removeFile: (path) => {

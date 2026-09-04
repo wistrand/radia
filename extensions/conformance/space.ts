@@ -12,6 +12,15 @@
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../../examples/operator.ts";
 
+// NEVER THE PERSON'S CREDENTIAL FILE. A spawned `dev` writes its operator credential where the CLI
+// reads it, which by default is `~/.radia/credentials.json`, and a dozen suites booting at once
+// wrote into a developer's real file beside their running space and lost its entry. One temp file
+// per test process (the first file to load picks it), inherited by every space spawned below and
+// read by `operatorToken` in this process, since both honour `RADIA_CREDENTIALS`.
+if (!Deno.env.get("RADIA_CREDENTIALS")) {
+  Deno.env.set("RADIA_CREDENTIALS", `${Deno.makeTempDirSync({ prefix: "radia-conformance-" })}/credentials.json`);
+}
+
 export async function bootSpace(port: number, opts: { artifactPort?: number } = {}): Promise<RadiaClient> {
   const url = `http://127.0.0.1:${port}`;
   const space = new Deno.Command(Deno.execPath(), {

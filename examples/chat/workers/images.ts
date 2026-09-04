@@ -67,12 +67,14 @@ const GENERATE_IMAGE: ToolDef = {
   type: "function",
   function: {
     name: "generate_image",
-    description: "Generate an image from a text description. Describe the subject, composition and " +
+    description: "Generate a raster image (always a PNG) from a text description. It cannot draw SVG " +
+      "or any vector format: for an SVG, write the markup yourself and store it with save_content or " +
+      "as a workspace file. Describe the subject, composition and " +
       "style in the prompt. The image model sees ONLY this prompt, not the conversation, so make it " +
       "self-contained. Returns a reference {artifactId, mediaType, size}, not image data: the picture " +
       "is stored in the space and the user is shown it automatically. Refer to the result in words " +
       "('the image above'). Never invent a link, path or URL to it, and do not ask for or expect " +
-      "base64. TO USE IT IN A PAGE, pass the artifactId to edit_workspace's `attach` and reference " +
+      "base64. TO USE IT IN A PAGE, pass the artifactId under `attach` in save_workspace or edit_workspace (never under `files`, which holds text) and reference " +
       "it by that filename. Do not reach for share_artifact and paste the URL into your HTML: that " +
       "link expires within the hour and the page breaks when it does. Takes 5-20s.",
     parameters: {

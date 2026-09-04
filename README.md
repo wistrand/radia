@@ -216,11 +216,13 @@ writers share a base, served to a browser over one short-lived link, and handed 
 
 ```bash
 radia workspace-git site --dir /tmp/site.git   # a bare repo; `git clone` it
-radia git-serve                                # …or serve every tree for `git clone` over HTTP
+radia git-serve                                # …or serve every tree for `git clone` and `git push` over HTTP
+git config --global credential.http://127.0.0.1:7790.helper '!radia git-credential'   # once: git signs in there as your radia login
 ```
 
-Export only: git is a projection of the records rather than their storage, and `git push` is
-refused with the reason. What that buys over git is per-file
+Git is a projection of the records rather than their storage. `git push` is accepted fast-forward
+only: each commit becomes the next version, and a rewritten or merged branch is refused with the
+reason. What that buys over git is per-file
 erasure without a rewritten history, every version attributable to a run, and grants that scope
 which tree an agent may touch at all. See
 [agent_docs/design-workspaces.md](agent_docs/design-workspaces.md).
