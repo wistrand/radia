@@ -134,8 +134,10 @@ onto an attempt, so `retryOf` chains ARE parent chains.
 **Emitting real git objects needs no dependency.** Verified: `crypto.subtle` does SHA-1,
 `CompressionStream("deflate")` produces a proper zlib stream, and the resulting object hash matches
 `git hash-object` exactly. Loose blob/tree/commit writing is on the order of 60 lines, with no `git`
-binary and no `--allow-run`. Packfile READING is where git's real complexity lives (delta chains,
-negotiation) and is not needed for export.
+binary and no `--allow-run`. Packfile READING (delta chains) is the half the export never needed and
+the push later did: `readPack` in `git-pack.ts`, both delta forms, every id recomputed. Negotiation
+is still absent on both sides, since a fetch gets a full pack and a push sends what the advertised
+refs imply.
 
 **Never make git objects the storage of record.** Two structural reasons:
 
@@ -191,7 +193,8 @@ reasons above intact:
   that changes no file are each refused in the `ng` line git prints beside the ref. There is no
   merge because nothing here needs one: the person rebases onto the branch and pushes again, and a
   fork is still made only by `basedOn`, never by a push.
-- The commit's bytes ride on the version (`WorkspaceManifest.git.raw`), so the re-export reproduces
+- The commit's bytes ride on the version (`WorkspaceManifest.git`, `raw` when the commit is valid
+  UTF-8 and `base64` otherwise, since a body is JSON), so the re-export reproduces
   the pusher's own ids and `git fetch` after `git push` changes nothing. That is the difference
   between a write-back and a round trip, and it is checked rather than assumed: a stored commit is
   reproduced only while it names exactly the tree and parent the export computes (an erased entry

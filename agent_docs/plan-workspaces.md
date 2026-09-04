@@ -1039,7 +1039,11 @@ wrong, which Phase 8 already learned the hard way.
 Basic auth, password is a definition token: `git clone http://you:<token>@host/ws.git`. The server
 builds a client per credential, so every workspace and artifact read goes through the CALLER's
 grants rather than the server's, and `git pull` next week still works. Verified end to end against a
-live space, including `radia revoke` refusing the next clone.
+live space, including `radia revoke` refusing the next clone. Since phase 13 the password may also
+be a run token (an SSO sign-in holds nothing else; it works until its ceiling), the `user:password`
+pair is split at the LAST colon, since a principal carries one (`human:oidc-…`) and a token never
+does (splitting at the first refused every SSO clone), and nobody types either: `radia
+git-credential` is the helper, configured URL-scoped for the git server's origin.
 
 *Two things the acceptance test caught that reading would not have, both about the CACHE.* A dumb
 clone is one request per object, so a client built per REQUEST exchanges the credential per object

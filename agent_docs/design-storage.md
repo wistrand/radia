@@ -261,8 +261,12 @@ ordered event. Ordering by `(xid, seq)` under that watermark is gap-free: each `
 one `(cursor, watermark]` window as the watermark advances, so a late-committing straggler is
 delivered then, not skipped. The cursor is **opaque** end-to-end (`SpaceEvent.cursor: string`, the
 SSE `id:` / `Last-Event-ID`). The transport only echoes it; each adapter interprets it (embedded:
-`seq`; Postgres: `xid`). Embedded keeps `cursor == seq` and is unaffected. Verified by a
-concurrent-writer test (a watcher polling while N puts commit over the pool misses none).
+`seq`; Postgres: `<xid>.<seq>`, since 2026-09-04). The pair matters: with the xid alone, resuming
+compared `xid > cursor`, so a page that ended inside a multi-event transaction (an ack writes two)
+lost that transaction's remaining events; the pair resumes exactly where the page stopped, and a
+bare `<xid>` keeps meaning "after that whole transaction". Embedded keeps `cursor == seq` and is
+unaffected. Verified by a concurrent-writer test (a watcher polling while N puts commit over the
+pool misses none) and by a one-event-per-page walk across an ack.
 
 **Current build:** the standalone **Postgres adapter is built** (`src/storage/postgres.ts`) with
 compare-and-set claims, so the hot path is multi-instance-safe. Real HA still needs the caches above

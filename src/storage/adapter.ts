@@ -107,7 +107,9 @@ export function resolveEventHorizon(
   if (!horizon) return { expired: false, horizon: null };
   let expired = false;
   try {
-    expired = BigInt(after.length > 0 ? after : "0") < BigInt(horizon.cursor);
+    // A Postgres cursor is `<xid>` or `<xid>.<seq>` (see `getEvents` there); the horizon is an xid.
+    const xid = (after.length > 0 ? after : "0").split(".")[0];
+    expired = BigInt(xid) < BigInt(horizon.cursor);
   } catch {
     expired = false;
   }

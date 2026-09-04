@@ -750,6 +750,20 @@ something was missing. A rule a caller can get wrong is one that will be got wro
 
 ### Storage, SQL and the planner
 
+**A Postgres event cursor is `<xid>.<seq>`, and resuming compares the pair.** `getEvents` in
+`src/storage/pgbase.ts` once compared `xid > cursor` alone while paging with a limit, so a page that
+ended on the first of an ack's two events (one transaction) lost the second on resume: a watch or a
+`Last-Event-ID` reconnect skipped it in silence. The seal walk in the same file compared the tuple
+and said why. A bare `<xid>` still arrives (`latestCursor`, the horizon, an older client) and keeps
+its meaning, everything after that whole transaction; `resolveEventHorizon` reads the xid part.
+Guard: `test/conformance/suites/events.ts`, one event per page across an ack (package Z).
+
+**Every epoch comparison in a claim is NULL-safe on both adapters** (`is not distinct from` on
+Postgres, `is` on SQLite, `?? null` bound). The expired-reclaim paths were not: Postgres bound the
+epoch raw and SQLite `?? 0`, and though a leased row always carries an epoch today, two adapters
+that agree only on the inputs that happen to occur are two claim rules the conformance suite is
+testing as one. Now the same binding as the available paths (package Z).
+
 **The page direction and its cursor comparison come from `pageClause`, together.** It was decided in
 FIVE places in three forms (twice per dialect, plus `pageRecords`), and the SQL paths derive the
 comparison from the direction while the oracle path reverses a sorted array. Changing four of the
@@ -973,6 +987,12 @@ on a space with 500 live ones and a stuck one. Fixed 2026-08-21 by pushing both 
   MCP adapter all start acting as whoever logged in last. Logins live under their own suffix; the
   operator entry is never touched. Caught one edit before it shipped, and guarded by
   `test/exchange.test.ts`.
+- **`newestByHash` picks the newest by the DB clock, never by id.** A record's id is a ULID minted
+  by the INSTANCE that wrote it, so a stop written by an instance whose clock runs behind sorts
+  BEFORE the run it stops, and "newest by id" resolved a stopped token as live. A handful of rows by
+  id, then `newer` (created_at first) picks: still one narrow read of one hash. The same rule every
+  registry projection follows, applied to the one read that must not miss a successor (package Z).
+  Guard: `test/credential-order.test.ts`.
 - **`writeEntry` in `src/credentials.ts` is locked, atomic, and refuses a file it cannot parse.**
   It was a plain read-modify-write, and `read` answered `{}` for a torn file, so a space booting
   while another wrote put back a file holding its own entry and nothing else: a developer's running
@@ -1154,6 +1174,18 @@ tokens keep minting, while `revokeDefinition` reaches only the NEWEST record
 `test/team.test.ts` (the shadowed token must still mint, or the refusal could be dropped).
 
 ### Grants, scopes and narrowed answers
+
+**The grant union `combineMatch` builds is exempt from the caller's `$or` cap, and nothing else is.**
+`MAX_OR_BRANCHES` (16) bounds what a caller may ask per record; a principal holding seventeen
+pattern grants on one kind was answered `400 too_many_branches` on every read, take and watch,
+because the union of its grants was that `$or`. The union is bounded by the grant ceiling instead,
+so `grantUnion` in `src/core/matching.ts` marks it with a symbol-keyed property (JSON cannot carry
+one, so no caller can claim it) and folds single-field primitive equalities into one `$in` first.
+All three caller budgets excuse it: the branch cap, the 64-node cap (`ctx.exemptNodes`) and the
+8 KB byte cap (`callerHalf`), because a first fix that lifted only the branch cap left twenty-two
+two-field grants refused by the node count and two hundred by the bytes. Guard:
+`test/conformance/suites/auth.ts`, twenty grants of each shape, and a caller's own 17-branch `$or`
+still refused (package Z).
 
 **An identical live re-put of an uncompactable registry is ABSORBED, not written.** `grant`,
 `ops_grant` and `kind_def` answer with the record that already carries the entry
@@ -1623,10 +1655,13 @@ caught and reported as `TEAMS: ANY`. Same limit applies to reading `radia permis
   file plus `a/b` produced exactly that. Only `git fsck` rejects it, which is why the export suite
   round-trips through the real binary where one is installed rather than trusting its own vectors:
   vectors written by the same author who wrote the encoding are wrong in the same direction.
-- **A git export's author is `created_by`, never the manifest's `owner`.** Provenance is not
-  authority. `owner` is a body field a client submits, so taking the author line from it would let a
-  record name whoever it liked as its writer. It travels as a trailer instead, where it reads as the
-  claim it is.
+- **A git export's author is the principal behind `created_by`, never the manifest's `owner`.**
+  Provenance is not authority. `owner` is a body field a client submits, so taking the author line
+  from it would let a record name whoever it liked as its writer. It travels as a trailer instead,
+  where it reads as the claim it is. The author is resolved through the RUN (`principalBehind` in
+  `extensions/ts/git.ts`: the agent its `agent_run` names, or the person a delegated run acted for),
+  because a run id names nobody tomorrow; a reader who may not query `agent_run` gets the run id, so
+  ids are deterministic per reader rather than per space.
 - **Encrypted content is coordination-invisible by construction.** Client-side-encrypted
   bodies are unmatchable, untaint-trackable, and invisible to diagnostics. E2E-from-the-
   runtime while plaintext is exposed to the LLM provider is rarely a coherent threat
@@ -1911,6 +1946,26 @@ only hang again.
   a name. See [design-execution.md](design-execution.md).
 
 ### Surfaces: HTTP, console, CLI and the SDKs
+
+- **The ops gate and the dispatcher parse `/v0/ops/records/{id}/{verb}` through ONE function.**
+  `opsRecordPath` in `src/server/http.ts`, exactly two segments. They parsed it differently once:
+  the gate's anchored regex saw no verb in `…/reclaim/` and treated it as a read, which `observe`
+  opens, while the dispatcher's `split("/")` saw `reclaim` and ran it. An observer, the default
+  credential of `radia mcp`, could reclaim, requeue, dead-letter, declassify and shred (package Z,
+  2026-09-04). Each write handler asserts its own power as well, so the router is never the only
+  line. Guard: `test/http.test.ts`, six malformed verbs as an observer.
+- **Every JSON body is read through `parseJsonBody` (`src/server/body.ts`), never `req.json()`.**
+  `req.json()` buffers the whole body before the record limit sees the parsed value, so nine routes
+  accepted an arbitrary payload into memory first. The ceiling is a transport one (8 MiB), refused
+  as `413 body_too_large` while the stream arrives, and it THROWS rather than returning null so a
+  handler's own "not an object" catch cannot turn a refused body into a 400. Guard:
+  `test/http.test.ts`, nine megabytes at six routes (package Z).
+- **Open mode refuses a write whose `Sec-Fetch-Site` is not the space's own origin.** A cross-origin
+  `text/plain` POST needs no preflight, so any page open in a developer's browser could write to an
+  open space as the operator. The header is stamped by the browser and cannot be forged by a page;
+  curl and the SDKs send none and pass; reads stay open, since the response is unreadable
+  cross-origin anyway. Required mode never reached this: it has no no-header operator. Guard:
+  `test/http.test.ts` (package Z).
 
 - **Never prune the credential file as a side effect of a write, and never on age alone.** An entry
   is rewritten only when a space STARTS, so a dev up for a month is indistinguishable from one that

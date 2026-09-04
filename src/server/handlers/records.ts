@@ -42,11 +42,12 @@ import type { PutRequest } from "../../core/record.ts";
 import { pageIsDescending, type Pattern } from "../../core/matching.ts";
 import { RadiaError } from "../../core/errors.ts";
 import { problem, rejectUnknown, statusFor } from "../problem.ts";
+import { parseJsonBody } from "../body.ts";
 import { decodeCursor, encodeCursor, type Page } from "../../../sdk/ts/wire.ts";
 
 async function readJson(req: Request): Promise<Record<string, unknown> | null> {
+  const j = await parseJsonBody(req); // past the ceiling this THROWS body_too_large, never null
   try {
-    const j = await req.json();
     return j && typeof j === "object" && !Array.isArray(j)
       ? j as Record<string, unknown>
       : null;

@@ -12,6 +12,7 @@ import type { Pattern } from "../../core/matching.ts";
 import { AUTHORIZATION_KINDS } from "../../core/kinds.ts";
 import { RadiaError } from "../../core/errors.ts";
 import { problem, rejectUnknown, statusFor } from "../problem.ts";
+import { parseJsonBody } from "../body.ts";
 
 /** Backstop re-check interval. The event-log trigger below is exact, so this only bounds the damage
  *  if a future authorization-bearing kind is added and left out of `AUTHORIZATION_KINDS`. A local
@@ -19,13 +20,10 @@ import { problem, rejectUnknown, statusFor } from "../problem.ts";
 const AUTH_RECHECK_MS = 30_000;
 
 export async function handleCreateWatch(space: Space, req: Request, principal: string): Promise<Response> {
-  let j: Record<string, unknown> | null;
-  try {
-    const parsed = await req.json();
-    j = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
-  } catch {
-    j = null;
-  }
+  const parsed = await parseJsonBody(req); // past the ceiling this THROWS body_too_large, never null
+  const j: Record<string, unknown> | null = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : null;
   if (!j || typeof j.kind !== "string") {
     return problem(400, "invalid_pattern", "watch requires a pattern with a kind");
   }

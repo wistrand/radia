@@ -118,4 +118,32 @@ export const eventSuites: Suite[] = [
       assertEquals(lineage.find((n) => n.record.id === b.id)?.depth, 1);
     },
   },
+  {
+    name: "a page boundary inside one transaction does not skip the rest of that transaction",
+    run: async (adapter) => {
+      // An ack with a result writes TWO events in one transaction. On Postgres the cursor was the
+      // transaction id alone and resuming compared `xid > cursor`, so a page that ended on the
+      // first of the two lost the second: a watch or a Last-Event-ID reconnect skipped it in
+      // silence. The cursor now carries the sequence too, and resuming compares the pair.
+      const space = newSpace(adapter);
+      const from = await adapter.latestCursor();
+      await space.put({ kind: "task", body: { tag: "x" } });
+      const t = await space.take({ pattern: { kind: "task" } });
+      await space.ack(t!.lease, { kind: "task", body: { tag: "y" } });
+      const seen: string[] = [];
+      let cursor = from;
+      for (let i = 0; i < 10; i++) {
+        const page = await adapter.getEvents(cursor, 1); // one event per page: a boundary everywhere
+        if (page.length === 0) break;
+        seen.push(page[0].operation);
+        cursor = page[0].cursor;
+      }
+      assertEquals(seen, ["put", "take", "put", "ack"], "every event in order, none skipped at a boundary");
+      // A bare cursor as older clients and `latestCursor` hand it out still means "after that
+      // whole transaction", so nothing that stored one before this breaks.
+      const bare = (await adapter.getEvents(from, 1))[0].cursor.split(".")[0];
+      const after = await adapter.getEvents(bare, 10);
+      assert(after.every((e) => e.operation !== "put" || e.recordId !== t!.record.id), "a bare cursor skips the whole transaction it names");
+    },
+  },
 ];

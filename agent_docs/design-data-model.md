@@ -225,7 +225,10 @@ owning `message`/`llm_call`/`tool_call`/`check` and so on.
 ## Resource limits
 
 **M1 status: mostly unbuilt.** The intent stands: an indexed query can still be expensive, so
-limits are not optional, and they belong at commit/registration. Three are enforced so far:
+limits are not optional, and they belong at commit/registration. Three are enforced so far, plus one
+TRANSPORT ceiling in front of them: every JSON request body is read through `parseJsonBody`
+(`src/server/body.ts`, 8 MiB, `413 body_too_large`), so a body the record limit would refuse is never
+buffered whole first, and the limit below stays the one that decides what a record may hold:
 
 - **pattern `$and`/`$or` nesting depth ≤ 3**: `MAX_DEPTH` in `src/core/matching.ts`, raised as
   `too_deep` at compile.

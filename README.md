@@ -197,7 +197,7 @@ radia permissions human:alice                 # what that principal can actually
 radia revoke human:alice                      # kill the durable credential; nothing else does
 radia workspaces                              # multi-file trees, newest version of each
 radia workspace-git site --dir /tmp/site.git  # a tree's history as a real git repository
-radia git-serve                               # …the same, over HTTP, for `git clone`
+radia git-serve                               # …the same, over HTTP, for `git clone` and `git push`
 ```
 
 Every command goes through the public `/v0` API; the CLI has no privileged backdoor. The

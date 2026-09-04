@@ -7,14 +7,11 @@ import type { Space } from "../../core/space.ts";
 import type { GrantDef } from "../../core/kinds.ts";
 import { RadiaError } from "../../core/errors.ts";
 import { problem, rejectUnknown, statusFor } from "../problem.ts";
+import { parseJsonBody } from "../body.ts";
 
 async function readJson(req: Request): Promise<Record<string, unknown> | null> {
-  try {
-    const j = await req.json();
-    return j && typeof j === "object" && !Array.isArray(j) ? j as Record<string, unknown> : null;
-  } catch {
-    return null;
-  }
+  const j = await parseJsonBody(req); // past the ceiling this THROWS body_too_large, never null
+  return j && typeof j === "object" && !Array.isArray(j) ? j as Record<string, unknown> : null;
 }
 
 function bearer(req: Request): string | undefined {

@@ -897,4 +897,37 @@ export const authSuites: Suite[] = [
       assertEquals(await denied(() => space.as("agent:none").artifactGate()), "forbidden");
     },
   },
+  {
+    name: "more pattern grants than an $or may hold still read, scoped to their union",
+    run: async (adapter) => {
+      // Grant patterns were unioned into one `$or`, and the compiler caps a caller's `$or` at 16
+      // branches, so a principal holding seventeen pattern grants on one kind was answered 400 on
+      // every read. The union `combineMatch` composes is bounded by the grant ceiling, not by what
+      // a caller may ask, and is exempt: single-field equalities fold into one `$in`, the rest
+      // stay branches. A CALLER's own wide `$or` is still refused.
+      const space = new Space(adapter);
+      space.registerKind({ kind: "task", indexedPaths: [{ path: "team", type: "keyword" }, { path: "op", type: "keyword" }] });
+      // Forty two-field grants with long values: past the caller's 64-node budget AND its 8 KB byte
+      // budget, both of which counted the union until 2026-09-04. The union's cost is bounded by
+      // the grant ceiling per (principal, kind), which is where a bound on it belongs.
+      const team = (i: number) => `t${i}-` + "x".repeat(240);
+      for (let i = 0; i < 40; i++) await space.put({ kind: "task", body: { team: team(i), op: "a" } });
+      await space.put({ kind: "task", body: { team: "other", op: "a" } });
+      for (let i = 0; i < 40; i++) {
+        await space.put({ kind: "grant", body: { principal: "agent:many", kind: "task", operations: ["query"], pattern: { team: team(i) } } });
+        await space.put({ kind: "grant", body: { principal: "agent:wide", kind: "task", operations: ["query"], pattern: { team: team(i), op: "a" } } });
+      }
+      const query = (principal: string, body: Record<string, unknown> = { kind: "task", limit: 100 }) =>
+        handleQuery(space, new Request("http://x/v0/records/query", { method: "POST", body: JSON.stringify(body) }), principal);
+      const many = await (await query("agent:many")).json() as { records: unknown[] };
+      assertEquals(many.records.length, 40, JSON.stringify(many).slice(0, 300));
+      const wide = await (await query("agent:wide")).json() as { records: unknown[] };
+      assertEquals(wide.records.length, 40, JSON.stringify(wide).slice(0, 300));
+      // And the union narrows a request that asks for more: grant ∧ request.
+      const narrowed = await (await query("agent:wide", { kind: "task", match: { op: "a" }, limit: 100 })).json() as { records: unknown[] };
+      assertEquals(narrowed.records.length, 40);
+      const own = await query("human:local", { kind: "task", match: { $or: Array.from({ length: 17 }, (_, i) => ({ team: `t${i}` })) } });
+      assertEquals(own.status, 400, "a caller's own $or keeps its cap");
+    },
+  },
 ];
