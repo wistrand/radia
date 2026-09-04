@@ -198,7 +198,7 @@ flowchart TB
   only reads those misses them: an unscoped `artifact` grant reaches the bytes, and `observe`
   reads every body in the space.
 - **Protected bytes are artifacts, never record bodies.** Already the erasure invariant, and it
-  earns its keep twice here: bytes are encryptable with a destroyable key, and an accidental copy
+  buys two things here: bytes are encryptable with a destroyable key, and an accidental copy
   can be shredded with `erasures` detecting a return. The scoping rule bites: a shredded
   artifact's plaintext digest survives in an unerasable body, so short low-entropy values (a
   name, an identifier) must never become artifacts at all. That is a convention the runtime

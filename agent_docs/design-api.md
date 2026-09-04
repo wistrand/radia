@@ -6,6 +6,10 @@ the wire protocol, and the client agent loop. Origin: outline §4–5.
 **M0/M1 status (implemented):** the guarantee, fenced leases, idempotency-before-lease,
 and all ten operations are built: HTTP handlers in `src/server/handlers/`, the service in
 `src/core/space.ts`, lease/settlement in the adapters, claim ranking in `src/core/take.ts`.
+`Space` is the one facade every caller holds (put/take/settle, watches, lineage and graph,
+kinds-as-records, envelope query, taint); the features it DELEGATES to rather than contains
+(`authorization.ts`, `identity.ts`, `seal.ts`, `gc.ts`, `flows.ts`, `artifacts.ts`,
+`inspection.ts`) each reach it through a narrow `XxxHost` port, so the dependency runs one way.
 Watches are implemented (see Wire protocol below), as is the artifact payload plane (below), and
 `query` takes a keyset cursor (`after`/`dir`, or an opaque `cursor` that carries its own direction;
 see [design-matching.md](design-matching.md)).
@@ -263,6 +267,24 @@ content-routing) rather than as scattered endpoints; see [CLAUDE.md](../CLAUDE.m
   deferred.
 - Patterns are never in query strings.
 - Errors: RFC 9457. `lease_lost` and lost-race are distinct non-error statuses.
+- **Where the HTTP surface lives (`src/server/`).** `http.ts` is `startServer`: the route table,
+  `resolveAuth` (Bearer token to principal), the ops-plane power gate and operator-token injection.
+  `handlers/` is one file per concern: `records.ts` (put/read_one/query, authorized through
+  `space.as`), `leases.ts` (take and the settle verbs), `agents.ts` (the bootstrap chain),
+  `artifacts.ts` (bytes in and out, download capabilities, `shred`), `ops.ts` (stats, events,
+  lineage, children, graph, envelope query, diagnostics, erasures, flows, integrity, admin,
+  remediate, gc, rewrap, declassify, shred) and `watches.ts` (SSE, gated by `authorizeWatch`).
+- **An unknown request field is a 400 that NAMES it** (`rejectUnknown`, `src/server/problem.ts`,
+  beside the RFC 9457 `problem` builder). A handler that picks fields by name silently drops a
+  misspelled one, and wherever that field narrows (a grant's `pattern`, a take's `allow_taint`, a
+  query's `order_by`) dropping it hands back a wider answer than was asked for. `grant` and
+  `kind_def` bodies are checked in core as well, since they arrive by more than one route
+  ([plan-bounded-reads.md](plan-bounded-reads.md)). Guard: `test/http.test.ts`.
+- **Every body is read through one capped reader** (`src/server/body.ts`). `parseJsonBody` counts
+  the stream as it arrives, Content-Length treated as a hint, and refuses past `MAX_JSON_BODY_BYTES`
+  (8 MiB) as `413 body_too_large`; `req.json()` buffers everything before `maxRecordBytes` can look.
+  The artifact upload's `readCapped` is the same function. A transport ceiling, never the record
+  limit: `maxRecordBytes` still decides what is stored. Guard: `test/http.test.ts`.
 - LISTEN/NOTIFY is wakeup only; the event log is truth.
 - Layering: Postgres → runtime (sole DB client) → protocol → {SDKs, MCP adapter, CLI}.
   The CLI uses only the public API.

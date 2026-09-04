@@ -70,7 +70,9 @@ redeclaration.
     caller(R) = run(R.created_by).actingFor ?? grantSubject(R.created_by)
 
 One read, no walk: `actingFor` holds a resolved caller and never another run. `Space.runRecord`
-already folds a run's successors and is the read to extend.
+already folds a run's successors and is the read to extend. Never a body field, and never the
+leased record's author: in the chat a `tool_call` is authored by the turn worker, so the leased
+record's `created_by` names another worker rather than the person.
 
 ### 1c. Entitlement
 
@@ -227,6 +229,10 @@ Two changes, and the second is the point:
    - delegable: `artifact: read_one`, `workspace: query`, `procedure: query`.
    - exec's own: the `put` half of those three, plus `check`, `capability`, `progress`, `sandbox`,
      `tool_call: take`, and `message`/`tool_result` (both written through `ack`).
+   The rule behind the split: a capability the caller lacks can NEVER be delegated, since the
+   intersection is a subset of the caller's grants, which is why `check: put` and workspace
+   authoring stay on the worker's own token. The two lists are `EXEC_GRANTS` in
+   `examples/chat/space/roles.ts`.
 
    What stays ambient is therefore authoring INTO another session's scope: an integrity reach, not
    a confidentiality one. The cross-user exposure was the read half, and that is closed.

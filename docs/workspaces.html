@@ -153,7 +153,7 @@
         <path d="M 380 76 L 380 96" class="flow" stroke="#818cf8"/>
 
         <rect x="20" y="96" width="720" height="52" rx="6" class="box" stroke="#818cf8"/>
-        <text x="40" y="118" class="label">extension: workspace, sandbox, git export</text>
+        <text x="40" y="118" class="label">extension: workspace, sandbox, git clone and push</text>
         <text x="40" y="136" class="muted">imports the SDK only. Never the runtime</text>
         <text x="720" y="128" text-anchor="end" class="muted">extensions/</text>
 
@@ -171,8 +171,9 @@
     </figure>
 
     <p>
-      Structural tests prevent extensions from importing runtime internals. Commands such as Git
-      export are therefore ordinary clients, not privileged server operations.
+      Structural tests prevent extensions from importing runtime internals. The Git export and
+      the Git server are therefore ordinary clients, not privileged server operations: a push
+      writes versions under the pusher's own permissions.
     </p>
 
     <div class="callout">
@@ -463,7 +464,7 @@ agent:scraper on 'prod': t1:07b3e5c918&#8230;</code></pre>
       access is authorized when the capability is minted, and the URL expires with that capability.
     </p>
 
-    <h3>Export a Git repository</h3>
+    <h3>Git: export, clone and push</h3>
     <div class="code-block">
       <div class="code-title">radia workspace-git</div>
       <pre class="terminal"><code>$ radia workspace-git landing-page --dir /tmp/landing.git
@@ -484,16 +485,28 @@ $ git clone /tmp/landing.git &amp;&amp; cd landing &amp;&amp; git log --oneline
 git server on http://127.0.0.1:7790  (reading http://127.0.0.1:7788)
 
 $ git config --global credential.http://127.0.0.1:7790.helper '!radia git-credential'
-$ git clone http://127.0.0.1:7790/landing-page.git</code></pre>
+$ git clone http://127.0.0.1:7790/landing-page.git
+$ cd landing-page &amp;&amp; $EDITOR index.html
+$ git commit -am "tighten the hero copy" &amp;&amp; git push
+To http://127.0.0.1:7790/landing-page.git
+   9c1e4a2..d41f2b7  main -> main
+$ radia workspaces
+NAME          FILES  VERSIONS  TREE             OWNER
+landing-page  9      8         a41c7f0e2b9d31…  human:oidc-alice</code></pre>
     </div>
 
     <p>
       Git authenticates as you: the credential helper hands git the login this machine already
       holds, from <code>radia login --sso</code> or <code>radia login</code>, and the server
-      applies that principal's Radia permissions.
-      Revocation stops subsequent fetches. Push is accepted fast-forward only: each pushed commit
-      becomes the next version, a rewritten or merged history is refused, and the commits keep
-      their ids, so a fetch after a push changes nothing.
+      applies that principal's Radia permissions. Revocation stops the next fetch or push.
+    </p>
+    <p>
+      Push is accepted fast-forward only. Each pushed commit becomes the next version, written
+      under the pusher's own <code>workspace: put</code> grant, and the commit keeps its id, so a
+      fetch after a push changes nothing. A force-push, a merge commit, a new or deleted branch, a
+      symlink or a commit that changes no file is refused with the reason on git's own
+      <code>! [remote rejected]</code> line. There is no merge: rebase onto the branch and push
+      again.
     </p>
 
     <p>

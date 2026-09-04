@@ -91,6 +91,61 @@ so with several instances over LOCAL blob directories both the shred and the ans
 (design-storage.md, "Scaling and multi-instance operation"). The check is a `doctor` finding for
 that configuration, derived the same way: shared record storage beside a non-shared `BlobStore`.
 
+## The console
+
+`src/ui/index.html`, served at `GET /` with no build step and holding nothing but the public API.
+Guards in `test/console.test.ts`. What each tab shows, and the routing that ties them together:
+
+**Routing.** The view lives in the URL as `#tab/recordId?knobs`. `applyRoute` runs from `start()`
+AFTER the sign-in gate and on `hashchange`, never at top level, because a route applied while signed
+out starts the Feed and Space polls behind the overlay; sign-in reloads the same URL, so the view
+survives re-auth. A browse travels as `#records?kind=…&dir=&limit=&match=&state=`, which is what lets
+an Overview bar and a doctor sample open the same list; `#auth?agent=…` opens an agent's card from a
+listener chip or a routing node; `#query` still lands on Records. The nav is three groups (reads;
+Put and Take, whose id stays `worker`; Kinds and Auth), and a tab id never changes: the docs name it
+as a route.
+
+**Overview.** Opens with the "Right now" pulse: tiles per state, a two-minute activity strip in 2s
+buckets on the DB clock (`PULSE_WINDOW_S`), one bar per kind, and who is listening, composed from
+`ops/digest` plus the events tail and polled only while the tab is open. Below it `loadDoctor`
+renders `ops/diagnostics` as ranked findings whose samples link to the records they rest on: a
+finding nobody can open is an assertion.
+
+**Records.** Reads NEWEST first (the oldest-50-as-"the records" trap shipped here once). Columns come
+from the kind's own `indexedPaths`, `explain` notes are rendered, and the query playground is folded
+in (match and `order_by` under a fold). A `state` browse reads the ENVELOPE query,
+`GET /v0/ops/records?state=`, the selector `doctor` and `remediate` use, so a tile's count and its
+list agree.
+
+**Feed.** Events grouped by lineage root, same-shape runs collapsed to ×N, a match filter that is a
+real bounded query, a flat view one toggle away, knobs in the hash (item 4).
+
+**Kinds.** The per-kind digest (declaration, counts, live listeners) and the routing diagram: which
+agents listen for which kinds, from live `interest` records, never declared (item 3).
+
+**Space.** Streams the ops event log into a property-similarity map (`<bz-graph>`, `src/ui/vendor/`),
+bounded by `evictSpace`, which drops finished records before live ones; seeded from the TAIL like the
+Feed, with "Replay all" as the explicit whole-log path. Nodes cluster by AGENT (via `agentOf`), never
+by a run id that means nothing tomorrow.
+
+**Graph.** The root picker defaults to a kind THIS SPACE declares (hardcoded to `conversation`, it
+opened with a 403 about another app on every space but the chat's). Holds the waterfall view, colours
+taint by label, and takes `direction=down` with `truncated` reported (items 5 and 9).
+
+**Flows.** Shapes mined from lineage, never declared, each with its exemplar ids as the evidence
+behind the claim (items 2 and 12).
+
+**Put and Take.** Write a record as this session; claim a record and settle its lease by hand.
+
+**Auth.** The bootstrap chain read from the space, and minting a person's session (operator only,
+the console's `radia login`). Holding the credential is [plan-console-auth.md](plan-console-auth.md);
+the SSO button is [plan-oidc.md](plan-oidc.md). The header's identity is read from
+`ops/permissions`, never assumed.
+
+**`agentOf`.** A record's `created_by` names the AGENT beside the run: a NARROW read of the newest
+`agent_run` for that one run, memoized and FAIL-SOFT, since an ordinary session holds no
+`agent_run: query` grant and a decoration must not blank the field it decorates.
+
 ## Not scheduled, and why
 
 - **Density mode and thread highlight** on the Space view are small and depend on nothing. They are

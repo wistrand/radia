@@ -34,7 +34,9 @@ of the application surface.
 
 Two non-coordination exceptions exist:
 [`operator.ts`](operator.ts) reads the local credential file (`src/credentials.ts`) to get the
-operator token it bootstraps with, rather than reimplementing a path convention that would drift;
+operator token it bootstraps with, rather than reimplementing a path convention that would drift
+(`operatorToken(url)`: `RADIA_TOKEN`, else the file `radia dev` writes, and it throws rather than
+returning nothing, so no example relies on the no-header open-mode shortcut);
 and `chat/smoke-fleet.ts`, a test, imports the registry projection it is asserting about. Neither is
 a coordination verb. An example reaching into `src/` for anything a client could do over `/v0` is a
 bug in the example.

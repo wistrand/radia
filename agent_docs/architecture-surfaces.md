@@ -43,6 +43,35 @@ Neither surface reaches past the SDK into `core/` or `storage/`. That is deliber
 essential: **if the CLI can do it, an external client can too.** A verb that needed a
 privileged shortcut would be evidence of a missing API, not a reason to add a backdoor.
 
+## The entry point: `src/main.ts`
+
+`radia dev` runs an embedded space plus the console, provisions an operator credential into the
+shared file and prints its token. `radia serve` is the SAME space through `runSpace(args, posture)`
+in a deployment's posture: no credential file, nothing on stdout, no console unless `--console`,
+persistent storage required, `--auth open` refused as a usage error, and `--operator-token-file
+<path>` (written owner-only) the one way to the operator bit; without it the token dies with the
+process, which is right for a restart of a provisioned space. `radia mcp` is the adapter; anything
+else is a CLI verb. Both space commands take `--config <file>`, a JSON object of the same flag
+names without the dashes, folded into argv so a command-line flag wins, and `--ext`, which mounts
+the `serve-ext` routes at `/ext/` on the space's own port under each caller's Bearer token.
+
+**What the person must do next goes to stdout; what the process is goes to the logger.** A
+`--log-file` would otherwise collect the operator token and the console sign-in link, and a token in
+a log is a token in every backup of that log. `src/main.ts` is also where `configureLogging` runs,
+once, before anything can log.
+
+## Logging: `src/log.ts`
+
+Process logging answers what THIS BUILD did (which credential resolved, why a sweep was slow, what
+the config parsed to), which no record can. Four levels, `getLogger(<component>)`, text to STDERR
+and JSONL to `--log-file` (`RADIA_LOG_LEVEL` / `RADIA_LOG_FILE`), synchronous with lost lines lost,
+and a bounded ring buffer (`recentLogs`, 200 entries) for `radia doctor` when there is no file. It
+reads NO configuration: `src/main.ts` configures it, which keeps `src/core` from importing a
+surface's flag parsing. Stderr is load-bearing, since `radia mcp` speaks JSON-RPC on stdout. An
+unwritable `--log-file` disables the file and says so once. Two rules decide record versus log: if
+another agent could need it, it is a RECORD; a credential is never logged. `test/layering.test.ts`
+refuses `console.*` in `src/core`/`server`/`storage`.
+
 ## The platform seam: `src/platform.ts`
 
 Every non-portable host operation lives in one file: process (`args`, `exit`, `env`, `osName`),
@@ -60,6 +89,12 @@ materializing a blob in memory.
 Why: the CLAUDE.md invariant is *maximal platform independence*. `Deno.exit` and
 `Deno.readTextFileSync` scattered through `src/` bind every module to one runtime for operations
 every runtime has. Behind the seam, a Node or Bun port reimplements this file and nothing else.
+
+**The seam is INJECTABLE.** The exported functions delegate to a backend object, Deno by default;
+`setPlatformBackend` swaps it. `src/platform_browser.ts` is the Web-APIs backend and `src/browser.ts`
+the browser entry (`bootBrowserSpace`: PGlite, memory blobs and `makeHandler` as the whole wire, no
+socket). `deno task bundle-browser` builds the docs playground from it; its outputs are gitignored
+and never committed ([plan-browser-space.md](plan-browser-space.md)).
 
 Two deliberate exceptions, both documented at their call sites:
 
@@ -82,6 +117,24 @@ request path, and sync keeps async colouring out of the call sites); `readTextFi
 - Nothing in `src/` outside `platform.ts` references `Deno.*`, except the two rows above.
 - Nothing outside `src/main.ts` calls `exit`. Deeper code returns a status or throws
   `UsageError`, so a caller always gets the chance to clean up and every function stays testable.
+
+## Flags, paths and the database lock: `src/flags.ts`, `src/paths.ts`, `src/lock.ts`
+
+`src/flags.ts` is the shared CLI scanner: `flag`, `optionalFlag`, `flags`, `has`, `positional`.
+`optionalFlag` is the bare-versus-valued distinction (`--db` alone is "persist, you pick where",
+the empty string; `--db <path>` names the place), and a following token counts as the value only
+if it does not start with `-`. A valueless switch must be in `VALUELESS` or `positional` eats the
+token after it (`test/defaults.test.ts`; [gotchas.md](gotchas.md#surfaces-http-console-cli-and-the-sdks)).
+
+`src/paths.ts` is the one runtime directory: everything a space writes (db, blobs, KEK, the seal
+key) lands under `./.radia`, and `RADIA_DIR` moves it. Never name a runtime path at a call site.
+
+`src/lock.ts` enforces ONE writer per local database: an OS advisory lock on `<db>.lock`
+(`acquireDbLock`), taken before the adapter opens the files and released after it closes them. PGlite
+has no locking of its own, so without it two `radia dev` on one directory both start and diverge with
+nothing able to detect it afterwards. The kernel releases the lock when the holder dies, so a SIGKILL
+leaves nothing stale; the loser reads the holder's pid and base URL out of the file (`lockRefusal`).
+[plan-startup-ergonomics.md](plan-startup-ergonomics.md) item 1.
 
 ## Credentials: `src/credentials.ts`
 
@@ -127,6 +180,13 @@ destructive verbs keep the operator credential.
 Keyed by base URL means keyed by HOST: a space on `127.0.0.1` has no credential under `localhost`,
 even though both reach it. Every default in this repo says `127.0.0.1` for that reason.
 
+**It is the USER's file, not a space's, so `radia credentials [--prune]` owns it**: the one CLI
+verb about this machine rather than a space, and it never prints a token. `--prune` drops only what
+a restart can rebuild (operator, `#observer`), never a `#login` durable half or a content key, and
+PROBES each dormant base first, since an entry is rewritten only when a space starts and age alone
+cannot tell a dead space from a long-running one (`credentialKind`; the trap is in
+[gotchas.md](gotchas.md#surfaces-http-console-cli-and-the-sdks)).
+
 The point is that **local development uses the same API shape as production**. There is no
 "no tokens locally" mode to grow out of: the CLI, the MCP adapter, the Python SDK, the console and
 the bundled examples all present `Authorization: Bearer` exactly as a deployed client does. Nothing
@@ -164,7 +224,12 @@ run token in the `#login` entry, with NO definition token, deliberately. A lapse
 is one browser click, not a stored secret, and deprovisioning at the IdP ends terminal access
 within one run ceiling. Everything downstream (the chat, the CLI verbs, `storedLogin`) reads it
 identically; only the renewal story differs, and `keepAlive` covers a live process to the
-ceiling either way.
+ceiling either way. The mechanism (`ssoLogin` in `cli.ts`): a one-shot listener on
+`127.0.0.1:8253` (the port is part of the IdP's registration; `--sso-port` for a space registered
+elsewhere) behind a random-path short link, so the terminal prints ~40 characters and a probe of
+`/` cannot spend the authorize round trip; the PKCE verifier and the nonce are checked CLI-side,
+since only this process saw them. `--compact` prints the run token alone, for
+`git clone http://you:$(radia login --sso --compact)@host/ws.git`.
 
 It reports what the principal can ACTUALLY do, by asking `permissions` after minting, rather than
 echoing the `--grant` flags it was passed. Grants may come from an earlier login or from an app
@@ -363,7 +428,10 @@ lab needs (agent_docs/plan-agent-lab.md). One JSONL line per call, at the single
 dispatch so a tool added later is traced without anybody remembering to. A FILE, never records in
 the space, because the space is the thing under observation and trace records would land in its own
 flows, stats, chain and registry budgets. Off unless asked for, and a failed write disables tracing
-for the process rather than failing the call it observes.
+for the process rather than failing the call it observes. `classify` reads the tool's text answer
+back and is NARROW on purpose: an empty array and the adapter's own two "found nothing" sentences
+are `empty`, anything it cannot read is `ok`, because over-reporting `empty` puts false findings in
+front of a reader.
 
 **It runs as the OBSERVER by default** ([architecture-ops-tiers.md](architecture-ops-tiers.md) phase 5): the
 stored `#observer` credential, holding the `observe` ops power and no coordination grants, so the
@@ -438,7 +506,13 @@ ignore (an absent one means exactly that).
 
 **A NAMED SESSION keeps its principal across restarts, and now also its CLAIMS.** `--session <name>` (or `RADIA_SESSION`)
 stores the run under a `#session:` credential entry and resumes it, with the durable half behind it
-so the session still recovers once that run passes its 12h ceiling. The name is SUPPLIED, not
+so the session still recovers once that run passes its 12h ceiling. Statelessness has ONE real
+bite here: a `claimId` only its minting process could settle. `recoverClaim` (`server.ts`)
+rederives the lease from the envelope (the id embeds the record id and epoch) instead of storing
+anything, gated on the RUN matching because a settle is owner-bound, which is what makes `--session`
+load-bearing for conformance and not only for attribution. The same split decides exit: an
+anonymous session RELEASES its claims on shutdown (nothing later can settle them), a named one keeps
+them and says how many, since giving the record back hands a teammate half-done work. The name is SUPPLIED, not
 derived: no harness exposes a session identity portably, and guessing one from a pid or a cwd gives
 a different principal every restart, which is the thing it exists to prevent. For attribution that
 outlives a day the unit is the AGENT rather than the run, which is what
@@ -487,6 +561,17 @@ model can report a stuck lease and do nothing about it.
   corrupt stream. Writes are synchronous so frames cannot interleave.
 - A raw `Lease` never crosses into a tool result. The model gets a `claimId`.
 
+## Tasks: `deno.json`
+
+Tasks are grouped and verb-first: `dev*` runs a space, `cli` is the CLI from a checkout
+(`deno task cli health`), `check`/`test*` verify (`test` is the aggregate; `test:quick`,
+`test:runtime`, `test:conformance[:pg|:s3]`, `test:extensions`, `test:lab`, `test:chat`,
+`test:analysis`, `test:mud`), `bench`/`profile` measure, `compile`/`release`/`bundle-*` build.
+`bump` (`scripts/bump-version.ts`) stamps the next `YYYY.M.COUNTER` version into every file that
+carries it (`deno.json`, `src/version.ts`, `docs/install.sh`, `docs/index.html`, `sdk/README.md`)
+and PRINTS the git tag and push commands, running none; an explicit version is the optional
+argument. `test/tasks.test.ts` and `test/docs.test.ts` hold the five files to one string.
+
 ## Distribution: `scripts/build-release.sh`
 
 `deno task release` compiles four targets (Linux and macOS, x64 and arm64; native Windows is
@@ -499,8 +584,11 @@ forsworn: [design-storage.md](design-storage.md) "Distribution" has the reasons 
 trusted-publishing re-entry path). Neither carries a binary or launcher:
 the binary's one supported install is `curl | sh` (`docs/install.sh`, downloading the gzipped
 release assets `.github/workflows/release.yml` attaches to a `v*` tag and verifying them against
-the release's `SHA256SUMS`; `test/docs.test.ts` holds the target list, the asset names and the
-sums file as a contract between the three files).
+the release's `SHA256SUMS`; `test/docs.test.ts` holds the target list, the asset names, the sums file
+and the documented install URLs to the version as a contract between the three files, and
+`deno task bump` is what stamps them). A published SDK asset is NEVER re-uploaded, since npm
+lockfile integrity and pip `#sha256` pins break retroactively: a bad asset means a new release
+(`release.yml`).
 
 `radia update` (`src/surfaces/update.ts`) is the SECOND reader of that contract, and the reason the
 guard names three files rather than two. It replaces this binary with a release build and verifies

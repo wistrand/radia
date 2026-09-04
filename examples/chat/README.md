@@ -47,9 +47,10 @@ deno run -A examples/chat/grant-user.ts human:oidc-...
 An OIDC identity starts with no grants. Retiring its `oidc_identity` record is the ban mechanism;
 revoking application grants alone is not a durable ban when automatic enrollment is enabled.
 
-Join mode is selected by the absence of an operator credential. A joined session cannot register
-kinds, mint workers, grant itself access, enumerate other users' conversations or reach the
-operations plane.
+Join mode is selected by the absence of an operator credential, never by a flag. A joined session
+cannot register kinds, mint workers, grant itself access, enumerate other users' conversations or
+reach the operations plane. A session holding none of this app's grants is told so at boot, with
+the `grant-user.ts` line to send the operator (`chat.ts`), rather than left with a turn that hangs.
 
 ## Join from a browser
 
@@ -192,8 +193,10 @@ worker reconstructs a bounded provider context from those records.
 
 The turn loop is also durable. The client seeds one `llm_call`; the turn worker watches resulting
 messages and emits tool calls, subsequent model rounds and `turn_complete`. Closing the terminal
-does not terminate an active turn. `--conversation <id>` and `--conversation last` attach a new
-client to existing records.
+does not terminate an active turn, and `radia flows` mines the turn's shape from lineage since it
+is records rather than a loop in the REPL
+([agent_docs/plan-chat-turn.md](../../agent_docs/plan-chat-turn.md)). `--conversation <id>` and
+`--conversation last` attach a new client to existing records.
 
 Escape or Ctrl-C during a turn writes a turn-scoped `cancel` record. The turn worker stops emitting
 new links after observing it. Already claimed model or tool work may still finish because delivery
@@ -241,7 +244,9 @@ The main tool groups are:
 - space queries, lineage, flows and diagnostics;
 - image generation and vision;
 - content and workspace saving;
-- jailed JavaScript, Python and saved workspace procedures.
+- jailed JavaScript, Python and saved workspace procedures. A saved procedure is a workspace
+  with a declared `entrypoint` rather than a lone code artifact (`tools/save.ts`,
+  `workers/exec.ts`), which is what makes it multi-file, Python-capable and bindable.
 
 ## Encrypted conversations
 

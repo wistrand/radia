@@ -162,3 +162,102 @@ Deno.test("agent_docs: CLAUDE.md's status marker agrees with the doc's own", asy
   }
   assertEquals(bad, [], "the routing file disagrees with the doc it routes to");
 });
+
+// The three guards below are what keeps CLAUDE.md the routing file its own Doc lifecycle section
+// describes. On 2026-09-04 it was 21,439 words with a 14,882-character table cell and 39 em dashes
+// in the file that bans them, because every change appended its lesson to the Layout cell of the
+// file it touched and nothing measured the result. The site's prose guard (`test/docs.test.ts`)
+// covered only the one corpus that was already clean.
+
+/** Text that is being NAMED rather than used: a quoted phrase, or code in backticks. */
+const unquoted = (text: string) => text.replace(/`[^`\n]*`/g, "").replace(/"[^"\n]*"/g, "");
+
+Deno.test("agent_docs: no banned prose tells in the docs an agent reads", async () => {
+  // The same curated list as the site's guard: phrases with no legitimate use, so a rephrase cannot
+  // trip it. plan-prose-tells.md is the catalogue of them and is exempt.
+  const banned = [
+    "earns its keep",
+    "nothing to offer",
+    "worth pausing",
+    "worth being pedantic",
+    "the interesting part is",
+    "surprisingly good",
+    "genuine operational win",
+    "pulls its weight",
+  ];
+  const bad: string[] = [];
+  for (const file of await markdownFiles()) {
+    if (file.endsWith("plan-prose-tells.md")) continue;
+    const text = unquoted(await Deno.readTextFile(file)).toLowerCase();
+    for (const phrase of banned) if (text.includes(phrase)) bad.push(`${file.slice(ROOT.length)}: "${phrase}"`);
+  }
+  assertEquals(bad, [], "drumroll prose in agent_docs or CLAUDE.md; see agent_docs/plan-prose-tells.md");
+});
+
+/**
+ * Em dashes per file, as a LEDGER rather than a ban: 548 were in `agent_docs/` when this was
+ * written, and a guard that fails on all of them at once is one that gets skipped. A file may
+ * never gain one, and when a file loses some the ceiling must come down with it, so the table
+ * stays the truth and the count only ever falls. A file not listed here has a ceiling of zero.
+ * CLAUDE.md's one remaining instance is the style rule naming the character, in backticks.
+ */
+const EM_DASH_CEILING: Record<string, number> = {
+  "architecture-analysis-workspace-agents.md": 3,
+  "architecture-jail-confinement.md": 1,
+  "architecture-ops-tiers.md": 1,
+  "architecture-workspace-agents.md": 2,
+  "design-api.md": 1,
+  "design-auth.md": 14,
+  "design-data-model.md": 14,
+  "design-execution.md": 2,
+  "design-inspection.md": 7,
+  "design-observability.md": 2,
+  "design-storage.md": 1,
+  "design-taint.md": 2,
+  "design-workspaces.md": 15,
+  "gotchas.md": 0,
+  "plan-audit-remediation.md": 89,
+  "plan-browser-space.md": 5,
+  "plan-chat-turn.md": 2,
+  "plan-chat-web-ui.md": 7,
+  "plan-delegation.md": 5,
+  "plan-encryption.md": 41,
+  "plan-extension-http.md": 3,
+  "plan-gc.md": 35,
+  "plan-inspection.md": 7,
+  "plan-milestones.md": 8,
+  "plan-oidc.md": 10,
+  "plan-prose-tells.md": 1,
+  "plan-reactor-loop.md": 7,
+  "plan-scaling.md": 15,
+  "plan-startup-ergonomics.md": 2,
+  "plan-substrate-rename.md": 3,
+  "plan-webworker-sandbox.md": 9,
+  "plan-workspaces.md": 93,
+  "research-app-lessons.md": 17,
+  "research-positioning.md": 3,
+};
+
+Deno.test("agent_docs: em dashes never increase, and the ledger tracks every decrease", async () => {
+  const bad: string[] = [];
+  for (const file of await markdownFiles()) {
+    const name = file.endsWith("CLAUDE.md") ? "CLAUDE.md" : file.slice(DOCS.length + 1);
+    const raw = await Deno.readTextFile(file);
+    const count = (name === "CLAUDE.md" ? unquoted(raw) : raw).split("—").length - 1;
+    const ceiling = EM_DASH_CEILING[name] ?? 0;
+    if (count > ceiling) bad.push(`${name}: ${count} em dashes, ceiling ${ceiling}; recast the new ones`);
+    else if (count < ceiling) bad.push(`${name}: ${count} em dashes, ceiling ${ceiling}; lower EM_DASH_CEILING to ${count}`);
+  }
+  assertEquals(bad, [], "em dashes in the docs an agent reads (test/agentdocs.test.ts holds the ledger)");
+});
+
+Deno.test("agent_docs: CLAUDE.md stays a routing file", async () => {
+  // Words and line length, both with headroom over the 2026-09-04 cut (6,892 words, 445 chars).
+  // A Layout cell or a Docs bullet that needs more than a line is narrative that belongs in the
+  // doc it links to; the Design principle and Invariants sections are the thick part by design.
+  const text = await Deno.readTextFile(join(ROOT, "CLAUDE.md"));
+  const words = text.split(/\s+/).filter(Boolean).length;
+  assert(words <= 7500, `CLAUDE.md is ${words} words; the budget is 7500. Move detail into agent_docs/ and leave a link`);
+  const long = text.split("\n").map((l, i) => [i + 1, l.length] as const).filter(([, n]) => n > 600);
+  assertEquals(long.map(([i, n]) => `line ${i}: ${n} chars`), [], "a CLAUDE.md line over 600 characters is a cell carrying a doc");
+});

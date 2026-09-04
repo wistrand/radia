@@ -156,8 +156,8 @@ Players enrol through `POST /v0/sessions/oidc` holding zero grants;
 `extensions/ts/enrolment.ts` (`sweepEnrolments`, `watchEnrolments`) is the shared "everyone the IdP
 vouches for may play" policy, parameterised by this app's grant set.
 
-**Fog of war: read-side room scoping is inexpressible; fog of war itself is not.** The distinction
-is the finding, and the shipped example blurs it. A grant matches record CONTENT against a static
+**Fog of war: read-side room scoping is inexpressible; fog of war itself is not.** (Sharpened
+2026-08-31.) The distinction is the finding, and the shipped example blurs it. A grant matches record CONTENT against a static
 pattern, so which side of an operation the discriminator lives on decides everything:
 
 - **WRITE works.** An NPC's `event: put` is pinned to `{roomId, actor}` (`examples/mud/roles.ts`),

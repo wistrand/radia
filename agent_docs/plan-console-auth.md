@@ -95,7 +95,11 @@ sign-in screen appears only when a credential is genuinely dead or revoked.
 - OIDC now: the real multi-user answer and deliberately deferred, with its shape now recorded
   (design-auth.md, "OIDC: deferred, with the shape decided"): mint-at-the-boundary into the
   existing chain, a mapping registry for `(iss, sub)`, runs minted directly with no durable half.
-  Phase 1 here is its prerequisite either way.
+  Phase 1 here is its prerequisite either way. SHIPPED since, same day ([plan-oidc.md](plan-oidc.md)):
+  "Sign in with SSO" (`oidcStart`) appears when the pre-auth health probe advertises an OIDC issuer,
+  runs code+PKCE in the page with the nonce checked page-side, and lands a bare run token with no
+  definition to remember; the IdP display name sits in the header pill as DECORATION beside the
+  enforced principal.
 - Baking a token into the served page: `GET /` is public, and a test exists whose whole job is
   preventing this.
 - Silently using the no-header shortcut: the original objection stands; phase 3 keeps the

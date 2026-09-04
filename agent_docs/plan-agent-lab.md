@@ -105,6 +105,12 @@ TWO ISOLATION RULES, both learned by breaking them on the first run. Every CLI c
 `radia dev`: the first dry run sent `team add --rotate` there and was refused only because
 `RADIA_CREDENTIALS` had already been redirected. And `RADIA_TOKEN` is dropped from every child, or
 it overrides each member's definition token and every agent acts as whoever started the lab.
+Two more hold the experiment together. The space runs `--auth required` (`run.ts`, `replay.ts`):
+open mode resolves every member to the operator, and the scoping under observation stops existing.
+And `team add` always passes `--rotate`, because a second definition for one agent is not a
+rotation and looks exactly like one. The runner is a CLIENT throughout: it spawns the binary and
+reads nothing private. The harnesses' non-interactive flags in the scenario file are VERIFIED BY
+NOTHING here, since they change on somebody else's release schedule.
 
 **Phase 1: `--trace`. BUILT.** `src/surfaces/mcp/trace.ts`, one JSONL line per tool call, written at
 the single `tools/call` dispatch so a tool added later is traced without anybody remembering to.

@@ -5,7 +5,10 @@ Spec and rationale for Radia's core data model. Origin: outline §2.
 **M0 status (implemented):** the record + `record_runtime` split, ULID ids, `body_sha256`,
 the client-vs-runtime metadata split, and `parent_ids` lineage live in
 `src/core/record.ts` (`buildRecord`), `src/storage/adapter.ts` (types), `src/storage/row.ts`
-(mapping), and the two adapters. Kinds/indexing: `src/core/kinds.ts`. `delegation_context`
+(mapping), and the two adapters. Ids are MONOTONIC ULIDs (`src/core/ids.ts`, `monotonicUlid`:
+the random half increments when the clock has not moved), which every latest-wins projection
+depends on; the projections themselves (`activeByKey`, `activeSet`, `retired: true`) are defined
+once in `sdk/ts/registry.ts` and reached in core through `src/core/registry.ts`. Kinds/indexing: `src/core/kinds.ts`. `delegation_context`
 (authority lineage) and `taint` (data lineage) are both built (M1); see "Provenance vs.
 authority" below. **Artifacts / blob storage (§2.4) are built (M1), with optional encryption at
 rest**. See the section below for what landed and what did not.

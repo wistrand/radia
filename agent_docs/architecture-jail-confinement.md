@@ -5,7 +5,8 @@
 > arm64): the full `deno task test:extensions` suite passed, darwin-gated case included, with the
 > machine's own Deno cache verified untouched afterwards. Still never run in this repo's CI, which
 > is the one residual and is a coverage gap rather than an open defect. Renamed from
-> `plan-jail-confinement.md` on 2026-08-30, under the lifecycle rule in CLAUDE.md: the phase
+> `plan-jail-confinement.md` on 2026-08-30, under the lifecycle rule in CLAUDE.md, because the
+> `plan-` name read as unfinished work to every external reviewer: the phase
 > numbers are kept because source files cite them. The defect it closed is package T in
 > [plan-audit-remediation.md](plan-audit-remediation.md).
 >
@@ -32,7 +33,8 @@
 ## The one hole, and why that simplifies the fix
 
 The Deno jail already denies net, env, run, ffi and write. MODULE LOADING is the only channel its
-read permission does not cover, so the missing piece is filesystem confinement and nothing else.
+read permission does not cover (neither `--allow-read` nor `--deny-read` gates it, measured in
+[plan-executors.md](plan-executors.md)), so the missing piece is filesystem confinement and nothing else.
 That is what makes this compositional: keep the permission jail exactly as it is, and add a
 filesystem boundary underneath it, chosen per platform. The alternative reading, "replace the Deno
 jail with bubblewrap", is both bigger and wrong, because it throws away a permission model that is

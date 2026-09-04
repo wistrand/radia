@@ -187,7 +187,9 @@ credential touch" has a small answer.
 `--scope local` keys config to a directory, so two projects are two principals and the space
 enforces the difference. Codex reads one user-level `~/.codex/config.toml`, so two Codex sessions
 share an entry unless given separate server names, and that is a naming convention. Say so rather
-than implying parity.
+than implying parity. agy (the third harness `radia team add` knows, `src/surfaces/mcp/config.ts`)
+takes the same `mcpServers` shape at a FIXED path with no flag to move it, so two agy members on
+one machine need `HOME` moved.
 
 **`observe` still crosses teams**, which is why it is opt-in. A member holding it reads every other
 team off the ops plane while its own coordination query correctly answers empty.
@@ -252,6 +254,10 @@ minting while `radia revoke` reaches only the newest. `radia team add` refuses i
 `--rotate`, which revokes before it creates.
 
 ## Isolation is the grant pattern
+
+Teams are ISOLATED BY DEFAULT, and the isolation is the grant pattern rather than a convention: a
+write carrying another team's label OR NO LABEL is refused by `bodyMatchesGrant`, so there is no
+unlabelled lane.
 
 | kind | claimable | separated by |
 |------------|-----------|-------------------------------|
