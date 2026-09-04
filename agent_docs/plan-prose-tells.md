@@ -73,7 +73,12 @@ as a verbal habit at four.
    only, nothing matches wording" doctrine explicitly: these phrases are never a rephrase of a
    claim, so a rephrase cannot trip the test. Judgment tells (genuinely, honest, "this is
    where") stay OUT of the guard and IN the review rule: they have legitimate uses, and a guard
-   that cries wolf gets deleted.
+   that cries wolf gets deleted. WIDENED 2026-09-04 to `agent_docs/` and CLAUDE.md
+   (`test/agentdocs.test.ts`): the same phrase list, with a quoted or backticked phrase counted as
+   named rather than used and this catalogue exempt; and the em dash as a per-file LEDGER rather
+   than a ban, since 548 stood in `agent_docs/` that day and a guard failing on all of them would
+   be skipped. A file may never gain one, and a ceiling must be lowered when its file loses some.
+   Proven RED on a planted phrase, a planted dash and a raised ceiling before it went green.
 
 ## The second sweep: four more structural classes, and two cleared
 

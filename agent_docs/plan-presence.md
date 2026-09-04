@@ -18,7 +18,8 @@ withdrawal VOTE with `chat_fleet` records (`examples/chat/client/fleet.ts`, `FLE
 refresh 5m), but when the SOLE fleet crashes nothing ever withdraws: its tools stay advertised
 until a person cleans up. Every caller of an advertised tool therefore carries its own timeout,
 and `collapseByTool` cannot tell a live disagreement from a stale advertisement, which is what
-blocks failing closed on a name conflict (action 8).
+blocks failing closed on a name conflict (action 8): without liveness, one stale advertisement from
+a crashed process would take a working tool offline indefinitely.
 
 Three mechanisms already answer "is the other side alive", each differently:
 
@@ -134,8 +135,9 @@ anything withdrew it. `retireProviderCapabilities` stays for readers outside the
      the live-invisible direction, and nothing downstream could tell it had happened.
 2. **Convert the chat. BUILT 2026-08-30** (`examples/chat/client/fleet.ts` is now announce plus
    `retireIfLast`, ~60 lines of projection deleted; `FLEET_PRESENCE` lives in
-   `examples/chat/space/kinds.ts` so the writer and the reader share one spec). Three corrections
-   to what this entry planned:
+   `examples/chat/space/kinds.ts` so the writer and the reader share one spec). A session hides
+   the tools of a fleet that stopped beating: the first withdrawal here that works after a CRASH
+   rather than only after a clean shutdown. Three corrections to what this entry planned:
    - **A NEW KIND (`chat_presence`), not a redeclared `chat_fleet`.** The plan called for an
      acknowledged break. Reading `incompatibleChanges` (`src/core/kinds.ts`) settled it the other
      way: the redeclaration drops an indexed path AND changes `contentKey`, so an existing space

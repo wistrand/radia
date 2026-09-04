@@ -217,7 +217,11 @@ flowchart TB
 
    Sealing runs ON DEMAND (verification seals first, the gc verb seals before it sweeps), never on
    a timer: an idle space holds no background work, the same rule `Notifier` and `sweepWatches`
-   follow.
+   follow. The chain reaches the space through `ChainHost` (`src/core/seal.ts`), which is TWO
+   members wide, `storage` and the optional `sealKey`, because sealing is a walk over the log plus
+   arithmetic over hashes: it reads no record, grant or kind, so nothing in it can be wrong about
+   authorization. Seals are content-derived, so two instances sealing one database compute
+   identical rows and the loser's insert is skipped.
 3. **Signatures at trust boundaries only (federation-time):** export bundles and
    cross-space transfers are runtime-signed together with the checkpoint proving chain
    position. Agent-held keys (via workload identity, no static key at rest) only when

@@ -176,6 +176,14 @@ into than a 1,000-row one, and the reader went from 1.66ms to 0.07ms. Why it mat
 [plan-registry-cost.md](plan-registry-cost.md): a registry read is linear in HISTORY, and only
 compaction makes it flat.
 
+**The counters are INSTANCE state** (`SweepState`, `src/core/gc.ts`: `writesSinceSweep` and a
+per-keyed-kind `writesSinceCompact` map), never the database's. Two instances over one database
+each keep their own count, so the housekeeping merely runs oftener; coordinating it would need a
+shared row and a lock to save work nobody is waiting on. The sweeps reach the space through
+`GcHost`, which is wider than `ChainHost` because eligibility is a question about kinds, reads and
+the blob store at once, and it asks the chain to ATTEST an event-log truncation rather than
+reimplementing it, or the sweep is indistinguishable from tampering when integrity next runs.
+
 **What it costs, measured** (in-process, 2026-08-06; the per-write counter itself is unmeasurable):
 
 | the Nth write pays          | sqlite  | pglite |

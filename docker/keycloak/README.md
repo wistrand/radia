@@ -1,7 +1,8 @@
 # Local Keycloak OIDC setup
 
 This Compose configuration runs Keycloak with a preconfigured Radia realm, browser login and CLI
-loopback redirects. It is for local development only: dev mode, no TLS and no restart policy. See
+loopback redirects. It is for local development only: dev mode, no TLS and no restart policy. A
+deployment recipe rather than an example (nothing here coordinates through the space). See
 [agent_docs/plan-oidc.md](../../agent_docs/plan-oidc.md) for what the space does with the
 id_token.
 

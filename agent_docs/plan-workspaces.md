@@ -671,7 +671,7 @@ three lines in the wrapper. One convention per layer.
 re-read per iteration and stops being cheap, which would have been discovered in use rather than in
 design.
 
-*Numbering the read broke two existing assertions, and the interesting part is which.* They asserted
+*Numbering the read broke two existing assertions, and which two says what they tested.* They asserted
 `content === "print(2)\n"` — raw bytes — under the name "reads back byte for byte". The intent was
 "this is the stored file and not a fabrication", and that intent survives numbering; the assertion
 did not. Both now strip the numbering and assert through it, with the numbering itself asserted

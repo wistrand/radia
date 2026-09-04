@@ -37,6 +37,13 @@ that definition token (`Authorization: Bearer`) and mints a short-lived **run to
 `agent_run` record; `POST /v0/agent-runs/{id}/stop` stops a run, and
 `POST /v0/agent-definitions/{agent}/revoke` (operator only) kills a definition token permanently.
 
+**Where the chain lives in core.** `src/core/identity.ts` holds definitions, runs, delegation and
+OIDC behind `IdentityHost`, the one core port that WRITES, since a credential comes into existence
+as a record. It holds no credential cache: every read is `newestByHash`, a NARROW read of one
+`tokenHash` taking the newest 1, and a stop or revocation is a successor carrying that same hash.
+`src/core/auth.ts` (`CredentialStore`, `mintCredential`) holds only what cannot be revoked. A
+DEFINITION token is durable and mint-only; a RUN token is short and acts.
+
 **Every credential in the chain is revocable, and that was not true until 2026-08-03.** A run token
 expires (~15 min) and can be stopped; a definition token does not expire, and had no off switch at
 all — `resolveCredential` checked the run branch for `status === "stopped"` and `expiresAt`, then
@@ -413,7 +420,10 @@ two guards (a Space is constructed only in `src/main.ts`/`src/browser.ts`; every
 site is in a ledger naming its authorization), and the conformance auth suite proves the core
 check on every adapter, planted-bypass red first (for `take` and the reads, the plant read the
 constraint and did not apply it, and the scoped principal saw the other compartment's record).
-Phase 2 is COMPLETE; `Space.access` stayed the one seam throughout.
+Phase 2 is COMPLETE; `Space.access` stayed the one seam throughout: every authorization read in
+`src/core/authorization.ts` (`authorize`, the grant reads, `bodyMatchesGrant`) resolves its grants
+through it, because five of the six entry points would otherwise read the worker's own grants and
+miss a delegated run's attenuation ([plan-delegation.md](plan-delegation.md)).
 
 ## The operator bit: a power taxonomy
 

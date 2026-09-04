@@ -4,14 +4,18 @@
 > reviewing ONE change set twice produced, and it produced more defects than the change set fixed.
 > Two are P1 (an unscoped grant from a typo, a fail-open taint barrier), five were pre-existing and
 > share one shape, and every one of the five was already a rule written in code that did not follow
-> it. Read it before picking a request field by name. CLOSED same day.
+> it. Read it before picking a request field by name. CLOSED same day. **Package Y (2026-08-29)** is
+> the fourth audit, run by CLASS rather than by file; **Package Z (2026-09-04)** is the fifth, an
+> external review re-derived line by line. Both CLOSED the day they opened. **NO PACKAGE IS OPEN as
+> of 2026-09-04**, and no P0 ever stayed open (K closed 2026-08-03: definitions are revocable).
 >
 > **A third audit opened package W on 2026-08-22 and CLOSED it the same day** (fourteen
 > findings across seven root causes, five guards proved red first; two reported findings did not
 > survive the check and are recorded with the correction, and the structural debt it named stays
 > open). **T closed 2026-08-06**: the confiner shipped the day the defect was measured, and this
 > entry said otherwise until 2026-08-30, which is a projection read as state over an append-only
-> ledger, in prose rather than in code. Everything else closed: A–G and J–O by 2026-08-03, **H, I, N, P, Q, R
+> ledger, in prose rather than in code; in those three weeks four independent external reviewers
+> each reported the shipped fix as an open P1. Everything else closed: A–G and J–O by 2026-08-03, **H, I, N, P, Q, R
 > and S** on 2026-08-04. What remains is the deferred low-severity batch below. The two pooled-Postgres races
 > package S fixed without a failing test now have one each (`test/concurrency.test.ts`, both
 > validated against the pre-fix adapter planted back in). The guards pass: `deno task test:runtime`
@@ -60,9 +64,16 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | ~~U~~ | ~~Idempotency keys scoped to one run token~~ | ~~P2~~ | **CLOSED 2026-08-09** |
 | ~~V~~ | ~~A worker dereferences a body field with its OWN authority~~ | ~~P1~~ | **CLOSED 2026-08-16** (reproduced, then fixed) |
 | ~~W~~ | ~~Third audit: SDK parity, audit-event integrity, two orderings of "newest"~~ | ~~P1/P2~~ | **CLOSED 2026-08-22** (14 findings; 5 guards proved red) |
+| ~~X~~ | ~~One change set reviewed twice: unscoped grant from a typo, fail-open taint barrier~~ | ~~P1/P2~~ | **CLOSED 2026-08-25** (7 findings, 2 P1) |
+| ~~Y~~ | ~~Fourth audit, by class: a write bound on one of two write paths~~ | ~~P2/P3~~ | **CLOSED 2026-08-29** |
+| ~~Z~~ | ~~External review of v2026.8.5: sandbox claims the code did not deliver~~ | ~~P1~~ | **CLOSED 2026-09-02** |
+| ~~Z~~ | ~~External review re-derived: ops gate parse, event cursor, grant `$or` cap, `newestByHash` order~~ | ~~P1/P2~~ | **CLOSED 2026-09-04** (7 of 8 fixed; 1 not found) |
 
-**Every package is closed**, T included (2026-08-06; this line said otherwise until
-2026-08-30) and Z (2026-09-02, external review, closed same day). Closed lessons are rules in
+**Every package is closed as of 2026-09-04**, T included (2026-08-06; this line said otherwise until
+2026-08-30), Y (2026-08-29) and both Z entries (2026-09-02 and 2026-09-04, external reviews, each
+closed the same day). When a package closes, the heading, the table row and this summary line are
+three places and all three are the ledger; a reviewer reads whichever one they land on, so a
+close recorded in one of them is not recorded. Closed lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
 
@@ -1155,10 +1166,11 @@ shared root and covers both dialects at once, which is why it belongs in E rathe
 
 ## Package Z: an external review, re-derived (2026-09-04) — CLOSED 2026-09-04
 
-An outside reviewer read the source and reported six defects with line numbers. Each was
-re-derived here before anything changed (quote the file, never report the absence of a quote);
-six were confirmed or narrowed and all six fixed the same day, one was not found. Every fix carries
-a test that fails on the planted defect.
+An outside reviewer read the source and reported eight defects with line numbers. Each was
+re-derived here before anything changed (quote the file, never report the absence of a quote):
+four confirmed as reported, two narrower than reported (the body cap, the open-mode CSRF), one inert
+and fixed by construction (the epoch binding), one not found. Seven fixed the same day, each fix
+carrying a test that fails on the planted defect.
 
 | # | Claim | Verdict | Fix and guard |
 |---|-------|---------|---------------|
@@ -1166,7 +1178,7 @@ a test that fails on the planted defect.
 | 2 | Postgres event cursor skips siblings of one transaction (P1) | VERIFIED | `getEvents` compared `xid > cursor` and paged with a limit; the seal walk already compared `(xid, seq)`. The cursor is now `<xid>.<seq>` and resuming compares the pair; a bare `<xid>` keeps its old meaning. `test/conformance/suites/events.ts` follows an ack's two-event transaction one event per page, on every adapter |
 | 3 | Seventeen pattern grants make a kind unreadable (P2) | VERIFIED | `combineMatch` folded every grant into one `$or` and the compiler capped a caller's `$or` at 16. The union is now marked with a symbol property no JSON can carry (`GRANT_UNION`), excused from all three caller budgets (branches, the 64-node count, the 8 KB byte cap; a first fix lifted only the first and was caught on re-review), and single-field primitive equalities fold into one `$in`. The caller's own caps stand. `test/conformance/suites/auth.ts`, forty grants of each shape with 240-byte values |
 | 4 | Credential resolution orders by id (P2, multi-instance) | VERIFIED | `newestByHash` took the newest by ULID, minted per instance; a stop from an instance whose clock ran behind sorted before the run it stopped. Now a handful of rows by id and the newest by the DB clock through `newer`, still one narrow read. `test/credential-order.test.ts` plants the skew |
-| 5 | No body cap on JSON routes | VERIFIED | Nine `req.json()` calls buffered before the size check; only artifacts had a capped reader. `src/server/body.ts` now holds that reader and `parseJsonBody`, an 8 MiB transport ceiling every JSON route reads through, refused as `413 body_too_large` while the body streams. The record limit still decides what is stored. `test/http.test.ts` posts nine megabytes at six routes |
+| 5 | No body cap on JSON routes | NARROWER, fixed | Nine `req.json()` calls buffered before the size check; only artifacts had a capped reader. `src/server/body.ts` now holds that reader and `parseJsonBody`, an 8 MiB transport ceiling every JSON route reads through, refused as `413 body_too_large` while the body streams. The record limit still decides what is stored. `test/http.test.ts` posts nine megabytes at six routes |
 | 6 | Open-mode CSRF | NARROWER, fixed | The mechanism is real, but `radia dev` defaults to `--auth required` (`main.ts`, `flag(args, "--auth") ?? "required"`) and the console authenticates with Bearer tokens, so the exposure was a space started with `--auth open`. There, a write with no token whose `Sec-Fetch-Site` says `cross-site` or `same-site` is now `403 cross_site`: a browser stamps that header and a page cannot forge it, curl and the SDKs send none. Reads stay open. `test/http.test.ts` |
 | 7 | Two dead `taintBarrier` copies | NOT FOUND | One definition (`authorization.ts`) and one delegating method (`space.ts`); nothing else by that name |
 | 8 | Postgres binds an undefined epoch as NULL on expired reclaim | VERIFIED, inert, fixed | `pgbase.ts` bound it raw and `sqlite.ts` bound `?? 0`; every claim sets an epoch, so the input that separated them did not exist after the backfill. Both expired paths now use NULL-safe equality with `?? null`, the binding their available paths already used, so the adapters agree on every input by construction. The lease suites on all three adapters |

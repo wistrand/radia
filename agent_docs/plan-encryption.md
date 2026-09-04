@@ -102,7 +102,7 @@ conjoined into the query. Never the worker's own grant on an id from a body.
 **This was not hypothetical, and it was not new.** The same shape already existed in `contextFor`
 (`extensions/ts/inference.ts`), where the `window <= 0` branch read
 `{conversationId: body.conversationId}` with no owner while the windowed branch conjoined
-`owner: body.owner`. Recorded as package V in
+`owner: body.owner`. Recorded as package V (P1) in
 [plan-audit-remediation.md](plan-audit-remediation.md), REPRODUCED, then fixed before this phase
 landed, so the rule existed in the code before a second caller depended on it.
 

@@ -291,7 +291,10 @@ already declares 24h retention (`progress` 1h), swept amortized on the write pat
 
 **Runtime. Changes the scaling law.**
 
-4. **BUILT: kind-aware wakeup** (`notify(kind)`, `src/core/notifier.ts`). 6U -> 2U per write.
+4. **BUILT: kind-aware wakeup** (`notify(kind)`, `src/core/notifier.ts`). 6U -> 2U per write. A
+   write of kind K wakes only the streams watching K plus the any-set (kindless watchers); a write
+   of an authorization kind and the cross-instance poll wake everyone, since either can change what
+   any stream is allowed to see.
 5. **BUILT: `idx_events_xid_seq`.** Each of those log reads was a whole-log scan+sort (2005ms at
    20M events); now a tail index scan, and no longer degrading with history.
 6. **BUILT: the shared log read** (`src/core/coalesce.ts`). Read the log ONCE per write, fetch the
@@ -302,8 +305,10 @@ already declares 24h retention (`progress` 1h), swept amortized on the write pat
    correct comparison to do it with. Coalescing needs none: `notify()` resumes every parked stream
    in the same tick, so their identical reads overlap by construction and collapse into one. It is
    not a cache (an entry lives only while its read is in flight), so there is no TTL to tune and no
-   staleness window. A broadcast tailer would only be needed if wakeups ever became staggered
-   enough that the burst stops overlapping; nothing in the design does that today.
+   staleness window. A shared record fetch is still authorized PER STREAM: single-flighting the read
+   never shares the verdict. A broadcast tailer would only be needed if wakeups ever became staggered
+   enough that the burst stops overlapping; nothing in the design does that today. Measured in
+   `bench/suites/fanout.ts`: 2 queries per write however many streams are parked.
 7. **Expose `--pool-size` and cache auth per epoch.** Eight connections is the hard cap on
    concurrent DB work and is not reachable from the CLI today; ~3 round trips precede every
    request's real work.

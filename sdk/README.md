@@ -53,7 +53,7 @@ hashing stay in the reference implementation
 | Credential  | `{definitionToken}` exchanges on expiry; `keepAlive(signal, onLost)` renews at half-life | `definition_token=` exchanges on expiry; `keep_alive(stop, on_lost)` renews at half-life |
 | Children    | `getChildren` / `getChildrenPage` (paged) | `get_children` / `get_children_page` (paged) |
 | Reads       | `readOne` (the OLDEST match) / `readNewest` | `read_one` (the OLDEST match) / `read_newest` |
-| Body typing | `RadiaRecord<T>`: `agentLoop<T>` / `registry<T>` / `readOne<T>` / `readNewest<T>` hand back a named body | none; bodies are dicts |
+| Body typing | `RadiaRecord<T>`: `agentLoop<T>` / `registry<T>` / `readOne<T>` / `readNewest<T>` hand back a named body, with the single cast at the harness boundary rather than one per worker | none; bodies are dicts |
 | Registry    | `registry(kind, match?)`: the current set, projected server-side from the kind's declared key. Entries are a `ReadonlySet`, since a projection has no order to index into | `registry(kind, match=None)`, a list, and the ONLY correct path there: Python has no projection helper |
 | Content key | `contentKey(tag, body)`, async (Web Crypto) | `content_key(tag, body)`, sync (hashlib) |
 | Dependencies| none beyond the runtime | none, standard library only (3.9+) |
@@ -164,6 +164,17 @@ overlap.
 `watch: false` runs `agentLoop` on its poll alone, for a host with a connection budget rather than a
 preference: a browser allows six per origin over HTTP/1.1, shared across tabs. It costs latency and
 nothing else, because the poll is the correctness argument and a watch is a wakeup hint.
+
+`concurrency: K` holds K claims at once (`agentLoop`, TS only). DEFAULT 1, so no existing worker
+changes; the fleet's WAITING workers opt in while exec stays at 1
+([agent_docs/plan-scaling.md](../agent_docs/plan-scaling.md)). Each claim's lease, heartbeat and
+cancellation are per claim already, so nothing new is needed, but records complete OUT OF ORDER
+above 1, and a handler that assumed one at a time must be checked before opting in.
+
+`reactorLoop` is the fact-side twin for readers that never claim: it reconciles at boot, on every
+wakeup and on every tick, and the always-on tick is the correctness spine while patterns stay
+wakeup hints ([agent_docs/plan-reactor-loop.md](../agent_docs/plan-reactor-loop.md);
+`test/loop.test.ts` plants the three failure classes it exists for).
 
 **The handler is told when it stops holding the lease**, which is what makes that last sentence
 actionable: TS gets a third argument, an `AbortSignal`; Python gets a third parameter, a

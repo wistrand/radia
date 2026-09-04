@@ -1,8 +1,8 @@
 # Plan: `radia update`, self-replace (signing designed, deferred)
 
-**Status: PHASE 1 BUILT 2026-08-30** (`src/surfaces/update.ts`, `radia update [--check]
-[--release <tag>]`, five platform-seam additions, `test/update.test.ts`). **PHASE 2 BUILT** the
-same day (README, `docs/index.html`, `architecture-surfaces.md`). The signing phases are open and
+**Status: PHASES 1 AND 2 BUILT 2026-08-30** (phase 1: `src/surfaces/update.ts`, `radia update
+[--check] [--release <tag>]`, five platform-seam additions, `test/update.test.ts`; phase 2, the
+same day: README, `docs/index.html`, `architecture-surfaces.md`). The signing phases are open and
 deliberately so; see the verdict below. Claims about current behaviour were verified against
 source the same day, and the Ed25519 result below was measured rather than looked up. The
 signing half is designed and DEFERRED; the verdict and its triggers are in "Is signing worth it".
@@ -52,7 +52,14 @@ line; it never falls back to checksum-only.
 ### The verb
 
 **The verb never elevates.** If the binary's directory is not writable by this user it fails naming
-the path and its owner, and prints the `install.sh` line. Never `sudo`, never a re-exec.
+the path and its owner, and prints the `install.sh` line with `RADIA_INSTALL_DIR` set to a
+writable directory. Never `sudo`, never a re-exec.
+
+**Three refusals are the design.** It will not run from a CHECKOUT, where `execPath()` names the
+`deno` executable and `deno task cli update` would replace it. `buildTarget()` IS the release
+triple, so there is no uname mapping to drift and no musl check to write. And the download runs
+BEFORE the rename, in the target directory, so a wrong-architecture build fails as a file rather
+than as the `radia` on a PATH.
 
 **Replace in place, atomically, keeping the installer's pre-flight.** Write the new binary to a
 temp name IN THE TARGET DIRECTORY, `chmod 0755`, run `<tmp> version` and require the version it

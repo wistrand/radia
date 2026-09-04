@@ -3,7 +3,12 @@
 This Compose configuration runs an S3-compatible object store for a local Radia space, so
 `--blobs` points at a bucket instead of a directory (`src/storage/s3.ts`,
 [design-storage.md](../../agent_docs/design-storage.md) "Scaling and multi-instance operation").
-Local development only: one node, no TLS, a throwaway credential in `s3-config.json`.
+Local development only: one node, no TLS, a throwaway credential in `s3-config.json` (the
+identity file `compose.yaml` passes as `-s3.config`, which is what turns SigV4 on). One recipe,
+three consumers: a local space, `scripts/s3-conformance.sh`, and CI's `s3` job
+(`.github/workflows/ci.yml`), so the endpoint a test runs against cannot drift from the one a space
+uses. The directory is named for the role, not the vendor, since the vendor changed once already
+(below).
 
 ```sh
 # 1. the endpoint (Ctrl-C stops it; `down -v` also discards the bytes)

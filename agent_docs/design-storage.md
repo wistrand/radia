@@ -87,6 +87,29 @@ terms are redundant and the planner assumes independence; details, numbers and m
 [design-api.md](design-api.md) for the take contract this implements and
 [design-data-model.md](design-data-model.md) for the record/envelope split.
 
+**The port's shape (`StorageAdapter`, `src/storage/adapter.ts`).** Records, leases, idempotency,
+the event log and the lineage graph, taking the compiled-match AST (`CompiledMatch`) rather than a
+pattern, plus the optional `prepareKind` physical hint above. Kinds are records and not a port
+concern. `src/storage/row.ts` is the row/value mapping every adapter shares; `pgbase.ts` is the
+Postgres-dialect body that `pglite.ts` and `postgres.ts` bind their driver to, and `sqlite.ts` is
+its own dialect.
+
+**Blob details that decide an operator's choices.** `--blobs` accepts a directory, `memory`,
+`s3://bucket/prefix`, or a comma-separated list, which is a migration (`src/storage/blobspec.ts`).
+`MigratingBlobStore` writes to ONE store and reads through the rest, since a record names bytes by
+content address and cannot be repointed; `delete` and `retainOnly` fan out to every layer, because
+an erasure that reached one copy is not one. In `src/storage/s3.ts` the wrapped DEK rides in object
+metadata so key and payload land in one atomic PUT, a deduped put touches the object with a
+server-side self-copy (`touch`) because `retainOnly`'s grace window reads that clock, and bucket
+versioning, object lock or replication keep what a shred deletes, so none belongs under erasable
+bytes.
+
+**The keyring (`src/storage/crypto.ts`).** A `SealedKey` names the key that wrapped it: `kid` is
+derived from the key itself, so two processes agree without being told. A blob's stored name is
+HMAC(KEK, digest), so a new key renames the estate, which is why every read, delete and keep-set
+spans the current key and every retired one. `rewrap` is digest-driven: what it cannot name is what
+a sweep keeps rather than deletes.
+
 The runtime is the sole DB client; everything else speaks the protocol:
 
 ```mermaid
@@ -307,6 +330,13 @@ SDK asset is never re-uploaded (npm lockfile integrity and pip hash pins break r
 is not this project. Neither package carries a binary or launcher. Native Windows is unsupported;
 WSL2 runs the Linux binary. The earlier launcher-package plan (`npx radia dev` /
 `pipx run radia dev`) was built and dropped before anything was published.
+
+The site those installs are read from is `docs/`, published by GitHub Pages
+(`.github/workflows/pages.yml`): no build, no framework, inline SVG. It is reader-facing, so it
+summarizes rather than specifies, and `agent_docs/` stays the record. Every claim in it a machine
+can check is checked by `test/docs.test.ts`, because the site sits outside the directory where
+"update the doc in the same change" is written down. `docs/og.png` is generated from `docs/og.svg`
+with `rsvg-convert`, never edited by hand.
 
 Registry publishing is DEFERRED, not forsworn (researched 2026-09-02). The 2025-26 mass
 compromises all started at publish credentials, not package content: the Shai-Hulud worm

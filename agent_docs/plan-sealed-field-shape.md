@@ -77,8 +77,9 @@ pattern, no grant, no watch and no `order_by`. It is a body-shape change, never 
 ## What it costs, stated before someone finds it
 
 - **Records already sealed carry the old shape.** `openBody` reads BOTH: the new field if present,
-  else the old one. That branch is permanent, not a migration window, because records are immutable
-  and a conversation sealed last month must still open.
+  else the old one (`sealedValue` in `extensions/ts/encrypted.ts`). That branch is permanent, not a
+  migration window, because records are immutable and a conversation sealed last month must still
+  open. A body carrying both names is refused.
 - **Plaintext and sealed records stop being structurally identical.** That is a real loss and it is
   also the entire point: the difference is what the uninstructed reader trips over.
 - **It does not protect a reader that passes a whole body onward.** A third party that forwards
@@ -93,7 +94,8 @@ pattern, no grant, no watch and no `order_by`. It is a body-shape change, never 
 1. **`sealBody` writes the new name and deletes the old.** `openBody` restores it, reading the new
    field first and falling back to the old. The nested case follows: a sealed tool call carries
    `function.argumentsSealed`, and the turn worker keeps routing on `id` and `function.name`, which
-   it never could read anyway.
+   it never could read anyway. It is the one write site outside `encrypted.ts`: it copies the
+   sealed blob by name (`function.argumentsSealed` to `tool_call.argsSealed`) and still needs no key.
 2. **The both-shape read is a conformance case, not a comment.** A hand-built old-shape record
    opens; a new-shape record opens; a record carrying BOTH is a refusal rather than a guess, since
    two ciphertexts for one field means somebody wrote a record two ways.

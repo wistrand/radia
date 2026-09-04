@@ -3,7 +3,8 @@
 Ergonomics backlog, measured 2026-08-20 by starting, restarting, killing and inspecting real
 spaces: an isolated lab (`RADIA_DIR`/`RADIA_CREDENTIALS` in a scratchpad, ports 7911-7922) plus
 read-only verbs against a four-day-old live space. Every number below was observed, not inferred.
-Items 1-7 and 9 are BUILT (2026-08-21). Item 8 is open.
+Items 1-7 and 9 are BUILT (2026-08-21). Item 8 (six permanent definitions per fleet restart) was
+FIXED 2026-08-29 by rotation; what stays open there is reporting the count.
 
 The target property: a person restarts a space, or looks at one, and is never surprised. The two
 failures that broke it (items 1 and 2) are closed, and the rest is residue nobody reports.

@@ -1,8 +1,9 @@
 # Taint: from one bit to a small closed label set (design)
 
-Why the boolean saturates, the label vocabulary that replaces it, and the mechanics. Nothing here is
-built. Taint as it exists today is described in [design-auth.md](design-auth.md) ("Taint:
-server-computed") and [design-data-model.md](design-data-model.md).
+Why the boolean saturates, the label vocabulary that replaces it, and the mechanics. Built (status
+below); the enforcement side is described in [design-auth.md](design-auth.md) ("Taint:
+server-computed") and [design-data-model.md](design-data-model.md). Read before adding a label or
+relying on `scope: {taint: …}`.
 
 > **Status: BUILT.** `TAINT_LABELS` in `src/core/kinds.ts`, union propagation in
 > `Space.computeTaint`, the allowlist barrier in `src/core/take.ts` and `Space.taintBarrier`,

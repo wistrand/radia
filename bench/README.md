@@ -23,7 +23,9 @@ confirm them.
 
 The main suites measure the core and one in-memory storage adapter in a single process. They omit
 HTTP, network latency and fsync, so they are useful for implementation comparisons but not
-deployment capacity planning. `deployment.ts` measures a running server over HTTP.
+deployment capacity planning: an in-process number is a floor for latency and a ceiling for
+throughput. `deployment.ts` measures a running server over HTTP. Nothing here asserts; a bench
+prints, and a regression is read off the table by a person.
 
 Every row carries p50/p95/p99 rather than a mean, because the tail is what a stalled agent
 feels. Scaling suites re-measure the *same* operation as the space fills; a rising p50 with a
@@ -44,7 +46,7 @@ constant result size is the signal.
 | `suites/gc.ts` | what housekeeping costs: the retention sweep, registry compaction, and the phase-4 blob pass |
 | `suites/oidc.ts` | the one UNAUTHENTICATED write path: what a rejected flood costs vs a first login vs a replay |
 | `suites/fanout.ts` | the watch fan-out: queries one write triggers as N streams park, counting the kind-blind `notify` tax directly |
-| `suites/chatload.ts` | N chat sessions against one space, five parked streams each, taking real turns through one shared worker. Reports turns/s, p99 turn latency and QUERIES PER TURN as N grows; `CHATLOAD_DEBUG=1` prints the per-method breakdown that says which term moved |
+| `suites/chatload.ts` | N chat sessions against one space, five parked streams each, taking real turns through one shared worker. Reports turns/s, p99 turn latency and QUERIES PER TURN as N grows, the column that decides whether the shape scales and the one that caught coalescing decaying at 200 streams on a queueing store (plan-scaling.md); `CHATLOAD_DEBUG=1` prints the per-method breakdown that says which term moved |
 | `profile.ts` | `deno task profile <script> [args…]`: CPU-profile any workload with zero external tooling (see Profiling below) |
 | `deployment.ts` | standalone: one space over HTTP against whatever storage it was started with, re-measured as it fills. Takes a `--url` instead of an adapter, so it measures the thing the suites above cannot. **It writes records and cannot delete them**; point it at a throwaway space |
 | `baselines.ts` | standalone: plan-validation.md's BASELINES. One pipeline workload run three ways (static orchestration, a plain worker queue, content-routed) over the same storage, measured clean, with a worker death, and with work of an unforeseen shape. `deno task bench:baselines [-- --items N]` |
