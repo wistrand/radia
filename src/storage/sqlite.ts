@@ -449,8 +449,10 @@ export class SqliteAdapter implements StorageAdapter {
           const wonExpired = this.run(
             `update record_runtime set state='leased', attempt=?, lease_id=?, lease_epoch=?,
                lease_owner=?, leased_until=?, lease_hard_deadline=?
-             where record_id=? and state='leased' and lease_epoch=?`,
-            [newAttempt, spec.leaseId, epoch, spec.ownerRun, leasedUntil, hardDeadline, id, cand.env.leaseEpoch ?? 0],
+             where record_id=? and state='leased' and lease_epoch is ?`,
+            // NULL-safe like the available path below, and the same binding Postgres uses, so the
+            // two adapters agree on every input rather than only on the ones that occur.
+            [newAttempt, spec.leaseId, epoch, spec.ownerRun, leasedUntil, hardDeadline, id, cand.env.leaseEpoch ?? null],
           );
           if (wonExpired === 0) continue; // another claimer reclaimed it first
         } else {

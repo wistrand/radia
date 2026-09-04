@@ -501,8 +501,10 @@ $ git clone http://127.0.0.1:7790/landing-page.git</code></pre>
       back to the source record. The exporter writes Git objects directly without invoking Git.
     </p>
     <p>
-      Export is one-way. Git object identity and rewritable history are not accepted as workspace
-      identity; Radia records and SHA-256 tree digests remain authoritative.
+      A push imports trees, never history. Each pushed commit's files become a version and its
+      commit id is recomputed from the bytes; Git object identity and rewritable history are not
+      accepted as workspace identity, and Radia records and SHA-256 tree digests remain
+      authoritative.
     </p>
   </div>
 </section>

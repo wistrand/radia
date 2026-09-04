@@ -701,7 +701,8 @@ export const gcSuites: Suite[] = [
       const h = await adapter.eventHorizon("0");
       assertEquals(h.horizon?.swept, r.swept);
       const retained = await space.getEvents("0");
-      assert(retained.length > 0 && retained.every((e) => BigInt(e.cursor) > BigInt(h.horizon!.cursor)));
+      // The xid part: a Postgres event cursor is `<xid>.<seq>`, the horizon an xid.
+      assert(retained.length > 0 && retained.every((e) => BigInt(e.cursor.split(".")[0]) > BigInt(h.horizon!.cursor)));
     },
   },
   {
@@ -790,7 +791,9 @@ export const gcSuites: Suite[] = [
       const h = await adapter.eventHorizon("0");
       assert(h.horizon, "the sweep must have truncated");
       const retained = await space.getEvents("0");
-      assert(retained.every((e) => BigInt(e.cursor) > BigInt(h.horizon!.cursor)), "no retained event may sit at or below the horizon");
+      // A Postgres event cursor is `<xid>.<seq>`; the horizon is an xid. Whole transactions are
+      // swept or kept, so the xid part alone decides, strictly.
+      assert(retained.every((e) => BigInt(e.cursor.split(".")[0]) > BigInt(h.horizon!.cursor)), "no retained event may sit at or below the horizon");
       assertEquals((await space.verifyIntegrity()).ok, true);
     },
   },

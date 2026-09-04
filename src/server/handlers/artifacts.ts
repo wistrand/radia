@@ -17,11 +17,12 @@
 // download capability" of design-data-model §2.4; the record id in the URL stays stable forever.
 
 import type { Space } from "../../core/space.ts";
-import type { TreeEntry } from "../../../sdk/ts/wire.ts";
+import type { OpsPower, TreeEntry } from "../../../sdk/ts/wire.ts";
 import { ARTIFACT, type ArtifactDef, clientTaint, validateArtifactDef } from "../../core/kinds.ts";
 import { RadiaError } from "../../core/errors.ts";
 import { problem, rejectUnknown, statusFor } from "../problem.ts";
 import { TREE_PREFIX } from "../http.ts";
+import { parseJsonBody, readCapped } from "../body.ts";
 
 /** Media types safe to hand a browser for inline display. Raster images, audio and video only:
  *  NOT `image/svg+xml` (scriptable), not `application/pdf` (scriptable in some viewers), not
@@ -48,32 +49,7 @@ const RENDERABLE_ISOLATED =
 // is what already happened for `.css`. The security property comes from the origin and the CSP, never
 // from this list.
 
-/** Read the request body with a hard ceiling, without trusting Content-Length. */
-async function readCapped(req: Request, limit: number): Promise<Uint8Array | "too_large"> {
-  const declared = Number(req.headers.get("content-length") ?? "");
-  if (Number.isFinite(declared) && declared > limit) return "too_large";
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  const reader = req.body?.getReader();
-  if (!reader) return new Uint8Array(0);
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > limit) {
-      await reader.cancel();
-      return "too_large";
-    }
-    chunks.push(value);
-  }
-  const out = new Uint8Array(total);
-  let at = 0;
-  for (const c of chunks) {
-    out.set(c, at);
-    at += c.byteLength;
-  }
-  return out;
-}
+// The capped reader lives in `../body.ts` now, shared with every JSON route.
 
 export async function handlePutArtifact(space: Space, req: Request, principal: string): Promise<Response> {
   const mediaType = (req.headers.get("content-type") ?? "application/octet-stream").split(";")[0].trim();
@@ -267,8 +243,8 @@ export async function handleGetArtifact(
 
 /** A body is optional here, and a malformed one must not be the reason an erasure fails. */
 async function shredOptions(req: Request): Promise<Record<string, unknown>> {
+  const j = await parseJsonBody(req); // too large throws; the catch below is for "not an object"
   try {
-    const j = await req.json();
     return j && typeof j === "object" ? j as Record<string, unknown> : {};
   } catch {
     return {};
@@ -276,7 +252,16 @@ async function shredOptions(req: Request): Promise<Record<string, unknown>> {
 }
 
 /** POST /v0/ops/artifacts/{id}/shred: destroy the bytes, keep the record. Operator-only via /ops. */
-export async function handleShredArtifact(space: Space, req: Request, recordId: string, principal: string): Promise<Response> {
+export async function handleShredArtifact(
+  space: Space,
+  req: Request,
+  recordId: string,
+  principal: string,
+  /** Asserted here as well as at the gate (see `handleAdmin` in ops.ts): erasure is the one verb
+   *  where a router that parsed the path differently from the gate must not be the only line. */
+  powers: ReadonlySet<OpsPower> | null,
+): Promise<Response> {
+  if (!powers?.has("purge")) return problem(403, "forbidden", "'purge' ops power required to shred");
   const j = await shredOptions(req);
   try {
     const r = await space.shredArtifact(recordId, {
@@ -317,13 +302,11 @@ export async function handleShredArtifact(space: Space, req: Request, recordId: 
  * assemble a capability over bytes it could not already read.
  */
 export async function handleMintPathCapability(space: Space, req: Request, principal: string): Promise<Response> {
-  let j: Record<string, unknown> | null = null;
-  try {
-    const parsed = await req.json();
-    j = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
-  } catch {
-    return problem(400, "invalid_body", "expected a JSON object");
-  }
+  const parsed = await parseJsonBody(req); // past the ceiling this THROWS body_too_large
+  const j: Record<string, unknown> | null = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : null;
+  if (!j) return problem(400, "invalid_body", "expected a JSON object");
   const raw = Array.isArray(j?.entries) ? j.entries as Record<string, unknown>[] : null;
   if (!raw || raw.length === 0) {
     return problem(400, "invalid_body", "expected {entries: [{path, artifactId}, …]} with at least one entry");
@@ -410,7 +393,7 @@ export async function handleMintCapability(space: Space, recordId: string, princ
  * refusing, which is the same answer the direct upload gives.
  */
 export async function handleMintUploadCapability(space: Space, req: Request, principal: string): Promise<Response> {
-  const j = await req.json().catch(() => null) as Record<string, unknown> | null;
+  const j = await parseJsonBody(req) as Record<string, unknown> | null | undefined; // too large THROWS
   if (!j || typeof j !== "object" || Array.isArray(j)) return problem(400, "invalid_body", "expected a JSON object");
   const unknown = rejectUnknown(j, ["mediaType", "filename", "meta", "parentIds", "taint"]);
   if (unknown) return unknown;

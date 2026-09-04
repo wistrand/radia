@@ -1153,6 +1153,24 @@ shared root and covers both dialects at once, which is why it belongs in E rathe
 
 ---
 
+## Package Z: an external review, re-derived (2026-09-04) — CLOSED 2026-09-04
+
+An outside reviewer read the source and reported six defects with line numbers. Each was
+re-derived here before anything changed (quote the file, never report the absence of a quote);
+six were confirmed or narrowed and all six fixed the same day, one was not found. Every fix carries
+a test that fails on the planted defect.
+
+| # | Claim | Verdict | Fix and guard |
+|---|-------|---------|---------------|
+| 1 | Ops write gate bypassed by a trailing slash (P1) | VERIFIED | `requiredOpsPower` anchored a regex, the dispatcher split on `/` and took the second segment, so `…/reclaim/` matched no power (a read, which `observe` opens) and still dispatched. One parser now, `opsRecordPath` in `src/server/http.ts`, exactly two segments, for both halves; and `handleAdmin`, `handleDeclassify` and `handleShredArtifact` assert their power themselves. `test/http.test.ts` posts six malformed verbs as an observer |
+| 2 | Postgres event cursor skips siblings of one transaction (P1) | VERIFIED | `getEvents` compared `xid > cursor` and paged with a limit; the seal walk already compared `(xid, seq)`. The cursor is now `<xid>.<seq>` and resuming compares the pair; a bare `<xid>` keeps its old meaning. `test/conformance/suites/events.ts` follows an ack's two-event transaction one event per page, on every adapter |
+| 3 | Seventeen pattern grants make a kind unreadable (P2) | VERIFIED | `combineMatch` folded every grant into one `$or` and the compiler capped a caller's `$or` at 16. The union is now marked with a symbol property no JSON can carry (`GRANT_UNION`), excused from all three caller budgets (branches, the 64-node count, the 8 KB byte cap; a first fix lifted only the first and was caught on re-review), and single-field primitive equalities fold into one `$in`. The caller's own caps stand. `test/conformance/suites/auth.ts`, forty grants of each shape with 240-byte values |
+| 4 | Credential resolution orders by id (P2, multi-instance) | VERIFIED | `newestByHash` took the newest by ULID, minted per instance; a stop from an instance whose clock ran behind sorted before the run it stopped. Now a handful of rows by id and the newest by the DB clock through `newer`, still one narrow read. `test/credential-order.test.ts` plants the skew |
+| 5 | No body cap on JSON routes | VERIFIED | Nine `req.json()` calls buffered before the size check; only artifacts had a capped reader. `src/server/body.ts` now holds that reader and `parseJsonBody`, an 8 MiB transport ceiling every JSON route reads through, refused as `413 body_too_large` while the body streams. The record limit still decides what is stored. `test/http.test.ts` posts nine megabytes at six routes |
+| 6 | Open-mode CSRF | NARROWER, fixed | The mechanism is real, but `radia dev` defaults to `--auth required` (`main.ts`, `flag(args, "--auth") ?? "required"`) and the console authenticates with Bearer tokens, so the exposure was a space started with `--auth open`. There, a write with no token whose `Sec-Fetch-Site` says `cross-site` or `same-site` is now `403 cross_site`: a browser stamps that header and a page cannot forge it, curl and the SDKs send none. Reads stay open. `test/http.test.ts` |
+| 7 | Two dead `taintBarrier` copies | NOT FOUND | One definition (`authorization.ts`) and one delegating method (`space.ts`); nothing else by that name |
+| 8 | Postgres binds an undefined epoch as NULL on expired reclaim | VERIFIED, inert, fixed | `pgbase.ts` bound it raw and `sqlite.ts` bound `?? 0`; every claim sets an epoch, so the input that separated them did not exist after the backfill. Both expired paths now use NULL-safe equality with `?? null`, the binding their available paths already used, so the adapters agree on every input by construction. The lease suites on all three adapters |
+
 ## Deferred: low severity
 
 Batch these; none warrant individual attention. Credentials file created at umask then chmod'd, leaving a world-readable

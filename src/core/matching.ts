@@ -46,9 +46,43 @@ export function combineMatch(
   requestMatch: Record<string, unknown> | undefined,
   grantPatterns: Record<string, unknown>[],
 ): Record<string, unknown> {
-  const constraint = grantPatterns.length === 1 ? grantPatterns[0] : { $or: grantPatterns };
+  const constraint = grantPatterns.length === 1 ? grantPatterns[0] : grantUnion(grantPatterns);
   if (!requestMatch || Object.keys(requestMatch).length === 0) return constraint;
   return { $and: [requestMatch, constraint] };
+}
+
+/**
+ * Marks the `$or` that `combineMatch` builds from a principal's grants, and nothing else.
+ *
+ * `MAX_OR_BRANCHES` bounds what a CALLER may ask per record, and a grant union is not that: it is
+ * composed here from records an operator wrote, bounded already by the per-(principal, kind) grant
+ * ceiling, and a principal holding seventeen pattern grants on one kind was answered `400
+ * too_many_branches` on every read, take and watch. A symbol-keyed, non-enumerable property is the
+ * mark, because a pattern arrives as JSON and JSON cannot carry one: no caller can claim it.
+ */
+export const GRANT_UNION: unique symbol = Symbol("radia.grantUnion");
+
+/** The union of several grant patterns, folded where it can be: single-field equalities on one
+ *  key become one `$in`, which is one pushed predicate rather than N branches (a team member's
+ *  `{team: "a"}`, `{team: "b"}`, … is the common shape). Everything else stays a branch. */
+function grantUnion(patterns: Record<string, unknown>[]): Record<string, unknown> {
+  const byKey = new Map<string, unknown[]>();
+  const branches: Record<string, unknown>[] = [];
+  for (const p of patterns) {
+    const keys = Object.keys(p);
+    const v = keys.length === 1 ? p[keys[0]] : undefined;
+    // PRIMITIVES only: `null`, an array or an object under `$in` would ask the pushdown and the
+    // oracle a question this fold was not written to answer the same way.
+    if (keys.length === 1 && !keys[0].startsWith("$") && (typeof v === "string" || typeof v === "number" || typeof v === "boolean")) {
+      const vals = byKey.get(keys[0]) ?? [];
+      if (!vals.some((v) => JSON.stringify(v) === JSON.stringify(p[keys[0]]))) vals.push(p[keys[0]]);
+      byKey.set(keys[0], vals);
+    } else branches.push(p);
+  }
+  for (const [key, vals] of byKey) branches.push(vals.length === 1 ? { [key]: vals[0] } : { [key]: { $in: vals } });
+  const union: Record<string, unknown> = { $or: branches };
+  Object.defineProperty(union, GRANT_UNION, { value: true, enumerable: false });
+  return union;
 }
 
 const MAX_DEPTH = 3;
@@ -86,6 +120,18 @@ interface Ctx {
   indexed: Map<string, string>; // path -> type
   sortable: Set<string>;
   registered: boolean;
+  /** Compiled nodes that belong to the grant union rather than to the caller's pattern. The
+   *  caller's budgets (`MAX_PREDICATES`, `MAX_PATTERN_BYTES`) are for what a caller asks; the
+   *  union is bounded by the grant ceiling instead, so its nodes are counted and then excused. */
+  exemptNodes: number;
+}
+
+/** The caller's own half of a match: the grant union `combineMatch` added is removed, wherever it
+ *  sits (the whole match, or one arm of the `$and` it was joined by). */
+function callerHalf(match: Record<string, unknown>): unknown {
+  if ((match as Record<symbol, unknown>)[GRANT_UNION]) return {};
+  if (Array.isArray(match.$and)) return { ...match, $and: match.$and.filter((m) => !(m as Record<symbol, unknown>)?.[GRANT_UNION]) };
+  return match;
 }
 
 export function compilePattern(t: Pattern, def: KindDef | undefined): CompiledMatch {
@@ -94,6 +140,7 @@ export function compilePattern(t: Pattern, def: KindDef | undefined): CompiledMa
     indexed: new Map((def?.indexedPaths ?? []).map((p) => [p.path, p.type])),
     sortable: new Set(def?.sortablePaths ?? []),
     registered: def !== undefined,
+    exemptNodes: 0,
   };
 
   // `match` is validated here rather than at each caller, for the same reason `compileOrderBy` is:
@@ -110,7 +157,9 @@ export function compilePattern(t: Pattern, def: KindDef | undefined): CompiledMa
   // Size before parse: a pattern this large is a denial of service on the matcher, and refusing it
   // by BYTES is the one check that cannot itself be expensive.
   if (t.match) {
-    const bytes = new TextEncoder().encode(JSON.stringify(t.match)).length;
+    // The CALLER's bytes: the grant union `combineMatch` joined on is bounded by the grant ceiling,
+    // not by this, or a principal with enough pattern grants could never read at all.
+    const bytes = new TextEncoder().encode(JSON.stringify(callerHalf(t.match))).length;
     if (bytes > MAX_PATTERN_BYTES) {
       throw new RadiaError(
         "pattern_too_large",
@@ -124,7 +173,7 @@ export function compilePattern(t: Pattern, def: KindDef | undefined): CompiledMa
     : undefined;
   // Counted on the COMPILED form, which is what the oracle walks. Depth alone does not bound it:
   // a flat object with ten thousand fields is depth 1 and ten thousand comparisons per record.
-  const predicates = countNodes(where);
+  const predicates = countNodes(where) - ctx.exemptNodes;
   if (predicates > MAX_PREDICATES) {
     throw new RadiaError(
       "too_many_predicates",
@@ -175,15 +224,18 @@ function compileObject(obj: Record<string, unknown>, ctx: Ctx, depth: number): M
       if (!Array.isArray(spec)) {
         throw new RadiaError("invalid_predicate", `${key} expects an array`);
       }
-      if (spec.length > MAX_OR_BRANCHES) {
-        // Branches MULTIPLY the work, and unlike depth they are cheap to add by the thousand.
+      if (spec.length > MAX_OR_BRANCHES && !(obj as Record<symbol, unknown>)[GRANT_UNION]) {
+        // Branches MULTIPLY the work, and unlike depth they are cheap to add by the thousand. The
+        // one `$or` exempt is the grant union `combineMatch` composes, bounded by the grant ceiling.
         throw new RadiaError(
           "too_many_branches",
           `${key} has ${spec.length} branches, over the ${MAX_OR_BRANCHES} limit`,
         );
       }
       const subs = spec.map((s) => compileObject(asObject(s, key), ctx, depth + 1));
-      nodes.push({ t: key === "$or" ? "or" : "and", nodes: subs });
+      const node: MatchNode = { t: key === "$or" ? "or" : "and", nodes: subs };
+      if ((obj as Record<symbol, unknown>)[GRANT_UNION]) ctx.exemptNodes += countNodes(node);
+      nodes.push(node);
     } else if (key.startsWith("$")) {
       throw operatorError(key);
     } else {

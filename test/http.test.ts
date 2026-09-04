@@ -1370,6 +1370,14 @@ Deno.test("http: each ops power opens exactly its verbs; none confers the identi
 
     const rec = await space.put({ kind: "task", body: { tag: "r" } });
     assertEquals(await status(handler(post(`/v0/ops/records/${rec.id}/reclaim`, {}, obs))), 403);
+    // The gate and the dispatcher must parse the path the SAME way. `…/reclaim/` matched no power
+    // (the gate's regex was anchored) and still dispatched (the router split on `/` and took the
+    // second segment), so an observer could reclaim, requeue, dead-letter, declassify and shred.
+    // A malformed verb is now no verb for either half, and each write handler asserts its power.
+    for (const verb of ["reclaim/", "requeue/", "dead-letter/", "declassify/", "shred/", "reclaim/x"]) {
+      const s = await status(handler(post(`/v0/ops/records/${rec.id}/${verb}`, {}, obs)));
+      assert(s === 403 || s === 404, `POST …/${verb} answered ${s} to an observer`);
+    }
 
     // No identity root below full: a power holder cannot write authorization records…
     assertEquals(await status(handler(post("/v0/records", { kind: "ops_grant", body: { principal: "agent:prg", operations: ["observe"] } }, prg))), 403);
@@ -1696,5 +1704,57 @@ Deno.test("readOne refuses the pre-envelope response shape instead of guessing",
     } finally {
       await server.shutdown();
     }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Package Z (2026-09-04), the deferred three: a transport ceiling on JSON bodies, an open-mode
+// cross-site refusal, and (in the conformance suites) NULL-safe epoch bindings.
+// ---------------------------------------------------------------------------
+
+Deno.test("http: a JSON body past the ceiling is refused while it streams, as 413, on every route", async () => {
+  const { handler, close } = await newHandler({ authRequired: false });
+  try {
+    // Nine megabytes of JSON, over MAX_JSON_BODY_BYTES: refused as `body_too_large` before the
+    // record limit (which is decided on the PARSED value, after the buffering) ever runs.
+    const huge = { kind: "task", body: { tag: "x".repeat(9 * 1024 * 1024) } };
+    for (const path of ["/v0/records", "/v0/records/query", "/v0/takes", "/v0/watches", "/v0/agent-definitions", "/v0/ops/remediate"]) {
+      const r = await handler(post(path, huge));
+      assertEquals(r.status, 413, `${path} answered ${r.status}`);
+      assertEquals(((await r.json()) as { title: string }).title, "body_too_large");
+    }
+    // An ordinary put is untouched.
+    const ok = await handler(post("/v0/records", { kind: "task", body: { tag: "small" } }));
+    assertEquals(ok.status, 201);
+    await drain(ok);
+  } finally {
+    await close();
+  }
+});
+
+Deno.test("http: in open mode a cross-site browser write is refused, and nothing else changes", async () => {
+  const { handler, close } = await newHandler({ authRequired: false });
+  try {
+    // No header at all (curl, the SDKs) resolves to the operator, as open mode promises.
+    const plain = await handler(post("/v0/records", { kind: "task", body: { tag: "a" } }));
+    assertEquals(plain.status, 201);
+    await drain(plain);
+    // The console on the same origin is a same-origin request.
+    const same = await handler(post("/v0/records", { kind: "task", body: { tag: "b" } }, { "sec-fetch-site": "same-origin" }));
+    assertEquals(same.status, 201);
+    await drain(same);
+    // A page on ANOTHER site, posting text/plain so no preflight runs: this is the forged write,
+    // and the browser stamps the header a page cannot forge.
+    for (const site of ["cross-site", "same-site"]) {
+      const forged = await handler(post("/v0/records", { kind: "task", body: { tag: "c" } }, { "sec-fetch-site": site, "content-type": "text/plain" }));
+      assertEquals(forged.status, 403, `${site} answered ${forged.status}`);
+      assertEquals(((await forged.json()) as { title: string }).title, "cross_site");
+    }
+    // Reads stay open: the response is unreadable cross-origin anyway.
+    const read = await handler(get("/v0/health", { "sec-fetch-site": "cross-site" }));
+    assertEquals(read.status, 200);
+    await drain(read);
+  } finally {
+    await close();
   }
 });

@@ -27,7 +27,7 @@ import type { ArtifactDef, GrantDef, GrantOp } from "./kinds.ts";
 import { AGENT_DEFINITION, AGENT_RUN, GRANT, OIDC_IDENTITY, parseTaintAllowlist, validateGrantDef } from "./kinds.ts";
 import type { Pattern } from "./matching.ts";
 import type { PutRequest } from "./record.ts";
-import { grantKey, isRetired, oidcIdentityKey, type RegistryView } from "./registry.ts";
+import { grantKey, isRetired, newer, oidcIdentityKey, type RegistryView } from "./registry.ts";
 import { OidcVerifier, type OidcConfig } from "./oidc.ts";
 import { addSeconds } from "./time.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
@@ -1101,11 +1101,21 @@ export async function resolveCredential(host: IdentityHost, token: string, now: 
   return { ok: true, kind: "def", agent: def.agent };
 }
 
-/** The newest record of `kind` carrying this token hash. That is the current state of that
- *  credential, because a stop is written as a successor with the same hash. */
+/**
+ * The newest record of `kind` carrying this token hash. That is the current state of that
+ * credential, because a stop or a revocation is written as a successor with the same hash.
+ *
+ * NEWEST BY THE DATABASE CLOCK, not by id. An id is a ULID minted by the INSTANCE that wrote the
+ * record, so two instances with skewed clocks can give a stop a smaller id than the run it stops,
+ * and "the newest by id" then resolves a stopped token as live. `created_at` is the DB clock and
+ * `newer` reads it first, which is the rule every registry projection follows. Still one NARROW
+ * read of one hash (plan-bounded-reads.md): a handful of rows by id, the newest of them by clock.
+ */
 export async function newestByHash(host: IdentityHost, kind: string, tokenHash: string): Promise<unknown | undefined> {
-  const rows = await host.query({ kind, match: { tokenHash } }, 1, { dir: "desc" });
-  return rows[0]?.body;
+  const rows = await host.query({ kind, match: { tokenHash } }, 8, { dir: "desc" });
+  let best: (typeof rows)[number] | undefined;
+  for (const r of rows) if (!best || newer(best, r)) best = r;
+  return best?.body;
 }
 
 /**

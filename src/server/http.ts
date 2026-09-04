@@ -100,11 +100,32 @@ const READ_ONLY_OPS =
 function requiredOpsPower(method: string, path: string): OpsPower | null {
   if (method !== "POST") return null;
   if (path === "/v0/ops/remediate") return "remediate";
-  const m = path.match(/^\/v0\/ops\/records\/[^/]+\/(reclaim|dead-letter|requeue|declassify|shred)$/);
-  if (!m) return null;
-  if (m[1] === "declassify") return "declassify";
-  if (m[1] === "shred") return "purge";
-  return "remediate";
+  const rec = opsRecordPath(path);
+  return rec?.tail && Object.hasOwn(OPS_RECORD_WRITE_POWER, rec.tail) ? OPS_RECORD_WRITE_POWER[rec.tail] : null;
+}
+
+const OPS_RECORD_WRITE_POWER: Record<string, OpsPower> = {
+  reclaim: "remediate",
+  "dead-letter": "remediate",
+  requeue: "remediate",
+  declassify: "declassify",
+  shred: "purge",
+};
+
+/**
+ * `/v0/ops/records/{id}[/{verb}]`, parsed ONCE and the same way for the gate and the dispatcher.
+ *
+ * They used to parse it differently: the gate matched an anchored regex, the dispatcher split on
+ * `/` and took the second segment, so `…/reclaim/` matched no power (treated as a read, which
+ * `observe` opens) and still dispatched to `handleAdmin`. An observer, the default credential of
+ * `radia mcp`, could reclaim, requeue, dead-letter, declassify and shred. Exactly two segments now:
+ * a trailing slash or anything more is not a verb, for either half.
+ */
+function opsRecordPath(pathname: string): { id: string; tail: string | undefined } | null {
+  if (!pathname.startsWith("/v0/ops/records/")) return null;
+  const parts = pathname.slice("/v0/ops/records/".length).split("/");
+  if (parts.length > 2 || !parts[0]) return null;
+  return { id: decodeURIComponent(parts[0]), tail: parts[1] || undefined };
 }
 
 /**
@@ -263,6 +284,12 @@ function capabilityRefused(space: Space): Response {
 
 type Auth = { principal: string } | { error: string; detail: string };
 
+/** An authentication failure as a response. 401 asks for a credential; a cross-site refusal is not
+ *  that (the page cannot be asked for one) and is a 403. */
+function authProblem(a: { error: string; detail: string }): Response {
+  return problem(a.error === "cross_site" ? 403 : 401, a.error, a.detail);
+}
+
 /**
  * Resolve the calling principal from a request. `Authorization: Bearer <token>` is the ONLY auth
  * channel, and exactly two kinds of token authorize coordination: a valid, unexpired RUN token
@@ -288,6 +315,15 @@ async function resolveAuth(req: Request, space: Space, authRequired: boolean): P
     return { error: r.reason, detail: `bearer token ${r.reason}` };
   }
   if (authRequired) return { error: "auth_required", detail: "this space requires Authorization: Bearer <run-token>" };
+  // OPEN MODE, and the request came from a browser page on some other site. A cross-origin POST
+  // with a text/plain body needs no preflight, so any page open in the developer's browser could
+  // write to a local open space as the operator. Browsers stamp `Sec-Fetch-Site` on every request
+  // and a page cannot forge it; curl and the SDKs send none and are unaffected. Reads stay open:
+  // the response is unreadable cross-origin anyway, and the write is what a forged request wants.
+  const site = req.headers.get("sec-fetch-site");
+  if (site && site !== "same-origin" && site !== "none" && req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS") {
+    return { error: "cross_site", detail: `a ${site} browser request may not write to an open space without a token` };
+  }
   return { principal: "human:local" };
 }
 
@@ -351,7 +387,7 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean, mou
     // already holds a credential and is asking for a narrower one (plan-delegation.md).
     if (route === "POST /v0/agent-runs/delegated") {
       const auth = await resolveAuth(req, space, authRequired);
-      if ("error" in auth) return problem(401, auth.error, auth.detail);
+      if ("error" in auth) return authProblem(auth);
       return await handleDelegatedRun(space, req, auth.principal);
     }
     // Mint a capability over a SET of artifacts, addressed by path. Generic: the runtime is handed
@@ -359,7 +395,7 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean, mou
     // than a concept in here.
     if (route === "POST /v0/capabilities") {
       const auth = await resolveAuth(req, space, authRequired);
-      if ("error" in auth) return problem(401, auth.error, auth.detail);
+      if ("error" in auth) return authProblem(auth);
       return await handleMintPathCapability(space, req, auth.principal);
     }
     // Renew a run: `/v0/agent-runs/{id}/renew` (own token or operator, checked in the handler).
@@ -370,7 +406,7 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean, mou
     // on failure.
     if (req.method === "POST" && url.pathname.startsWith("/v0/agent-runs/") && url.pathname.endsWith("/renew")) {
       const renewAuth = await resolveAuth(req, space, authRequired);
-      if ("error" in renewAuth) return problem(401, renewAuth.error, renewAuth.detail);
+      if ("error" in renewAuth) return authProblem(renewAuth);
       const runId = decodeURIComponent(url.pathname.slice("/v0/agent-runs/".length, -"/renew".length));
       return await handleRenewRun(space, req, renewAuth.principal, runId);
     }
@@ -379,7 +415,7 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean, mou
     // fresh runs forever and rotating the subject left the old one working beside the new.
     if (req.method === "POST" && url.pathname.startsWith("/v0/agent-definitions/") && url.pathname.endsWith("/revoke")) {
       const revokeAuth = await resolveAuth(req, space, authRequired);
-      if ("error" in revokeAuth) return problem(401, revokeAuth.error, revokeAuth.detail);
+      if ("error" in revokeAuth) return authProblem(revokeAuth);
       const agent = decodeURIComponent(url.pathname.slice("/v0/agent-definitions/".length, -"/revoke".length));
       return await handleRevokeDefinition(space, req, revokeAuth.principal, agent);
     }
@@ -438,7 +474,7 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean, mou
     // authenticated?", and answering `200 {principal: "anonymous"}` to an expired or stopped
     // token makes a dead credential indistinguishable from an open space.
     if ("error" in auth && !(isPublic && auth.error === "auth_required")) {
-      return problem(401, auth.error, auth.detail);
+      return authProblem(auth);
     }
     const principal = "principal" in auth ? auth.principal : "anonymous";
 
@@ -529,26 +565,25 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean, mou
     if (route === "GET /v0/ops/integrity") return await handleIntegrity(space);
 
     // --- observability + control plane: /v0/ops/records/{id}[/{envelope|lineage|graph}|/{reclaim|dead-letter|requeue}] ---
-    if (url.pathname.startsWith("/v0/ops/records/")) {
-      const parts = url.pathname.slice("/v0/ops/records/".length).split("/");
-      const id = decodeURIComponent(parts[0] ?? "");
-      const tail = parts[1];
-      if (id) {
-        if (req.method === "GET" && !tail) return await handleGetRecord(space, id, opsScope, principal);
-        if (req.method === "GET" && tail === "envelope") return await handleEnvelope(space, id, opsScope, principal);
-        if (req.method === "GET" && tail === "lineage") return await handleLineage(space, id, opsScope, principal);
-        if (req.method === "GET" && tail === "children") return await handleChildren(space, id, opsScope, url, principal);
-        if (req.method === "GET" && tail === "graph") return await handleGraph(space, id, url, opsScope, principal);
-        if (req.method === "GET" && tail === "thread") return await handleThread(space, id, opsScope, principal);
-        if (req.method === "POST" && (tail === "reclaim" || tail === "dead-letter" || tail === "requeue")) {
-          return await handleAdmin(space, id, tail);
-        }
-        if (req.method === "POST" && tail === "declassify") return await handleDeclassify(space, req, id, principal);
-        // Erasure. On the ops plane because it is irreversible and operator-only, and beside
-        // declassify because both are carve-outs from an invariant: one clears a classification,
-        // the other destroys a payload. Neither is something a participant may do to itself.
-        if (req.method === "POST" && tail === "shred") return await handleShredArtifact(space, req, id, principal);
+    const opsRecord = opsRecordPath(url.pathname);
+    if (opsRecord) {
+      const { id, tail } = opsRecord;
+      if (req.method === "GET" && !tail) return await handleGetRecord(space, id, opsScope, principal);
+      if (req.method === "GET" && tail === "envelope") return await handleEnvelope(space, id, opsScope, principal);
+      if (req.method === "GET" && tail === "lineage") return await handleLineage(space, id, opsScope, principal);
+      if (req.method === "GET" && tail === "children") return await handleChildren(space, id, opsScope, url, principal);
+      if (req.method === "GET" && tail === "graph") return await handleGraph(space, id, url, opsScope, principal);
+      if (req.method === "GET" && tail === "thread") return await handleThread(space, id, opsScope, principal);
+      // The write verbs take the caller's POWERS and assert their own, so the gate above is not the
+      // only line between an observer and an erasure.
+      if (req.method === "POST" && (tail === "reclaim" || tail === "dead-letter" || tail === "requeue")) {
+        return await handleAdmin(space, id, tail, opsPowers);
       }
+      if (req.method === "POST" && tail === "declassify") return await handleDeclassify(space, req, id, principal, opsPowers);
+      // Erasure. On the ops plane because it is irreversible and operator-only, and beside
+      // declassify because both are carve-outs from an invariant: one clears a classification,
+      // the other destroys a payload. Neither is something a participant may do to itself.
+      if (req.method === "POST" && tail === "shred") return await handleShredArtifact(space, req, id, principal, opsPowers);
     }
 
     switch (route) {

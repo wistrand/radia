@@ -137,7 +137,12 @@ one. See [plan-delegation.md](plan-delegation.md).
 
 ## Enforcement
 
-One place: the ops gate in `src/server/http.ts`, a three-way instead of a binary.
+One place: the ops gate in `src/server/http.ts`, a three-way instead of a binary. One PARSE too:
+the gate and the dispatcher read `/v0/ops/records/{id}/{verb}` through `opsRecordPath`, exactly two
+segments, because reading it two ways let `…/reclaim/` past the gate as a read and into `handleAdmin`
+as a write (package Z, 2026-09-04). And the write handlers (`handleAdmin`, `handleDeclassify`,
+`handleShredArtifact`) assert their power themselves, so the gate is a first line rather than the
+only one.
 
 ```mermaid
 flowchart TB

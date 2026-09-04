@@ -698,8 +698,10 @@ export class PgSqlAdapter implements StorageAdapter {
           const won = await tx.query(
             `update record_runtime set state='leased', attempt=$1, lease_id=$2, lease_epoch=$3,
                lease_owner=$4, leased_until=$5, lease_hard_deadline=$6
-             where record_id=$7 and state='leased' and lease_epoch=$8`,
-            [newAttempt, spec.leaseId, epoch, spec.ownerRun, leasedUntil, hardDeadline, id, cand.env.leaseEpoch],
+             where record_id=$7 and state='leased' and lease_epoch is not distinct from $8`,
+            // NULL-safe like the available path below, so the two adapters agree on every input
+            // rather than only on the ones that occur (a leased row always has an epoch today).
+            [newAttempt, spec.leaseId, epoch, spec.ownerRun, leasedUntil, hardDeadline, id, cand.env.leaseEpoch ?? null],
           );
           if (won.affectedRows === 0) continue; // another claimer reclaimed it first
         } else {
@@ -903,14 +905,30 @@ export class PgSqlAdapter implements StorageAdapter {
     // still be in flight, so ordering by (xid, seq) is gap-free: every xid falls in exactly one
     // (cursor, watermark] window as the watermark advances, and a low-seq/high-xid straggler that
     // commits late is delivered then, not skipped.
+    // THE CURSOR IS `<xid>.<seq>`, and resuming compares the PAIR. A cursor that was the xid alone
+    // resumed with `xid > cursor`, so a page boundary inside one transaction (an ack writes two
+    // events in one) dropped that transaction's remaining events on the next page: a watch or a
+    // `Last-Event-ID` reconnect skipped them in silence. The seal walk below already compared the
+    // tuple and said why. A bare `<xid>` still arrives (`latestCursor`, the horizon, a client that
+    // stored one before this) and keeps its old meaning: everything after that whole transaction.
     const after = afterCursor && afterCursor.length > 0 ? afterCursor : "0";
-    const res = await this.sql.query<RawRow>(
-      `select seq, xid::text as cursor, id, ts, run_id, operation, record_id, kind, state, detail
-       from events
-       where xid > $1::text::xid8 and xid < pg_snapshot_xmin(pg_current_snapshot())
-       order by xid, seq asc limit $2`,
-      [after, limit],
-    );
+    const [afterXid, afterSeq] = after.split(".");
+    const res = afterSeq !== undefined
+      ? await this.sql.query<RawRow>(
+        `select seq, xid::text || '.' || seq::text as cursor, id, ts, run_id, operation, record_id, kind, state, detail
+         from events
+         where (xid, seq) > ($1::text::xid8, $2::bigint)
+           and xid < pg_snapshot_xmin(pg_current_snapshot())
+         order by xid, seq asc limit $3`,
+        [afterXid, afterSeq, limit],
+      )
+      : await this.sql.query<RawRow>(
+        `select seq, xid::text || '.' || seq::text as cursor, id, ts, run_id, operation, record_id, kind, state, detail
+         from events
+         where xid > $1::text::xid8 and xid < pg_snapshot_xmin(pg_current_snapshot())
+         order by xid, seq asc limit $2`,
+        [afterXid, limit],
+      );
     return res.rows.map(rowToEvent);
   }
 
@@ -928,7 +946,7 @@ export class PgSqlAdapter implements StorageAdapter {
     // the follower a cursor past events still able to appear behind it.
     const res = await this.sql.query<RawRow>(
       `select * from (
-         select seq, xid, xid::text as cursor, id, ts, run_id, operation, record_id, kind, state, detail
+         select seq, xid, xid::text || '.' || seq::text as cursor, id, ts, run_id, operation, record_id, kind, state, detail
            from events where xid < pg_snapshot_xmin(pg_current_snapshot())
           order by xid desc, seq desc limit $1
        ) t order by t.xid asc, t.seq asc`,

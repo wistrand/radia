@@ -70,6 +70,13 @@ So in open mode only, a "Sign in as local operator" button uses the shortcut del
 header then says who you are. Hidden entirely under `--auth required` (the server refuses it
 anyway). Zero-paste local dev, by the most visible path possible.
 
+The shortcut has one door the button does not open: a page on any other site could POST a
+`text/plain` body to a local open space with no preflight and write as the operator. Since
+2026-09-04 `resolveAuth` (`src/server/http.ts`) refuses a tokenless write whose `Sec-Fetch-Site`
+is not `same-origin` or `none` (`403 cross_site`); browsers stamp the header and a page cannot
+forge it, curl and the SDKs send none, and reads stay open because a cross-origin response is
+unreadable anyway.
+
 ### 4. Renew whatever was pasted
 
 Even a bare run token gets the `keepAlive` half-life renewal (same run, up to the 12h ceiling).

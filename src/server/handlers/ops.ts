@@ -7,8 +7,9 @@
 
 import type { Space } from "../../core/space.ts";
 import type { RecordState, StatsScope } from "../../storage/adapter.ts";
-import type { DigestResponse, FlowsResponse, IntegrityResponse, OpsScope } from "../../../sdk/ts/wire.ts";
+import type { DigestResponse, FlowsResponse, IntegrityResponse, OpsPower, OpsScope } from "../../../sdk/ts/wire.ts";
 import { problem, rejectUnknown, statusFor } from "../problem.ts";
+import { parseJsonBody } from "../body.ts";
 import { RadiaError } from "../../core/errors.ts";
 
 /**
@@ -347,13 +348,10 @@ export async function handleErasures(space: Space, url: URL): Promise<Response> 
  * answers before the write, which is the point: the question is about a draft.
  */
 export async function handleDryRun(space: Space, req: Request): Promise<Response> {
-  let j: Record<string, unknown> | null = null;
-  try {
-    const parsed = await req.json();
-    j = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
-  } catch {
-    return problem(400, "invalid_body", "expected a JSON object");
-  }
+  const parsed = await parseJsonBody(req); // past the ceiling this THROWS body_too_large
+  const j: Record<string, unknown> | null = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : null;
   if (!j || typeof j.kind !== "string" || j.kind.length === 0) {
     return problem(400, "invalid_body", "expected {kind: string, body?: unknown}");
   }
@@ -515,7 +513,10 @@ export async function handleDeclassify(
   req: Request,
   recordId: string,
   principal: string,
+  /** Asserted here as well as at the gate; see `handleAdmin`. */
+  powers: ReadonlySet<OpsPower> | null,
 ): Promise<Response> {
+  if (!powers?.has("declassify")) return problem(403, "forbidden", "'declassify' ops power required");
   let labels: string[] | undefined;
   const raw = await req.text();
   if (raw.trim().length > 0) {
@@ -550,17 +551,12 @@ export async function handleDeclassify(
  *  (bypasses lease fencing; grant-gated). The body is the same envelope selector
  *  `GET /v0/ops/records` takes, so diagnosing and fixing share one vocabulary. */
 export async function handleRemediate(space: Space, req: Request): Promise<Response> {
-  let j: Record<string, unknown>;
-  try {
-    const parsed = await req.json();
-    // `null` and `[]` are valid JSON but not objects. Without this the field reads below throw.
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return problem(400, "invalid_body", "expected a JSON object");
-    }
-    j = parsed as Record<string, unknown>;
-  } catch {
+  const parsed = await parseJsonBody(req); // past the ceiling this THROWS body_too_large
+  // `null` and `[]` are valid JSON but not objects. Without this the field reads below throw.
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     return problem(400, "invalid_body", "expected a JSON object");
   }
+  const j = parsed as Record<string, unknown>;
   const action = String(j.action ?? "");
   if (action !== "reclaim" && action !== "dead-letter" && action !== "requeue") {
     return problem(400, "invalid_action", `action must be reclaim | dead-letter | requeue, got '${action}'`);
@@ -660,7 +656,16 @@ export async function handleRewrap(space: Space, req: Request, allowLive: boolea
   return Response.json(out);
 }
 
-export async function handleAdmin(space: Space, recordId: string, action: string): Promise<Response> {
+export async function handleAdmin(
+  space: Space,
+  recordId: string,
+  action: string,
+  /** The caller's ops powers, asserted HERE as well as at the gate: a second parse of the path
+   *  once let an observer through, and a write verb that trusts the router alone is one line away
+   *  from that again. */
+  powers: ReadonlySet<OpsPower> | null,
+): Promise<Response> {
+  if (!powers?.has("remediate")) return problem(403, "forbidden", `'remediate' ops power required to ${action} a record`);
   let applied: boolean;
   if (action === "reclaim") applied = await space.reclaim(recordId);
   else if (action === "dead-letter") applied = await space.forceDeadLetter(recordId);
