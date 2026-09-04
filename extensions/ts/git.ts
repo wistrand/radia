@@ -1,10 +1,12 @@
 // A workspace's version history, projected into a real git repository.
 //
-// EXPORT ONLY, and one way. The decision and its reasoning are in agent_docs/design-workspaces.md
-// ("Git: what to borrow, what to emit, what to refuse"); the short version is that git objects must
-// never become the storage of record, because `gc` deletes, rebase rewrites and refs move, while a
-// record is immutable and the one erasure path is deliberate and operator-only. Import would accept
-// trees whose history git can rewrite, which reopens exactly that from the outside.
+// A PROJECTION, never the storage of record. The decision and its reasoning are in
+// agent_docs/design-workspaces.md ("Git: what to borrow, what to emit, what to refuse"); the short
+// version is that git objects must never become the storage of record, because `gc` deletes,
+// rebase rewrites and refs move, while a record is immutable and the one erasure path is
+// deliberate and operator-only. What comes back the other way (`git-push.ts`) is TREES, each
+// becoming a version through the ordinary write-back, and never history: a rewritten branch is
+// refused, so nothing rewritable is ever what a record rests on.
 //
 // THE CORRESPONDENCE IS ALREADY THERE, which is why this file is small:
 //
@@ -232,6 +234,50 @@ export function principalIdentity(principal: string, createdAt: string): GitIden
   };
 }
 
+/** The header of a commit object: what a push needs to walk it, with the payload kept whole. */
+export interface ParsedCommit {
+  tree: string;
+  parents: string[];
+  /** The bytes as text, for storing on a version so a re-export reproduces this exact id. */
+  raw: string;
+}
+
+/** Read a commit's `tree` and `parent` lines. A header line starting with a space continues the
+ *  previous one (`gpgsig` is several lines), and the first empty line starts the message. */
+export function parseCommit(payload: Uint8Array): ParsedCommit {
+  const raw = new TextDecoder().decode(payload);
+  let tree = "";
+  const parents: string[] = [];
+  for (const line of raw.split("\n")) {
+    if (line === "") break;
+    if (line.startsWith(" ")) continue;
+    const sp = line.indexOf(" ");
+    const key = sp < 0 ? line : line.slice(0, sp), value = sp < 0 ? "" : line.slice(sp + 1);
+    if (key === "tree") tree = value;
+    else if (key === "parent") parents.push(value);
+  }
+  if (!/^[0-9a-f]{40}$/.test(tree)) throw new Error("commit has no tree");
+  for (const p of parents) if (!/^[0-9a-f]{40}$/.test(p)) throw new Error("commit has a malformed parent");
+  return { tree, parents, raw };
+}
+
+/** One entry of a tree object: `<mode> <name>\0<20 raw id bytes>`, repeated. */
+export function parseTree(payload: Uint8Array): { mode: string; name: string; id: string }[] {
+  const out: { mode: string; name: string; id: string }[] = [];
+  const dec = new TextDecoder();
+  let p = 0;
+  while (p < payload.length) {
+    const sp = payload.indexOf(0x20, p);
+    const nul = payload.indexOf(0, sp);
+    if (sp < 0 || nul < 0 || nul + 20 > payload.length) throw new Error("malformed tree entry");
+    let id = "";
+    for (let i = nul + 1; i < nul + 21; i++) id += payload[i].toString(16).padStart(2, "0");
+    out.push({ mode: dec.decode(payload.subarray(p, sp)), name: dec.decode(payload.subarray(sp + 1, nul)), id });
+    p = nul + 21;
+  }
+  return out;
+}
+
 export interface ExportedVersion {
   /** The `workspace` record this commit was built from. */
   recordId: string;
@@ -371,6 +417,7 @@ export async function buildWorkspaceRepo(
   const commitByRecord = new Map<string, string>();
   const manifestByRecord = new Map<string, WorkspaceManifest>();
   const exported: ExportedVersion[] = [];
+  const behind = new Map<string, string>(); // run id -> the durable principal behind it, once per run
 
   for (const version of versions) {
     const manifest = version.body;
@@ -444,11 +491,23 @@ export async function buildWorkspaceRepo(
 
     const parent = manifest.basedOn ? commitByRecord.get(manifest.basedOn) : undefined;
     const previousManifest = manifest.basedOn ? manifestByRecord.get(manifest.basedOn) : undefined;
+    // The DURABLE identity behind `created_by`, which for anything a fleet writes is a run id that
+    // means nothing a week later: the run record names its agent and, for a delegated run, the
+    // person it acted for, and both are server-written, so the author line stays provenance rather
+    // than a claim. Never the manifest's `owner`, which a client submits (that travels as a
+    // trailer, where it reads as the claim it is). Fails soft to the run id for a reader that may
+    // not read runs, so ids are deterministic per reader's view rather than absolutely.
     const identity = principalIdentity(
-      version.runtimeMeta.createdBy,
+      await principalBehind(client, version.runtimeMeta.createdBy, behind),
       version.runtimeMeta.createdAt,
     );
-    const commit = await buildCommit({
+    // A version that ARRIVED as a git commit (`git push`) carries that commit's bytes, so exporting
+    // it again yields the id the pusher already has and their next fetch is a no-op. Reproduced
+    // only when it still describes this tree and this parent: an erased entry moves the tree, and
+    // a stored payload is record content, so both are checked rather than trusted. Otherwise the
+    // synthesised commit below stands in, at the cost of a divergent id.
+    const pushed = manifest.git ? await reproducible(manifest.git, root, parent) : undefined;
+    const commit = pushed ?? await buildCommit({
       tree: root,
       parents: parent ? [parent] : [],
       author: identity,
@@ -488,6 +547,48 @@ export async function buildWorkspaceRepo(
   return { objects, branches, head: mainBranch, versions: exported, erased, at: newest.id };
 }
 
+/**
+ * The durable principal behind a `created_by`: the agent a run belongs to, or the person a
+ * delegated run acts for. One narrow read per run (`agent_run` matched on `run`, newest first), the
+ * same read the console's `agentOf` makes, and the same fail-soft: a reader without `agent_run:
+ * query` gets the run id back, never an error, since a decoration must not fail the export.
+ */
+async function principalBehind(client: RadiaClient, createdBy: string, memo: Map<string, string>): Promise<string> {
+  if (!createdBy.startsWith("run:")) return createdBy;
+  const hit = memo.get(createdBy);
+  if (hit !== undefined) return hit;
+  let who = createdBy;
+  try {
+    const [run] = await client.queryNewest<{ agent?: string; actingFor?: string }>({ kind: "agent_run", match: { run: createdBy } }, 1);
+    who = run?.body.actingFor ?? run?.body.agent ?? createdBy;
+  } catch {
+    // not readable by this principal: the run id stands
+  }
+  memo.set(createdBy, who);
+  return who;
+}
+
+/** A pushed commit's bytes as an object, when they name exactly this tree and this parent. */
+async function reproducible(
+  stored: { raw?: string; base64?: string },
+  tree: string,
+  parent: string | undefined,
+): Promise<GitObject | undefined> {
+  let payload: Uint8Array;
+  let parsed: ParsedCommit;
+  try {
+    payload = stored.raw !== undefined
+      ? new TextEncoder().encode(stored.raw)
+      : Uint8Array.from(atob(stored.base64 ?? ""), (c) => c.charCodeAt(0));
+    parsed = parseCommit(payload);
+  } catch {
+    return undefined;
+  }
+  const parents = parent ? [parent] : [];
+  if (parsed.tree !== tree || parsed.parents.length !== parents.length || parsed.parents.some((p, i) => p !== parents[i])) return undefined;
+  return { id: await gitObjectId("commit", payload), type: "commit", payload };
+}
+
 /** The commit message: a summary line, then trailers that lead back to the records.
  *
  *  Trailers rather than prose, so `git log --format=%(trailers:key=Radia-Workspace,valueonly)` walks
@@ -521,6 +622,9 @@ function commitMessage(
     ...(manifest.basedOn ? [`Radia-Based-On: ${manifest.basedOn}`] : []),
     ...(manifest.conversationId ? [`Radia-Conversation: ${manifest.conversationId}`] : []),
     `Radia-Owner: ${manifest.owner}`,
+    // The run itself, since the author line now names the principal behind it and the run is
+    // what the event log and lineage are keyed by.
+    `Radia-Created-By: ${record.runtimeMeta.createdBy}`,
   ];
   return `${summary}\n\n${trailers.join("\n")}\n`;
 }

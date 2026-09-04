@@ -12,18 +12,31 @@
 // two `if`s and they are what anything without a git client (curl, a browser, a static mirror) can
 // still read. See `git-pack.ts` for the protocol itself.
 //
-// READ-ONLY, and `git push` is refused in words rather than by 404. Push means reading packfiles —
-// delta chains, the half of git's complexity export never touches — and it reopens the export-only
-// decision from the outside, which rests on SHA-1 staying out of the attestation chain and on git
-// history being rewritable while records are not.
+// PUSH TOO, fast-forward only (`git-push.ts`). A pushed commit's tree becomes the next version
+// through `writeWorkspace`, so the space keeps receiving sha256 artifacts and manifests and never a
+// git object; a non-fast-forward, a merge or a new branch is refused in the `ng` line git prints,
+// which is a protected branch's behaviour and why no merge exists here. The pack reader that makes
+// this possible (`git-pack.ts`) recomputes every id from the bytes, so a pack cannot
+// alias objects, and the commit bytes ride on the version so the re-export reproduces the pusher's
+// ids: `git fetch` after `git push` is a no-op.
 //
 // NO RUNTIME CHANGE AND NO WIRE-CONTRACT CHANGE. This binds its own port and talks `/v0` like any
 // other client, which is what keeps `src/server` from learning what a workspace is. The same
 // reasoning made `workspace-git` a client verb rather than an endpoint.
 
-import type { RadiaClient } from "../../sdk/ts/client.ts";
-import { buildWorkspaceRepo, type GitExportOptions, type GitRepo, gitLooseBytes } from "./git.ts";
-import { advertisement, parseUploadPack, uploadPackError, uploadPackResponse } from "./git-pack.ts";
+import { RadiaClient } from "../../sdk/ts/client.ts";
+import { buildWorkspaceRepo, type GitExportOptions, type GitObject, type GitRepo, gitLooseBytes } from "./git.ts";
+import {
+  advertisement,
+  parseReceivePack,
+  parseUploadPack,
+  readPack,
+  receiveAdvertisement,
+  receiveReport,
+  uploadPackError,
+  uploadPackResponse,
+} from "./git-pack.ts";
+import { acceptPush } from "./git-push.ts";
 
 export interface GitServeOptions extends GitExportOptions {
   /** How many built repositories to keep. Each holds one workspace's whole object set in memory. */
@@ -59,6 +72,35 @@ export interface GitServeLog {
 export type ClientFor = (req: Request, opts: { startsFetch: boolean }) => RadiaClient | null | Promise<RadiaClient | null>;
 
 /**
+ * The password in a clone or push URL, as a client. Either half of a credential works:
+ *
+ *   - a DEFINITION token, durable and mint-only, exchanged here for a run per fetch. What `radia
+ *     login <principal>` stores and what belongs in a `.git/config` that outlives a session;
+ *   - a RUN token, which is all an SSO sign-in has (`radia login --sso`): no durable half exists for
+ *     it on purpose, so IdP deprovisioning bites within one run ceiling. It is used as it is, and
+ *     when it lapses git meets a 401 and the person signs in again.
+ *
+ * Tried in that order: a run token cannot mint, so presenting one as a definition fails and falls
+ * through; a live definition never reaches the second step, and a revoked one resolves to nothing
+ * there. The second step also admits the operator credential `radia dev` wrote, which is what the
+ * CLI's own verbs use on a laptop with no login. Throws when the space resolves the password to no
+ * principal at all, which the caller turns into a 401.
+ */
+export async function clientForPassword(base: string, password: string): Promise<RadiaClient> {
+  const asDefinition = new RadiaClient(base, { definitionToken: password });
+  try {
+    await asDefinition.ensureCredential();
+    return asDefinition;
+  } catch {
+    // not a live definition token; a run or operator token is the other thing a URL can carry
+  }
+  const asIs = new RadiaClient(base, { token: password });
+  const h = await asIs.health(); // 401 for a token that resolves to nothing, or to a stopped run
+  if (!h.principal) throw new Error("the password resolves to no principal");
+  return asIs;
+}
+
+/**
  * Serve one space's workspaces at `/<name>.git/…`.
  *
  * `clientFor` is asked on every request, so authorization is the CALLER's rather than the server's:
@@ -85,28 +127,17 @@ export function gitHandler(
         ...(status === 401 && !req.headers.get("authorization") ? { challenge: true as const } : {}),
       });
 
-    // `git push` runs `git-receive-pack`, which is the one thing this will never do. Say so: a 404
-    // reads as a missing feature and sends the person looking for a flag.
-    if (path.endsWith("/git-receive-pack") || url.searchParams.get("service") === "git-receive-pack") {
-      log(403);
-      return text(
-        403,
-        "this repository is export-only: a Radia workspace is the storage of record and git is a projection of it.\n" +
-          "Change the tree with edit_workspace (or the workspace SDK); the next version appears here as a new commit.\n",
-      );
-    }
-
     const route = parse(path, url.searchParams.get("service"));
     if (!route) {
       log(404);
       return text(404, "expected /<workspace>.git/info/refs, /<workspace>.git/HEAD or /<workspace>.git/objects/xx/…\n");
     }
-    // A POST, for the one route that is one: `git-upload-pack` carries the client's wants in its
-    // body. Everything else is a read and stays a read.
-    const wantsPost = route.kind === "upload-pack";
+    // A POST for the two routes that carry a body: `git-upload-pack` (the client's wants) and
+    // `git-receive-pack` (ref updates and a pack). Everything else is a read and stays a read.
+    const wantsPost = route.kind === "upload-pack" || route.kind === "receive-pack";
     if (wantsPost ? req.method !== "POST" : req.method !== "GET" && req.method !== "HEAD") {
       log(405, route.workspace);
-      return text(405, "read-only\n");
+      return text(405, wantsPost ? "POST only\n" : "read-only\n");
     }
 
     let client: RadiaClient | null;
@@ -114,7 +145,7 @@ export function gitHandler(
       // Both advertisement routes start a fetch. The `git-upload-pack` POST that follows does not:
       // it is the second half of one the advertisement already authenticated, and re-authenticating
       // there would mint a second run per clone for no extra guarantee.
-      client = await clientFor(req, { startsFetch: route.kind === "refs" || route.kind === "smart-refs" });
+      client = await clientFor(req, { startsFetch: route.kind === "refs" || route.kind === "smart-refs" || route.kind === "receive-refs" });
     } catch {
       // A credential that cannot be exchanged (revoked, expired, wrong) is an authentication
       // failure, not a server error. Anything else here would tell a clone to retry.
@@ -123,9 +154,10 @@ export function gitHandler(
     if (!client) {
       log(401, route.workspace);
       return new Response(
-        "authenticate with a definition token as the password:\n" +
-          "  git clone http://<you>:<definition-token>@<host>/<workspace>.git\n" +
-          "`radia login <principal>` mints and stores one.\n",
+        "authenticate with a token as the password:\n" +
+          "  git clone http://<you>:<token>@<host>/<workspace>.git\n" +
+          "A definition token (`radia login <principal> --compact-definition`) outlives a session;\n" +
+          "an SSO run token (`radia login --sso --compact`) lasts until its run ceiling.\n",
         // The realm is what makes `git` prompt rather than fail, and what a credential helper keys on.
         { status: 401, headers: { "www-authenticate": `Basic realm="radia"`, "content-type": "text/plain" } },
       );
@@ -154,6 +186,50 @@ export function gitHandler(
           "cache-control": "no-cache",
         },
       });
+    }
+
+    if (route.kind === "receive-refs") {
+      const body = receiveAdvertisement(repo.branches);
+      log(200, route.workspace, body.length);
+      return new Response(body as Uint8Array<ArrayBuffer>, {
+        headers: { "content-type": "application/x-git-receive-pack-advertisement", "cache-control": "no-cache" },
+      });
+    }
+
+    if (route.kind === "receive-pack") {
+      // Answers travel in the report, per ref, because that is what git prints beside the ref. A
+      // pack that cannot be read fails every ref at once and says why in the `unpack` line.
+      const headers = { "content-type": "application/x-git-receive-pack-result", "cache-control": "no-cache" };
+      let parsed: ReturnType<typeof parseReceivePack>;
+      try {
+        parsed = parseReceivePack(new Uint8Array(await req.arrayBuffer()));
+      } catch (e) {
+        const body = receiveReport((e as Error).message, []);
+        log(200, route.workspace, body.length);
+        return new Response(body as Uint8Array<ArrayBuffer>, { headers });
+      }
+      let objects = new Map<string, GitObject>();
+      if (parsed.pack) {
+        try {
+          objects = await readPack(parsed.pack, (id) => repo.objects.get(id));
+        } catch (e) {
+          const body = receiveReport((e as Error).message, parsed.commands.map((c) => ({ ref: c.ref, ok: false, message: "pack rejected" })));
+          log(200, route.workspace, body.length);
+          return new Response(body as Uint8Array<ArrayBuffer>, { headers });
+        }
+      }
+      let results;
+      try {
+        results = await acceptPush(client, repo, route.workspace, objects, parsed.commands, opts);
+      } finally {
+        // The snapshot every build here is has been overtaken, for EVERY credential: by the versions
+        // a push wrote, or by whatever made it stale enough to refuse. Either way the next
+        // advertisement must be rebuilt, or the pusher's own fetch keeps seeing the old tip.
+        cache.invalidate(route.workspace);
+      }
+      const body = receiveReport("ok", results);
+      log(200, route.workspace, body.length);
+      return new Response(body as Uint8Array<ArrayBuffer>, { headers });
     }
 
     if (route.kind === "upload-pack") {
@@ -225,7 +301,7 @@ export function gitHandler(
 
 interface Route {
   workspace: string;
-  kind: "refs" | "smart-refs" | "upload-pack" | "head" | "object";
+  kind: "refs" | "smart-refs" | "upload-pack" | "receive-refs" | "receive-pack" | "head" | "object";
   id?: string;
 }
 
@@ -236,7 +312,10 @@ function parse(path: string, service: string | null): Route | null {
   const [, workspace, rest] = m;
   if (!workspace || workspace.startsWith(".")) return null;
   if (rest === "git-upload-pack") return { workspace, kind: "upload-pack" };
-  if (rest === "info/refs") return { workspace, kind: service === "git-upload-pack" ? "smart-refs" : "refs" };
+  if (rest === "git-receive-pack") return { workspace, kind: "receive-pack" };
+  if (rest === "info/refs") {
+    return { workspace, kind: service === "git-upload-pack" ? "smart-refs" : service === "git-receive-pack" ? "receive-refs" : "refs" };
+  }
   if (rest === "HEAD") return { workspace, kind: "head" };
   // Exactly git's layout: two hex characters of the id as a directory, the other 38 as the file.
   const object = rest.match(/^objects\/([0-9a-f]{2})\/([0-9a-f]{38})$/);
@@ -275,8 +354,15 @@ class RepoCache {
 
   constructor(private readonly max: number) {}
 
+  /** Drop every build of one workspace, whoever built it: its history just grew. */
+  invalidate(workspace: string): void {
+    for (const key of [...this.entries.keys()]) {
+      if (key.startsWith(`${workspace}\0`)) this.entries.delete(key);
+    }
+  }
+
   get(workspace: string, client: RadiaClient, opts: GitExportOptions): Promise<GitRepo> {
-    const key = `${workspace} ${credentialKey(client)}`;
+    const key = `${workspace}\0${credentialKey(client)}`; // NUL: a workspace name can hold a space
     const hit = this.entries.get(key);
     if (hit && Date.now() - hit.at < this.ttlMs) return hit.repo;
     // Stored before it resolves, so the burst of object requests a clone makes shares ONE build
@@ -306,9 +392,11 @@ export function basicPassword(req: Request): string | undefined {
   if (scheme?.toLowerCase() !== "basic" || !encoded) return undefined;
   try {
     // `user:password`, and only the password matters: the space authenticates a TOKEN, and the
-    // username is whatever the person typed into the URL.
+    // username is whatever the person typed into the URL. Split at the LAST colon: a token never
+    // holds one, a principal does (`human:oidc-…`), and splitting at the first handed the server
+    // `oidc-…:<token>` as the password and refused every SSO clone.
     const decoded = atob(encoded);
-    const colon = decoded.indexOf(":");
+    const colon = decoded.lastIndexOf(":");
     return colon < 0 ? undefined : decoded.slice(colon + 1) || undefined;
   } catch {
     return undefined;

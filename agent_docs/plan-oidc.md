@@ -13,7 +13,10 @@ The three decisions this implements are recorded in [design-auth.md](design-auth
 existing bootstrap chain, never a parallel auth model; the principal comes from the `(iss, sub)`
 mapping registry (`oidc_identity`, reserved, operator-written, latest-wins), never a raw claim;
 runs are minted directly with NO durable half, so IdP deprovisioning takes effect within one
-12-hour ceiling.
+12-hour ceiling. That run token is also what git gets: `radia git-serve` accepts it as the HTTP
+password (`clientForPassword`, beside a definition token), `radia git-credential` hands it to git
+from the stored login, and `radia login --sso --compact` prints it alone, so a clone or push under
+SSO holds nothing durable either and stops at the same ceiling.
 
 ## Shape
 

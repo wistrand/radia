@@ -34,7 +34,11 @@ deno task chat
 ```
 
 `--auto-grant` enrolls identities accepted by the configured OIDC issuer into the chat's standard
-grant set. Without it, grant a known principal explicitly:
+grant set. It assigns only to an identity that holds nothing yet (a revoked person is not
+re-admitted by a sweep), so when the standard set GROWS, people enrolled before the change keep
+the old set: on 2026-09-04 it gained `workspace: put` scoped to the person, which is what a
+`git push` into `radia git-serve` writes with, and anyone enrolled earlier gets it by the explicit
+grant below, run once. Without `--auto-grant`, grant a known principal explicitly:
 
 ```bash
 deno run -A examples/chat/grant-user.ts human:oidc-...

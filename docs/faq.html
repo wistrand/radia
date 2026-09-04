@@ -196,8 +196,9 @@
     <p>
       A workspace makes every tree version a record the runtime can authorize, bind to an agent,
       execute and connect to data lineage. Git remains better for merge, blame, editors and its
-      ecosystem. Radia exports workspace history as a read-only Git repository; it does not accept
-      rewritable Git history as workspace identity. <a href="workspaces.html">See workspace storage and execution &rarr;</a>
+      ecosystem. Radia serves workspace history as a Git repository and accepts fast-forward pushes
+      into it, each commit becoming a version; it never takes rewritable Git history as workspace
+      identity. <a href="workspaces.html">See workspace storage and execution &rarr;</a>
     </p>
   </div>
 </section>

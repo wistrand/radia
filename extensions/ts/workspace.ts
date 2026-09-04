@@ -124,6 +124,16 @@ export interface WorkspaceManifest {
   entrypoint?: string;
   files: WorkspaceFile[];
   retired?: boolean;
+  /**
+   * The git commit this version ARRIVED as (`git push` into `radia git-serve`), as the commit
+   * object's bytes. Kept so a re-export reproduces the pusher's own id and their next fetch is a
+   * no-op; without it every push would diverge from its own history. Metadata beside the tree,
+   * never the tree: the files are artifacts and the identity is `treeDigest`, exactly as for any
+   * other version, and an export that cannot reproduce it (an erased entry) synthesises a commit
+   * instead. Outside the digest, and never carried onto a successor. `raw` when the bytes are UTF-8
+   * (readable in a record), `base64` when they are not (git allows any encoding in a message).
+   */
+  git?: { raw?: string; base64?: string };
 }
 
 /**
@@ -322,8 +332,10 @@ export async function writeWorkspace(
   // than landing a manifest entry that points at nothing.
   for (const [path, artifactId] of attached) {
     // Coordination plane, for the reason spelled out in `editWorkspace`: the ops plane is the
-    // operator's, and this runs in workers.
-    const meta = await client.artifactMeta(artifactId);
+    // operator's, and this runs in workers. And as the READER, never the writer: an attached id
+    // is a claim the caller made, and a worker resolving it with its own unscoped read would place
+    // bytes the caller may not see into a tree it can serve (package V). `editWorkspace` agrees.
+    const meta = await reader.artifactMeta(artifactId);
     if (!meta?.digest) {
       throw new Error(
         `no artifact ${artifactId} is readable by this principal (for '${path}'); if it exists, ` +
@@ -1129,6 +1141,7 @@ export async function editWorkspace(
     ...(entrypoint ? { entrypoint } : {}),
   };
   delete (body as { id?: string }).id;
+  delete body.git; // a pushed commit describes ITS version; a successor is a new one
   const { id } = await client.put(
     {
       kind: "workspace",
@@ -1402,7 +1415,12 @@ export async function commitWorkspace(
   /** A RAISE, never inheritance: labels the caller knows about and the graph does not (the run
    *  reached the network). Inheritance from the predecessor happens through `parentIds` below and
    *  needs nothing here. */
-  opts: { taint?: string[]; parentIds?: string[] } = {},
+  opts: {
+    taint?: string[];
+    parentIds?: string[];
+    /** The git commit this version arrived as (`WorkspaceManifest.git`), set by a push only. */
+    git?: { raw?: string; base64?: string };
+  } = {},
   /** Who reads, when that is a different credential from the one that writes: the fork check below
    *  is a `workspace` query, and under delegation authoring is the worker's own capability while
    *  reading is bounded by the caller. Defaults to `client`. */
@@ -1420,6 +1438,8 @@ export async function commitWorkspace(
     files: captured.files,
   };
   delete (body as { id?: string }).id;
+  delete body.git; // a pushed commit describes ITS version; a successor is a new one
+  if (opts.git) body.git = opts.git;
   const { id } = await client.put(
     {
       kind: "workspace",

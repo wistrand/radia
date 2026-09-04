@@ -219,9 +219,11 @@ Two changes, and the second is the point:
 
 2. Exec's grants over session data move to `delegable:agent:chat-exec`. Which ones is narrower than
    this plan first said, and the mechanism decides it rather than caution: a delegated run is
-   `worker INTERSECT caller`, so it can never exceed the CALLER, and the session deliberately holds
-   no `workspace: put` and no `procedure: put`. Delegating those would intersect to nothing and
-   break `save_procedure` and write-back. So the split is READ versus WRITE:
+   `worker INTERSECT caller`, so it can never exceed the CALLER, and the session holds no
+   `procedure: put` and (since 2026-09-04) `workspace: put` only within its own `{owner}` scope,
+   for a person's `git push`. Delegating those would intersect to nothing, or to the caller's own
+   scope, and break `save_procedure` and write-back for anything beyond it. So the split is READ
+   versus WRITE:
    - delegable: `artifact: read_one`, `workspace: query`, `procedure: query`.
    - exec's own: the `put` half of those three, plus `check`, `capability`, `progress`, `sandbox`,
      `tool_call: take`, and `message`/`tool_result` (both written through `ack`).

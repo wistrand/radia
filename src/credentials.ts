@@ -12,7 +12,7 @@
 // clean shutdown. A stale entry simply fails to resolve, which is a 401, not a silent downgrade.
 
 import { dirname, join } from "@std/path";
-import { env, mkdirp, readTextFile, removeFile, restrictToOwner, writeTextFile } from "./platform.ts";
+import { env, mkdirp, readTextFile, removeFile, renameFile, restrictToOwner, withFileLockSync, writeTextFile } from "./platform.ts";
 import { OPS_GRANT } from "../sdk/ts/wire.ts";
 import { opsGrantKey } from "../sdk/ts/registry.ts";
 
@@ -77,16 +77,41 @@ export function saveCredential(base: string, cred: StoredCredential): { path: st
   return writeEntry(baseKey(base), cred);
 }
 
-/** One entry of the credential file, replaced in place. Owner-only on the way out: the file holds
- *  every credential this machine has for every space it talks to. */
+/**
+ * One entry of the credential file, replaced in place. Owner-only on the way out: the file holds
+ * every credential this machine has for every space it talks to.
+ *
+ * LOCKED AND ATOMIC, because this file is written by every space that starts and read by every
+ * verb, and a plain read-modify-write lost a laptop's operator credential: several spaces booting
+ * at once each read the file, one of them read it half-written, `read` answered `{}` for the torn
+ * JSON, and that writer put back a file holding its own entry and nothing else. So the whole
+ * read-modify-write runs under an exclusive lock on a sibling `.lock` file, the new contents land
+ * by rename so no reader ever sees a partial file, and a file that EXISTS but does not parse is
+ * refused rather than replaced: "start clean" is a fine answer to a missing file and a
+ * catastrophic one to a damaged file holding every other credential.
+ */
 function writeEntry(key: string, cred: StoredCredential): { path: string; ok: boolean; error?: string } {
   const path = credentialsPath();
   try {
     mkdirp(dirname(path));
-    const all = read(path);
-    all[key] = cred;
-    writeTextFile(path, JSON.stringify(all, null, 2) + "\n");
-    restrictToOwner(path);
+    withFileLockSync(`${path}.lock`, () => {
+      const text = readTextFile(path);
+      let all: CredentialFile = {};
+      if (text !== undefined && text.trim() !== "") {
+        try {
+          const parsed = JSON.parse(text);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+          all = parsed as CredentialFile;
+        } catch {
+          throw new Error(`${path} exists but is not valid JSON; refusing to overwrite the other credentials in it. Move it aside to start over.`);
+        }
+      }
+      all[key] = cred;
+      const tmp = `${path}.${Math.random().toString(36).slice(2)}.tmp`;
+      writeTextFile(tmp, JSON.stringify(all, null, 2) + "\n");
+      restrictToOwner(tmp);
+      renameFile(tmp, path);
+    });
     return { path, ok: true };
   } catch (e) {
     return { path, ok: false, error: (e as Error).message };

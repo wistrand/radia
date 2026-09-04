@@ -973,6 +973,14 @@ on a space with 500 live ones and a stuck one. Fixed 2026-08-21 by pushing both 
   MCP adapter all start acting as whoever logged in last. Logins live under their own suffix; the
   operator entry is never touched. Caught one edit before it shipped, and guarded by
   `test/exchange.test.ts`.
+- **`writeEntry` in `src/credentials.ts` is locked, atomic, and refuses a file it cannot parse.**
+  It was a plain read-modify-write, and `read` answered `{}` for a torn file, so a space booting
+  while another wrote put back a file holding its own entry and nothing else: a developer's running
+  space lost its operator credential to the conformance suites booting beside it (2026-09-04).
+  Now `withFileLockSync` on a sibling `.lock`, a rename from a temp file, and an error rather than a
+  wipe for damaged JSON. The other half is that no test may write the person's file: every spawner
+  of a `dev` sets `RADIA_CREDENTIALS` to a temp path. Guarded by `test/credentials.test.ts`, twenty
+  processes at once.
 - **"Public route" means no credential is REQUIRED, not that a bad one is ignored.** `GET /` and
   `GET /v0/health` skip authentication so the console can bootstrap under `--auth required`. The
   skip covered every credential error, so an expired or garbage token got

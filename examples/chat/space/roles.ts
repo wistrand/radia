@@ -189,11 +189,12 @@ const EXEC_GRANTS: Grant[] = [
   { kind: "check", operations: ["put"] },
   // The WRITE half of the three kinds below stays here, and the reason is the mechanism rather
   // than caution: a delegated run's authority is `worker INTERSECT caller`, so it can never exceed
-  // the CALLER, and the session deliberately holds no `workspace: put` or `procedure: put` (only
-  // this worker may author a tree or store a procedure, which is what makes "the assistant saved
-  // this" mean it went through the sandbox). Delegating those would intersect to nothing.
-  // What that leaves ambient is authoring INTO another session's scope, an integrity reach rather
-  // than a confidentiality one, and the read half below is where the cross-user exposure was.
+  // the CALLER. The session holds `procedure: put` not at all and `workspace: put` only within its
+  // own `{owner}` scope (a person's `git push`), so a tree stored for another session, or a
+  // procedure at all, can only come from here, which is what makes "the assistant saved this" mean
+  // it went through the sandbox. What that leaves ambient is authoring INTO another session's
+  // scope, an integrity reach rather than a confidentiality one, and the read half below is where
+  // the cross-user exposure was.
   { kind: "artifact", operations: ["put"] },
   { kind: "workspace", operations: ["put"] },
   { kind: "procedure", operations: ["put"] },
@@ -377,8 +378,13 @@ export function userGrants(scope?: Record<string, unknown>, principal?: string):
     // one, and routing the bytes through a worker would mean handing a worker arbitrary paths.
     { kind: "artifact", operations: ["put", "read_one", "query"], ...scoped },
     // A tree the session owns. Scoped like the rest, so a session sees its own workspaces and no
-    // one else's, and the runtime enforces the stamp on the way in as well as the way out.
-    { kind: "workspace", operations: ["query"], ...scoped },
+    // one else's, and the runtime enforces the stamp on the way in as well as the way out. `put`
+    // too, since 2026-09-04: a person with a clone writes it back with `git push`, and that is the
+    // person authoring a tree under their own name, bounded by the same `{owner}` pattern. What
+    // stays with the exec worker is `procedure: put` and `check: put`: "the assistant saved this"
+    // still means it went through the sandbox, because the model's save_workspace is delegated
+    // and a delegated run intersects to the CALLER's own scope, never past it.
+    { kind: "workspace", operations: ["put", "query"], ...scoped },
     // UNSCOPED, and that is the point rather than an oversight. A `sandbox` record is written by the
     // exec-worker, so a scope binding it to this session's own records would match nothing, and the
     // session could not answer "what can you run, and under what isolation" about the very jails its

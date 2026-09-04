@@ -224,6 +224,22 @@ check("…and both trees after saving", listed.workspaces.map((w) => w.name).sor
 const solver = listed.workspaces.find((w) => w.name === "solver")!;
 check("a tree saved twice is one workspace with two versions", solver.versions === 2 && solver.files === 2, JSON.stringify(solver));
 
+// BYTES BY REFERENCE. A live session put the artifact id generate_image returned under `files`,
+// the tree gained a 26-byte "penguin.png" holding that id as text, and three versions shipped a
+// broken image before the repair reached for edit_workspace's `attach`. save_workspace now has
+// `attach` too, refuses an id under `files` naming the fix, and reports each file's size so the
+// tell is in the answer.
+const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4, 5, 6, 7, 8]);
+const png = await admin.putArtifact(pngBytes, { mediaType: "image/png", filename: "penguin.png", meta: { conversationId: wsConv, owner: "human:alice" } });
+const asText = await toolCall("save_workspace", { name: "pic", files: { "index.html": "<img src=penguin.png>\n", "penguin.png": png.id } });
+check("an artifact id under `files` is refused", typeof asText.error === "string", JSON.stringify(asText));
+check("…naming attach as the fix", /attach/.test(String(asText.error)));
+const placed = await toolCall("save_workspace", { name: "pic", files: { "index.html": "<img src=penguin.png>\n" }, attach: { "penguin.png": png.id } });
+check("an attached artifact is in the tree", Array.isArray(placed.files) && (placed.files as string[]).includes("penguin.png"), JSON.stringify(placed));
+const sizes = placed.bytes as Record<string, number> | undefined;
+check("…and the answer carries each file's size", !!sizes && sizes["penguin.png"] === pngBytes.length && sizes["index.html"] === "<img src=penguin.png>\n".length, JSON.stringify(sizes));
+check("save_workspace's description names attach", /attach/.test(saveWs));
+
 // NOT scoped to the conversation, and the reason is a live failure. Hiding the rest made this tool
 // contradict `space_count`, which is owner-scoped by the grant: one said 8 workspaces, the other said
 // none, both correctly, and the model burned eight tool rounds trying to reconcile them.

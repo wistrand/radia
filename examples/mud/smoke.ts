@@ -27,6 +27,9 @@ import type { EventBody } from "./feed.ts";
 
 const PORT = 7905;
 const url = `http://127.0.0.1:${PORT}`;
+// Never the person's credential file: the spawned space writes its operator entry where the CLI
+// reads it, and this process reads it back through the same variable.
+if (!Deno.env.get("RADIA_CREDENTIALS")) Deno.env.set("RADIA_CREDENTIALS", `${Deno.makeTempDirSync({ prefix: "radia-mud-smoke-" })}/credentials.json`);
 const space = new Deno.Command(Deno.execPath(), {
   args: ["run", "-A", "src/main.ts", "dev", "--port", String(PORT), "--artifact-port", "0"],
   stdout: "null",

@@ -92,6 +92,13 @@ if set, else `$XDG_STATE_HOME/radia/credentials.json`, `%APPDATA%\radia\…`, or
 Resolution order for any client: `RADIA_TOKEN` → the stored credential for that base URL → none,
 which is a `401` unless the space was started with `--auth open`.
 
+**Every write to the file is locked and atomic** (`writeEntry`: an exclusive lock on a sibling
+`.lock`, a rename from a temp file, and a refusal rather than a wipe when the file exists but does
+not parse). A plain read-modify-write lost a developer's operator entry when a dozen test spaces
+booted beside their running one (2026-09-04), and the other half of that fix is that nothing that
+spawns a `dev` for a test writes the person's file: every such spawner sets `RADIA_CREDENTIALS` to a
+temp path. `test/credentials.test.ts` runs twenty processes at one file.
+
 **Four identities share the file, under separate keys.** The operator credential sits at the base
 URL; a person's `radia login` sits at `<base>#login` (`storedLogin`/`saveLogin`); the OBSERVER sits
 at `<base>#observer` (`storedObserver`/`saveObserver`): an `agent:local-observer` definition token,
@@ -261,16 +268,24 @@ that reads as a population.
 `workspace-git <name> --dir <out>` is the verb that reaches outside the runtime, into
 `extensions/ts/git.ts`, and it is the reason this layer is a directory rather than an argument. It
 writes a BARE repository, so `git clone <out>` does the checkout; see
-[design-workspaces.md](design-workspaces.md) for why the projection is export-only. It needs
+[design-workspaces.md](design-workspaces.md) for why git history is never imported, only trees (a
+push into `git-serve`). It needs
 `workspace: query` and `artifact: read_one`, and nothing more: an export reads exactly what its
 principal could already read, which is why it takes the caller's credential rather than holding one.
 
 `git-serve` is the same objects over HTTP, and the clearest case of what this layer is FOR: a CLI
 verb that binds its own port and talks `/v0` like any other client, so `git clone` works with no
-runtime change and no wire-contract entry. Authorization stays the caller's, since a definition
-token is the HTTP password and the server exchanges it per fetch, so a clone reads what that
-principal can
-and `radia revoke` stops the next one. Read-only; push is refused in words.
+runtime change and no wire-contract entry. Authorization stays the caller's: the HTTP password is a
+definition token, exchanged per fetch, or an SSO session's run token used as it is
+(`clientForPassword` in `extensions/ts/git-http.ts` tries both), so a clone reads what that principal
+can, and `radia revoke` or the run ceiling stops the next one. `radia git-credential` is git's
+credential helper over the same file `radia login` writes, so a person logs in once and git asks
+for the token itself rather than carrying it in a URL; git's `host` is the git server's and maps to
+no space, so the helper answers for the CLI's own space (`--url` when there are several). It is
+configured URL-SCOPED (`credential.http://127.0.0.1:7790.helper`) and refuses any host that is not
+loopback or `--host`, because a helper git may ask about github.com is a helper that hands a radia
+credential to github.com. `git push` is accepted fast-forward only, each commit becoming
+a version under the same credential (design-workspaces.md, "Git").
 
 Two things it taught, both about being a long-running process rather than about git.
 `onShutdown` REPLACES the default behaviour of SIGINT and SIGTERM, so a handler that does nothing
