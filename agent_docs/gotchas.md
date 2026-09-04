@@ -1365,6 +1365,11 @@ report absent, not present, or the banner advertises a tool that can only hang a
   the program. A router fits REQUIREMENTS, not a name ([design-execution.md](design-execution.md)).
 ### Surfaces: HTTP, console, CLI and the SDKs
 
+- **Never assume a `Request` has a body STREAM; Firefox has no `Request.body` getter.** Deno always
+  does, so a reader built on `req.body.getReader()` passes every suite here and answers EMPTY in
+  the one place a browser runs the handler, the playground space (`src/browser.ts`): every put
+  failed `invalid_body` in Firefox (2026-09-04). `readCapped` (`src/server/body.ts`) falls back to
+  `arrayBuffer()` and caps after. Guard: `test/http.test.ts`, a Proxy that hides `body`.
 - **The ops gate and the dispatcher parse `/v0/ops/records/{id}/{verb}` through ONE function.**
   `opsRecordPath` in `src/server/http.ts`, exactly two segments. A gate regex that saw no verb in
   `…/reclaim/` while the dispatcher's `split("/")` ran `reclaim` let `radia mcp`'s default observer

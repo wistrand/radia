@@ -94,6 +94,10 @@ open mode; the console's labeled operator button is the sign-in.
    that possible). Memory is the one axis a browser cannot cap, and the record says so.
 2. **One space per browser profile.** PGlite is single-connection; multi-instance stays
    Postgres-only. This matches the existing embedded posture rather than adding a restriction.
+   The page is also the ONE place a browser's `Request` reaches server code: Firefox has no
+   `Request.body` getter, so `readCapped` (`src/server/body.ts`) buffers whole when the stream is
+   missing. A server-side reader that only Deno has exercised is untested here until a person
+   opens the playground in Firefox (2026-09-04, every put answered `invalid_body`).
 3. **Artifact-origin isolation weakens.** The two-port design cannot exist on a static page;
    rendering agent-generated content needs sandboxed iframes or stays download-only, and the
    playground says so.

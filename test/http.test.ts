@@ -1732,6 +1732,34 @@ Deno.test("http: a JSON body past the ceiling is refused while it streams, as 41
   }
 });
 
+Deno.test("http: a Request without a body STREAM is still read, capped after the fact", async () => {
+  // Firefox does not implement the `Request.body` getter, and the browser space hands a
+  // constructed Request to this handler in the page. `readCapped` read the stream and answered
+  // EMPTY when there was none, so every playground put failed `invalid_body` in Firefox while
+  // Deno, which always has the stream, saw nothing (2026-09-04). A Proxy that hides `body` is the
+  // closest stand-in this repo can run without a browser.
+  const noStream = (req: Request): Request =>
+    new Proxy(req, {
+      get: (t, k) => {
+        if (k === "body") return undefined;
+        const v = Reflect.get(t, k);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+  const { handler, close } = await newHandler({ authRequired: false });
+  try {
+    const ok = await handler(noStream(post("/v0/records", { kind: "task", body: { tag: "no-stream" } })));
+    assertEquals(ok.status, 201);
+    await drain(ok);
+    const huge = { kind: "task", body: { tag: "x".repeat(9 * 1024 * 1024) } };
+    const r = await handler(noStream(post("/v0/records", huge)));
+    assertEquals(r.status, 413);
+    assertEquals(((await r.json()) as { title: string }).title, "body_too_large");
+  } finally {
+    await close();
+  }
+});
+
 Deno.test("http: in open mode a cross-site browser write is refused, and nothing else changes", async () => {
   const { handler, close } = await newHandler({ authRequired: false });
   try {

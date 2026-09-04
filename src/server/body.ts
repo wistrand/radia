@@ -23,8 +23,15 @@ export async function readCapped(req: Request, limit: number): Promise<Uint8Arra
   if (Number.isFinite(declared) && declared > limit) return "too_large";
   const chunks: Uint8Array[] = [];
   let total = 0;
+  // `Request.body` is the stream to count as it arrives, and Deno always has it. Firefox does not
+  // implement the getter (MDN lists it as limited availability), and the browser space
+  // (`src/browser.ts`) hands a constructed Request to this same handler, so there the body is
+  // buffered whole and checked after. A refused body is refused either way; only the moment differs.
   const reader = req.body?.getReader();
-  if (!reader) return new Uint8Array(0);
+  if (!reader) {
+    const whole = new Uint8Array(await req.arrayBuffer());
+    return whole.byteLength > limit ? "too_large" : whole;
+  }
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
