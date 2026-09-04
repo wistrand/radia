@@ -1,6 +1,6 @@
 {
   "name": "radia",
-  "version": "2026.9.2",
+  "version": "2026.9.3",
   "license": "Apache-2.0",
   "exports": "./src/main.ts",
   "tasks": {
