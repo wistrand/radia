@@ -88,7 +88,7 @@ prints the console's Graph URL for the live thread at boot).
   origin, so it prints `deno task chat -- --conversation <id>`. The terminal PROBES for the page
   (`http://<space host>:8082`, overridable with `--web-url`/`RADIA_CHAT_WEB`) and prints
   `…/#c/<id>` only when something answers carrying the page's own marker. Publishing the URL as a
-  `chat_web` fact was the tempting version and carries a trap worth knowing before reaching for it:
+  `chat_web` fact was the tempting version and carries a trap:
   a NEW grant reaches nobody already admitted, because the auto-grant sweep decides each principal
   once and skips anyone already holding something (`extensions/ts/enrolment.ts`), so retro-fitting
   means enumerating `enrolledPrincipals`. A probe answers "there IS a page there" rather than
@@ -176,7 +176,7 @@ browser may be trusted to PAINT versus what has to land somewhere isolated:
 
 **A capability URL is never stored.** Not in a message body, not in a record, not in scrollback that
 outlives it. It is a five-minute bearer link over one artifact; the artifact id is the stable name
-and the only thing worth keeping.
+and the only thing to store.
 
 **Lane 2 is the one with a deployment cost.** It needs `space.artifactOrigin`
 (`http://<advertised>:<artifactPort>`) reachable from the browser and on the SAME SCHEME as the page,

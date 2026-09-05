@@ -107,7 +107,7 @@ Two deliberate exceptions, both documented at their call sites:
 import **only** from `sdk/ts/`, never from `src/`, so they model what an external agent author
 writes. They are Deno scripts by construction and use `Deno.*` directly.
 
-Design notes worth keeping: file I/O is sync throughout (startup- and config-scale, never on a
+Design notes: file I/O is sync throughout (startup- and config-scale, never on a
 request path, and sync keeps async colouring out of the call sites); `readTextFile` returns
 `undefined` rather than throwing, because every caller treats missing as "no value";
 `writeStdout` is sync because two interleaved async writes would corrupt the MCP frame stream.
@@ -384,7 +384,7 @@ convention" buys: promotion is a grant rotation and a binding is a record, so al
 long-running one, and it is a client that happens to run other people's code: it holds each
 hosted agent's DEFINITION token (mint-only, so it cannot read, write or claim), mints each run,
 and claims under that run, which is why one host serving ten agents needs none of their authority.
-Two choices worth knowing. It is BROKERED by default, because that is the invoker leaving the jail
+Two choices. It is BROKERED by default, because that is the invoker leaving the jail
 no way to reach the API, and a default that is merely convenient would be the wrong one here. And
 `--agents -` reads the token map from stdin, since a credential passed as an argument is visible
 in `ps` to every user on the box.
@@ -596,7 +596,7 @@ the same way, which makes it the upgrade path a person actually has: re-running 
 and requires knowing a release exists, which nothing said. `--check` reports and exits 1 when one
 does, so a schedule is the operator's to write rather than a phone-home on `radia dev`.
 
-Three properties are worth knowing before touching it, each a failure it already refuses:
+Three properties to know before touching it, each a failure it already refuses:
 
 - **It refuses unless `isStandalone()`.** From a checkout `execPath()` names the `deno` executable,
   so `deno task cli update` would replace it. That is the worst outcome the verb has.

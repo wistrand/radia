@@ -55,7 +55,7 @@ constant result size is the signal.
 ## What the first run found
 
 Measured on one developer machine, sqlite in-memory, scale 1. Absolute numbers will differ;
-the **shapes** are the point.
+compare the **shapes** down a column, not the values.
 
 **Matching used to be a scan, and that was the limit.** The first run measured the cost of
 deferring predicate pushdown, and the numbers were the argument for building it:
@@ -69,12 +69,12 @@ deferring predicate pushdown, and the numbers were the argument for building it:
 
 `read_one` got faster, and it also became **flat**: 31µs at 2k, 32µs at 10k, 29µs at 40k, where
 before it grew linearly with the space. Postgres tells the same story: `read_one` at 40k went
-513ms → 732µs. Two findings from the original run drove this and are worth keeping: every
+513ms → 732µs. Two findings from the original run drove this and still hold: every
 predicate shape cost the same (equality, `$gt`, `$or`, and a match that hits nothing were within
 noise of each other), and `read_one` was no faster than `query limit=100`, since both scanned the
 kind and both materialized every match to return one record.
 
-**That flatness needs an index nobody would think to add, and it regressed once already.** A
+**That flatness needs `idx_records_kind_id`, a `(kind, id)` index, and it regressed once already.** A
 pushed `LIMIT` only helps if the database can produce rows in id order without reading the whole
 kind first, and SQLite's primary key alone does not do that: `where kind = ? … order by id limit N`
 plans as USE TEMP B-TREE FOR ORDER BY, sorting every record of the kind before the limit applies.
@@ -82,7 +82,19 @@ plans as USE TEMP B-TREE FOR ORDER BY, sorting every record of the kind before t
 fixed. `idx_records_kind_id (kind, id)` turns it into an ordered seek that stops at the Nth match:
 12.0ms → 0.05ms, flat again. Postgres has the same index for a different reason (`idx_records_id_c`,
 byte-order ids), which is why only the SQLite side drifted, and why a claim about the SHAPE of a
-number is worth re-running rather than trusting.
+number is re-run, not trusted.
+
+**The planner takes an index only when its statistics say so, and on PGlite they were gathered once, on an empty table.** A
+2026-09-05 rerun of the growth suite read PGlite `read_one` at 744µs, 2.1ms and 7.7ms across 2k,
+10k and 40k records while Postgres stayed near 190µs: the same query, planned on statistics gathered
+when the kind was declared on an empty table. EXPLAIN at 40k showed a GIN bitmap over 2,858 matches
+and a sort; after one ANALYZE (150ms) the same read walked `idx_records_id_c` to the first match,
+8.7ms to 0.47ms through the space. Postgres autoanalyzes within a minute of 10% growth; PGlite has no
+autovacuum, so the adapters now analyze on that rule themselves (`PgSqlAdapter.maybeAnalyze`):
+re-measured, PGlite `read_one` reads 399µs, 358µs and 349µs across the same three sizes, and
+`query 25` 611µs, 577µs and 563µs.
+The same rerun found nothing else moved: SQLite `put` 53 to 56µs and `read_one` 31 to 35µs across
+the sizes, chat load at 122 to 127 queries per turn to 100 streams, and the HTTP fill at 3.0k puts/s.
 
 The speedup came from two separate changes. The
 GIN index over record bodies is *not* used for the benchmark's predicate at all: "rare" matches
@@ -118,7 +130,7 @@ forced (building the SQL text per call re-parsed an identical query every level)
 fans out, and on a networked Postgres where a round trip is latency rather than work, the
 batching itself is what pays.
 
-**Contention found a real bug. The benchmark that counts honestly is the one that finds it.**
+**Contention found a real bug, because the benchmark counts empty takes separately.**
 The contention bench counts *empty* takes separately instead of treating a null claim as
 "queue drained". On Postgres that counter read **67 empty takes at 4 claimers and 166 at 16**,
 for a queue that always had work: `take` was row-locking every available record of the kind,
@@ -142,7 +154,7 @@ stream: AES-GCM verifies its tag over the whole ciphertext
 
 One space over HTTP against a live Postgres with fsync, filled to a million records, 64 requests in
 flight. Client, space and database on one machine, so latency is flattered and throughput
-penalised; the shapes are the point. p50/p99 in ms.
+penalised; compare the shapes down a column. p50/p99 in ms.
 
 | records | put/s | put | read_one | query | scoped | `$any` | `$each` | stats | take+ack |
 |---|---|---|---|---|---|---|---|---|---|
@@ -171,7 +183,7 @@ else meanwhile. That is what the scan budget was built for, and the row above it
 `refused`.
 
 **The budget, measured at scale.** A run toward twenty million was stopped at 5.5M because the two
-things worth learning had already answered themselves, both taken WHILE 64 writers were filling, so
+questions it was run for were both answered, both taken WHILE 64 writers were filling, so
 they are comparable to each other rather than to the idle table above:
 
 | records | `$each` (refused) | stats |
@@ -379,7 +391,7 @@ planner statistics on the body paths and fell back to the guess the "planned on 
 describes (`take` 23.6ms, "growing"). A real client declares durably (a `kind_def` record),
 which creates the statistics; measured that way the same claim is **10.5ms and flat**, and an
 explicit `ANALYZE` takes it to 6.3ms. The fix was in the bench: `suites/scale.ts` now declares
-its kind durably, so it measures the plan a real deployment gets. The finding worth keeping is
+its kind durably, so it measures the plan a real deployment gets. The finding is
 that a benchmark using the convenience registration path measures a plan no client sees.
 
 **`diagnostics` was `appendSeals` doing 500 sequential INSERTs.** `verifyIntegrity` seals before
@@ -410,7 +422,7 @@ deno task profile --out oidc bench/run.ts --suite oidc --adapter sqlite
 ```
 
 Two caveats: the profiled script runs via dynamic import, so `import.meta.main` is false inside
-it; and an await-heavy workload shows large `(idle)` — that is honest (the CPU really is
+it; and an await-heavy workload shows large `(idle)`, which is correct (the CPU really is
 waiting), so profile the adapter under load, not a latency bench, when hunting CPU.
 
 ## Writing a benchmark

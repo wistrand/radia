@@ -360,7 +360,7 @@ turn worker routes on them; only `function.arguments` is ciphertext. The turn wo
 that blob into `tool_call.args` verbatim, carries the marker across so the tool worker knows to open
 it, and parses nothing. The parse happens on the far side of the key, in the tool worker.
 
-One consequence worth knowing: an OPENED `tool_call.args` is the model's raw argument STRING, where
+One consequence: an OPENED `tool_call.args` is the model's raw argument STRING, where
 an unencrypted one is already an object. Both readers handle both shapes in one line.
 
 The per-call index joins the idempotency key (`${key}#${i}`), or two calls in one round would derive
@@ -452,7 +452,7 @@ wrap, it adds one and writes a successor. Only a holder can — adding a wrap ne
 access spreads from a machine that has it, never from one that wants it. Best-effort: a session that
 cannot write still works, and the other machine waits for one that can.
 
-Three consequences worth knowing:
+Three consequences:
 
 - **The key record is read NEWEST-first.** Enrolment writes a successor, so the unordered read that
   worked before returned the original wrap set forever and the new machine never appeared. `readOne`

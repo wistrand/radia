@@ -120,3 +120,42 @@ Deno.test("planner: a failed hint never fails the kind declaration", async () =>
     await adapter.close();
   }
 });
+
+Deno.test("planner: statistics are re-gathered as the space fills, amortized, and the read plan follows", async () => {
+  // `prepareKind`'s ANALYZE runs at declaration, on an empty table. Postgres's autovacuum catches
+  // up later; PGlite has none, so a `radia dev` space planned every read on empty-table statistics
+  // for its whole life: a GIN bitmap over every match plus a sort, where the id index would stop at
+  // the first row (8.7ms vs 0.47ms at 40k, 2026-09-05). The adapter now analyzes on a 10%-of-rows
+  // rule with a 500-write floor. Pinned two ways: the COUNT of analyses over a fill (amortized,
+  // never per write) and the plan the read gets afterwards.
+  const adapter = new PgliteAdapter();
+  await adapter.init();
+  try {
+    // deno-lint-ignore no-explicit-any
+    const sql = (adapter as any).sql as { query: (q: string, p?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> };
+    const raw = sql.query.bind(sql);
+    let analyzes = 0;
+    sql.query = (q: string, p?: unknown[]) => {
+      if (/^\s*analyze/i.test(q)) analyzes++;
+      return raw(q, p);
+    };
+    const space = new Space(adapter);
+    // Declared as a RECORD, the production path: that is what creates the expression statistics
+    // the amortized ANALYZE refreshes. Without them the planner has no estimate for the path at
+    // all and guesses one row, whatever the table holds.
+    const def = { kind: "task", indexedPaths: [{ path: "op", type: "keyword" as const }], claimable: true };
+    space.registerKind(def);
+    await space.put({ kind: "kind_def", body: def });
+    analyzes = 0; // the declaration's own analyze is not what this counts
+    for (let i = 0; i < 1200; i++) await space.put({ kind: "task", body: { op: i % 7 === 0 ? "rare" : "common", n: i } });
+    // 1200 inserts on a 500-write floor: at 500 and at 1000, two tables each. Not per write.
+    assertEquals(analyzes, 4);
+    const plan = (await raw(
+      `explain select id from records where kind = $1 and (body_jsonb @> $2::jsonb and body_jsonb #> '{op}' = $3::jsonb) order by id collate "C" asc limit 1`,
+      ["task", JSON.stringify({ op: "rare" }), JSON.stringify("rare")],
+    )).rows.map((r) => String(r["QUERY PLAN"])).join("\n");
+    assert(!/Bitmap/.test(plan), `the read still collects every match through the GIN index:\n${plan}`);
+  } finally {
+    await adapter.close();
+  }
+});

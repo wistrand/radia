@@ -117,7 +117,7 @@ already declares 24h retention (`progress` 1h), swept amortized on the write pat
      until the next sweep), and a principal already holding something is never touched, because
      `RadiaClient.grant` REVIVES a retired grant and a blind re-assign would undo an operator's
      narrowing. The plant restored all 19 grants over a deliberate one-grant narrowing.
-     The second property has a cost worth knowing: a power added on a LATER run reaches nobody
+     The second property has a cost: a power added on a LATER run reaches nobody
      already admitted, because the sweep never looks at them again. Anything meant for everyone
      enumerates `enrolledPrincipals` rather than riding the sweep.
      What is still open is the self-service case for a space with no administrator at all: a
@@ -434,7 +434,7 @@ per turn that is ~2.9k puts/s, which lands on the 3.1k puts/s measured independe
 `authorize` per write, which is one per REQUEST in production and therefore correct rather than
 waste), and ~23 clock reads — `storage.now()`, once per write.
 
-**The clock is NOT worth fixing, and the reason is a trap worth naming.** 23 of 122 queries is 19%
+**The clock is not worth fixing, and the reason is a trap.** 23 of 122 queries is 19%
 of the count, so moving the stamp into the insert looked like the cheapest win available. Measured
 instead of reasoned — same sweep, `now()` replaced by a host clock so the round trip disappears
 entirely — it is worth **~2%** of turn latency (390ms → 382ms at N=4, 771ms → 753ms at N=8; the

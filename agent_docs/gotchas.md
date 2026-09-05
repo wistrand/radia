@@ -549,6 +549,12 @@ that something was missing. A rule a caller can get wrong is one that will be go
 
 ### Storage, SQL and the planner
 
+- **Statistics gathered at declaration describe an EMPTY table; PGlite never gathers them again.**
+  `prepareKind` analyzes once, when the kind_def lands, and PGlite has no autovacuum, so a `radia
+  dev` space planned every read on empty-table estimates for life: a GIN bitmap over every match
+  plus a sort (8.7ms `read_one` at 40k) where the id index stops at the first row (0.47ms).
+  `PgSqlAdapter.maybeAnalyze` re-analyzes after 500 inserts and every 10% of growth (the autoanalyze
+  rule). Guard: `test/planner.test.ts`, analyses counted over a fill and the plan read back.
 **A Postgres event cursor is `<xid>.<seq>`, and resuming compares the pair.** Comparing `xid` alone
 while paging drops the second of an ack's two events (one transaction) at a page boundary, so a
 `Last-Event-ID` reconnect skips it silently (`getEvents`, `src/storage/pgbase.ts`). A bare `<xid>`

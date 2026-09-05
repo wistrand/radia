@@ -110,7 +110,7 @@ Answered: an entrypoint written as `default(record, space)` can be exercised fro
 real shim, the real frames and the real jail, and the transcript shows the host's contributions
 (the stamp, the forced parent, the labels, the idempotency key) rather than only what the code
 said. Nothing is written.
-Two decisions worth keeping. READS ARE REFUSED in a rehearsal: a dry run holds no credential, and
+Two decisions. READS ARE REFUSED in a rehearsal: a dry run holds no credential, and
 answering a query from whatever client is nearby would hand jailed code that principal's reach,
 which is the failure the broker exists to prevent, reintroduced by the thing meant to test it. The
 unused client is a throwing Proxy rather than a real one, so "provably unused" is enforced instead

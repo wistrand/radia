@@ -75,7 +75,7 @@ pinned URL and never via the registries (2026-09-02; see "Distribution" below).
 
 The claim index is what lets a candidate window be an ordered seek rather than a scan of the
 envelope table. A pattern with a pushable predicate does need the join, and there the two backends
-diverge for a reason worth knowing: SQLite walks the claim index and stops early, while Postgres
+diverge: SQLite walks the claim index and stops early, while Postgres
 underestimates the jsonb predicate badly enough to collect every match and sort. Fix the ESTIMATE,
 never the query: `StorageAdapter.prepareKind` (optional; implemented by the Postgres adapters,
 ignored by SQLite) creates planner statistics on each declared path expression when a kind is
@@ -83,7 +83,13 @@ declared, and analyzes BOTH `records` and `record_runtime`, since a claim joins 
 statistics on either half sinks the estimate, which is worth roughly 3x on a 20k-record claim and
 turns the plan into an ordered index walk. A residual underestimate remains because the two pushed
 terms are redundant and the planner assumes independence; details, numbers and method in
-[gotchas.md](gotchas.md), "a claim on Postgres is planned on a guess". See
+[gotchas.md](gotchas.md), "a claim on Postgres is planned on a guess". That ANALYZE runs on a
+table that is EMPTY at declaration, so the adapters also re-analyze as the space fills
+(`PgSqlAdapter.maybeAnalyze`, since 2026-09-05): after 500 inserts, then after every 10% of growth,
+Postgres's own autoanalyze rule. Postgres would get there within a minute on its own; PGlite has no
+autovacuum and never would, and measured at 40k rows its `read_one` planned on empty-table
+statistics collected 2,858 GIN matches and sorted them (8.7ms) where the analyzed plan walks the id
+index to the first match (0.47ms). One ANALYZE of both tables costs 150ms at that size. See
 [design-api.md](design-api.md) for the take contract this implements and
 [design-data-model.md](design-data-model.md) for the record/envelope split.
 

@@ -404,6 +404,14 @@ class PgJson implements JsonDialect {
 class IdempotencyReplay extends Error {}
 
 /**
+ * When the amortized ANALYZE fires: after this many record inserts, or after this fraction of the
+ * rows the last ANALYZE saw, whichever is larger. Postgres's own autoanalyze rule (50 rows + 10%),
+ * with a higher floor because the first thousand rows plan fine either way.
+ */
+const ANALYZE_MIN_WRITES = 500;
+const ANALYZE_FRACTION = 0.1;
+
+/**
  * The full StorageAdapter, in Postgres SQL, over a `SqlBackend`. Single-winner claiming rests on
  * a CHECKED compare-and-set: the state transition names the state it expects, and a claimer
  * whose update affects zero rows lost the race and moves to the next candidate. That holds on a
@@ -415,6 +423,35 @@ class IdempotencyReplay extends Error {}
  */
 export class PgSqlAdapter implements StorageAdapter {
   constructor(readonly name: string, protected readonly sql: SqlBackend) {}
+
+  // Record inserts seen by THIS instance, and how many the last ANALYZE had seen. Instance state
+  // like `SweepState`: two instances over one database each keep their own and analyze oftener.
+  #inserts = 0;
+  #insertsAtAnalyze = 0;
+  #analyzing = false;
+
+  /**
+   * Amortized ANALYZE, the planner's half of housekeeping. `prepareKind` analyzes once, at
+   * declaration, on a table that is EMPTY at that moment; Postgres's autovacuum re-analyzes after
+   * 10% growth within a minute, and PGlite never does. Measured on PGlite at 40k rows: `read_one`
+   * planned on empty-table statistics collects 2,858 GIN matches and sorts them (8.7ms through the
+   * space); after ANALYZE it walks `idx_records_id_c` to the first match (0.47ms), and the ANALYZE
+   * itself is 150ms once. The 10%-with-a-floor rule fires a logarithmic number of times over a
+   * space's life; a failure waits for the next threshold, or for autovacuum where there is one.
+   */
+  private async maybeAnalyze(): Promise<void> {
+    const since = this.#inserts - this.#insertsAtAnalyze;
+    if (since < Math.max(ANALYZE_MIN_WRITES, ANALYZE_FRACTION * this.#insertsAtAnalyze)) return;
+    if (this.#analyzing) return;
+    this.#analyzing = true;
+    this.#insertsAtAnalyze = this.#inserts;
+    try {
+      await this.sql.query("analyze records");
+      await this.sql.query("analyze record_runtime");
+    } catch { /* the next threshold, or autovacuum where there is one */ } finally {
+      this.#analyzing = false;
+    }
+  }
 
   async init(): Promise<void> {
     await this.sql.init();
@@ -497,7 +534,7 @@ export class PgSqlAdapter implements StorageAdapter {
   }
 
   async put(input: PutInput): Promise<PutResult> {
-    return await this.txIdem(input.idempotency, async (tx) => {
+    const out = await this.txIdem(input.idempotency, async (tx) => {
       await this.insertRecord(tx, input);
       await this.appendEvent(tx, {
         runId: input.record.runtimeMeta.createdBy,
@@ -510,6 +547,8 @@ export class PgSqlAdapter implements StorageAdapter {
       }, input.envelope.availableAt);
       return { id: input.record.id, deduped: false };
     });
+    await this.maybeAnalyze(); // the write that crossed the threshold pays, as with the sweeps
+    return out;
   }
 
   /**
@@ -768,7 +807,7 @@ export class PgSqlAdapter implements StorageAdapter {
     // narrow race (a concurrent first attempt storing its response in between) costs one
     // unnecessary check and never a wrong answer.
     if (beforeWrite && !await this.hasStoredResponse(idem)) await beforeWrite();
-    return await this.txIdem(idem, async (tx): Promise<AckResult> => {
+    const out = await this.txIdem(idem, async (tx): Promise<AckResult> => {
       const now = await this.txNow(tx);
       const row = await this.fetchEnvelopeRow(tx, ref.recordId);
       if (!this.leaseValid(row, ref)) return { status: "lease_lost" };
@@ -807,6 +846,8 @@ export class PgSqlAdapter implements StorageAdapter {
       }, now);
       return { status: "ok", resultId: result?.record.id };
     });
+    if (result) await this.maybeAnalyze(); // a result is an insert, the same as a put
+    return out;
   }
 
   async nack(ref: LeaseRef, backoffSeconds: number, maxAttempts: number, idem?: IdempotencyKey): Promise<SettleResult> {
@@ -1362,6 +1403,7 @@ export class PgSqlAdapter implements StorageAdapter {
   }
 
   private async insertRecord(tx: Sql, input: PutInput): Promise<void> {
+    this.#inserts++; // counted before the insert; a rolled-back one merely brings the ANALYZE nearer
     const parents = input.record.runtimeMeta.parentIds;
     if (parents.length > 0) {
       // One round-trip regardless of parent count.
