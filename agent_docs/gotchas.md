@@ -1540,6 +1540,12 @@ decorates); `radia get` prints the same line. Lasting attribution names the AGEN
 
 ### Agent- and model-facing design
 
+- **Launch a harness OUTSIDE every project: Claude Code disables a `--mcp-config` server by NAME
+  from the project's `disabledMcpServers`.** `~/.claude.json` held `disabledMcpServers: ["radia"]`
+  for this repo, so from any cwd inside it the server named `radia` in a strict `--mcp-config` gave
+  "NO TOOLS", and from `/tmp` all 24 (2026-09-05, traced after a scratch directory under
+  `.radia/` failed the same way). `radia team up` runs members in `~/.radia/team/<member>/`, the
+  lab in `~/.radia-lab/<run>/<agent>/`. Guard: `test/teamup.test.ts`.
 - **A word a tool description defines is what that word MEANS to the model.** `save_procedure` says
   a saved procedure "becomes one of your tools", so "list tools" routed to the saved-code listing,
   came back empty, and the assistant reported having no tools with 39 in front of it. The

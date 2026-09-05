@@ -50,7 +50,7 @@ hashing stay in the reference implementation
 |-|------------|--------|
 | Path        | [`ts/`](ts/): import `mod.ts`; behind it `wire.ts`, `registry.ts`, `await.ts`, `client.ts`, `loop.ts` | [`py/radia.py`](py/radia.py) |
 | Client      | `RadiaClient`      | `RadiaClient` |
-| Worker loop | `agentLoop`: claims, heartbeats, settles, and publishes an `interest` per pattern (retired on a clean stop, re-announced on a new run) | `agent_loop`, the same, interests included since 2026-09-05 (`publish_interest`) |
+| Worker loop | `agentLoop`: claims, heartbeats, settles, and publishes an `interest` per pattern (retired on a clean stop, re-announced on a new run); a handler returns `SETTLED` when it settled the claim through another channel | `agent_loop`, the same, interests included since 2026-09-05 (`publish_interest`) |
 | Reactor loop (fact-side: watch, re-read, decide) | `reactorLoop` | not yet: hand-roll the sweep, or poll |
 | Paging      | `queryNewest` / `queryOldest` / `queryOrdered` / `queryPage` → `{records, nextCursor, scope}` | `query_newest` / `query_oldest` / `query_ordered` / `query_page` → `(records, next_cursor, scope)` |
 | Watches     | `client.watch()` async generator | `client.watch()` generator |

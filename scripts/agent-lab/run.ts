@@ -54,6 +54,12 @@ interface AgentSpec {
   /** Extra environment for this harness only (an API key, a CODEX_HOME). */
   env?: Record<string, string>;
   /**
+   * Files written into the agent's directory before it starts, by name. A string is written as
+   * is; anything else is JSON. Both get the same `{{…}}` substitution as `command`, which is what
+   * lets a `team.json` for `radia team up` name this run's model, binary and directory.
+   */
+  files?: Record<string, unknown>;
+  /**
    * Which credential this agent acts under. `member` (the default) is its own definition token;
    * `operator` is the run's operator, and is REFUSED for a harness.
    *
@@ -513,6 +519,12 @@ for (const a of agents) {
   };
   await Deno.mkdir(configPath.replace(/\/[^/]*$/, ""), { recursive: true });
   await Deno.writeTextFile(configPath, JSON.stringify(config, null, 2));
+  for (const [name, content] of Object.entries(a.files ?? {})) {
+    const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
+    const path = name.startsWith("/") ? name : `${a.dir}/${name}`;
+    await Deno.mkdir(path.replace(/\/[^/]*$/, ""), { recursive: true });
+    await Deno.writeTextFile(path, substitute([text], a, configPath)[0]);
+  }
   // Not `home`: that name is the operator's HOME at module scope, and shadowing it here would put
   // two very different directories one letter apart in a function that links a credential.
   const privateDir = await harnessHome(a);
@@ -580,6 +592,8 @@ function substitute(argv: string[], a: typeof agents[number], configPath: string
     "{{config}}": configPath,
     "{{url}}": base,
     "{{binary}}": a.invocation.command,
+    // ABSOLUTE: a harness runs with its own directory as cwd, so `./radia` would resolve there.
+    "{{radia}}": Deno.realPathSync(binary),
     // TOML array syntax and JSON array syntax agree for strings, which is what lets one value serve
     // Codex's `-c` and a JSON config alike.
     "{{mcpArgs}}": JSON.stringify(a.invocation.args),

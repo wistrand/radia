@@ -1198,6 +1198,25 @@ against the code, all confirmed, all fixed with a guard:
 | 14 | Python `agent_loop` publishes no interest records | `publish_interest` keyed per run as the TS client does; the loop announces at start, re-announces on a new run, retires on a clean stop. `examples/pipeline-py/demo.py --once` |
 | 15 | The npm tarball ships raw `.ts` with no `types` field | A stance, not a build: `sdk/README.md` names the runtimes that load it as is (Deno, Bun, Node 22.18+) and says a build step is not planned |
 
+### Self-review of the harness worker (2026-09-05), CLOSED the same day
+
+`radia team up`, `extensions/ts/harness-worker.ts` and `src/surfaces/teamfile.ts` were written in
+one day against live harnesses. A read-through of the three files found six defects, each fixed
+with a contract case in `extensions/conformance/harness-worker.test.ts` or `test/teamup.test.ts`:
+
+| # | Defect | Fix and guard |
+|---|--------|---------------|
+| 1 | The MCP config `team up` writes carries the member's DEFINITION TOKEN and was created at the umask, world-readable | `restrictToOwner` after the write, as `--operator-token-file` does; the session-id file too. `test/teamup.test.ts` asserts mode 600 |
+| 2 | A harness that ignored SIGTERM held its lease, its heartbeat and the loop's slot open past the timeout | SIGKILL five seconds after SIGTERM. A fixture that swallows SIGTERM is dead within the escalation |
+| 3 | A harness that NACKED its claim read as `ok`, and the loop's own ack then answered `lease_lost`; with zero backoff the record bounced back to the same worker five times in one `--once` | "Settled by the harness" now means the record is no longer under OUR lease id (a nack keeps the epoch, so the epoch could not tell). A nacking fixture is reported `settled` with no ack over it |
+| 4 | A warm session (one harness session per member) under `concurrency > 1` would resume one session from two processes at once | Refused at start, naming the two settings |
+| 5 | `--once` on a failed launch waited out the failure pause (5s and up) before returning, and the worker's abort was not among the things that cut the pause | The pause is skipped under `once` and cut by the worker's own abort as well as the fence |
+| 6 | `--fresh` looked for leftovers in the newest 200 `task` records, so an OLD open task, the exact leftover it is for, was missed | The ops-plane envelope query by STATE (`queryEnvelopes`, every predicate before the cap), capped at 1000 and saying so when hit |
+
+Two more were tidied on the way: the three privileged steps built three admin clients, each an
+exchange, and now share one; and a worker stopping under Ctrl-C consulted the envelope before
+killing its child, which is pointless when the worker itself is going.
+
 The hardcoded chat vocabulary in `extensions/ts/inference.ts` and `encrypted.ts` was reported too
 and is not a defect as framed: every extension names its own kinds (`workspace.ts` names
 `workspace`). Whether those kinds are the chat's or the extension's is a naming decision for

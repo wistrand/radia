@@ -10,7 +10,7 @@
 // there is nothing to keep in sync and nothing new to learn; `sdk/ts/client.ts` and the rest stay
 // importable for anyone who prefers them. The npm package points `.` here.
 export * from "./client.ts";
-export { agentLoop, reactorLoop } from "./loop.ts";
+export { agentLoop, reactorLoop, SETTLED } from "./loop.ts";
 export type { LoopOptions, ReactorOptions } from "./loop.ts";
 export { contentKey, newer, newestByKey, oidcIdentityKey, opsGrantKey } from "./registry.ts";
 export { fnv1a, kindDefKey } from "./wire.ts";

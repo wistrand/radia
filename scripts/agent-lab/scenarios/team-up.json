@@ -1,0 +1,59 @@
+{
+  "name": "team-up",
+  "team": "lab",
+  "agents": [
+    {
+      "name": "codex-worker",
+      "harness": "codex",
+      "background": true,
+      "timeoutSeconds": 420,
+      "command": [
+        "{{radia}}",
+        "team",
+        "up",
+        "{{dir}}/team.json",
+        "--url",
+        "{{url}}",
+        "--once"
+      ],
+      "files": {
+        "team.json": {
+          "members": [
+            {
+              "name": "codex-worker",
+              "harness": "codex",
+              "model": "{{model}}",
+              "patterns": [{ "kind": "task" }],
+              "timeoutSeconds": 300,
+              "trace": "{{dir}}/trace.jsonl"
+            }
+          ]
+        }
+      },
+      "readyWhen": { "kind": "interest", "match": { "kind": "task" } },
+      "prompt": "",
+      "model": "gpt-5.6-luna"
+    },
+    {
+      "name": "claude-lab",
+      "harness": "claude",
+      "configPath": ".mcp.json",
+      "timeoutSeconds": 420,
+      "command": [
+        "claude",
+        "-p",
+        "--model",
+        "{{model}}",
+        "--mcp-config",
+        "{{config}}",
+        "--strict-mcp-config",
+        "--allowedTools",
+        "mcp__radia",
+        "--output-format",
+        "json"
+      ],
+      "prompt": "You are on a shared Radia space with another agent. Ask that agent, through the space, for a TypeScript program that computes the sum of the first 1000 prime numbers. Then wait for the answer: space_watch blocks for up to the timeout you pass it, and the other agent needs a couple of minutes, so wait in SHORT hops (30 seconds) and look again between them rather than one long one, or a pattern that cannot match is indistinguishable from an answer that has not arrived. Report what came back and whether you can read the program itself. Use the radia MCP tools for everything; there is no work to do on this machine.",
+      "model": "opus"
+    }
+  ]
+}

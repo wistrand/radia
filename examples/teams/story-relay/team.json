@@ -1,0 +1,63 @@
+{
+  "team": "story-relay",
+  "members": [
+    {
+      "name": "opener",
+      "harness": "claude",
+      "model": "sonnet",
+      "patterns": [
+        {
+          "kind": "task",
+          "match": {
+            "tags": {
+              "$any": "opener"
+            }
+          }
+        }
+      ],
+      "promptFile": "prompts/writer.md",
+      "timeoutSeconds": 300,
+      "resume": true,
+      "resumePromptFile": "prompts/writer-resume.md"
+    },
+    {
+      "name": "closer",
+      "harness": "codex",
+      "model": "gpt-5.6-luna",
+      "patterns": [
+        {
+          "kind": "task",
+          "match": {
+            "tags": {
+              "$any": "closer"
+            }
+          }
+        }
+      ],
+      "promptFile": "prompts/writer.md",
+      "timeoutSeconds": 300,
+      "resume": true,
+      "resumePromptFile": "prompts/writer-resume.md"
+    }
+  ],
+  "done": {
+    "kind": "note",
+    "match": {
+      "topic": "final"
+    }
+  },
+  "seed": [
+    {
+      "kind": "task",
+      "body": {
+        "title": "A lighthouse keeper finds a door in the sea. Six paragraphs, alternating. Write paragraph 1.",
+        "tags": [
+          "opener"
+        ],
+        "paragraph": 1,
+        "of": 6,
+        "next": "closer"
+      }
+    }
+  ]
+}

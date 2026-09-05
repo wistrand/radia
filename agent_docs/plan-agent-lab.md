@@ -277,6 +277,15 @@ real runs are scheduled.
 - **Teaching the runtime about the lab.** It is a client. `scripts/`, importing the SDK, never
   `src/`. `--trace` is the single exception and it lives in a surface.
 
+## The launcher scenario (2026-09-05)
+
+`scenarios/team-up.json` runs a member as a WORKER rather than a session: `radia team up` launches
+`codex exec` only when the requester's task is claimed, with the worker's `team.json` written by the
+runner's `files` field and the launched adapter traced through `trace`. Its readiness signal is the
+`interest` record the loop publishes. Three runs found three defects in the launcher (a missing env
+for the adapter, a double settle, a fence read from our own ack), each fixed the same day; the runs
+are in research-agent-sessions.md.
+
 ## Read before
 
 Building anything that observes agent behaviour, adding an event type to capture attempts, or

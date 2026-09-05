@@ -307,6 +307,16 @@ the verb is about under twenty that it is not (`--all` is the escape). It report
 isolation ends, worst first: members whose grants carry no team pattern and therefore read every
 team, crossers, and members holding `observe`.
 
+`team up` runs the members of a `team.json` as WORKERS (`src/surfaces/teamfile.ts`,
+`extensions/ts/harness-worker.ts`; architecture-teams.md "Members as workers"): one `agentLoop`
+per member, its handler launching the harness per claim. It holds only each member's durable half,
+which `team add` now stores on the machine it ran on (`#member:<agent>` in the credentials file,
+never pruned), and mints nothing: setup stays the privileged step. It writes each member's MCP
+config under `.radia/team/` naming the adapter with `--session <member>`, and claims under that
+session's run itself, so the claim id the harness is handed is one it may settle. A team directory
+(`examples/teams/<name>/`) bootstraps with `--init --seed`, and the file's `done` pattern ends the
+run with the matching record printed as the answer.
+
 `runs --for <principal> [--stop]` and `team remove` are the OFFBOARDING cascade, and both cover
 the two run classes a person acts through: their own sessions (`agent_run{agent: X}`) and runs
 workers hold on their behalf (`agent_run{actingFor: X}`). `team remove` also retires the member's

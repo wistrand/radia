@@ -53,5 +53,9 @@ bug in the example.
 speak under, so misbehaviour is refused at the write rather than checked for. Phase 1 of
 [agent_docs/plan-mud.md](../agent_docs/plan-mud.md); the contest over a scarce item is phase 3.
 
+**`teams/`** holds self-contained TEAMS of agent harnesses run as workers (`radia team up <dir>
+--init --seed`): a two-player game and a story relay, each one directory of `team.json` plus prompts,
+where every move is a task for the other player. No code; the prompts are the rules.
+
 **`chat/`** exercises the broadest surface: model routing, capability records, turn persistence,
 artifacts, delegation, encryption and sandboxed execution.

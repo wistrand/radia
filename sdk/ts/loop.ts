@@ -76,8 +76,11 @@ export interface LoopOptions<T = unknown> {
    * answer is a failure", which is an ordinary result to return (`extensions/ts/tool-worker.ts`
    * states the same rule for tool calls, because an undecryptable or invalid call will not
    * decrypt or validate on redelivery either).
+   *
+   * `SETTLED` is the fourth: the handler settled the claim through another channel under the same
+   * run, and the loop must not settle it again.
    */
-  handle: (record: RadiaRecord<T>, client: RadiaClient, signal: AbortSignal) => Promise<PutRequest | void>;
+  handle: (record: RadiaRecord<T>, client: RadiaClient, signal: AbortSignal) => Promise<PutRequest | void | typeof SETTLED>;
   /**
    * Where the loop narrates itself. Absent means SILENT for routine trace (took, acked, fenced),
    * which is the right default for a library.
@@ -92,6 +95,15 @@ export interface LoopOptions<T = unknown> {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * A handler's way of saying "this claim is already settled, by me or on my behalf": the loop then
+ * neither acks nor nacks it. Needed when the settle goes through another channel under the SAME
+ * run, as when a launched harness settles the claim it was handed (`radia team up`): the loop's own
+ * ack would carry the same idempotency key with a different request and be refused as a conflict,
+ * and reading that as a failure nacked a record that was already consumed.
+ */
+export const SETTLED: unique symbol = Symbol.for("radia.settled");
 
 /**
  * A network-level failure as something a person can act on.
@@ -215,7 +227,11 @@ export async function agentLoop<T = unknown>(client: RadiaClient, o: LoopOptions
       // rather than re-asserted by every handler. The runtime still decides what a body may be; this
       // only stops the assertion being written out once per worker.
       const result = await o.handle(claimed.record as RadiaRecord<T>, client, claim.signal);
-      if (fenced) {
+      if (result === SETTLED) {
+        // The handler knows the claim was settled through its own channel; a fence the heartbeat saw
+        // meanwhile is that settle, not another owner.
+        log(`[${o.name}] ${claimed.record.kind} ${short(claimed.record.id)} settled by the handler`);
+      } else if (fenced) {
         // Settling is pointless and the log line has to say which of the two happened: the work
         // ran to completion but somebody else owns the record now.
         log(`[${o.name}] ${short(claimed.record.id)} finished after being fenced: not settled, duplicate work possible`);

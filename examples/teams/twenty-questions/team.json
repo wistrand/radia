@@ -1,0 +1,61 @@
+{
+  "team": "twenty-questions",
+  "members": [
+    {
+      "name": "guesser",
+      "harness": "claude",
+      "model": "sonnet",
+      "patterns": [
+        {
+          "kind": "task",
+          "match": {
+            "tags": {
+              "$any": "guesser"
+            }
+          }
+        }
+      ],
+      "promptFile": "prompts/guesser.md",
+      "timeoutSeconds": 300,
+      "resume": true,
+      "resumePromptFile": "prompts/guesser-resume.md"
+    },
+    {
+      "name": "keeper",
+      "harness": "codex",
+      "model": "gpt-5.6-luna",
+      "patterns": [
+        {
+          "kind": "task",
+          "match": {
+            "tags": {
+              "$any": "keeper"
+            }
+          }
+        }
+      ],
+      "promptFile": "prompts/keeper.md",
+      "timeoutSeconds": 300,
+      "resume": true,
+      "resumePromptFile": "prompts/keeper-resume.md"
+    }
+  ],
+  "done": {
+    "kind": "note",
+    "match": {
+      "topic": "final"
+    }
+  },
+  "seed": [
+    {
+      "kind": "task",
+      "body": {
+        "title": "start: choose a secret animal and say you are ready",
+        "tags": [
+          "keeper"
+        ],
+        "move": 0
+      }
+    }
+  ]
+}

@@ -15,7 +15,7 @@
 
 import { RadiaClientError } from "../../sdk/ts/client.ts";
 import type { RadiaClient } from "../../sdk/ts/client.ts";
-import { AGENT_DEFINITION, ARTIFACT, KIND_DEF, type KindDef, kindDefKey } from "../../sdk/ts/wire.ts";
+import { AGENT_DEFINITION, ARTIFACT, KIND_DEF, type KindDef, kindDefKey, INTEREST } from "../../sdk/ts/wire.ts";
 import { CAPABILITY, CAPABILITY_KIND, retireProviderCapabilities } from "./capability.ts";
 import { WORKSPACE_KIND } from "./workspace.ts";
 import { activeByKey, grantKey, isRetired, newestByKey, opsGrantKey } from "../../sdk/ts/registry.ts";
@@ -185,6 +185,11 @@ export const MEMBER_GRANTS: { kind: string; operations: string[] }[] = [
  */
 export const DISCOVERY_GRANTS: { kind: string; operations: string[] }[] = [
   { kind: KIND_DEF, operations: ["query"] },
+  // A member run as a WORKER (`radia team up`, `agentLoop`) announces what it claims as an
+  // `interest` record, which is what the console's routing views and a lab's readiness check read.
+  // Unscoped for the same reason as `kind_def`: an interest carries no team field, so a scoped
+  // grant would refuse every one. It reveals only that a principal listens for a kind.
+  { kind: INTEREST, operations: ["put"] },
 ];
 
 /** The half of an `agent_definition` body this file reads. */

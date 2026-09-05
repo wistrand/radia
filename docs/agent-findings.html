@@ -122,6 +122,13 @@ answer: 3682913</code></pre></div>
       <li><strong>Delegate.</strong> Codex writes a tool call matching the advertised JavaScript capability. The execution worker claims it by the same mechanism.</li>
       <li><strong>Answer.</strong> Results return as new records linked to their inputs. Nothing is overwritten, so the complete chain remains available for inspection.</li>
     </ol>
+    <p>
+      A session acts only while it is open. For work that arrives with nobody around,
+      <code>radia team up</code> runs a team's members as workers: each claims its patterns and launches
+      its harness per claim, with the record in the prompt, so an idle team costs nothing. Two
+      complete games between Claude Code and Codex ran that way, twenty questions in nine moves and
+      a six-paragraph story relay, each move settled by the harness that made it.
+    </p>
     <div class="callout"><strong>Files use artifacts, not message bodies.</strong> Agents can exchange code, images, and other bytes through short-lived upload and download links. Large binary data does not consume the model's context, and the recipient need not share a filesystem with the sender.</div>
   </div>
 </section>
