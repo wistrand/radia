@@ -77,8 +77,9 @@ refuses `console.*` in `src/core`/`server`/`storage`.
 Every non-portable host operation lives in one file: process (`args`, `exit`, `env`, `osName`),
 files (`readTextFile`, `writeTextFile`, `mkdirp`, `removeFile`, `restrictToOwner`,
 `moduleRelative`), **binary files** for artifact blobs (`writeBinaryFile`, `readBinaryFile`,
-`readBinaryStream`, `fileSize`), standard streams (`stdin`, `writeStdout`, `writeStderr`), signals
-(`onShutdown`), and HTTP in both directions: `serve` for the socket the space listens on,
+`readBinaryStream`, `fileSize`), standard streams (`stdin`, `writeStdout`, `writeStderr`), the
+terminal (`stdoutIsTerminal`, `consoleColumns`: what decides colour, width and the alternate
+screen in `radia activity`), signals (`onShutdown`), and HTTP in both directions: `serve` for the socket the space listens on,
 `httpGetJson` for OIDC discovery and JWKS, and `httpRequest` for the S3 blob store, which needs four
 verbs, headers it signs itself and a response body it streams to the caller.
 
@@ -402,6 +403,16 @@ this space do" rather than "what is in it". Its two granularity flags are not co
 diagram looks equally complete however it is set, so the output prints the scan size and every
 incompleteness note rather than leaving the reader to infer either. See
 [design-inspection.md](design-inspection.md).
+
+`activity` (`src/surfaces/activity.ts`, 2026-09-05) is the console's Activity tab in a terminal:
+one lane per agent, the window across, every event a mark coloured by its kind, and the handoffs
+(a record one agent wrote and another claimed) listed with their median delay. Two reads, the
+events tail and one `agent_run` lookup per run, the same two the console makes, with the model
+kept in step with the console's `activityModel` by `test/activity.test.ts`. `--follow` redraws
+every three seconds, on a terminal in the ALTERNATE SCREEN with the cursor hidden (the way `less`
+and `top` run), restored on Ctrl-C so the shell's scrollback is untouched; `--json` prints the model. Colour is ANSI 256 and OFF into a pipe, under
+`NO_COLOR` (any value) or past `--no-color`, so a captured run is plain text, and the terminal
+size comes through the platform seam (`consoleColumns`, `stdoutIsTerminal`).
 
 `integrity` verifies the event chain and names the FIRST divergence rather than a verdict, because
 "the chain is invalid" is not something anyone can act on. It prints the caveat when the chain is

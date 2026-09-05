@@ -75,6 +75,10 @@ export interface PlatformBackend {
   stdin(): ReadableStream<Uint8Array>;
   writeStdout(text: string): void;
   writeStdoutBytes(bytes: Uint8Array): void;
+  /** Whether stdout is a terminal: what decides colour and cursor control in a CLI verb. */
+  stdoutIsTerminal(): boolean;
+  /** The terminal's column count, or undefined when stdout is not one. */
+  consoleColumns(): number | undefined;
   writeStderr(text: string): void;
   onShutdown(handler: () => void): () => void;
   serve(opts: ServeOptions, handler: (req: Request) => Response | Promise<Response>): { finished: Promise<void> };
@@ -223,6 +227,20 @@ const denoBackend: PlatformBackend = {
   stdin: () => Deno.stdin.readable,
   writeStdout: (text) => {
     Deno.stdout.writeSync(encoder.encode(text));
+  },
+  stdoutIsTerminal: () => {
+    try {
+      return Deno.stdout.isTerminal();
+    } catch {
+      return false;
+    }
+  },
+  consoleColumns: () => {
+    try {
+      return Deno.stdout.isTerminal() ? Deno.consoleSize().columns : undefined;
+    } catch {
+      return undefined;
+    }
   },
   writeStdoutBytes: (bytes) => {
     // `writeSync` may write short. Bytes are the one thing here that can be megabytes, so the loop
@@ -488,6 +506,14 @@ export function stdin(): ReadableStream<Uint8Array> {
  *  writes would corrupt the frame stream. */
 export function writeStdout(text: string): void {
   backend.writeStdout(text);
+}
+
+export function stdoutIsTerminal(): boolean {
+  return backend.stdoutIsTerminal();
+}
+
+export function consoleColumns(): number | undefined {
+  return backend.consoleColumns();
 }
 
 /** RAW bytes to stdout, for a payload that is not text. Separate from `writeStdout` because the

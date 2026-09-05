@@ -43,7 +43,8 @@ import { flag, flags, has, positional } from "../flags.ts";
 import { ensureParent } from "../paths.ts";
 import { API_VERSION, VERSION } from "../version.ts";
 import { runUpdate } from "./update.ts";
-import { env, httpRequest, onShutdown, readBinaryFile, serve, stdin, UsageError, writeBinaryFile, writeStdoutBytes } from "../platform.ts";
+import { activityJson, loadActivity, renderActivity, wantColor, WINDOWS } from "./activity.ts";
+import { consoleColumns, env, httpRequest, onShutdown, readBinaryFile, serve, stdin, stdoutIsTerminal, UsageError, writeBinaryFile, writeStdout, writeStdoutBytes } from "../platform.ts";
 import type { Lease } from "../storage/adapter.ts";
 
 const HELP = `radia <command> [options]
@@ -109,6 +110,9 @@ Inspect
   lineage <record-id>                 ancestry via parent_ids
   children <record-id>                records descending from it
   events [--after <cursor> | --tail <n>] [--limit <n>]
+  activity [--window 2m|10m|1h] [--kind <kind>] [--follow] [--width <cols>] [--no-color]
+                                      who handed work to whom: one lane per agent, marks coloured by
+                                      kind, handoffs listed (the console's Activity tab, in ANSI)
   otlp --to <collector> (--thread <recordId> | --follow) [--trace-root <kind>]
   watch <kind> [--match <json>]       stream wakeups until interrupted
 
@@ -205,7 +209,7 @@ interface Ctx {
  *  phase 5): the operator token stays for coordination verbs and everything destructive, so a
  *  routine `radia doctor` is not a process holding the whole operator bit. An explicit
  *  `RADIA_TOKEN` still wins for every verb (resolveToken precedence). */
-const OBSERVER_VERBS = new Set(["stats", "events", "doctor", "erasures", "flows", "integrity", "permissions", "get", "lineage", "children", "otlp"]);
+const OBSERVER_VERBS = new Set(["stats", "events", "doctor", "erasures", "flows", "integrity", "permissions", "get", "lineage", "children", "otlp", "activity"]);
 
 /**
  * The CLI leg of OIDC sign-in (plan-oidc.md): the native-app LOOPBACK flow, RFC 8252. Discover
@@ -1555,6 +1559,61 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           ]))
           : note + "(no events)"
       );
+    }
+
+    // The console's Activity tab in a terminal (src/surfaces/activity.ts): the events tail plus one
+    // agent_run read per run, rendered as lanes. `--follow` redraws every three seconds until
+    // interrupted, clearing the screen only when stdout is a terminal.
+    case "activity": {
+      const windowKey = flag(argv, "--window") ?? "10m";
+      if (!(windowKey in WINDOWS)) throw new UsageError("--window must be one of 2m, 10m, 1h");
+      const kind = flag(argv, "--kind");
+      const terminal = stdoutIsTerminal();
+      const color = wantColor(has(argv, "--no-color"), env("NO_COLOR"), terminal);
+      const columns = Number(flag(argv, "--width")) || consoleColumns() || 100;
+      const memo = new Map<string, string>();
+      const frame = async (): Promise<string> => {
+        const m = await loadActivity(client, WINDOWS[windowKey], kind, memo);
+        return ctx.json
+          ? JSON.stringify(activityJson(m), null, 2) + "\n"
+          : renderActivity(m, { columns, color, windowLabel: `the last ${windowKey === "1h" ? "hour" : windowKey.replace("m", " minutes")}` });
+      };
+      if (!has(argv, "--follow")) {
+        writeStdout(await frame());
+        return 0;
+      }
+      // On a terminal, follow mode runs in the ALTERNATE SCREEN with the cursor hidden, the way
+      // `less` and `top` do, so the redraws never scroll the shell's history and leaving restores
+      // whatever was on screen before. Into a pipe it is plain redraws, one after another.
+      const screen = terminal && !ctx.json;
+      // A frame is fetched and rendered BEFORE anything touches the screen, then painted in ONE
+      // write: home the cursor, each line followed by erase-to-end-of-line, erase-below at the end.
+      // Clearing the screen first left it blank for the length of the two reads, which is the
+      // flicker; overwriting in place shows the old frame until the new one lands whole.
+      const paint = (text: string) =>
+        screen ? "\x1b[H" + text.split("\n").map((l) => l + "\x1b[K").join("\n") + "\x1b[J" : text;
+      let stopped = false;
+      let resolveWake: (() => void) | undefined;
+      const off = onShutdown(() => {
+        stopped = true;
+        resolveWake?.();
+      });
+      if (screen) writeStdout("\x1b[?1049h\x1b[?25l");
+      try {
+        while (!stopped) {
+          const text = await frame();
+          if (stopped) break;
+          writeStdout(paint(text));
+          await new Promise<void>((r) => {
+            resolveWake = r;
+            setTimeout(r, 3000);
+          });
+        }
+      } finally {
+        if (screen) writeStdout("\x1b[?25h\x1b[?1049l");
+        off();
+      }
+      return 0;
     }
 
     // OTLP export: threads as traces, attempts as spans (extensions/ts/otlp.ts). A CLIENT that

@@ -121,7 +121,8 @@ both, pinned by `test/console.test.ts`: a take of one's own record is counted an
 a take of a record older than the tail is credited to a dashed "written earlier" source, and a full
 tail younger than the window says so rather than reading as "nothing happened before". Runs are
 named by `agentOf`. It exists because the Space tab places a record by what it IS, and the first
-question a person asks is "did the worker pick it up?", which a similarity map cannot answer.
+question a person asks is "did the worker pick it up?", which a similarity map cannot answer. `radia activity` (`src/surfaces/activity.ts`) is the same model in a terminal: lanes, marks
+and the handoff list in ANSI, `--follow` to redraw, colour off into a pipe or under `NO_COLOR`.
 
 **Records.** Reads NEWEST first (the oldest-50-as-"the records" trap shipped here once). Columns come
 from the kind's own `indexedPaths`, `explain` notes are rendered, and the query playground is folded
