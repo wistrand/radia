@@ -137,6 +137,11 @@ export function renderPrompt(template: string, values: Record<string, string>): 
 
 const decoder = new TextDecoder();
 
+/** Drain a stream line by line into `sink`; for a process whose output is relayed and not kept. */
+export async function pumpLines(stream: ReadableStream<Uint8Array>, sink: (line: string) => void): Promise<void> {
+  await pump(stream, sink, []);
+}
+
 /** Drain a stream line by line into `sink`, keeping a bounded tail. */
 async function pump(stream: ReadableStream<Uint8Array>, sink: (line: string) => void, tail: string[]): Promise<void> {
   let rest = "";

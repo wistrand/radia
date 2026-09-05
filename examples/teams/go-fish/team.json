@@ -1,0 +1,180 @@
+{
+  "team": "go-fish",
+  "kinds": [
+    {
+      "kind": "sandbox",
+      "indexedPaths": [
+        { "path": "name", "type": "keyword" },
+        { "path": "language", "type": "keyword" },
+        { "path": "isolation", "type": "keyword" },
+        { "path": "network", "type": "keyword" },
+        { "path": "processes", "type": "keyword" }
+      ],
+      "claimable": false,
+      "usage": "A jail somebody configured and what it guarantees; the one named go-fish-dealer carries the broker's `api`, the call shapes the dealer's program may use. Declared here because a fresh space has no sandbox kind and the dealer host may write records but not kinds."
+    },
+    {
+      "kind": "table",
+      "indexedPaths": [
+        { "path": "team", "type": "keyword" },
+        { "path": "game", "type": "keyword" },
+        { "path": "seq", "type": "number" }
+      ],
+      "sortablePaths": ["seq"],
+      "claimable": false,
+      "usage": "The whole state of one Go Fish game, written by the dealer's program after every move: {game, seq, state}, seq counting up and the game id inside state as well. One game at a time, so the current table is the newest table record (dir desc), never the highest seq, which the previous game's runs past. The dealer writes it and the author reads it to debug the program; no player holds a grant on it."
+    }
+  ],
+  "members": [
+    {
+      "name": "dealer",
+      "service": true,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/examples/teams/go-fish/dealer-host.ts",
+        "--url",
+        "{{url}}",
+        "--team",
+        "go-fish",
+        "--workspace",
+        "go-fish-dealer",
+        "--author",
+        "author"
+      ],
+      "grants": [
+        "table:put,query,read_one"
+      ],
+      "unscopedGrants": [
+        "sandbox:put,query,read_one"
+      ]
+    },
+    {
+      "name": "author",
+      "harness": "claude",
+      "model": "sonnet",
+      "patterns": [
+        {
+          "kind": "task",
+          "match": {
+            "tags": {
+              "$any": "author"
+            }
+          }
+        }
+      ],
+      "grants": [
+        "table:query,read_one"
+      ],
+      "unscopedGrants": [
+        "sandbox:query,read_one"
+      ],
+      "promptFile": "prompts/author.md",
+      "resume": true,
+      "resumePromptFile": "prompts/author-resume.md",
+      "timeoutSeconds": 600
+    },
+    {
+      "name": "ada",
+      "harness": "claude",
+      "model": "sonnet",
+      "patterns": [
+        {
+          "kind": "task",
+          "match": {
+            "tags": {
+              "$any": "ada"
+            }
+          }
+        }
+      ],
+      "promptFile": "prompts/player.md",
+      "resume": true,
+      "resumePromptFile": "prompts/player-resume.md",
+      "timeoutSeconds": 300
+    },
+    {
+      "name": "ben",
+      "harness": "codex",
+      "model": "gpt-5.6-luna",
+      "patterns": [
+        {
+          "kind": "task",
+          "match": {
+            "tags": {
+              "$any": "ben"
+            }
+          }
+        }
+      ],
+      "promptFile": "prompts/player.md",
+      "resume": true,
+      "resumePromptFile": "prompts/player-resume.md",
+      "timeoutSeconds": 300
+    },
+    {
+      "name": "cy",
+      "harness": "claude",
+      "model": "sonnet",
+      "patterns": [
+        {
+          "kind": "task",
+          "match": {
+            "tags": {
+              "$any": "cy"
+            }
+          }
+        }
+      ],
+      "promptFile": "prompts/player.md",
+      "resume": true,
+      "resumePromptFile": "prompts/player-resume.md",
+      "timeoutSeconds": 300
+    },
+    {
+      "name": "dee",
+      "harness": "codex",
+      "model": "gpt-5.6-luna",
+      "patterns": [
+        {
+          "kind": "task",
+          "match": {
+            "tags": {
+              "$any": "dee"
+            }
+          }
+        }
+      ],
+      "promptFile": "prompts/player.md",
+      "resume": true,
+      "resumePromptFile": "prompts/player-resume.md",
+      "timeoutSeconds": 300
+    }
+  ],
+  "done": {
+    "kind": "note",
+    "match": {
+      "topic": "final"
+    }
+  },
+  "seed": [
+    {
+      "kind": "task",
+      "body": {
+        "title": "write the dealer's program, then have it deal",
+        "tags": [
+          "author"
+        ],
+        "phase": "write",
+        "players": [
+          "ada",
+          "ben",
+          "cy",
+          "dee"
+        ],
+        "ranks": 6
+      }
+    }
+  ]
+}

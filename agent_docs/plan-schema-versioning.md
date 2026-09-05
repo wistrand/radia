@@ -51,6 +51,13 @@ Ranked by damage, and the ranking is the plan: build for the top three, report t
   error, and the answer looks complete: the same shape as the bounded-read class
   ([plan-bounded-reads.md](plan-bounded-reads.md)).
 - **Changing a type.** Harmless today, per the finding above. Affects the physical statistics hint.
+- **Reordering, which is not a redeclaration at all.** `kindDefKey` is order-independent and the
+  idempotency row compares BODIES, so the same declaration written in two field orders is one key
+  with two bodies: `idempotency_conflict` for the retention window, and nothing about the message
+  says the declarations are identical. Write through `canonicalKindDef` (`sdk/ts/wire.ts`), which
+  `declareKind` does; a conflict whose key is already declared is treated as declared. It orders
+  the SET-valued arrays only: `keyOf` joins `contentKey` in order, so reordering that one is a
+  different compaction identity under an equal key, which is the row above.
 
 ## The precedent this follows
 

@@ -15,7 +15,7 @@
 
 import { RadiaClientError } from "../../sdk/ts/client.ts";
 import type { RadiaClient } from "../../sdk/ts/client.ts";
-import { AGENT_DEFINITION, ARTIFACT, KIND_DEF, type KindDef, kindDefKey, INTEREST } from "../../sdk/ts/wire.ts";
+import { AGENT_DEFINITION, ARTIFACT, canonicalKindDef, KIND_DEF, type KindDef, kindDefKey, INTEREST } from "../../sdk/ts/wire.ts";
 import { CAPABILITY, CAPABILITY_KIND, retireProviderCapabilities } from "./capability.ts";
 import { WORKSPACE_KIND } from "./workspace.ts";
 import { activeByKey, grantKey, isRetired, newestByKey, opsGrantKey } from "../../sdk/ts/registry.ts";
@@ -291,12 +291,25 @@ export async function declareKind(
   live: Map<string, { id: string; def: KindDef }>,
 ): Promise<void> {
   const cur = live.get(def.kind);
-  const merged = mergeKind(cur?.def, def);
+  // CANONICAL, because the key is order-independent and the idempotency row is not: the merge
+  // takes the live declaration's path order, and writing that under a key an earlier run had
+  // written in this build's order is `idempotency_conflict` until the row expires.
+  const merged = canonicalKindDef(mergeKind(cur?.def, def));
   if (cur && kindDefKey(merged) === kindDefKey(cur.def)) return;
   try {
     await admin.registerKind(merged);
   } catch (e) {
-    if (!(e instanceof RadiaClientError) || e.code !== "incompatible_redeclaration") throw e;
+    if (!(e instanceof RadiaClientError)) throw e;
+    if (e.code === "idempotency_conflict") {
+      // A declaration with this key exists in some earlier order (written before the canonical
+      // form). Same key means the same paths, order, key fields and usage, so it IS this
+      // declaration; the newest live one differs only in what the key says it lacks. Nothing to
+      // write, and no way to: the key is server-derived from the content.
+      const all = await admin.queryAll<KindDef>({ kind: KIND_DEF, match: { kind: def.kind } });
+      if (all.some((r) => kindDefKey(r.body) === kindDefKey(merged))) return;
+      throw e;
+    }
+    if (e.code !== "incompatible_redeclaration") throw e;
     const theirs = cur?.def.contentKey ?? [];
     const ours = merged.contentKey ?? [];
     if (theirs.length > 0 && !theirs.every((k) => ours.includes(k))) throw e;

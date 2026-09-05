@@ -237,14 +237,18 @@ export const BROKER_API: SandboxApi = {
       call: "space.query(pattern, limit) -> record[]",
       description:
         "Read records. `pattern` is ONE object, {kind, match}, e.g. {kind: 'note', match: {topic: 'x'}}; " +
-        "`match` is nested, not spread. Returns the records themselves, an array. Classification " +
-        "labels on anything returned are raised on everything you write afterwards.",
+        "`match` is nested, not spread. OLDEST first unless the pattern says otherwise: `dir: 'desc'` " +
+        "for newest first, or `orderBy` ([{path, dir}], on a path the kind declares sortable). Returns " +
+        "the records themselves, an array. Classification labels on anything returned are raised on " +
+        "everything you write afterwards.",
     },
     {
       call: "space.readOne(pattern) -> record | null",
       description:
-        "The single best match, same pattern shape. What it returns becomes a data PARENT of " +
-        "everything you write afterwards, labels included: what you read flows into what you write.",
+        "The FIRST match in the pattern's order, same pattern shape: the OLDEST without more, the " +
+        "NEWEST with `dir: 'desc'`, or the first by `orderBy` on a sortable path. What it returns " +
+        "becomes a data PARENT of everything you write afterwards, labels included: what you read " +
+        "flows into what you write.",
     },
     {
       call: "space.put({kind, body}) -> {id}",
@@ -283,7 +287,7 @@ async function call(op, args) {
   const id = ++seq;
   await send({ id, op, args });
   const reply = JSON.parse(await nextLine());
-  if (!reply.ok) throw new Error(reply.error ?? "broker refused");
+  if (!reply.ok) throw new Error(reply.error ?? ("broker refused " + op));
   return reply.result;
 }
 const space = {
@@ -874,15 +878,21 @@ async function perform(
       // It used to answer with a one-element array (or an empty one), so jailed code calling
       // `space.readOne` got back something no other caller of that name gets, on a surface this
       // file declares NORMATIVE (audit package W7).
+      // `dir` is honoured on both reads: the newest record of a kind is the read most code wants
+      // (the current table, the latest state) and the only other way to it is a sortable path the
+      // kind may not declare. The read-one endpoint takes no `dir`, so newest-one is the newest
+      // page of one, which is the SDK's own `readNewest` shape.
+      const { dir, ...bare } = p as { dir?: string } & Record<string, unknown>;
+      const newest = dir === "desc" && !p.orderBy?.length;
       if (call.op !== "query") {
-        const rec = (await ctx.client.readOne(p)) ?? null;
+        const rec = (newest ? (await ctx.client.queryNewest(bare as typeof p, 1))[0] : await ctx.client.readOne(bare as typeof p)) ?? null;
         if (rec) note(rec, true);
         return { id: call.id, ok: true, result: rec };
       }
       // The pattern is the JAIL's, so `order_by` is data. A directional read cannot be combined
       // with it, so honour the pattern's own order when it has one rather than refusing the call.
       const n = Math.min(Number(limit) || 50, 500);
-      const rows = p.orderBy?.length ? await ctx.client.queryOrdered(p, n) : await ctx.client.queryOldest(p, n);
+      const rows = p.orderBy?.length ? await ctx.client.queryOrdered(p, n) : newest ? await ctx.client.queryNewest(bare as typeof p, n) : await ctx.client.queryOldest(bare as typeof p, n);
       for (const r of rows) note(r, false);
       return { id: call.id, ok: true, result: rows };
     }

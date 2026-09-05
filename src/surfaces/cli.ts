@@ -10,7 +10,7 @@
 import { RadiaClient, RadiaClientError } from "../../sdk/ts/client.ts";
 // From the SDK like every other wire shape. It reached into `src/core` before `Diagnostics` moved
 // into the wire vocabulary, under a type-only layering exemption that is no longer needed.
-import type { Diagnostics, MintedRun, RadiaRecord } from "../../sdk/ts/client.ts";
+import type { Diagnostics, KindDef, MintedRun, RadiaRecord } from "../../sdk/ts/client.ts";
 import { RESERVED_KINDS } from "../../sdk/ts/wire.ts";
 import { newestByKey, unsafeAsPopulation } from "../../sdk/ts/registry.ts";
 // A SURFACE may import a convention; the runtime may not. See test/layering.test.ts.
@@ -24,11 +24,11 @@ import { BINDING, type Binding, declareBinding, type Outcome, readBindings, sand
 import { brokeredInvoker, declareBrokerSandbox } from "../../extensions/ts/broker.ts";
 import { selectJavascriptJail } from "../../extensions/ts/exec-tool.ts";
 import { auditCompartment } from "../../extensions/ts/compartment.ts";
-import { addMember, DEFAULT_TEAM, declareTeamKinds, type MemberRemoval, type ObserveChange, readDefinition, removeMember, TEAM_FIELD, teamRoster } from "../../extensions/ts/team.ts";
+import { addMember, DEFAULT_TEAM, declareKind, declareTeamKinds, liveKinds, type MemberRemoval, type ObserveChange, readDefinition, removeMember, TEAM_FIELD, teamRoster } from "../../extensions/ts/team.ts";
 import { configLocation, type Harness, mcpInvocation, renderMcpConfig, renderMcpInstall } from "./mcp/config.ts";
 import { TOOLS } from "./mcp/tools.ts";
-import { framePrompt, harnessTemplates, loadTeamFile, substitute } from "./teamfile.ts";
-import { type HarnessRun, learnCodexThread, runHarnessMember } from "../../extensions/ts/harness-worker.ts";
+import { framePrompt, harnessTemplates, loadTeamFile, substitute, type TeamFileMember } from "./teamfile.ts";
+import { type HarnessRun, learnCodexThread, pumpLines, runHarnessMember } from "../../extensions/ts/harness-worker.ts";
 import { extensionFor, mediaTypeForPath } from "./media.ts";
 import {
   CREDENTIAL_STALE_DAYS,
@@ -51,7 +51,7 @@ import { ensureParent, radiaDir } from "../paths.ts";
 import { API_VERSION, VERSION } from "../version.ts";
 import { runUpdate } from "./update.ts";
 import { activityJson, loadActivity, renderActivity, wantColor, WINDOWS } from "./activity.ts";
-import { consoleColumns, env, httpRequest, mkdirp, onShutdown, readBinaryFile, readTextFile, realPath, restrictToOwner, serve, stdin, stdoutIsTerminal, UsageError, writeBinaryFile, writeStdout, writeStdoutBytes, writeTextFile } from "../platform.ts";
+import { consoleColumns, env, httpRequest, mkdirp, onResize, onShutdown, readBinaryFile, readTextFile, realPath, restrictToOwner, serve, spawnProcess, stdin, stdoutIsTerminal, UsageError, writeBinaryFile, writeStdout, writeStdoutBytes, writeTextFile } from "../platform.ts";
 import type { Lease } from "../storage/adapter.ts";
 
 const HELP = `radia <command> [options]
@@ -87,7 +87,8 @@ Inspect
   team up [<dir>|<team.json>] [--init] [--seed] [--fresh] [--once] [--done <json>] [--verbose] [--member <name>]…
                                       run a team's members as WORKERS: each claims its patterns and
                                       launches its harness (claude, codex, …) per claim, no session
-                                      needed. --init mints members not yet on this machine, --seed
+                                      needed. --init mints members not yet on this machine (and
+                                      re-mints one whose token lacks a grant the file names), --seed
                                       writes the file's starting records, --fresh retires the
                                       team's open tasks from earlier runs first, and the file's
                                       done pattern (or --done) ends the run with the record that
@@ -1590,13 +1591,15 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       const kind = flag(argv, "--kind");
       const terminal = stdoutIsTerminal();
       const color = wantColor(has(argv, "--no-color"), env("NO_COLOR"), terminal);
-      const columns = Number(flag(argv, "--width")) || consoleColumns() || 100;
+      // Read per frame rather than once, so a follow tracks the terminal as it is resized.
+      const fixedWidth = Number(flag(argv, "--width")) || 0;
+      const columns = () => fixedWidth || consoleColumns() || 100;
       const memo = new Map<string, string>();
       const frame = async (): Promise<string> => {
         const m = await loadActivity(client, WINDOWS[windowKey], kind, memo);
         return ctx.json
           ? JSON.stringify(activityJson(m), null, 2) + "\n"
-          : renderActivity(m, { columns, color, windowLabel: `the last ${windowKey === "1h" ? "hour" : windowKey.replace("m", " minutes")}` });
+          : renderActivity(m, { columns: columns(), color, windowLabel: `the last ${windowKey === "1h" ? "hour" : windowKey.replace("m", " minutes")}` });
       };
       if (!has(argv, "--follow")) {
         writeStdout(await frame());
@@ -1613,9 +1616,17 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       const paint = (text: string) =>
         screen ? "\x1b[H" + text.split("\n").map((l) => l + "\x1b[K").join("\n") + "\x1b[J" : text;
       let stopped = false;
+      let resized = false;
       let resolveWake: (() => void) | undefined;
       const off = onShutdown(() => {
         stopped = true;
+        resolveWake?.();
+      });
+      // A resize wakes the loop for an immediate repaint at the new width. That frame starts with
+      // a full clear, because the terminal has reflowed the old lines and in-place overwriting
+      // would leave the wrapped remnants standing.
+      const offResize = onResize(() => {
+        resized = true;
         resolveWake?.();
       });
       if (screen) writeStdout("\x1b[?1049h\x1b[?25l");
@@ -1623,7 +1634,9 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         while (!stopped) {
           const text = await frame();
           if (stopped) break;
-          writeStdout(paint(text));
+          const clear = screen && resized ? "\x1b[2J" : "";
+          resized = false;
+          writeStdout(clear + paint(text));
           await new Promise<void>((r) => {
             resolveWake = r;
             setTimeout(r, 3000);
@@ -1632,6 +1645,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       } finally {
         if (screen) writeStdout("\x1b[?25h\x1b[?1049l");
         off();
+        offResize();
       }
       return 0;
     }
@@ -2607,16 +2621,50 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
     const admin = adminFor();
     adminClient = admin;
     await declareTeamKinds(admin);
+    // The file's own kinds (a `tool_call` for an exec worker, a game's state kind), declared
+    // before any member is minted, the way the lab's `kinds` are: a member holds no kind_def: put.
+    // MERGED over what the space already declares under that name (`declareKind`): a raw
+    // registration on a dev space where the chat had declared `tool_call` with more paths was
+    // refused as an incompatible redeclaration, and rightly, since it would have stopped the
+    // chat's live grants compiling. A merge only ever ADDS paths, which needs no acknowledgement.
+    if (team.kinds?.length) {
+      const live = await liveKinds(admin);
+      for (const k of team.kinds) {
+        await declareKind(admin, k as unknown as KindDef, live);
+        say(`[kinds] ${String((k as { kind: string }).kind)} declared${live.has(String((k as { kind: string }).kind)) ? " (merged over the live declaration)" : ""}`);
+      }
+    }
+    const parseGrant = (g: string) => {
+      const [kind, ops] = g.split(":");
+      return { kind, operations: ops.split(",").map((o) => o.trim()).filter(Boolean) };
+    };
     for (const m of chosen) {
       const agent = `agent:${m.name}`;
-      if (m.definitionToken || storedMember(base, agent)) continue;
+      if (m.definitionToken) continue;
       const prior = await readDefinition(admin, agent);
-      if (prior.state === "active") {
+      const wanted = [...(m.grants ?? []), ...(m.unscopedGrants ?? [])].map(parseGrant);
+      if (storedMember(base, agent)) {
+        // CONVERGE rather than skip. A token stored by an earlier file (or an earlier version of
+        // this one) lacks the grants this file adds, and a definition removed on the space cannot
+        // mint at all; both looked like "already minted" and left the member failing at claim
+        // time. Held grants are read from enforcement (`permissions`), never from what a setup
+        // once assigned, and a shortfall is a ROTATION: the stored token is replaced.
+        const held = prior.state === "active" ? (await admin.permissions(agent)).kinds : [];
+        const missing = wanted.filter((w) => !held.some((k) => k.kind === w.kind && w.operations.every((o) => (k.operations as string[]).includes(o))));
+        if (prior.state === "active" && missing.length === 0) continue;
+        say(`[${agent}] re-minting: ${prior.state !== "active" ? "its definition is not live on this space" : `it lacks ${missing.map((w) => `${w.kind}:${w.operations.join(",")}`).join(" ")}`}`);
+      } else if (prior.state === "active") {
         throw new UsageError(`${agent} is already defined on this space but its token is not on this machine; run \`radia team add ${m.name} --team ${label} --rotate\` here`);
       }
-      const member = await addMember(admin, agent, { teams: [label], supersedes: prior.id });
+      const member = await addMember(admin, agent, { teams: [label], supersedes: prior.id, extra: (m.grants ?? []).map(parseGrant) });
+      // Reference kinds carry no team, so a scoped grant on one matches nothing: written unscoped,
+      // as the operator, the one way to say so (the lab does the same for its exec worker).
+      for (const g of m.unscopedGrants ?? []) {
+        const { kind, operations } = parseGrant(g);
+        await admin.put({ kind: "grant", body: { principal: agent, kind, operations } });
+      }
       saveMember(base, agent, { token: member.definitionToken, definitionToken: member.definitionToken, mintedAt: new Date().toISOString() });
-      say(`[${agent}] minted for team ${label}, token stored`);
+      say(`[${agent}] minted for team ${label}, token stored${m.grants?.length ? `, +${m.grants.join(" ")}` : ""}${m.unscopedGrants?.length ? `, unscoped ${m.unscopedGrants.join(" ")}` : ""}`);
     }
   }
   // LEFTOVERS. Unclaimed claimable work is never swept, so every earlier run's open tasks are
@@ -2644,6 +2692,62 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
       say(`[seed] ${r.kind} ${id}`);
     }
   }
+  // FOREIGN CLAIMANTS. A claimable record cannot say who may claim it, so a listener on one of this
+  // team's kinds that is NOT a member and holds an unscoped take (the chat fleet's exec worker on
+  // `tool_call`, on a dev space shared with it) can win the race. A `serveTools` worker echoes the
+  // call's team label onto its reply, so that case now works; any other claimant answers WITHOUT
+  // the label, which no member can read, and the space records an ordinary take. So it is named,
+  // and only where its interest can OVERLAP one of this team's claims: the chat's image and file
+  // workers listen on `tool_call` too, for their own tool names, and can never take a
+  // `run_javascript` call. A listener scoped to ANOTHER team cannot claim this one's records and
+  // is not reported; an unscoped grant beside a scoped one is invisible here exactly as in
+  // `radia team` (architecture-teams.md).
+  //
+  // Two passes, because the team's own claims are what overlap is measured against. A loop
+  // member's are in the file (its patterns), so those kinds are checked before anything is claimed.
+  // A service claims through its own loop and the file states only the grant (the exec member's
+  // `tool_call:take`, the case the first run missed), so those kinds are checked once the members
+  // are up and their live interests say what they claim.
+  const takes = (g: string) => (g.split(":")[1] ?? "").split(",").map((o) => o.trim()).includes("take") ? [g.split(":")[0]] : [];
+  const loopPatterns = (m: TeamFileMember) => (m.service ? [] : (m.patterns ?? [{ kind: "task" }]));
+  const loopKinds = new Set(chosen.flatMap((m) => loopPatterns(m).map((p) => p.kind)));
+  const grantKinds = new Set(chosen.flatMap((m) => [...(m.grants ?? []), ...(m.unscopedGrants ?? [])].flatMap(takes)).filter((k) => !loopKinds.has(k)));
+  const members = new Set(team.members.map((m) => `agent:${m.name}`));
+  // Two matches are DISJOINT when they name one field with constants that cannot both hold: a
+  // scalar, `$in` or `$any` on each side and no value in common. Anything else (an operator this
+  // does not read, a field only one side names) counts as overlapping, erring towards naming.
+  const values = (v: unknown): unknown[] | undefined => {
+    if (v === null || typeof v !== "object") return [v];
+    const o = v as Record<string, unknown>;
+    if (Array.isArray(o.$in)) return o.$in;
+    if ("$any" in o) return Array.isArray(o.$any) ? o.$any : [o.$any];
+    return undefined;
+  };
+  const disjoint = (a: Record<string, unknown>, b: Record<string, unknown>) =>
+    Object.keys(a).some((f) => {
+      if (!(f in b)) return false;
+      const va = values(a[f]), vb = values(b[f]);
+      return !!va && !!vb && !va.some((x) => vb.some((y) => x === y));
+    });
+  const auditClaimants = async (kinds: Set<string>) => {
+    for (const kind of kinds) {
+      const { interests } = await admin().dryRun(kind);
+      const ours: Record<string, unknown>[] = [
+        ...chosen.flatMap((m) => loopPatterns(m).filter((p) => p.kind === kind).map((p) => ({ [TEAM_FIELD]: label, ...(p.match ?? {}) }))),
+        ...interests.filter((i) => i.agent && members.has(i.agent)).map((i) => ({ [TEAM_FIELD]: label, ...(i.match ?? {}) })),
+      ];
+      const foreign = interests.filter((i) => i.agent && !members.has(i.agent));
+      for (const agent of new Set(foreign.map((i) => i.agent!))) {
+        const hit = foreign.filter((i) => i.agent === agent).find((i) => ours.length === 0 || ours.some((o) => !disjoint(o, i.match ?? {})));
+        if (!hit) continue;
+        const perms = await admin().permissions(agent);
+        const k = perms.kinds.find((x) => x.kind === kind && x.operations.includes("take"));
+        if (!k || k.patterns.length > 0) continue;
+        say(`[warn] ${agent} listens on ${kind} as ${JSON.stringify(hit.match ?? {})} with an UNSCOPED take and is not a member of team ${label}: it can claim this team's ${kind} records first. A reply that does not carry the team label is invisible to every member (a serveTools worker echoes it; a claimed task is simply gone). If that is not intended, stop it or run this team on a space of its own (radia dev --port 7790, then --url http://127.0.0.1:7790)`);
+      }
+    }
+  };
+  await auditClaimants(loopKinds);
   // The harnesses' directories live BESIDE THE CREDENTIALS FILE (`~/.radia/team/<member>/`), never
   // under the project: Claude Code applies a project's `disabledMcpServers` (in `~/.claude.json`)
   // by NAME to a server passed with `--mcp-config --strict-mcp-config`, for any cwd inside that
@@ -2663,6 +2767,11 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
   const donePattern = doneFlag ? JSON.parse(doneFlag) as { kind: string; match?: Record<string, unknown> } : team.done;
   let inFlight = 0;
   let answer: RadiaRecord | undefined;
+  // `--once`: the run ends when every loop member has handled one claim. A member's own loop stops
+  // itself after its claim; the shared controller is what also stops the SERVICES, which would
+  // otherwise hold the run open forever (the first service member did).
+  const loopMembers = chosen.filter((m) => !m.service).length;
+  let onceDone = 0;
   const watchDone = async () => {
     if (!donePattern) return;
     const startedAt = (await ctx.client.health()).now ?? new Date().toISOString();
@@ -2694,6 +2803,45 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
       throw new UsageError(
         `${agent}: no definition token on this machine. Add --init to mint it here (or \`radia team add ${m.name} --team ${label} --rotate\` if it exists elsewhere; the token is shown once and stored where it runs), or put it in ${file} as definitionToken`,
       );
+    }
+    if (m.service) {
+      // A SERVICE: spawned once with the member's own token in its environment and its command,
+      // restarted after a pause if it exits while the run lives, killed when the run ends. It is
+      // not looped over claims: it claims for itself (an exec worker's `serveTools`).
+      // `{{repo}}` is this checkout, for a service that is a script in it (the lab's exec worker);
+      // from a compiled binary it is the binary's directory, and a service should name a path.
+      const repo = mcpInvocation(base).fromSource ? realPath(fsPathOf(new URL("../../", import.meta.url))) : realPath(mcpInvocation(base).command).replace(/\/[^/]*$/, "");
+      const values = { model: m.model ?? "", url: base, token: definitionToken, credentials: realPath(credentialsPath()), radiaDir: radiaRoot, session: m.session ?? m.name, config: "", binary: "", mcpArgs: "[]", codexTools: "{}", repo };
+      const command = substitute(m.command!, values);
+      const workDir = m.cwd ?? `${dir}/${m.name}`;
+      mkdirp(workDir);
+      say(`[${agent}] up: service ${command[0]}, cwd ${workDir}`);
+      let backoff = 0;
+      while (!ac.signal.aborted) {
+        const child = spawnProcess({
+          command: command[0],
+          args: command.slice(1),
+          cwd: workDir,
+          env: { ...(m.env ?? {}), RADIA_URL: base, RADIA_DEFINITION_TOKEN: definitionToken, RADIA_CREDENTIALS: realPath(credentialsPath()), RADIA_DIR: radiaRoot },
+        });
+        const stop = () => child.kill();
+        ac.signal.addEventListener("abort", stop, { once: true });
+        const relay = (stream: ReadableStream<Uint8Array>) => pumpLines(stream, (line) => say(`[${agent}] | ${line}`));
+        const startedAt = Date.now();
+        const [status] = await Promise.all([child.status, relay(child.stdout), relay(child.stderr)]);
+        ac.signal.removeEventListener("abort", stop);
+        if (ac.signal.aborted) break;
+        backoff = Date.now() - startedAt > 60_000 ? 0 : Math.min(60_000, backoff + 5_000);
+        say(`[${agent}] service exited ${status.signal ? "on " + status.signal : status.code}; restarting in ${backoff / 1000}s`);
+        await new Promise<void>((r) => {
+          const t = setTimeout(r, backoff);
+          ac.signal.addEventListener("abort", () => {
+            clearTimeout(t);
+            r();
+          }, { once: true });
+        });
+      }
+      return;
     }
     const session = m.session ?? m.name;
     const resumed = storedSession(base, session)?.token;
@@ -2782,11 +2930,19 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
         inFlight--;
         runs.push(r);
         say(`[${agent}] ${r.kind} ${r.recordId.slice(-6)} -> ${r.outcome} (exit ${r.exitCode ?? "killed"}, ${(r.durationMs / 1000).toFixed(1)}s)`);
+        if (once && ++onceDone >= loopMembers) setTimeout(() => ac.abort(), 2000); // after the loop's own settle
       },
     });
   });
   try {
-    await Promise.all([...workers, watchDone()]);
+    // The second audit pass, once the services' interests are live. Not tied to the abort, so a
+    // `--once` run that finishes first still reports what it found.
+    const lateAudit = async () => {
+      if (grantKinds.size === 0) return;
+      await new Promise((r) => setTimeout(r, 2000));
+      await auditClaimants(grantKinds);
+    };
+    await Promise.all([...workers, watchDone(), lateAudit()]);
   } finally {
     off();
   }
@@ -2795,6 +2951,10 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
     : "no claims handled";
   return out(ctx, { members: chosen.map((m) => `agent:${m.name}`), runs, done: answer ?? null }, () =>
     answer ? `${summary}\n\ndone: ${answer.kind} ${answer.id}\n${JSON.stringify(answer.body, null, 2)}` : summary);
+}
+
+function fsPathOf(u: URL): string {
+  return u.protocol === "file:" ? decodeURIComponent(u.pathname) : u.href;
 }
 
 function describeClientError(e: unknown): string {

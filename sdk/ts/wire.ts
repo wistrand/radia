@@ -373,6 +373,27 @@ export function fnv1a(s: string): string {
 }
 
 /**
+ * The declaration in the ONE order every writer must use: `kindDefKey` is order-independent, so
+ * two orderings of one declaration share a key, and the idempotency row compares BODIES, which are
+ * not. A team's merge over a live declaration once re-put the chat's path order under the key the
+ * team's own order had been written with, and every `--init` after that was `idempotency_conflict`
+ * for a week.
+ *
+ * Sorts the two SET-valued arrays and drops undefined fields; nothing else changes. `contentKey` is
+ * deliberately left as declared: `keyOf` (`src/core/gc.ts`) joins its paths IN ORDER, so reordering
+ * it changes every record's compaction identity and splits a registry that latest-wins depends on.
+ */
+export function canonicalKindDef(def: KindDef): KindDef {
+  const out: KindDef = {
+    ...def,
+    indexedPaths: [...(def.indexedPaths ?? [])].sort((a, b) => a.path.localeCompare(b.path) || a.type.localeCompare(b.type)),
+  };
+  if (def.sortablePaths) out.sortablePaths = [...def.sortablePaths].sort();
+  for (const k of Object.keys(out) as (keyof KindDef)[]) if (out[k] === undefined) delete out[k];
+  return out;
+}
+
+/**
  * A deterministic idempotency key for a declaration, stable across process restarts and
  * independent of field order: the same def dedups (no record growth), a changed def is a new
  * successor record.

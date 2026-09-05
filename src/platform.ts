@@ -79,12 +79,31 @@ export interface PlatformBackend {
   stdoutIsTerminal(): boolean;
   /** The terminal's column count, or undefined when stdout is not one. */
   consoleColumns(): number | undefined;
+  /** Called when the terminal is resized (SIGWINCH); a no-op where the host has no such signal. */
+  onResize(handler: () => void): () => void;
   writeStderr(text: string): void;
   onShutdown(handler: () => void): () => void;
   serve(opts: ServeOptions, handler: (req: Request) => Response | Promise<Response>): { finished: Promise<void> };
   httpGetJson(url: string): Promise<unknown>;
   httpRequest(url: string, init: RequestInit): Promise<Response>;
   runCapture(cmd: string, args: string[], timeoutMs: number): Promise<{ code: number; stdout: string }>;
+  /** A long-running child with its output streamed: what a SERVICE member of a team is. `kill`
+   *  sends SIGTERM; `status` resolves when it exits. */
+  spawnProcess(opts: SpawnOptions): SpawnedProcess;
+}
+
+export interface SpawnOptions {
+  command: string;
+  args: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+}
+
+export interface SpawnedProcess {
+  stdout: ReadableStream<Uint8Array>;
+  stderr: ReadableStream<Uint8Array>;
+  status: Promise<{ code: number; signal: string | null }>;
+  kill(): void;
 }
 
 const encoder = new TextEncoder();
@@ -251,6 +270,11 @@ const denoBackend: PlatformBackend = {
   writeStderr: (text) => {
     Deno.stderr.writeSync(encoder.encode(text));
   },
+  onResize: (handler) => {
+    if (Deno.build.os === "windows") return () => {};
+    Deno.addSignalListener("SIGWINCH", handler);
+    return () => Deno.removeSignalListener("SIGWINCH", handler);
+  },
   onShutdown: (handler) => {
     const signals: Deno.Signal[] = Deno.build.os === "windows" ? ["SIGINT"] : ["SIGINT", "SIGTERM"];
     for (const sig of signals) Deno.addSignalListener(sig, handler);
@@ -273,6 +297,19 @@ const denoBackend: PlatformBackend = {
     }
   },
   httpRequest: (url, init) => fetch(url, init),
+  spawnProcess: (o) => {
+    const child = new Deno.Command(o.command, { args: o.args, cwd: o.cwd, env: o.env, stdin: "null", stdout: "piped", stderr: "piped" }).spawn();
+    return {
+      stdout: child.stdout,
+      stderr: child.stderr,
+      status: child.status.then((st) => ({ code: st.code, signal: st.signal ?? null })),
+      kill: () => {
+        try {
+          child.kill("SIGTERM");
+        } catch { /* already gone */ }
+      },
+    };
+  },
   runCapture: async (cmd, args, timeoutMs) => {
     const child = new Deno.Command(cmd, { args, stdout: "piped", stderr: "null" }).spawn();
     const timer = setTimeout(() => {
@@ -538,6 +575,9 @@ export function writeStderr(text: string): void {
  * credential outlives the space that minted it, 401ing the next command. SIGTERM does not
  * exist on Windows; SIGINT does, so the set is platform-dependent.
  */
+export function onResize(handler: () => void): () => void {
+  return backend.onResize(handler);
+}
 export function onShutdown(handler: () => void): () => void {
   return backend.onShutdown(handler);
 }
@@ -585,4 +625,8 @@ export function httpRequest(url: string, init: RequestInit): Promise<Response> {
  *  a runtime operation; a sandboxed process belongs to `extensions/ts/sandbox.ts`, outside `src/`. */
 export function runCapture(cmd: string, args: string[], timeoutMs: number): Promise<{ code: number; stdout: string }> {
   return backend.runCapture(cmd, args, timeoutMs);
+}
+
+export function spawnProcess(opts: SpawnOptions): SpawnedProcess {
+  return backend.spawnProcess(opts);
 }

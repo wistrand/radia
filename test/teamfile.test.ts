@@ -76,7 +76,7 @@ Deno.test("teamfile: a team is a directory, with the label, the seed and prompts
 });
 
 Deno.test("teamfile: the shipped example teams parse, name a harness each, and their prompts exist", () => {
-  for (const name of ["twenty-questions", "story-relay"]) {
+  for (const name of ["twenty-questions", "story-relay", "go-fish"]) {
     const t = loadTeamFile(`examples/teams/${name}`, (p) => {
       try {
         return Deno.readTextFileSync(p);
@@ -85,12 +85,44 @@ Deno.test("teamfile: the shipped example teams parse, name a harness each, and t
       }
     });
     assertEquals(t.team, name);
-    assert(t.members.length === 2 && t.members.every((m) => m.harness in BUILTIN_HARNESSES && m.prompt), name);
+    assert(t.members.length >= 2 && t.members.every((m) => m.service ? !!m.command : (m.harness in BUILTIN_HARNESSES && m.prompt)), name);
     assert(t.seed && t.seed.length >= 1 && t.seed.every((r) => r.kind === "task"), `${name} seeds a task`);
     assertEquals(t.done, { kind: "note", match: { topic: "final" } }, `${name} ends on a final note`);
-    assert(t.members.every((m) => m.resume === true && m.resumePrompt), `${name} runs warm sessions with a resume prompt`);
+    assert(t.members.filter((m) => !m.service).every((m) => m.resume === true && m.resumePrompt), `${name} runs warm sessions with a resume prompt`);
     // The game's prompts carry NO mechanics: the frame does, so a prompt says only the rules.
-    for (const m of t.members) for (const text of [m.prompt!, m.resumePrompt!]) assert(!/space_ack|claimId|space_lineage|parentIds/.test(text), `${name}/${m.name}: mechanics in the prompt: ${text.slice(0, 80)}`);
+    // go-fish is the stated exception: drawing from the pile (a take) and keeping a hand (a note
+    // query) are moves the frame does not have, so its prompt names those two tools and no other.
+    for (const m of t.members) for (const text of m.service ? [] : [m.prompt!, m.resumePrompt!]) {
+      assert(!/claimId|space_lineage|parentIds/.test(text), `${name}/${m.name}: mechanics in the prompt: ${text.slice(0, 80)}`);
+      if (name !== "go-fish") assert(!/space_ack|space_take|space_query|space_put/.test(text), `${name}/${m.name}: a tool named in the prompt`);
+      else assert(!/space_ack|space_take|space_put/.test(text), `${name}/${m.name}: a settle or claim tool named in the prompt`);
+    }
+    if (name === "go-fish") {
+      // The dealer is a SERVICE running the workspace-agent host beside the file, the only member
+      // granted the table; an author model writes the program; four players; the team declares the
+      // sandbox kind (a fresh space has none, and a member may not declare kinds) and the table.
+      assertEquals(t.members.map((m) => m.name), ["dealer", "author", "ada", "ben", "cy", "dee"]);
+      const dealer = t.members[0];
+      assert(dealer.service && dealer.command && dealer.command.some((s) => s.includes("go-fish/dealer-host.ts")), "the dealer is a service running the host beside the file");
+      assertEquals(dealer.grants, ["table:put,query,read_one"]);
+      assert(dealer.unscopedGrants?.includes("sandbox:put,query,read_one"), "the jail declaration is unscoped");
+      assertEquals(t.kinds?.map((k) => k.kind), ["sandbox", "table"]);
+      assert((t.kinds![1].sortablePaths as string[] | undefined)?.includes("seq"), "the newest table is the highest seq");
+      assertEquals(t.seed!.length, 1);
+      assertEquals(t.seed![0].body.phase, "write");
+      assertEquals(t.seed![0].body.tags, ["author"]);
+      // The author's prompt names the workspace, the entrypoint and the sandbox record whose `api`
+      // is the contract; a player's prompt touches none of it.
+      const author = t.members[1];
+      // It reads the table, because a model repairing the program has to see what the program sees.
+      assertEquals(author.grants, ["table:query,read_one"]);
+      assert(/dealer\.js/.test(author.prompt!) && /go-fish-dealer/.test(author.prompt!) && /kind: "sandbox"/.test(author.prompt!));
+      assert(/fix/.test(author.resumePrompt!), "the resumed author is fixing its program");
+      for (const pl of t.members.slice(2)) {
+        assert(!t.members.slice(2).some((m) => m.grants?.length), "a player holds no extra grant");
+        assert(!/dealer\.js|kind: "sandbox"|kind: "table"|space_save_workspace|space_edit_workspace|space_read_workspace/.test(pl.prompt!), `${pl.name} touches the table`);
+      }
+    }
   }
 });
 
@@ -127,4 +159,26 @@ Deno.test("teamfile: the frame wraps a job, the resume frame is the short one, a
   assertEquals(framePrompt("mine", false, false), "mine");
   assert(framePrompt(undefined, true, false).includes("Do what the record asks"));
   assertThrows(() => parseTeamFile(JSON.stringify({ members: [{ name: "a", harness: "claude", frame: "no" }] })), UsageError, "frame must be true or false");
+});
+
+Deno.test("teamfile: kinds, per-member grants and service members are typed and refused by name", () => {
+  const t = parseTeamFile(JSON.stringify({
+    kinds: [{ kind: "thing", indexedPaths: [] }],
+    members: [
+      { name: "svc", service: true, command: ["run", "{{repo}}/x.ts"], grants: ["thing:take"], unscopedGrants: ["sandbox:query"] },
+      { name: "a", harness: "claude", grants: ["thing:put,query"] },
+    ],
+  }));
+  assertEquals(t.kinds?.[0].kind, "thing");
+  assertEquals(t.members[0].harness, "service", "a service needs no harness; it is named for it");
+  assertEquals(t.members[0].grants, ["thing:take"]);
+  assertEquals(t.members[1].grants, ["thing:put,query"]);
+  const bad = (file: unknown, re: RegExp) => {
+    const e = assertThrows(() => parseTeamFile(JSON.stringify(file), "x.json"), UsageError);
+    assert(re.test(e.message), e.message);
+  };
+  bad({ members: [{ name: "svc", service: true }] }, /a service member needs its own command/);
+  bad({ members: [{ name: "a", harness: "claude", grants: ["thing"] }] }, /<kind>:<op,op>/);
+  bad({ members: [{ name: "a", harness: "claude" }], kinds: [{ indexedPaths: [] }] }, /kind_def bodies/);
+  bad({ members: [{ name: "a", harness: "claude", service: "yes" }] }, /service must be true or false/);
 });

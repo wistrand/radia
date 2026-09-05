@@ -13,6 +13,8 @@ import { RadiaClient } from "../../sdk/ts/client.ts";
 import { CAPABILITY_KIND, type ToolDef } from "../ts/capability.ts";
 import { PROGRESS_KIND } from "../ts/progress.ts";
 import { answer, serveTools, toolResult } from "../ts/tool-worker.ts";
+import type { ToolContext } from "../ts/agent-tools.ts";
+import { artifactMeta } from "../ts/exec-tool.ts";
 import { ENC_V1, encryptText, newFleetKeyPair, openBody, sealConversation } from "../ts/encrypted.ts";
 import { parseArgs } from "../ts/turn.ts";
 import { bootSpace } from "./space.ts";
@@ -60,6 +62,13 @@ Deno.test("[tool-worker] the envelope always carries callId, and the answer's sh
   assertEquals(r.body.owner, "human:t");
   assertEquals(r.body.ok, true);
   assertEquals(r.kind, "tool_result");
+  assertEquals("team" in r.body, false, "no label on the call, none invented on the reply");
+  // The reply lands where the call was: a team's call answered by a worker that knows nothing of
+  // teams still carries the label, or the scoped caller never sees its own answer.
+  const scoped = toolResult("call2", { tool: "calc", team: "go-fish" }, answer({ value: 1 }));
+  assertEquals(scoped.body.team, "go-fish");
+  const stamped = toolResult("call3", { tool: "calc", team: "go-fish" }, answer({ value: 1 }, { meta: { team: "mine" } }));
+  assertEquals(stamped.body.team, "mine", "a worker's own stamp wins over the echo");
   assertEquals(r.parentIds, undefined, "no parents unless the answer names them");
   assertEquals(r.taint, undefined, "ABSENT is not the same as an empty raise");
 
@@ -126,10 +135,14 @@ Deno.test("[tool-worker] unparseable arguments are refused as a PARSE error, bef
 Deno.test("[tool-worker] serves what it advertises, and a THROWN failure is an answer not a nack", async () => {
   await withSpace(async (c) => {
     const stop = new AbortController();
+    const seen: ToolContext[] = [];
     const serving = serveTools(c, {
       provider: "w1",
       tools: {
-        good: (a) => Promise.resolve({ echoed: a.x }),
+        good: (a, ctx) => {
+          if (ctx) seen.push(ctx);
+          return Promise.resolve({ echoed: a.x });
+        },
         bad: () => Promise.reject(new Error("nope")),
       },
       schemas: [def("good"), def("bad")],
@@ -140,9 +153,16 @@ Deno.test("[tool-worker] serves what it advertises, and a THROWN failure is an a
       const caps = await awaitOne(c, { kind: "capability", match: { tool: "good", provider: "w1" } });
       assert(caps, "each tool is advertised under its provider");
 
-      const ok = await c.put({ kind: "tool_call", body: { tool: "good", args: { x: 7 }, conversationId: "c1" } });
-      const okReply = await awaitOne<{ ok: boolean; output: { echoed: number } }>(c, { kind: "tool_result", match: { callId: ok.id } });
+      const ok = await c.put({ kind: "tool_call", body: { tool: "good", args: { x: 7 }, conversationId: "c1", team: "go-fish" } });
+      const okReply = await awaitOne<{ ok: boolean; output: { echoed: number }; team?: string }>(c, { kind: "tool_result", match: { callId: ok.id } });
       assertEquals(okReply?.body.output.echoed, 7);
+      // The call's compartment reaches the tool (for what it stores) and the reply (for who reads
+      // it), so a worker that knows nothing of teams serves one.
+      assertEquals(okReply?.body.team, "go-fish");
+      assertEquals(seen.find((x) => x.callId === ok.id)?.team, "go-fish");
+      assertEquals(artifactMeta(seen.find((x) => x.callId === ok.id), {}), { team: "go-fish" });
+      assertEquals(artifactMeta(seen.find((x) => x.callId === ok.id), { meta: () => ({ team: "mine", by: "w1" }) }), { team: "mine", by: "w1" });
+      assertEquals(artifactMeta(undefined, { meta: () => ({ team: "mine" }) }), {}, "no context, no stamp: the worker's meta takes the call's context");
 
       const bad = await c.put({ kind: "tool_call", body: { tool: "bad", conversationId: "c1" } });
       const badReply = await awaitOne<{ ok: boolean; output: string }>(c, { kind: "tool_result", match: { callId: bad.id } });

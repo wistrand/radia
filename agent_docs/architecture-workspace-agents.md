@@ -280,10 +280,12 @@ to `deno-confined` ran in the PLAIN jail while the record advertised confinement
 an entrypoint takes `(record)` and can reach nothing until a deployment says otherwise
 (`radia bind --brokered`). It was on for every hosted agent, bounded only by that agent's grants,
 which is the same shape as an unscoped artifact grant being a door out of a compartment. The
-measurement that decided it: the only production consumer of the brokered host, the analysis
+measurement that decided it: the consumer of the brokered host at the time, the analysis
 pipeline's three stages, never called `space` at all, so it was paying for the channel and the
 `mkfifo` permission behind it; it now dispatches per binding like `radia host` and asks for
-neither. `--broker` forces the channel on for a fleet whose bindings predate the field; `--no-broker`
+neither. The second consumer, go-fish's dealer (`examples/teams/go-fish/dealer-host.ts`), is the
+opposite case and is why the channel exists: its program's whole job is reads and writes, four to
+six per move, and it declares `brokered` for that. `--broker` forces the channel on for a fleet whose bindings predate the field; `--no-broker`
 is the default and stays accepted. A binding that predates the field and calls `space` gets a
 STAND-IN rather than `undefined`: every property throws "this binding is not brokered … add
 `radia bind <agent> --brokered`", because a silent default change whose symptom is "Cannot read
@@ -326,6 +328,13 @@ are invisible: a broker call rejected inside the jail appears in neither the tra
 
 The guard is that the advertised names are the names the shim binds, in the JS shim and the Python
 one (`extensions/conformance/broker.test.ts`), so the record cannot drift into a lie.
+
+**Both reads take `dir`, and the record had to say which match they answer.** Without a direction
+`query` and `readOne` answer the OLDEST, which is what "the single best match" meant; a program
+reading the current state got the first record ever written, and the only newest-first read was
+`orderBy` on a path the kind may have never declared sortable. `dir: "desc"` now works on both
+(the read-one endpoint takes none, so the broker answers newest-one as the newest page of one),
+and the API record states the default rather than leaving it to be discovered by a wrong answer.
 
 ## The operator surface
 

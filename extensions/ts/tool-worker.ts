@@ -28,6 +28,7 @@ export interface ToolCallBody {
   args?: Record<string, unknown>;
   conversationId?: string;
   owner?: string;
+  team?: string;
 }
 
 const ANSWER = Symbol("radia.toolAnswer");
@@ -68,6 +69,11 @@ const isAnswer = (v: unknown): v is ToolAnswer =>
  * `taint` is passed through rather than defaulted, because an empty array and an absent one differ
  * to the runtime: absent means "raise nothing", which is not the same as asserting the result is
  * unclassified.
+ *
+ * The reply lands WHERE THE CALL WAS: `conversationId`, `owner` and `team` are copied from the call,
+ * because the caller reads under its own scope and an answer outside it is an answer nobody sees.
+ * A worker serving several compartments (the chat's exec worker answering a team's call) needs no
+ * knowledge of any of them; `meta` may still override what a worker stamps on its own.
  */
 export function toolResult(
   callId: string,
@@ -76,7 +82,7 @@ export function toolResult(
 ): { kind: string; body: Record<string, unknown>; parentIds?: string[]; taint?: string[] } {
   return {
     kind: "tool_result",
-    body: { callId, conversationId: b.conversationId, owner: b.owner, ...a.meta, ok: a.ok, output: a.output },
+    body: { callId, conversationId: b.conversationId, owner: b.owner, ...(b.team !== undefined ? { team: b.team } : {}), ...a.meta, ok: a.ok, output: a.output },
     ...(a.parentIds?.length ? { parentIds: a.parentIds } : {}),
     ...(a.taint ? { taint: a.taint } : {}),
   };
@@ -240,7 +246,13 @@ export async function serveTools(client: RadiaClient, opts: ServeOptions): Promi
       refresh(); // a tool added since the last claim becomes claimable without a restart
       const raw = rec.body;
       const callId = rec.id;
-      const ctx: ToolContext = { callId, conversationId: raw.conversationId, owner: raw.owner, caller: () => callerClient(rec) };
+      const ctx: ToolContext = {
+        callId,
+        conversationId: raw.conversationId,
+        owner: raw.owner,
+        ...(raw.team !== undefined ? { team: raw.team } : {}),
+        caller: () => callerClient(rec),
+      };
       const stage = opts.stage?.(raw.tool ?? "");
       if (stage) await progress(c, { ...ctx, stage, by: provider, note: raw.tool }, [callId]);
       let a: ToolAnswer;

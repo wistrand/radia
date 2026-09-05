@@ -642,6 +642,12 @@ useful one, which is why a cheap scenario's race is wider than its work.
   because it IS implemented. The spec now states the supported set beside it, checked against the
   compiler.
 
+- **A read leaves no event, so honesty by inspection is honesty by prompt.** Designing the
+  five-model Go Fish (2026-09-05) put it plainly: the table is a workspace every member may read,
+  and a player that peeks writes nothing, so the log cannot show it. The rule that a take is
+  recorded only after it wins a record ("the space records what agents DID") has this as its
+  other face: what an agent LOOKED AT is never in the record. Anything that must be unseen needs
+  a grant that refuses the read, not a prompt that asks for restraint.
 - **Refuse at the decision, not only in the description.** A chat session (2026-09-04, SSO, fast
   tier) put the artifact id `generate_image` returned under `save_workspace`'s `files`, which holds
   TEXT: the tree gained a 26-byte `penguin.png` holding the id, three versions shipped a broken
@@ -686,6 +692,85 @@ traced it: `~/.claude.json` holds `disabledMcpServers: ["radia"]` for this repo,
 to a strict `--mcp-config` server from any cwd inside it. Members now run in `~/.radia/team/`. The harness output
 was also relayed raw, which put a 20 KB `space_kinds` answer on one log line; it is digested to one
 line per event now, `--verbose` for the stream.
+
+The first `examples/teams/go-fish` run (2026-09-05, five members, the chat fleet on the same dev
+space): the dealer wrote its program and table, sent the setup `tool_call`, and the answer came in
+18ms from `agent:chat-exec`, the CHAT's exec worker, whose unscoped `tool_call: take` beat the
+team's own service to the record. Its `tool_result` carried no `team`, so the dealer's scoped
+`space_children` and `space_watch` answered nothing for three minutes over a result that existed,
+and the run stalled at the deal. Nothing in the log told it from a slow worker: a take is a take.
+The reply now lands where the call was (`toolResult` copies `team` from the call, as it did
+`conversationId` and `owner`), so the chat's worker serves the team; `team up` names a non-member
+with an unscoped take on a kind a member claims, at start, for the claimants that do not echo.
+
+The same day the dealer became a workspace agent (`examples/teams/go-fish/dealer-host.ts`), and
+the reference program written for its smoke hit the trap the author model would have hit: the
+broker's `readOne` answered the DEAL on every move, because it returns the oldest match unless the
+pattern orders, while the API record the jail is handed said "the single best match". The record
+now says which match and how to ask for the newest; the program orders by a sortable `seq`. Two
+more, both caught by the smoke before any model ran: a fresh space has no `sandbox` kind, and a
+member may write sandbox records but not kinds, so the team file declares it; and `phase` is not
+an indexed path of `task`, so a take cannot match on it, only on `tags`. Per move the host spends
+about 200ms (a jail spawn, four to six brokered writes); a full game of four ranks ran in 4.8s.
+
+The first real run of that design (2026-09-05, Claude Code as author, two Claude and two Codex
+players) wrote a working program in one pass, 18 turns and no local file, and the game stalled at
+table version 5. The program took the game id from the ask task, and two of four players (one
+Codex, one Claude, both on resumed sessions) sent asks without it: `match: {game: undefined}`
+matches anything, so those moves ran against the newest table and wrote tables with no `game`
+(JSON drops an undefined field), and the next ask that DID carry it matched only the two oldest
+versions, read a stale turn, refused, and handed no turn on. The rule that came out: a program's
+protocol must not depend on a player copying a field forward. The current table is the newest
+table record, the game id lives in its state, and a refusal hands the turn on again. The reference
+program and the author's prompt say so; the live author got the defect as a `fix` task, claimed it
+within a minute, saved a second version, and handed the stalled player a fresh turn.
+
+The second game on that space found the fix wrong in two ways, both mine. "Newest by `seq`"
+crosses games: the previous game's table ran to seq 6 while the new one started at 0, so every
+ask was refused as `wrong-game`, and a refusal that hands the turn back to the old table's player
+put cy through four paid retries in a minute. The current table is the newest table RECORD, which
+jailed code could not ask for: the broker's `query` ignored `dir` and the read-one endpoint rejects
+it, so the only newest-first read was `orderBy` on a sortable path. `dir: "desc"` now works on both
+broker reads (`extensions/conformance/broker.test.ts`), the API record says so, a `wrong-game`
+refusal hands nothing on, and the smoke plays two games back to back, which is also what found
+that the team file's `done` pattern stops the dealer service with the rest of the run.
+
+What made that expensive rather than merely wrong is worth stating on its own: **the host only
+noticed a program that THREW.** A program answering `ok: false` forever looks like success, so the
+fix task was never written and the loop ran on a person's attention instead. It cost four launches
+in a minute, twice, and a third of the way in `radia team up --fresh` had also dead-lettered the
+one open `fix` task, so the repair the author had been handed was silently gone. The host now
+counts identical asks answered `ok: false` and hands the author a fix at the third (`watchForALoop`,
+one task per program version), which is what makes `--fresh` survivable: the loop re-raises the
+repair instead of losing it. Raising it is not enough on its own, measured on the run that proved
+the rest: the author repaired the program in 59s and the player paid six launches during those 59
+seconds, because every refusal handed the turn back. The move that raises a fix now HOLDS its claim
+until a new version appears (`waitForRepair`, heartbeaten, concurrency 1), so the game pauses for
+the repair. Guard: the go-fish smoke saves a program that always refuses.
+
+Two more of that run's stalls were the same rule seen from different sides, and the rule is worth
+stating plainly: **a refusal from the player whose turn it is must still advance the turn.** A
+player refused for a reason repeating the ask cannot cure is asked again and sends the same thing,
+which is a paid loop; a refusal that hands NOTHING on kills the game outright. Both happened. The
+second is how the run ended: a player holding no cards was handed the turn anyway (the pile was
+empty too), had no rank to ask with, invented `{action: "draw"}` rather than an ask, and the
+program answered `unknown-target` and wrote no turn task. So the author's prompt now carries three
+rules (advance on refusal, never hand the turn to a player who cannot play, end the game when
+nobody can) and the players' prompt says to send the ask fields even when nothing looks askable,
+since the dealer knows what to do with an ask it cannot grant and nothing about an invented field.
+The author was then blocked repairing it: it held no grant on `table`, so it could not see the
+state its own program reads. A model that maintains a program needs read access to what that
+program owns, which is not the same as a player having it.
+
+The first go-fish game to FINISH ran at 17:36 to 17:40 on that same space: 29 claims, all settled
+by the harness that made them, ending on the final note (ada, ben and cy two books each, dee none)
+and stopping the run. Two Claude Code players and two Codex, about $3.50 of Claude turns plus the
+Codex halves, and a book was laid roughly every four moves. Of that, six launches and about $0.95
+were one player nacking a turn from the ABANDONED game, whose hand was empty: a nack returns the
+task, it is re-claimed, and only the space's attempt ceiling ended it at `dead_letter` after six.
+A worker that cannot do a piece of work must still answer it. The players' prompt (both halves, and
+the resume half is the one that runs) now says to send the ask whatever the hand looks like, since
+the dealer is the only thing that can move the game on and a returned turn comes straight back.
 
 The first complete team run (2026-09-05, `examples/teams/story-relay`, Claude Code opening, Codex
 closing): six paragraphs in 2m47s, every claim settled by the harness that made it and the baton

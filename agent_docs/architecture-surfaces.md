@@ -78,8 +78,10 @@ Every non-portable host operation lives in one file: process (`args`, `exit`, `e
 files (`readTextFile`, `writeTextFile`, `mkdirp`, `removeFile`, `restrictToOwner`,
 `moduleRelative`), **binary files** for artifact blobs (`writeBinaryFile`, `readBinaryFile`,
 `readBinaryStream`, `fileSize`), standard streams (`stdin`, `writeStdout`, `writeStderr`), the
-terminal (`stdoutIsTerminal`, `consoleColumns`: what decides colour, width and the alternate
-screen in `radia activity`), signals (`onShutdown`), and HTTP in both directions: `serve` for the socket the space listens on,
+terminal (`stdoutIsTerminal`, `consoleColumns`, `onResize`: what decides colour, width, the
+alternate screen and the repaint on SIGWINCH in `radia activity`), signals (`onShutdown`), processes (`runCapture` for a short command
+with its output, `spawnProcess` for a long-running child with its streams: a team's service
+member), and HTTP in both directions: `serve` for the socket the space listens on,
 `httpGetJson` for OIDC discovery and JWKS, and `httpRequest` for the S3 blob store, which needs four
 verbs, headers it signs itself and a response body it streams to the caller.
 
@@ -422,7 +424,9 @@ kept in step with the console's `activityModel` by `test/activity.test.ts`. `--f
 every three seconds, on a terminal in the ALTERNATE SCREEN with the cursor hidden (the way `less`
 and `top` run), restored on Ctrl-C so the shell's scrollback is untouched; `--json` prints the model. Colour is ANSI 256 and OFF into a pipe, under
 `NO_COLOR` (any value) or past `--no-color`, so a captured run is plain text, and the terminal
-size comes through the platform seam (`consoleColumns`, `stdoutIsTerminal`).
+size comes through the platform seam (`consoleColumns`, `stdoutIsTerminal`, `onResize`): the width
+is read per frame and a resize (SIGWINCH) repaints at once, after one full clear, since the
+terminal has reflowed the old lines and overwriting in place would leave their remnants.
 
 `integrity` verifies the event chain and names the FIRST divergence rather than a verdict, because
 "the chain is invalid" is not something anyone can act on. It prints the caveat when the chain is

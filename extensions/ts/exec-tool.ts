@@ -198,6 +198,15 @@ export function execTools(client: RadiaClient, opts: ExecToolsOptions): {
   };
 }
 
+/** What a stored output is labelled with: the CALL's compartment first (`ctx.team`, so a worker
+ *  serving another team's call stores where that team reads), then the worker's own `meta`. */
+export function artifactMeta(ctx: ToolContext | undefined, opts: Pick<ExecToolsOptions, "meta">): Record<string, string | number | boolean | null> {
+  return {
+    ...(ctx?.team !== undefined ? { team: ctx.team } : {}),
+    ...((ctx && opts.meta?.(ctx)) ?? {}),
+  };
+}
+
 /** Oversized or explicitly-saved output, as an artifact parented on the call. Best effort: a bad
  *  media type must not swallow the output the caller actually asked for. */
 async function store(
@@ -218,7 +227,7 @@ async function store(
       // call that produced them and `space_children` finds them from the call.
       ...(ctx?.callId ? { parentIds: [ctx.callId] } : {}),
       taint: (opts.readRoots ?? []).length > 0 ? ["file"] : [],
-      meta: (ctx && opts.meta?.(ctx)) ?? {},
+      meta: artifactMeta(ctx, opts),
     });
     return { artifactId: a.id, size: a.size };
   } catch (e) {

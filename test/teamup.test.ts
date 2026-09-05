@@ -100,6 +100,22 @@ Deno.test("team up: runs a team.json member as a worker that launches its harnes
     const again = await cli(["team", "up", ".", "--init", "--seed", "--once", "--url", url], { ...env, RADIA_DIR: ".radia" }, tdir);
     assertEquals(again.code, 0, again.err);
     assert(!again.err.includes("minted"), again.err);
+    // A file that GAINS a grant re-mints the stored member rather than skipping it: what the
+    // member holds is read from enforcement, and a shortfall is a rotation.
+    const widened = JSON.parse(await Deno.readTextFile(`${tdir}/team.json`)) as { members: Record<string, unknown>[] };
+    widened.members[0].grants = ["note:take"];
+    widened.members[0].unscopedGrants = ["sandbox:query"];
+    await Deno.writeTextFile(`${tdir}/team.json`, JSON.stringify(widened));
+    const grown = await cli(["team", "up", tdir, "--init", "--seed", "--once", "--url", url], env);
+    assertEquals(grown.code, 0, grown.err);
+    assertStringIncludes(grown.err, "[agent:player] re-minting: it lacks note:take sandbox:query");
+    assertStringIncludes(grown.err, "[agent:player] minted for team game, token stored, +note:take, unscoped sandbox:query");
+    const held = await admin.permissions("agent:player");
+    assert(held.kinds.some((k) => k.kind === "note" && k.operations.includes("take")), JSON.stringify(held.kinds));
+    assert(held.kinds.some((k) => k.kind === "sandbox" && k.operations.includes("query") && k.patterns.length === 0), "the unscoped grant is unscoped");
+    const settled = await cli(["team", "up", tdir, "--init", "--seed", "--once", "--url", url], env);
+    assertEquals(settled.code, 0, settled.err);
+    assert(!settled.err.includes("minting") && !settled.err.includes("minted"), settled.err);
     assertStringIncludes(again.out, "1 run: 0 settled, 1 ok");
     const upLine = again.err.split("\n").find((l) => l.includes("[agent:player] up:"))!;
     assert(/config \/\S+\/team\/player\.mcp\.json, cwd \/\S+\/team\/player/.test(upLine), upLine);
@@ -134,6 +150,79 @@ Deno.test("team up: runs a team.json member as a worker that launches its harnes
     assertEquals(fresh.code, 0, fresh.err);
     assertStringIncludes(fresh.err, "[fresh] 1 open task from earlier runs dead-lettered");
     assertEquals((await admin.getEnvelope(leftover))!.state, "dead_letter");
+
+    // A FOREIGN CLAIMANT: a principal outside the team, holding an UNSCOPED take on a kind a member
+    // claims, listening. It wins the race and answers outside the compartment (the chat's exec
+    // worker took the go-fish dealer's tool_call), so the verb names it at start. One scoped to
+    // ANOTHER team cannot claim these records and is not reported.
+    const outsider = await admin.createAgentDefinition("agent:outsider", [
+      { principal: "agent:outsider", kind: "task", operations: ["take"] },
+      { principal: "agent:outsider", kind: "interest", operations: ["put"] },
+    ]);
+    await new RadiaClient(url, { definitionToken: outsider.definitionToken }).publishInterest({ kind: "task" });
+    const elsewhere = await admin.createAgentDefinition("agent:other-team", [
+      { principal: "agent:other-team", kind: "interest", operations: ["put"] },
+    ]);
+    await admin.grant("agent:other-team", "task", ["take"], { team: "elsewhere" });
+    await new RadiaClient(url, { definitionToken: elsewhere.definitionToken }).publishInterest({ kind: "task", match: { team: "elsewhere" } });
+    // Unscoped, but listening for a tag this team never uses: its interest cannot overlap the
+    // solver's `tags: {$any: "solver"}`, the way the chat's image worker listens on `tool_call`
+    // for its own tool name and can never take a `run_javascript` call.
+    const tagger = await admin.createAgentDefinition("agent:tagger", [
+      { principal: "agent:tagger", kind: "task", operations: ["take"] },
+      { principal: "agent:tagger", kind: "interest", operations: ["put"] },
+    ]);
+    await new RadiaClient(url, { definitionToken: tagger.definitionToken }).publishInterest({ kind: "task", match: { tags: { $any: "tagger" } } });
+    const foreign = await cli(["team", "up", ddir, "--seed", "--fresh", "--once", "--url", url], env);
+    assertEquals(foreign.code, 0, foreign.err);
+    assertStringIncludes(foreign.err, "[warn] agent:outsider listens on task as {} with an UNSCOPED take and is not a member of team quiz");
+    assert(!foreign.err.includes("agent:other-team"), foreign.err);
+    assert(!foreign.err.includes("agent:tagger"), foreign.err);
+
+    // A SERVICE member: spawned once with its token in the environment, its output relayed, its
+    // extra and unscoped grants written by --init, and the team's kinds declared. The service here
+    // is a script that prints its principal (from the token it was handed) and waits.
+    const sdir = `${dir}/svc`;
+    await Deno.mkdir(sdir, { recursive: true });
+    await Deno.writeTextFile(`${sdir}/svc.ts`, `
+      import { RadiaClient } from "${new URL("../sdk/ts/client.ts", import.meta.url).href}";
+      const c = new RadiaClient(Deno.env.get("RADIA_URL")!, { definitionToken: Deno.env.get("RADIA_DEFINITION_TOKEN")! });
+      const h = await c.health();
+      // Its OWN permissions: a member may read those and nobody else's, and the run's agent is
+      // what the permissions are keyed by.
+      const mine = await c.permissions(h.agent ?? "agent:helper");
+      console.log("svc up as " + h.principal + " with " + mine.kinds.map((k) => k.kind + ":" + k.operations.join(",")).sort().join(" "));
+      await new Promise((r) => setTimeout(r, 60_000));
+    `);
+    // The space already declares `widget` with MORE paths (another app's), so the team's narrower
+    // declaration must merge over it rather than be refused as an incompatible redeclaration.
+    await admin.registerKind({ kind: "widget", indexedPaths: [{ path: "team", type: "keyword" }, { path: "owner", type: "keyword" }], claimable: true });
+    await Deno.writeTextFile(`${sdir}/team.json`, JSON.stringify({
+      team: "svc",
+      kinds: [{ kind: "widget", indexedPaths: [{ path: "team", type: "keyword" }] }],
+      members: [
+        { name: "helper", service: true, command: [Deno.execPath(), "run", "-A", `${sdir}/svc.ts`], grants: ["widget:take"], unscopedGrants: ["interest:query"] },
+        { name: "asker", harness: "script", command: [Deno.execPath(), "run", "-A", fixture], env: { FAKE_MODE: "exit0" }, patterns: [{ kind: "task", match: { tags: { $any: "asker" } } }] },
+      ],
+      seed: [{ kind: "task", body: { title: "one", tags: ["asker"] } }],
+    }));
+    // The service claims `widget` through its own loop and the file states only the GRANT, so a
+    // foreign unscoped claimant on that kind is found from the grant, not from a pattern.
+    const grabber = await admin.createAgentDefinition("agent:grabber", [
+      { principal: "agent:grabber", kind: "widget", operations: ["take"] },
+      { principal: "agent:grabber", kind: "interest", operations: ["put"] },
+    ]);
+    await new RadiaClient(url, { definitionToken: grabber.definitionToken }).publishInterest({ kind: "widget" });
+    const svc = await cli(["team", "up", sdir, "--init", "--seed", "--once", "--url", url], env);
+    assertEquals(svc.code, 0, svc.err);
+    assertStringIncludes(svc.err, "[warn] agent:grabber listens on widget as {} with an UNSCOPED take and is not a member of team svc");
+    assertStringIncludes(svc.err, "[kinds] widget declared (merged over the live declaration)");
+    const widget = (await admin.listKinds()).find((k) => k.kind === "widget")!;
+    assert(widget.indexedPaths.some((p) => p.path === "owner"), "the merge kept the other app's path");
+    assertStringIncludes(svc.err, "[agent:helper] minted for team svc, token stored, +widget:take, unscoped interest:query");
+    assertStringIncludes(svc.err, "[agent:helper] up: service ");
+    assert(/\[agent:helper\] \| svc up as \S+ with .*interest:put,query .*widget:take/.test(svc.err), svc.err);
+    assertStringIncludes(svc.out, "1 run: 0 settled, 1 ok");
 
     // A member nobody minted here is refused by name, with the fix.
     await Deno.writeTextFile(file, JSON.stringify({ members: [{ name: "ghost", harness: "script", command: ["true"] }] }));
