@@ -122,8 +122,9 @@ Deno.test("[team] the roster reads from enforcement, not from what was assigned"
     const codex = roster.find((m) => m.agent === "agent:codex")!;
     assert(claude.opsPowers.includes("observe"));
     assert(!codex.opsPowers.includes("observe"), "--no-observe must actually withhold the power");
-    // `kind_def` is the DISCOVERY grant and is deliberately unscoped; the rest carry the team.
-    assertEquals(claude.kinds.map((k) => k.kind).sort(), ["artifact", "capability", "kind_def", "note", "task", "workspace"]);
+    // `kind_def` and `interest` are the DISCOVERY grants and are deliberately unscoped (a
+    // declaration and an announcement carry no team); the rest carry the team.
+    assertEquals(claude.kinds.map((k) => k.kind).sort(), ["artifact", "capability", "interest", "kind_def", "note", "task", "workspace"]);
     assertEquals(claude.teams, [DEFAULT_TEAM]);
     assert(claude.active);
   } finally {

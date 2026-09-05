@@ -30,6 +30,7 @@ deno task lab -- --scenario scripts/agent-lab/scenarios/smoke.json   # no model,
 | `workspace-smoke` | nothing | the workspace chain with no model: author a tree, promote, bind, run it brokered |
 | `team-workspace` | a few cents | the same chain with a MODEL authoring the tree: does it produce something a host can actually run |
 | `team-tree` | ~$1 | THREE models on one tree: one writes it, one changes it, one checks the answer after it ran |
+| `team-up` | a few cents | the worker is not a session: `radia team up` runs the Codex member as a WORKER that launches `codex exec` only when a task is claimed, so the requester's task is picked up with no harness alive until it arrives. The launched adapter is traced like any other (`trace` in the member's `team.json`) |
 
 **Every producer/consumer scenario has a startup race, and the prompt is where it is settled.** A
 harness spends between 10 seconds and a minute orienting itself before its first tool call, and the

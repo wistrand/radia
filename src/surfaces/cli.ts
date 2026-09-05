@@ -10,7 +10,7 @@
 import { RadiaClient, RadiaClientError } from "../../sdk/ts/client.ts";
 // From the SDK like every other wire shape. It reached into `src/core` before `Diagnostics` moved
 // into the wire vocabulary, under a type-only layering exemption that is no longer needed.
-import type { Diagnostics, MintedRun } from "../../sdk/ts/client.ts";
+import type { Diagnostics, MintedRun, RadiaRecord } from "../../sdk/ts/client.ts";
 import { RESERVED_KINDS } from "../../sdk/ts/wire.ts";
 import { newestByKey, unsafeAsPopulation } from "../../sdk/ts/registry.ts";
 // A SURFACE may import a convention; the runtime may not. See test/layering.test.ts.
@@ -26,6 +26,9 @@ import { selectJavascriptJail } from "../../extensions/ts/exec-tool.ts";
 import { auditCompartment } from "../../extensions/ts/compartment.ts";
 import { addMember, DEFAULT_TEAM, declareTeamKinds, type MemberRemoval, type ObserveChange, readDefinition, removeMember, TEAM_FIELD, teamRoster } from "../../extensions/ts/team.ts";
 import { configLocation, type Harness, mcpInvocation, renderMcpConfig, renderMcpInstall } from "./mcp/config.ts";
+import { TOOLS } from "./mcp/tools.ts";
+import { framePrompt, harnessTemplates, loadTeamFile, substitute } from "./teamfile.ts";
+import { type HarnessRun, learnCodexThread, runHarnessMember } from "../../extensions/ts/harness-worker.ts";
 import { extensionFor, mediaTypeForPath } from "./media.ts";
 import {
   CREDENTIAL_STALE_DAYS,
@@ -36,15 +39,19 @@ import {
   resolveDefinitionToken,
   resolveToken,
   saveLogin,
+  saveMember,
+  saveSession,
   storedLogin,
+  storedMember,
   storedObserver,
+  storedSession,
 } from "../credentials.ts";
 import { flag, flags, has, positional } from "../flags.ts";
-import { ensureParent } from "../paths.ts";
+import { ensureParent, radiaDir } from "../paths.ts";
 import { API_VERSION, VERSION } from "../version.ts";
 import { runUpdate } from "./update.ts";
 import { activityJson, loadActivity, renderActivity, wantColor, WINDOWS } from "./activity.ts";
-import { consoleColumns, env, httpRequest, onShutdown, readBinaryFile, serve, stdin, stdoutIsTerminal, UsageError, writeBinaryFile, writeStdout, writeStdoutBytes } from "../platform.ts";
+import { consoleColumns, env, httpRequest, mkdirp, onShutdown, readBinaryFile, readTextFile, realPath, restrictToOwner, serve, stdin, stdoutIsTerminal, UsageError, writeBinaryFile, writeStdout, writeStdoutBytes, writeTextFile } from "../platform.ts";
 import type { Lease } from "../storage/adapter.ts";
 
 const HELP = `radia <command> [options]
@@ -77,6 +84,14 @@ Inspect
                                       session token alone; --compact-definition prints the
                                       durable one, for a tool that cannot re-authenticate
   team                                every principal that holds a definition, and what it can do
+  team up [<dir>|<team.json>] [--init] [--seed] [--fresh] [--once] [--done <json>] [--verbose] [--member <name>]…
+                                      run a team's members as WORKERS: each claims its patterns and
+                                      launches its harness (claude, codex, …) per claim, no session
+                                      needed. --init mints members not yet on this machine, --seed
+                                      writes the file's starting records, --fresh retires the
+                                      team's open tasks from earlier runs first, and the file's
+                                      done pattern (or --done) ends the run with the record that
+                                      matched printed as the answer (examples/teams/)
   team add <name>… [--team <t>]… [--harness claude|codex|agy|json] [--grant <kind>:<op,op>]…
                    [--observe] [--rotate] [--name <mcp-server>]
                                       put an agent harness on this space: declare the shared
@@ -572,8 +587,9 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
     // stops both.
     case "team": {
       const [sub] = positional(argv, 1);
-      const USAGE = "team [list [--all] | add <name>… [--team <t>]… [--harness claude|codex|agy|json] [--grant <kind>:<op,op>]… [--observe] [--rotate] | remove <name>…]";
-      if (sub !== undefined && sub !== "add" && sub !== "remove" && sub !== "list") return usage(USAGE);
+      const USAGE = "team [list [--all] | add <name>… [--team <t>]… [--harness claude|codex|agy|json] [--grant <kind>:<op,op>]… [--observe] [--rotate] | remove <name>… | up [<dir>|<team.json>] [--init] [--seed] [--fresh] [--once] [--done <json>] [--verbose] [--member <name>]…]";
+      if (sub !== undefined && sub !== "add" && sub !== "remove" && sub !== "list" && sub !== "up") return usage(USAGE);
+      if (sub === "up") return await teamUp(argv, ctx);
       // A bare name is a convenience, not a second namespace: `claude` means `agent:claude`, and
       // anything already carrying a prefix is passed through so a `human:` member still works.
       const names = positional(argv, 64).slice(1).map((n) => (n.includes(":") ? n : `agent:${n}`));
@@ -741,6 +757,10 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         // racer that revoked in between loses instead of adding a second definition.
         const after = state === "active" ? (await readDefinition(client, agent)).id : prior.id;
         const member = await addMember(client, agent, { teams: lanes, observe, extra, supersedes: after });
+        // The token is shown once; `radia team up` runs this member as a worker later and needs the
+        // durable half, so it is kept where the CLI's other credentials live. Best effort: a file
+        // that cannot be written costs `up` a clear message, never `add` its result.
+        saveMember(client.base, agent, { token: member.definitionToken, definitionToken: member.definitionToken, mintedAt: new Date().toISOString() });
         const short = agent.replace(/^agent:/, "");
         // The harness follows the NAME when the name is one, which is what makes the common case
         // (`radia team add claude codex`) print the right block for each without a flag.
@@ -2554,6 +2574,232 @@ async function readAllBytes(stream: ReadableStream<Uint8Array>): Promise<Uint8Ar
 }
 
 // ---- output ----
+
+/**
+ * `radia team up`: the members of a `team.json` as workers (extensions/ts/harness-worker.ts). Holds
+ * nothing but each member's own durable half, which `team add` stored on this machine; setup stays
+ * the privileged step, and this mints no member. Each member's harness resumes the SAME session
+ * run the loop claims under, so the claim id in its prompt is one it may settle.
+ */
+async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
+  const where = positional(argv, 2)[1] ?? "team.json";
+  const team = loadTeamFile(where, readTextFile);
+  const file = where.endsWith(".json") ? where : `${where.replace(/\/$/, "")}/team.json`;
+  const base = flag(argv, "--url") ?? team.url ?? ctx.client.base;
+  const only = new Set(flags(argv, "--member").map((n) => String(n).replace(/^agent:/, "")));
+  const chosen = team.members.filter((m) => only.size === 0 || only.has(m.name));
+  if (!chosen.length) throw new UsageError(`no member of ${file} matches --member ${[...only].join(", ")}`);
+  const once = has(argv, "--once");
+  const label = team.team ?? DEFAULT_TEAM;
+  // Every line stamped on the wall clock, because a run spans minutes and a harness's pause is
+  // only visible as a gap between lines.
+  const say = (line: string) => console.error(`${new Date().toISOString()} ${line}`);
+  // --init and --seed are the PRIVILEGED half, and the one place this verb uses the operator: the
+  // client it was built with. A member with no token on this machine is minted the way `team add`
+  // does, under the file's team, and its token stored; one already defined elsewhere is refused
+  // with the rotation named, since a second definition is not a rotation.
+  // The OPERATOR's client, for the three privileged steps; built once, since each construction
+  // would exchange the durable half again.
+  const adminFor = () => new RadiaClient(base, resolveDefinitionToken(base) ? { definitionToken: resolveDefinitionToken(base)!, reuseRun: true } : { token: resolveToken(base) });
+  let adminClient: RadiaClient | undefined;
+  const admin = () => (adminClient ??= adminFor());
+  if (has(argv, "--init")) {
+    const admin = adminFor();
+    adminClient = admin;
+    await declareTeamKinds(admin);
+    for (const m of chosen) {
+      const agent = `agent:${m.name}`;
+      if (m.definitionToken || storedMember(base, agent)) continue;
+      const prior = await readDefinition(admin, agent);
+      if (prior.state === "active") {
+        throw new UsageError(`${agent} is already defined on this space but its token is not on this machine; run \`radia team add ${m.name} --team ${label} --rotate\` here`);
+      }
+      const member = await addMember(admin, agent, { teams: [label], supersedes: prior.id });
+      saveMember(base, agent, { token: member.definitionToken, definitionToken: member.definitionToken, mintedAt: new Date().toISOString() });
+      say(`[${agent}] minted for team ${label}, token stored`);
+    }
+  }
+  // LEFTOVERS. Unclaimed claimable work is never swept, so every earlier run's open tasks are
+  // still there and the next run's members claim them beside the new seed: three games ran
+  // interleaved once, the guesser asking one question of three keepers. `--fresh` dead-letters
+  // the team's open tasks first; without it, they are counted and named so nobody is surprised.
+  if (has(argv, "--fresh") || has(argv, "--seed")) {
+    // The team's OPEN tasks: the envelope query on the ops plane answers by STATE, with every
+    // predicate applied before its cap, so an old open task (the leftover this is for) is found
+    // where a newest-200 `task` query would have missed it. The cap is stated when it is hit.
+    const CAP = 1000;
+    const rows = await admin().queryEnvelopes({ state: "available", kind: "task", limit: CAP });
+    const open = rows.filter((r) => (r.record?.body as Record<string, unknown> | undefined)?.[TEAM_FIELD] === label).map((r) => r.envelope.recordId);
+    if (rows.length >= CAP) say(`[warn] more than ${CAP} open tasks on this space; only the first ${CAP} were checked for team ${label}`);
+    if (open.length && has(argv, "--fresh")) {
+      for (const id of open) await admin().admin("dead-letter", id);
+      say(`[fresh] ${open.length} open task${open.length === 1 ? "" : "s"} from earlier runs dead-lettered`);
+    } else if (open.length) {
+      say(`[warn] ${open.length} open task${open.length === 1 ? "" : "s"} from earlier runs will be claimed too (${open.map((id) => id.slice(-6)).join(", ")}); --fresh retires them first`);
+    }
+  }
+  if (has(argv, "--seed")) {
+    for (const r of team.seed ?? []) {
+      const { id } = await admin().put({ kind: r.kind, body: { [TEAM_FIELD]: label, ...r.body }, ...(r.parentIds ? { parentIds: r.parentIds } : {}) });
+      say(`[seed] ${r.kind} ${id}`);
+    }
+  }
+  // The harnesses' directories live BESIDE THE CREDENTIALS FILE (`~/.radia/team/<member>/`), never
+  // under the project: Claude Code applies a project's `disabledMcpServers` (in `~/.claude.json`)
+  // by NAME to a server passed with `--mcp-config --strict-mcp-config`, for any cwd inside that
+  // project, and this repo's entry disables "radia". A directory outside every project has no
+  // such entry. Absolute throughout, since the harness runs there and not where the verb ran.
+  mkdirp(`${radiaDir()}`);
+  const radiaRoot = realPath(radiaDir());
+  const dir = `${realPath(credentialsPath()).replace(/\/[^/]*$/, "")}/team`;
+  mkdirp(dir);
+  const runs: HarnessRun[] = [];
+  const ac = new AbortController();
+  const off = onShutdown(() => ac.abort());
+  // DONE: the file's `done` pattern (or --done <json>), watched with this CLI's own credential. A
+  // matching record written after the run started is the answer: it is printed, the workers are
+  // given a grace period to finish the harness in flight, and the verb exits 0.
+  const doneFlag = flag(argv, "--done");
+  const donePattern = doneFlag ? JSON.parse(doneFlag) as { kind: string; match?: Record<string, unknown> } : team.done;
+  let inFlight = 0;
+  let answer: RadiaRecord | undefined;
+  const watchDone = async () => {
+    if (!donePattern) return;
+    const startedAt = (await ctx.client.health()).now ?? new Date().toISOString();
+    // The match is the file's plus the team label, and only that: `done` is `{kind, match}` by
+    // schema, so no order of its own is being overridden by reading newest-first here.
+    const doneMatch = { [TEAM_FIELD]: label, ...(donePattern.match ?? {}) };
+    while (!ac.signal.aborted) {
+      await new Promise((r) => setTimeout(r, 2000));
+      if (ac.signal.aborted) return;
+      try {
+        const [newest] = await ctx.client.queryNewest({ kind: donePattern.kind, match: doneMatch }, 1);
+        if (newest && newest.runtimeMeta.createdAt >= startedAt) {
+          answer = newest;
+          say(`[done] ${newest.kind} ${newest.id} matches ${JSON.stringify(donePattern)}; stopping${inFlight ? ` after ${inFlight} harness${inFlight === 1 ? "" : "es"} in flight` : ""}`);
+          const until = Date.now() + 60_000;
+          while (inFlight > 0 && Date.now() < until) await new Promise((r) => setTimeout(r, 500));
+          ac.abort();
+          return;
+        }
+      } catch (e) {
+        say(`[done] cannot read ${donePattern.kind}: ${describeClientError(e)}; still waiting`);
+      }
+    }
+  };
+  const workers = chosen.map(async (m) => {
+    const agent = `agent:${m.name}`;
+    const definitionToken = m.definitionToken ?? storedMember(base, agent)?.definitionToken;
+    if (!definitionToken) {
+      throw new UsageError(
+        `${agent}: no definition token on this machine. Add --init to mint it here (or \`radia team add ${m.name} --team ${label} --rotate\` if it exists elsewhere; the token is shown once and stored where it runs), or put it in ${file} as definitionToken`,
+      );
+    }
+    const session = m.session ?? m.name;
+    const resumed = storedSession(base, session)?.token;
+    const client = new RadiaClient(base, { definitionToken, ...(resumed ? { token: resumed } : {}) });
+    // The harness's adapter resumes this session by name, so the run it reads must be the one
+    // this loop claims under: written before every spawn, since a run past its ceiling is replaced.
+    const remember = async () => {
+      await client.ensureCredential();
+      const now = client.bearerToken;
+      if (now) saveSession(base, session, { token: now, definitionToken, mintedAt: new Date().toISOString() });
+    };
+    await remember();
+    const invocation = mcpInvocation(base);
+    const mcpArgs = [...invocation.args, "--session", session, ...(m.trace ? ["--trace", m.trace] : [])];
+    // The harness runs in a scratch directory of its own, the way the lab gives each agent one.
+    // Launched in the repo root, Claude Code loaded NO tools from `--mcp-config` (this project has
+    // MCP state of its own there); from a fresh directory the same config gave all 24 (2026-09-05).
+    const workDir = m.cwd ?? `${dir}/${m.name}`;
+    mkdirp(workDir);
+    const configPath = `${dir}/${m.name}.mcp.json`;
+    // The adapter's environment is whatever the HARNESS gives it, and Codex gives it only this
+    // block, not the parent's. The session this loop claims under is read from the credentials
+    // file, so the file's location travels here or the harness lands on a run of its own and its
+    // settle is refused (the first lab run, 2026-09-05).
+    const adapterEnv = { RADIA_DEFINITION_TOKEN: definitionToken, RADIA_CREDENTIALS: realPath(credentialsPath()), RADIA_DIR: radiaRoot };
+    // The config carries the member's DEFINITION TOKEN, so it is owner-only, like the credentials
+    // file and `--operator-token-file`: `writeTextFile` creates at the umask, which is 644 here.
+    writeTextFile(configPath, JSON.stringify({ mcpServers: { radia: { command: invocation.command, args: mcpArgs, env: adapterEnv } } }, null, 2));
+    restrictToOwner(configPath);
+    const values = {
+      model: m.model ?? "",
+      config: configPath,
+      url: base,
+      binary: invocation.command,
+      mcpArgs: JSON.stringify(mcpArgs),
+      token: definitionToken,
+      credentials: realPath(credentialsPath()),
+      radiaDir: radiaRoot,
+      codexTools: `{ ${TOOLS.map((t) => `${t.name} = { approval_mode = "approve" }`).join(", ")} }`,
+      session,
+    };
+    const templates = m.command ? { first: m.command } : harnessTemplates(m.harness, m.resume === true, team.harnesses);
+    const command = substitute(templates.first, values);
+    // A warm session's id lives in a file beside the member's directory, so it survives a restart
+    // of this verb and is dropped by the worker when a run fails.
+    const sessionFile = `${dir}/${m.name}.harness-session`;
+    const resume = m.resume && templates.resume
+      ? {
+        command: substitute(templates.resume, values),
+        prompt: framePrompt(m.resumePrompt ?? m.prompt, m.frame !== false, true),
+        sessions: {
+          load: () => readTextFile(sessionFile)?.trim() || undefined,
+          save: (id: string | undefined) => {
+            if (id) {
+              writeTextFile(sessionFile, id);
+              restrictToOwner(sessionFile);
+            } else if (readTextFile(sessionFile) !== undefined) writeTextFile(sessionFile, "");
+          },
+        },
+        ...(m.harness === "codex" ? { learn: learnCodexThread } : {}),
+      }
+      : undefined;
+    if (m.resume && !resume) say(`[${agent}] resume asked for, but harness '${m.harness}' has no resume template; running fresh per claim`);
+    say(`[${agent}] up: ${m.harness}${m.model ? ` (${m.model})` : ""}${resume ? ", warm session" : ""}, claims ${JSON.stringify(m.patterns ?? [{ kind: "task" }])}, session ${session}, config ${configPath}, cwd ${workDir}`);
+    await runHarnessMember(client, {
+      agent,
+      command,
+      prompt: framePrompt(m.prompt, m.frame !== false, false),
+      resume,
+      patterns: m.patterns ?? [{ kind: "task" }],
+      leaseSeconds: m.leaseSeconds ?? 120,
+      timeoutSeconds: m.timeoutSeconds ?? 600,
+      concurrency: m.concurrency ?? 1,
+      cwd: workDir,
+      env: m.env,
+    }, {
+      signal: ac.signal,
+      log: say,
+      once,
+      verbose: has(argv, "--verbose"),
+      beforeSpawn: async () => {
+        inFlight++;
+        await remember();
+      },
+      onRun: (r) => {
+        inFlight--;
+        runs.push(r);
+        say(`[${agent}] ${r.kind} ${r.recordId.slice(-6)} -> ${r.outcome} (exit ${r.exitCode ?? "killed"}, ${(r.durationMs / 1000).toFixed(1)}s)`);
+      },
+    });
+  });
+  try {
+    await Promise.all([...workers, watchDone()]);
+  } finally {
+    off();
+  }
+  const summary = runs.length
+    ? `${runs.length} run${runs.length === 1 ? "" : "s"}: ${["settled", "ok", "failed", "timeout", "fenced"].map((k) => `${runs.filter((r) => r.outcome === k).length} ${k}`).join(", ")}`
+    : "no claims handled";
+  return out(ctx, { members: chosen.map((m) => `agent:${m.name}`), runs, done: answer ?? null }, () =>
+    answer ? `${summary}\n\ndone: ${answer.kind} ${answer.id}\n${JSON.stringify(answer.body, null, 2)}` : summary);
+}
+
+function describeClientError(e: unknown): string {
+  return e instanceof RadiaClientError ? e.message : String(e);
+}
 
 function out(ctx: Ctx, data: unknown, human: () => string): number {
   console.log(ctx.json ? JSON.stringify(data, null, 2) : human());

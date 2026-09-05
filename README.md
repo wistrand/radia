@@ -261,6 +261,23 @@ record's run.
 The members share `task` (claimable, so a lease is what stops two agents doing the same work twice)
 and `note` (a mailbox by `to`, a thread by `topic`).
 
+A session on MCP acts only while it is open, so for work that arrives with nobody around, run the
+members as WORKERS. A team is one directory: `team.json` names the members, their harness and model,
+what each claims, the seed that starts the work and what a final answer looks like; `prompts/`
+holds each member's rules in the game's own words, and the launcher wraps them in the mechanics.
+
+```bash
+radia team up examples/teams/twenty-questions --init --seed   # mint the members, seed, run
+radia team up examples/teams/twenty-questions --seed --fresh  # a new game: retire the last one's leftovers
+```
+
+Each member claims its patterns and launches its harness only when a record is claimed for it, so an
+idle team costs nothing; the harness settles the claim through the same MCP tools, warm sessions keep
+one harness session per member across moves, and the run ends itself when a record matches `done`.
+Two games ship in [`examples/teams/`](examples/teams/): twenty questions and a story relay, both run
+end to end with Claude Code and Codex. See
+[agent_docs/architecture-teams.md](agent_docs/architecture-teams.md), "Members as workers".
+
 **Teams are isolated by default.** `--team alpha` scopes every grant with `pattern: {team: "alpha"}`,
 so a write carrying another team's label, or no label at all, is refused at the write, and a read
 returns that team's records without hinting there were others. Repeat `--team` for a member that

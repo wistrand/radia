@@ -659,6 +659,80 @@ RESULT, which carried an id, a size and nothing about how to refer to it. The an
 the rule (`shown: …`, `examples/chat/workers/images.ts`). The moment is the reply, so the artifact
 is the result, whatever the description already said.
 
+The first two runs of `team-up` (2026-09-05, `radia team up` launching Codex per claim, Claude Code
+asking). The shape held both times: the task was claimed and Codex started within a second of the
+put, with no harness alive until then. Run one found a deployment defect: Codex hands its MCP
+server only the env in its config, so the adapter never saw `RADIA_CREDENTIALS`, minted a run of
+its own, and `space_ack` was refused as an unknown claim after the work was done; Codex then spent
+80 seconds trying to re-take the record the loop still held, and the answer reached Claude by
+LINEAGE (the artifact was parented on the task) rather than by the ack. Run two, with the file in
+the env, settled through the shared claim at 71s. It also showed a prompt gap and a loop gap: Codex
+passed the CLAIM id as an artifact's parent (`parent_not_found`, recovered on its own; the prompt
+now says the claim id is not a record), and the loop acked the claim a second time under the same
+idempotency key and read the conflict as a failure, so `agentLoop` gained `SETTLED`, a handler's
+way of saying the claim is already settled. Run three settled at 59s with the answer on the ack and
+Claude reading it by 63s, and found the last gap: the loop's heartbeat renewed at 65s, found the
+record consumed, called it a lost lease and killed Codex mid-summary, so the run read `fenced`. A
+lease lost to our OWN settle is not a fence: the worker now checks the envelope before killing and
+leaves a harness that settled to finish, and the loop lets a handler's `SETTLED` win over a fence
+it saw meanwhile. One instance each; rates need more runs.
+
+The first `examples/teams/twenty-questions` run (2026-09-05, `radia team up`, real harnesses):
+Codex kept the secret and handed the turn over in 22s, settling its own claim; Claude Code, the
+guesser, reported that no radia tools existed and could not move. Probed with a three-turn prompt:
+the identical `--mcp-config` gave NO TOOLS with the repo root as cwd and all 24 from an empty
+directory. A scratch directory under the project's `.radia/` failed the same way, which is what
+traced it: `~/.claude.json` holds `disabledMcpServers: ["radia"]` for this repo, applied by name
+to a strict `--mcp-config` server from any cwd inside it. Members now run in `~/.radia/team/`. The harness output
+was also relayed raw, which put a 20 KB `space_kinds` answer on one log line; it is digested to one
+line per event now, `--verbose` for the stream.
+
+The first complete team run (2026-09-05, `examples/teams/story-relay`, Claude Code opening, Codex
+closing): six paragraphs in 2m47s, every claim settled by the harness that made it and the baton
+passed each time, the run ending itself on the `topic: "final"` note. Per move: Claude 18 to 21s
+and $0.08 to $0.12, Codex 36 to 44s at 130k to 220k input tokens, most of it the lineage it read
+back each time. One heartbeat renewal reported `lease_lost` between Codex's ack and its exit,
+which is the settle seen from the loop and now left alone. One instance; a rate needs more runs.
+
+The first complete `twenty-questions` (2026-09-05, after `--fresh` retired the earlier games'
+leftovers): seven questions to the elephant in 7m54s, fifteen claims all settled by the harness
+that made them, ended by the keeper's `topic: "final"` verdict. The prompt change that named the
+three tools the game uses cut the keeper from eight calls and 270k to 300k input tokens per move to
+three calls and 60k to 130k. Two earlier attempts had interleaved with leftovers from the runs
+before them (one guesser at moves 1, 3 and 4 of three games), which is what `--fresh` and the
+leftover warning came from. Reading a game back: `radia lineage` from the final note walks the
+TASKS, since each answer is acked as a child note rather than a parent; the answers are the
+`space_children` of each task, which is how the players themselves read them.
+
+WHERE THE 7m54s WENT, from the event log: claim latency (put to take) 0.5s over all fifteen moves,
+harness runs (take to ack) 439s, gaps between a settle and the next put about 35s. Inside a keeper
+move (29s typical): 5s to first output, then four model turns of about 6s around three calls. Inside
+a guesser move: 5 to 12 model turns at about 4.5s each, the count growing with the lineage it
+re-reads (five turns at move 1, twelve at move 7). The space answered each call in milliseconds.
+What would cut it, in order: prompts that put the ack and the hand-over in one turn and stop
+re-reading a lineage already read; warm sessions per member (`claude --resume`, the analysis's
+method B); a faster model tier. Nothing on the list is a runtime cost. The first two were built the
+same day: the prompts now name the calls and ask for the ack and the hand-over in one turn, and
+`resume: true` keeps a session per member with a `-resume` prompt that reads one note.
+
+MEASURED the same afternoon, the next `twenty-questions` (nine questions to the otter, 19 claims
+all settled by their harness, warm from each member's second move):
+
+| per move            | cold (elephant) | warm (otter) |
+|---------------------|-----------------|--------------|
+| keeper seconds      | 22 to 29        | 14 to 18     |
+| keeper input tokens | 60k to 133k     | 54k to 87k   |
+| guesser seconds     | 15 to 63        | 7 to 12      |
+| guesser turns       | 5 to 12         | 4 to 5       |
+| guesser cost        | $0.07 to $0.17  | $0.03 to $0.08 |
+| seconds per move    | 32              | 10           |
+
+The whole game went from 7m54s for 15 moves to 3m07s for 19. The guesser's gain is the session:
+four turns whatever the move number, where the cold run grew to twelve re-reading the lineage.
+The keeper's is smaller because Codex's resumed context still grows with every move (54k to 87k
+input tokens across nine answers) and each answer takes its four turns; a cheaper keeper would
+summarise rather than carry the thread. One warm game; a rate needs more.
+
 ## Read before
 
 Writing a tool description or a kind `usage` string, adding a lab scenario, or explaining why an

@@ -1,6 +1,7 @@
 # Teams: several agent harnesses on one space (architecture)
 
-> Status: BUILT 2026-08-26. Source: [extensions/ts/team.ts](../extensions/ts/team.ts) (the
+> Status: BUILT 2026-08-26; members as WORKERS (`radia team up`, team directories, warm sessions,
+> `done`) BUILT 2026-09-05 and run end to end with real harnesses. Source: [extensions/ts/team.ts](../extensions/ts/team.ts) (the
 > convention), `src/surfaces/cli.ts` `case "team"` (the verb),
 > [src/surfaces/mcp/config.ts](../src/surfaces/mcp/config.ts) (the harness config it prints) and
 > [src/surfaces/mcp/scope.ts](../src/surfaces/mcp/scope.ts) (the write fill). Guards:
@@ -125,11 +126,126 @@ without anything being logged on purpose.
 **Driving both agents yourself.** You are then the transport, and the exclusivity is your attention.
 A lease is exclusivity the space enforces, and it survives you looking away.
 
+## Members as workers: `team.json` and `radia team up`
+
+A harness on MCP acts only while a session is open, and nothing wakes one that is not running
+(below). `radia team up` (2026-09-05) removes that limit without touching the protocol: each member
+in a `team.json` becomes a WORKER, an `agentLoop` on the member's patterns holding a real watch
+stream and a fenced lease, whose handler launches the harness once per claim, non-interactively,
+with the claimed record in its prompt and the member's MCP config in its hands. An idle team costs
+no tokens; a harness exists only while there is work. Source: `extensions/ts/harness-worker.ts` (the
+loop and the spawn, a client like `host.ts`), `src/surfaces/teamfile.ts` (the file and the harness
+command templates), the verb in `src/surfaces/cli.ts`.
+
+```json
+{
+  "members": [
+    { "name": "claude-alpha", "harness": "claude", "model": "opus",
+      "patterns": [{ "kind": "task", "match": { "tags": { "$any": "javascript" } } }] },
+    { "name": "codex-alpha", "harness": "codex", "model": "gpt-5.6-luna" }
+  ]
+}
+```
+
+```bash
+radia team add claude-alpha codex-alpha --team alpha   # once: mints each member, stores its token here
+radia team up                                          # runs both as workers until Ctrl-C
+radia team up --once --member claude-alpha             # one claim, then stop
+```
+
+A team is one DIRECTORY (`examples/teams/<name>/`: `team.json`, `prompts/`, a README), and
+`radia team up <dir> --init --seed` is the whole bootstrap: `--init` mints the members the file
+names under its `team` label and stores their tokens, `--seed` writes the file's starting records
+with the label added, and a member's `promptFile` resolves beside the file. The two examples,
+`twenty-questions` and `story-relay`, are games whose rules are the prompts: a member claims by a
+tag of its own, hands the turn on by writing the next task with the other's tag, and parents it on
+the previous one so the match is one thread.
+
+Rules the design rests on:
+
+- **A member may announce what it claims.** `DISCOVERY_GRANTS` carries `interest: put`, unscoped
+  like `kind_def: query` and for the same reason (an interest names a kind and no team): the first
+  lab run had the worker's loop refused on its announcement, and the scenario's readiness check
+  waits for exactly that record. Members minted before 2026-09-05 need `radia team add <name>
+  --rotate` to gain it.
+- **Setup stays the privileged step.** `team add` mints and, since this shipped, also stores each
+  member's durable half on the machine it ran on (`#member:` in the credentials file). `team up`
+  reads that and mints nothing, so it holds only what the members hold. A file written elsewhere
+  may carry `definitionToken` per member.
+- **The claim is SHARED with the harness.** The loop claims under the member's named session run
+  (`storedSession`, saved before every spawn), and the harness's adapter resumes the same session
+  (`radia mcp --session <name>`), so the claim id in the prompt, `claim-<record>-<epoch>` in the
+  adapter's own format, is one the harness may settle with its answer riding the ack, the way a
+  member on MCP answers. `recoverClaim` gates on the run, which is why the run must be shared.
+  The session lives in the credentials file, and a harness hands its MCP server only the env in
+  its config, so that config carries `RADIA_CREDENTIALS` and `RADIA_DIR` as well as the token:
+  the first lab run omitted them, the adapter minted a run of its own, and Codex's `space_ack`
+  was refused as an unknown claim after it had done the work.
+- **Every way a harness ends is one settlement.** Settled by the harness: the loop's own settle
+  loses the lease on purpose and the log says so. Clean exit without settling: the loop acks with
+  no result. Non-zero exit: nack. Past `timeoutSeconds` (default 600): killed and nacked. Lease lost
+  mid-run: the child is killed, since a fenced worker stops at the fence, UNLESS the record is
+  consumed, which under an owner-bound settle means the harness acked it and is still printing its
+  summary (the heartbeat's next renewal reports that as lease_lost); the handler then returns
+  `SETTLED` and the loop neither acks nor nacks.
+  "Settled by the harness" is decided by the LEASE ID, not the epoch: a nack hands the record back
+  under the same epoch, so only a changed or cleared lease id says the claim is no longer ours.
+  A child that ignores SIGTERM gets SIGKILL five seconds later, and a warm session refuses
+  `concurrency > 1`, since it is one harness session.
+- **The FRAME carries the mechanics; a team's prompt is only its game.** `FRAME` (and
+  `RESUME_FRAME` for a warm session) is wrapped around every prompt by `framePrompt`: who the
+  harness is, the record, the claim id, and the three moves as exact calls (read with
+  `space_lineage`/`space_children`, answer with `space_ack`, hand on with `space_put` parented on
+  the record, give back with `space_nack`), plus the one-record rule. So a game's prompt says what
+  to read, what its answer is and what to hand on, in the game's words, and
+  `test/teamfile.test.ts` refuses a shipped prompt that names a tool or a claim id. `frame: false`
+  hands a prompt over as written, for a team that states the mechanics itself.
+- **The command templates are somebody else's release.** `BUILTIN_HARNESSES` carries the
+  invocations the agent lab has run real harnesses with (Claude Code's `-p --mcp-config
+  --strict-mcp-config --allowedTools mcp__radia`, Codex's `exec -` with the adapter configured on
+  its command line); a file may override them under `harnesses`, or a member may bring `command`.
+  `{{model}}` drops its flag when no model is set, `{{prompt}}` in argv means the prompt travels
+  there, otherwise it goes in on stdin, which both harnesses read.
+- **Warm sessions are the worker's, not the harness's.** `resume: true` keeps one harness session
+  per member across claims (the analysis's method B): the worker mints a UUID before the first
+  launch (`claude --session-id`, later `--resume`) or learns it from Codex's `thread.started` and
+  passes it to `codex exec resume <id> -`, stores it in `~/.radia/team/<member>.harness-session`,
+  and DROPS it after a failed run; a fence (a Ctrl-C, a stop) or a timeout keeps it, being the
+  loop's doing rather than the session's. `resumePrompt` is what a session that already
+  holds the earlier moves is told, which is where the speed comes from: a resumed move reads one
+  child note instead of the whole lineage. Templates: `BUILTIN_HARNESSES["<harness>-first"]` and
+  `"<harness>-resume"`, `harnessTemplates` choosing. Contract: the two warm-session cases in
+  `extensions/conformance/harness-worker.test.ts`.
+- **Leftovers are named, and `--fresh` retires them.** Unclaimed claimable work is never swept,
+  so every earlier run's open tasks are claimed beside the next seed: three games once ran
+  interleaved, one guesser asking one question of three keepers. `team up` counts the team's open
+  tasks at start and names them; `--fresh` dead-letters them before seeding.
+- **A run with an end ends itself.** The file's `done` (or `--done <json>`) is a pattern the
+  verb watches with the CLI's own credential, the team label added: a matching record written
+  after the start is printed as the answer and the verb exits 0, after up to 60s for a harness in
+  flight to finish. The games end on a `note` with `topic: "final"`, an indexed path, which the
+  last move's prompt asks for; a pattern cannot read prose, so the ending must be a field.
+- **Each harness runs in a directory of its own OUTSIDE every project**, `~/.radia/team/<member>/`
+  beside the credentials file: Claude Code applies a project's `disabledMcpServers` by name to a
+  `--mcp-config` server for any cwd inside the project, and this repo's entry disables `radia`
+  (gotchas.md). Its output is
+  digested to one line per event (`digestLine`), `--verbose` for the stream.
+- **Cost is bounded by the lease, the timeout and `concurrency`** (default 1 per member), never
+  by the model. Contract: `extensions/conformance/harness-worker.test.ts`, every outcome driven
+  with a harness that has no model.
+- **The first real run is a lab scenario**, `scripts/agent-lab/scenarios/team-up.json`: a Claude
+  Code session asks for a program, and the Codex member is a worker that launches `codex exec` only
+  when the task is claimed. The scenario writes the worker's `team.json` through the runner's new
+  `files` field, and its `trace` names the lab's trace file so the launched harness is observed
+  like any other. Unrun as of 2026-09-05; findings belong in research-agent-sessions.md.
+
 ## What it is NOT for
 
-**Nothing external wakes a harness that is not running.** A task can sit in the space indefinitely;
-the runtime fires at no deadline, by decision (`availableAt` defers claimability, there is no
-sweeper, and an idle space runs nothing). Somebody has to start the agent.
+**Nothing external wakes a harness that is not running, unless a worker runs it.** A task can sit
+in the space indefinitely; the runtime fires at no deadline, by decision (`availableAt` defers
+claimability, there is no sweeper, and an idle space runs nothing). Somebody has to start the agent,
+and `radia team up` (above) is that somebody: a worker on `agentLoop` that starts the harness per
+claim.
 
 **Once one IS running, it can watch without being poked each time.** A harness that can spawn a
 subagent (Claude Code's is one) can hand it a loop of `space_watch {newOnly: true}` calls and let it
@@ -139,7 +255,8 @@ instruction rather than a code change. It is bounded by the SESSION, not by the 
 dies with the harness, and it is polling, so it spends tokens while it waits.
 
 For work that must be picked up with no session alive at all, the answer is a worker on `agentLoop`
-(the SDK's event-driven loop, which holds a real watch stream), not a harness on MCP.
+(the SDK's event-driven loop, which holds a real watch stream), not a harness on MCP; `radia team
+up` is that worker with a harness as its handler.
 
 **"MCP cannot push" is false as a statement about the PROTOCOL and true as one about the clients,
 and the second is what decides whether to build anything.** Since 2026-07-28 there is a named

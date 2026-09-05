@@ -135,12 +135,13 @@ function writeEntry(key: string, cred: StoredCredential): { path: string; ok: bo
 /** How long an auto-provisioned entry survives without being rewritten. */
 export const CREDENTIAL_STALE_DAYS = 14;
 
-export type CredentialKind = "operator" | "observer" | "login" | "content-key" | "session";
+export type CredentialKind = "operator" | "observer" | "login" | "content-key" | "session" | "member";
 
 /** Which identity an entry holds, from its key suffix. */
 export function credentialKind(key: string): CredentialKind {
   if (key.endsWith(OBSERVER)) return "observer";
   if (key.includes(SESSION)) return "session";
+  if (key.includes(MEMBER)) return "member";
   if (key.endsWith(LOGIN)) return "login";
   if (key.includes(CONTENT_KEY)) return "content-key";
   return "operator";
@@ -292,6 +293,22 @@ export function saveSession(
   cred: StoredCredential,
 ): { path: string; ok: boolean; error?: string } {
   return writeEntry(baseKey(base) + SESSION + name, cred);
+}
+
+// ---- team members: the durable half `radia team add` minted on this machine ----
+//
+// A definition token is shown once, and `radia team up` runs a member as a worker later, so the
+// half it needs is kept here under the member's name. Setup stays the privileged step: `up` reads
+// this and mints nothing.
+const MEMBER = "#member:";
+
+/** The definition `radia team add` stored for this member on this space, if it ran here. */
+export function storedMember(base: string, agent: string): StoredCredential | undefined {
+  return read(credentialsPath())[baseKey(base) + MEMBER + agent];
+}
+
+export function saveMember(base: string, agent: string, cred: StoredCredential): { path: string; ok: boolean; error?: string } {
+  return writeEntry(baseKey(base) + MEMBER + agent, cred);
 }
 
 // ---- the observer credential, the safe default for the MCP adapter ----
