@@ -90,7 +90,7 @@ Five distinct concepts, never overloaded onto one field:
 | Field             | Meaning                                    |
 |-------------------|--------------------------------------------|
 | `available_at`    | eligibility (delayed visibility, backoff)  |
-| `claim_until`     | no new claims after this time              |
+| `claim_until`     | no new claims after this time; UNWRITTEN, see below |
 | `deadline_at`     | business deadline; CARRIED ONLY, see below  |
 | `retention_until` | content GC eligibility                     |
 | `leased_until`    | current lease expiry                       |
@@ -116,14 +116,17 @@ never discards valid completed work. What sweeping past `retention_until` delete
 keeps (the event residue, and that residue's own opt-in horizon) is [plan-gc.md](plan-gc.md),
 "The ledger".
 
-**`deadline_at` is CARRIED, not acted on, and the table above used to imply otherwise.** A writer
-seeds it, the runtime denormalizes it into the envelope and returns it, and nothing else reads it:
-claim ordering is `effective_priority`, no diagnostic reports work about to miss one, and no event
-fires when one passes. Naming it a "scheduler signal" described the scheduler that is not built
-(M3, [design-scheduler.md](design-scheduler.md)). Keep it accurate rather than aspirational: a
-worker that needs urgency today gets it from `requested_priority` and whatever the record's body
-says. What acting on it would take is item 7 of "What is missing" in
-[research-applications.md](research-applications.md).
+**Two of the five are inert, and the table above used to imply otherwise.** `deadline_at` is
+CARRIED: a writer seeds it, the runtime denormalizes it into the envelope and returns it, and
+nothing else reads it. Claim ordering is `effective_priority`, no diagnostic reports work about to
+miss a deadline, and no event fires when one passes. Naming it a "scheduler signal" described the
+scheduler that is not built (M3, [design-scheduler.md](design-scheduler.md)). `claim_until` is
+worse: the column exists, every write sets it to `undefined`, and no code compares it, so there is
+no way to express "no new claims after this time" at all. Keep both accurate rather than
+aspirational: a worker that needs urgency today gets it from `requested_priority` and the record's
+body. What acting on `deadline_at` would take is item 7 of "What is missing" in
+[research-applications.md](research-applications.md); what `claim_until` would buy is a crisp
+expiry for an award, in [design-marketplace.md](design-marketplace.md) open question 2.
 
 ## Client vs. runtime-authoritative metadata
 
