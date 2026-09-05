@@ -91,7 +91,7 @@ Five distinct concepts, never overloaded onto one field:
 |-------------------|--------------------------------------------|
 | `available_at`    | eligibility (delayed visibility, backoff)  |
 | `claim_until`     | no new claims after this time              |
-| `deadline_at`     | business deadline / scheduler signal       |
+| `deadline_at`     | business deadline; CARRIED ONLY, see below  |
 | `retention_until` | content GC eligibility                     |
 | `leased_until`    | current lease expiry                       |
 
@@ -115,6 +115,15 @@ Retention expiry does **not** invalidate an in-flight valid lease. Administrativ
 never discards valid completed work. What sweeping past `retention_until` deletes and what it
 keeps (the event residue, and that residue's own opt-in horizon) is [plan-gc.md](plan-gc.md),
 "The ledger".
+
+**`deadline_at` is CARRIED, not acted on, and the table above used to imply otherwise.** A writer
+seeds it, the runtime denormalizes it into the envelope and returns it, and nothing else reads it:
+claim ordering is `effective_priority`, no diagnostic reports work about to miss one, and no event
+fires when one passes. Naming it a "scheduler signal" described the scheduler that is not built
+(M3, [design-scheduler.md](design-scheduler.md)). Keep it accurate rather than aspirational: a
+worker that needs urgency today gets it from `requested_priority` and whatever the record's body
+says. What acting on it would take is item 7 of "What is missing" in
+[research-applications.md](research-applications.md).
 
 ## Client vs. runtime-authoritative metadata
 

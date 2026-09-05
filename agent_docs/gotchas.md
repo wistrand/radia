@@ -157,6 +157,11 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   such shortcut) breaks retention-vs-lease separation. Keep the five distinct. `available_at` is
   the one a writer may SEED (`PutRequest.availableAt`, delayed visibility), and it stays the
   runtime's afterwards: nack, requeue and quarantine all rewrite it.
+- **`deadline_at` does NOTHING; do not build on it.** It is stored, denormalized into the envelope
+  and returned, and no code orders, filters, warns or refuses on it: claim ordering is
+  `effective_priority`. A worker sorting by it gets the order it asked for and no urgency, and a
+  scheduler reading it does not exist (M3). What it would take is item 7 of "What is missing" in
+  `research-applications.md`.
 
 **A `kind_def` field left OUT of `kindDefKey` can never be set on an existing kind.** `registerKind`
 puts under that key, so a declaration changing only an unkeyed field re-puts the same key with a
