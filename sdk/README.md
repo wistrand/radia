@@ -26,6 +26,15 @@ against the release when the URL carries `#sha256=<digest>` from `SHA256SUMS` (s
 `--require-hashes`). Deno apps skip the tarball and import the tagged sources directly:
 `https://raw.githubusercontent.com/wistrand/radia/v2026.9.3/sdk/ts/mod.ts`.
 
+The npm tarball ships the TypeScript SOURCES, with no compiled `.js`, no `.d.ts` and no `types`
+field: the exports map points at `.ts` files, which is one of the zero-build rules of this repo.
+That decides who can run it as is: Deno, Bun, and Node with type stripping (22.18 and later, where
+it is on by default; earlier 22.x behind `--experimental-strip-types`), and any bundler that reads
+TypeScript (esbuild, Vite, tsx). `tsc` type-checks the package from those sources under
+`moduleResolution: "bundler"` or `"node16"`, but a plain `node` older than that cannot load it. A
+build step producing `.js` plus declarations is the alternative and is not planned; ask before
+adding one.
+
 `ts/wire.ts` defines the frozen wire vocabulary and pure functions that clients and the server must
 compute identically. The runtime imports these definitions; the SDK imports nothing from `src/`.
 `test/layering.test.ts` enforces that direction for value and type imports.
@@ -41,9 +50,9 @@ hashing stay in the reference implementation
 |-|------------|--------|
 | Path        | [`ts/`](ts/): import `mod.ts`; behind it `wire.ts`, `registry.ts`, `await.ts`, `client.ts`, `loop.ts` | [`py/radia.py`](py/radia.py) |
 | Client      | `RadiaClient`      | `RadiaClient` |
-| Worker loop | `agentLoop`        | `agent_loop` |
+| Worker loop | `agentLoop`: claims, heartbeats, settles, and publishes an `interest` per pattern (retired on a clean stop, re-announced on a new run) | `agent_loop`, the same, interests included since 2026-09-05 (`publish_interest`) |
 | Reactor loop (fact-side: watch, re-read, decide) | `reactorLoop` | not yet: hand-roll the sweep, or poll |
-| Paging      | `queryNewest` / `queryOldest` / `queryOrdered` / `queryPage` → `{records, nextCursor, scope}` | `query_newest` / `query_oldest` / `query_page` → `(records, next_cursor, scope)` |
+| Paging      | `queryNewest` / `queryOldest` / `queryOrdered` / `queryPage` → `{records, nextCursor, scope}` | `query_newest` / `query_oldest` / `query_ordered` / `query_page` → `(records, next_cursor, scope)` |
 | Watches     | `client.watch()` async generator | `client.watch()` generator |
 | Artifacts   | `putArtifact` / `getArtifact` / `artifactMeta` (HEAD: digest and size, no bytes) / `artifactCapability` (download) / `uploadCapability` (upload, single-use: the record is described at mint and the holder PUTs only bytes) | `put_artifact` / `get_artifact` / `artifact_capability` |
 | Remediation | `admin(action, id)` / `remediate(action, selector)` | `admin(action, id)` / `remediate(action, state=…, expired=…, kind=…)` |

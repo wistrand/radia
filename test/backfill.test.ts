@@ -136,3 +136,33 @@ for (const d of dialects) {
     }
   });
 }
+
+// A row claimed before `lease_owner` existed has none. The adapters' owner check compared only when
+// an owner was stored, so on such a row anyone holding the lease id and epoch settled as the owner
+// (2026-09-05). No write path leaves the column empty today, so the row is planted by SQL.
+for (const d of dialects) {
+  Deno.test(`backfill [${d.name}]: a lease with NO stored owner refuses every other principal's settle`, async () => {
+    const adapter = d.open(d.location());
+    await adapter.init();
+    try {
+      const space = newSpace(adapter);
+      await space.put({ kind: "task", body: { tag: "legacy" } });
+      const claimed = await space.take({ pattern: { kind: "task" } }, { owner: "run:a" });
+      assert(claimed);
+      const sql = `update record_runtime set lease_owner = null where record_id = '${claimed!.record.id}'`;
+      // deno-lint-ignore no-explicit-any
+      const a = adapter as any;
+      if (a.db) a.db.exec(sql);
+      else await a.sql.exec(sql);
+      assertEquals((await space.getEnvelope(claimed!.record.id))!.leaseOwner ?? null, null, "the owner is gone");
+      // fail CLOSED: a principal presenting the lease is fenced out, whoever it is
+      assertEquals((await space.ack(claimed!.lease, undefined, undefined, "run:b")).status, "lease_lost");
+      assertEquals((await space.ack(claimed!.lease, undefined, undefined, "run:a")).status, "lease_lost");
+      assertEquals((await space.getEnvelope(claimed!.record.id))!.state, "leased");
+      // the runtime's own raw verb names no owner and may still settle it (remediation's path)
+      assertEquals((await space.ack(claimed!.lease)).status, "ok");
+    } finally {
+      await adapter.close();
+    }
+  });
+}

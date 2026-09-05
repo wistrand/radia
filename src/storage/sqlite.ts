@@ -1229,7 +1229,9 @@ function leaseValid(row: RawRow | null, ref: LeaseRef): boolean {
   // Owner-bound settle, checked HERE and not by the caller: this runs inside the transaction,
   // after `withIdem` has replayed any stored response, which is the ordering the
   // idempotency-before-lease-validation invariant requires. See `LeaseRef.expectOwner`.
-  if (ref.expectOwner !== undefined && row.lease_owner != null && String(row.lease_owner) !== ref.expectOwner) {
+  // A row with NO owner (claimed before the column existed) fails the same way: skipping the
+  // check there let anyone holding the lease id and epoch settle as the owner (2026-09-05).
+  if (ref.expectOwner !== undefined && (row.lease_owner == null || String(row.lease_owner) !== ref.expectOwner)) {
     return false;
   }
   return row.state === "leased" &&

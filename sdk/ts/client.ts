@@ -68,11 +68,16 @@ export type { Population } from "./registry.ts";
 export { awaitResult } from "./await.ts";
 export type { AwaitOptions, AwaitOutcome } from "./await.ts";
 
+// Every wire type a public method here takes or returns, so `mod.ts` (which re-exports this file
+// wholesale) is a complete barrel: `TakeResult` and `DelegatedRun` were reachable only from the
+// `radia/wire` subpath until 2026-09-05.
 export type {
-  AckResult, BlobGcResult, CompactionResult, Cursor, Diagnostics, DigestResponse, EffectivePermissions, Envelope, ErasureReport, ErasureStatus, EventGcResult, FlowReport, FlowShape,
-  FlowsResponse, GcReport, IntegrityReport, IntegrityResponse, KindDef, Lease, MintedRun, OpsScope, Page, Pattern,
-  PutRequest, RadiaRecord, RunRenewal, ShredResult, SpaceDigest, SpaceEvent, TreeEntry,
-};
+  AckResult, BlobGcResult, ChainedEvent, CompactionResult, Cursor, DelegatedRun, DelegationContext, Diagnostics, DigestResponse,
+  EffectivePermissions, Envelope, ErasureReport, ErasureStatus, EventGcResult, EventInput, FlowReport, FlowShape, FlowsResponse,
+  GcReport, GrantOp, IndexedPath, IndexedType, IntegrityReport, IntegrityResponse, KindDef, Lease, MintedRun, OpsPower, OpsScope,
+  OrderKey, Page, Pattern, PutRequest, RadiaRecord, RecordState, RenewResult, RunRenewal, RuntimeMeta, SettleResult, ShredResult,
+  SpaceDigest, SpaceEvent, StaleSplit, TakeResult, TreeEntry, Ulid,
+} from "./wire.ts";
 
 export interface KindStateCount {
   kind: string;
@@ -647,6 +652,11 @@ export class RadiaClient {
    * and the two directional verbs point here rather than letting a caller discover it as a 400.
    */
   async queryOrdered<T = unknown>(pattern: Pattern, limit = 100): Promise<RadiaRecord<T>[]> {
+    // The name promises the pattern's OWN order. Without one the server answers oldest-first, the
+    // reading the directed helpers exist to name, so refuse rather than hand back that page.
+    if (!pattern.orderBy?.length) {
+      throw new Error(`${JSON.stringify(pattern.kind)} is queried with queryOrdered but names no orderBy: use queryNewest or queryOldest for the id order`);
+    }
     const r = await this.req("POST", "/v0/records/query", { ...pattern, limit });
     return r.records;
   }

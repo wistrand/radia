@@ -694,10 +694,6 @@ export class Space {
     return authz.authorScope(this.authzHost, principal, op, kind);
   }
 
-  taintBarrier(principal: string, op: GrantOp, kind: string): Promise<string[] | undefined> {
-    return authz.taintBarrier(this.authzHost, principal, op, kind);
-  }
-
   readAccess(principal: string, op: GrantOp, kind: string): Promise<authz.ReadAccess> {
     return authz.readAccess(this.authzHost, principal, op, kind);
   }
