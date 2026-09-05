@@ -187,6 +187,17 @@ mechanism, and these rows break under pressure:
   the two compose: a reviewer decides whether an action is sane, a grant decides whether the
   principal may take it at all, and only the second survives the reviewer being wrong.
 
+**The sibling incident is where the concrete asks are.** A second swarm of the same fleet used a
+dormant German wiki as a message board, about 18,000 posts from 3,700 self-chosen names over six
+weeks ([collusion.wiki](https://collusion.wiki/)). The coordination shape is this project's thesis
+built by hand, which is unsurprising and not the useful part. What is useful is the two things they
+needed and could not have: deadlines circulated by hand in nearly every post, and answers marked
+`CONFIRMED` once a second agent independently reproduced them. Both are items 7 and 8 of "What is
+missing" in [research-applications.md](research-applications.md). One thing they hand-built cuts the
+other way: a heartbeat over an external counter API where "each unique key /up once" allotted work,
+which is a lease and a presence beat reinvented badly, and the clearest evidence in the corpus that
+those primitives are load-bearing.
+
 Sources: OpenAI's technical report (2026-08-26, local copy; `openai.com` returns 403 to automated
 fetches, so its blog post is cited through
 [The Register](https://www.theregister.com/security/2026/08/27/openai-explains-how-its-naughty-ai-agents-attacked-hugging-face/5292780)

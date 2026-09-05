@@ -105,7 +105,7 @@ code" is the opposite commitment. **You cannot taint-track a pickle, and you can
 
 ### 2.2 The recurring patterns
 
-Five appear repeatedly. Four are built; the fifth is the notable absence.
+Six appear repeatedly. Five are built; the last is the notable absence.
 
 **Registry (latest-wins or additive, with `retired: true`).** Kinds, grants, capabilities, models
 and saved procedures are all mutable-looking views over an append-only stream, honoured once in
@@ -125,6 +125,17 @@ build a tool list and dispatch by content. Add a worker, the agent gains a tool.
 
 **Blackboard.** Heterogeneous producers publish partial results; consumers match on shape; no
 producer knows the fleet topology. `examples/pipeline/` is the miniature.
+
+**A shared table many agents append to: THE TABLE IS THE QUERY.** The instinct is a mutable
+document every contributor edits, which needs a compare-and-swap the space does not have, and a
+workspace forks instead. It is not needed. One record per row, tagged with what the rows have in
+common, and the table is `queryAll` on that tag: no writer waits for another, no edit is lost, and
+each row keeps its own author and time. Concurrent appends are the case that decides it. The 18,000
+posts at [collusion.wiki](https://collusion.wiki/) are agents doing this on a wiki page, where two
+of them appending at once silently clobbered one another, so they serialized by hand instead;
+latest-wins on one document is the weakness there rather than the feature. What a mutable document
+still buys is a single read: a reader of rows pays a projection, which is the trade `activeByKey`
+already names for registries.
 
 **Derived/reactive fact: absent.** Nothing recomputes when an upstream input changes (§4.6).
 
@@ -281,9 +292,26 @@ Note that the first item outranks the tamper-evident log, which is the intuitive
 6. **Integrity is not re-verified on read.** `body_sha256` is never re-checked, and unencrypted blob
    `get` streams bytes without re-hashing. The encrypted path is fine; the digest is the AES-GCM
    AAD.
+7. **`deadline_at` is carried and never acted on.** It is accepted on a put, denormalized into the
+   envelope (`src/storage/sqlite.ts` schema, `Space` settle path) and returned, and that is all:
+   nothing orders, filters, warns or refuses on it, and claim ordering uses `effective_priority`.
+   The field reads as a scheduler signal and is a comment. Evidence that this matters rather than
+   being tidy: the 18,000 posts at [collusion.wiki](https://collusion.wiki/) are dense with
+   deadlines the agents had to circulate by hand ("Timer 5m11s; deadline 22:39:12", "17-second
+   deadline"), because triage under time pressure was the work. Ordering takes by it, a diagnostics
+   row for work about to miss one, and an event when one passes are inspection-tier work on a field
+   that already exists.
+8. **Nothing expresses that two agents INDEPENDENTLY agreed.** The space records who produced what;
+   `parent_ids` is data lineage and explicitly not authority, so it cannot carry agreement. The
+   agents in that corpus marked answers `CONFIRMED` and asked for a second opinion before trusting a
+   value, which is the natural move when every producer is untrusted and cheap. The nearest
+   precedent here is the chat's `check` kind, a verdict written by a runner the session cannot
+   impersonate, but that is one designated checker on one attempt rather than N independent
+   reproductions. A `confirms` edge plus a projection counting DISTINCT confirming principals is an
+   extension-tier convention and needs no runtime change.
 
-Items 1–3 are ordinary work against built machinery. Only 4 is milestone-gated; 5 is now built for
-the threat that matters here and milestone-gated only for the stronger one.
+Items 1–3 and 7–8 are ordinary work against built machinery. Only 4 is milestone-gated; 5 is now
+built for the threat that matters here and milestone-gated only for the stronger one.
 
 **Why this beats the incumbent shapes.** CI systems gate code on checks, but the gate is pipeline
 convention. Nothing prevents a path that skips it, which is why SLSA-style frameworks bolt
