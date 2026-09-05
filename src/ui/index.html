@@ -110,6 +110,12 @@
   .space-bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; font-size: 12px; }
   .space-bar select, .space-bar input[type=number] { width: auto; }
   .space-bar label { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
+  /* Activity tab: the handoff map and the per-agent timeline, plain SVG */
+  .act-fig { overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); margin-top: 8px; }
+  .act-fig svg { display: block; }
+  .act-fig text { font-family: system-ui, sans-serif; }
+  .act-fig .halo { paint-order: stroke; stroke: var(--panel); stroke-width: 3px; stroke-linejoin: round; }
+  .act-summary { font-size: 13px; margin: 6px 0 2px; }
 </style>
 </head>
 <body>
@@ -164,6 +170,7 @@
        the docs, so a label may change and an id may not (`worker` is labelled Take). -->
   <button data-tab="overview" class="active" title="what is going on right now, and what needs attention">Overview</button>
   <span class="nav-sep" aria-hidden="true"></span>
+  <button data-tab="activity" title="who handed work to whom, and when: the last minutes as a map and a timeline">Activity</button>
   <button data-tab="records" title="browse and query one kind's records, newest first">Records</button>
   <button data-tab="feed" title="what happened, in order, grouped by thread">Feed</button>
   <button data-tab="graph" title="one record's thread: as a waterfall over time, or as a graph">Graph</button>
@@ -194,6 +201,33 @@
   </section>
 
   <!-- RECORDS -->
+  <!-- ACTIVITY: the last minutes as a handoff map and a per-agent timeline -->
+  <section id="activity">
+    <div class="panel">
+      <h2>Activity
+        <label style="display:inline; float:right; font-size:12px; color:var(--muted)">
+          <input type="checkbox" id="act-live" style="width:auto" checked onchange="toggleActivityLive()"> live
+        </label>
+      </h2>
+      <p class="muted" style="margin-top:0">Who handed work to whom. An <b>arrow</b> is a record one agent wrote and another claimed; a <b>lane</b> is one agent's events in order, and an <b>arc</b> across lanes is a claim of somebody else's record, drawn from where it was written. Click anything for the record behind it. Built from the same event log as the Feed, nothing declared.</p>
+      <div class="row">
+        <div style="max-width:150px"><label>Window</label><select id="act-window" onchange="routeActivity()">
+          <option value="2m">last 2 minutes</option>
+          <option value="10m" selected>last 10 minutes</option>
+          <option value="1h">last hour</option>
+        </select></div>
+        <div style="max-width:220px"><label>Kind</label><input id="act-kind" list="kind-list" placeholder="all kinds" onchange="routeActivity()"></div>
+      </div>
+      <div id="act-msg"></div>
+      <div id="act-summary" class="act-summary muted"></div>
+      <h2 style="font-size:13px; margin-top:12px">Handoffs</h2>
+      <div id="act-map"><div class="empty">loading…</div></div>
+      <h2 style="font-size:13px; margin-top:14px">Timeline by agent</h2>
+      <div id="act-lanes"></div>
+    </div>
+    <div class="panel"><h2>Detail</h2><div id="act-detail"><div class="empty">Click a mark or an arrow.</div></div></div>
+  </section>
+
   <section id="records">
     <div class="panel">
       <h2>Browse records</h2>
@@ -571,7 +605,9 @@ function selectTab(b) {
   stopGraphLive();
   stopSpace();
   stopPulse();
+  stopActivity();
   if (b.dataset.tab === "overview") { loadHealth(); startPulse(); loadDoctor(); }
+  if (b.dataset.tab === "activity") startActivity();
   if (b.dataset.tab === "kinds") loadKindsTab();
   if (b.dataset.tab === "feed") startFeed();
   if (b.dataset.tab === "graph") loadGraphRoots();
@@ -642,6 +678,12 @@ function applyRoute() {
     if (m !== null) $("feed-match").value = m;
     const v = r.params.get("view");
     if (v === "flat" || v === "thread") $("feed-group").value = v;
+  }
+  if (b.dataset.tab === "activity") {
+    const w = r.params.get("window");
+    $("act-window").value = w === "2m" || w === "1h" ? w : "10m";
+    const k = r.params.get("kind");
+    if (k !== null) $("act-kind").value = k;
   }
   if (b.dataset.tab === "graph") {
     // Absent means the DEFAULT (waterfall — a duration question is where a graph link usually
@@ -2295,6 +2337,195 @@ async function resetSpace() {
   spaceCursor = "0";
   $("space-count").textContent = "";
   await startSpace();
+}
+
+// ---- activity (who handed work to whom, and when) ----
+// A composition of GET /v0/ops/events?tail=… (the read the Overview's strip and the Space tab
+// already make) plus one `agent_run` lookup per run: no new server surface, and no state of its
+// own, since both pictures are recomputed from the tail on every poll. The Space tab places a
+// record by what it IS; this places an event by who did it and when, which is the question a
+// person asks first ("did the worker pick it up?") and the one a similarity map cannot answer.
+let activityTimer = null;
+const ACT_WINDOWS = { "2m": 120_000, "10m": 600_000, "1h": 3_600_000 };
+const ACT_TAIL = 500, ACT_MAX_AGENTS = 12; // 500 is the server's cap on `tail`; asking for more returns 500 and would read as a full window
+const EARLIER = "(written earlier)";
+/** A lane or node label: a run id differs at its END, so keep that rather than the prefix. */
+function actLabel(a, max) {
+  if (a.length <= max) return a;
+  return a.startsWith("run:") ? "run:…" + a.slice(-8) : a.slice(0, max - 1) + "…";
+}
+function startActivity() { loadActivity(); if ($("act-live").checked && !activityTimer) activityTimer = setInterval(loadActivity, 3000); }
+function stopActivity() { if (activityTimer) { clearInterval(activityTimer); activityTimer = null; } }
+function toggleActivityLive() { stopActivity(); if ($("act-live").checked) activityTimer = setInterval(loadActivity, 3000); }
+function routeActivity() {
+  const p = new URLSearchParams();
+  if ($("act-window").value !== "10m") p.set("window", $("act-window").value);
+  const k = $("act-kind").value.trim();
+  if (k) p.set("kind", k);
+  navigate("activity", "", p);
+}
+/**
+ * The window's events as a picture. PURE, so the console test can pin it: `name` turns a run id
+ * into the agent to draw (the durable principal where it is known, else the run), `now` is the
+ * DB clock. A handoff is a `take` of a record whose `put` is in the tail and was made by another
+ * agent; a take of one's own record counts as `own` and draws nothing; a take of a record written
+ * before the tail reaches is credited to `EARLIER`, which is drawn as a source and never as a
+ * lane, since nothing can say what it did.
+ */
+function activityModel(events, name, now, windowMs, kindFilter) {
+  const since = now - windowMs;
+  const covered = events.length < ACT_TAIL || (events.length > 0 && Date.parse(events[0].ts) <= since);
+  const writer = new Map();
+  for (const e of events) if (e.operation === "put" && e.recordId) writer.set(e.recordId, { agent: name(e.runId), ts: Date.parse(e.ts), kind: e.kind });
+  const agents = new Map();
+  const touch = (a) => { if (!agents.has(a)) agents.set(a, { events: 0, writes: 0, claims: 0, own: 0 }); return agents.get(a); };
+  const edges = new Map(), arcs = [], marks = [], kinds = new Set();
+  for (const e of events) {
+    if (!e.recordId) continue;
+    const ts = Date.parse(e.ts);
+    if (ts < since || (kindFilter && e.kind !== kindFilter)) continue;
+    const agent = name(e.runId), a = touch(agent);
+    a.events++;
+    if (e.kind) kinds.add(e.kind);
+    marks.push({ ts, agent, op: opClass(e.operation), operation: e.operation, kind: e.kind || "", id: e.recordId, seq: e.seq });
+    if (e.operation === "put") a.writes++;
+    if (e.operation !== "take") continue;
+    a.claims++;
+    const w = writer.get(e.recordId);
+    if (w && w.agent === agent) { a.own++; continue; }
+    const from = w ? w.agent : EARLIER;
+    touch(from);
+    const key = `${from}\0${agent}\0${e.kind}`;
+    const edge = edges.get(key) || { from, to: agent, kind: e.kind || "", n: 0, ids: [] };
+    edge.n++;
+    if (edge.ids.length < 5) edge.ids.push(e.recordId);
+    edges.set(key, edge);
+    if (w && w.ts >= since) arcs.push({ t0: w.ts, from: w.agent, t1: ts, to: agent, kind: e.kind || "", id: e.recordId });
+  }
+  return { since, covered, agents, edges: [...edges.values()], arcs, marks, kinds: [...kinds].sort() };
+}
+async function loadActivity() {
+  const r = await api("GET", "/v0/ops/events?tail=" + ACT_TAIL);
+  if (!r.ok) { note("act-msg", "err", r.data && r.data.detail || `events: ${r.status}`); return; }
+  $("act-msg").innerHTML = "";
+  const events = r.data.events || [];
+  await agentsFor(events.map((e) => e.runId));
+  const now = Date.now() + DB_SKEW;
+  const windowKey = ACT_WINDOWS[$("act-window").value] ? $("act-window").value : "10m";
+  const m = activityModel(events, shortRun, now, ACT_WINDOWS[windowKey], $("act-kind").value.trim());
+  const real = [...m.agents].filter(([a]) => a !== EARLIER);
+  const writes = real.reduce((n, [, a]) => n + a.writes, 0), claims = real.reduce((n, [, a]) => n + a.claims, 0);
+  const handoffs = m.edges.reduce((n, e) => n + e.n, 0);
+  const label = $("act-window").selectedOptions[0].textContent;
+  const oldest = events.length ? Math.round((now - Date.parse(events[0].ts)) / 1000) : 0;
+  $("act-summary").innerHTML = m.marks.length
+    ? `${m.marks.length} event${m.marks.length === 1 ? "" : "s"} in the ${esc(label)}: ${writes} written, ${claims} claimed, ${handoffs} handed between agents, ${real.length} agent${real.length === 1 ? "" : "s"} active.`
+      + (m.covered ? "" : ` <span class="note err" style="display:inline; padding:2px 8px">the log's last ${ACT_TAIL} events reach back only ${oldest}s, so the window is cut there</span>`)
+    : `<div class="empty">Nothing happened in the ${esc(label)}${$("act-kind").value.trim() ? " for this kind" : ""}. Widen the window, or run an example against this space.</div>`;
+  $("act-map").innerHTML = m.marks.length ? renderHandoffMap(m) : "";
+  $("act-lanes").innerHTML = m.marks.length ? renderTimeline(m, now) : "";
+}
+/** Agents as nodes on a ring, one arrow per (writer, claimer, kind), width by count. */
+function renderHandoffMap(m) {
+  const active = [...m.agents].filter(([a]) => a !== EARLIER).sort((a, b) => b[1].events - a[1].events);
+  const shown = active.slice(0, ACT_MAX_AGENTS).map(([a]) => a);
+  if (m.edges.some((e) => e.from === EARLIER)) shown.push(EARLIER);
+  const edges = m.edges.filter((e) => shown.includes(e.from) && shown.includes(e.to));
+  if (!edges.length) {
+    const own = active.reduce((n, [, a]) => n + a.own, 0);
+    return `<div class="empty">No record changed hands in this window${own ? ` (${own} claim${own === 1 ? "" : "s"} of an agent's own record)` : ""}. A handoff is a record one agent writes and another claims.</div>`;
+  }
+  const n = shown.length, W = 760, H = Math.max(240, 90 + n * 40), cx = W / 2, cy = H / 2;
+  const rx = W / 2 - 110, ry = H / 2 - 40, nodeW = 168, nodeH = 26;
+  const pos = new Map(shown.map((a, i) => {
+    const t = n === 1 ? 0 : (-Math.PI / 2) + (2 * Math.PI * i) / n;
+    return [a, { x: n === 1 ? cx : cx + rx * Math.cos(t), y: n === 1 ? cy : cy + ry * Math.sin(t) }];
+  }));
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="handoffs between agents">`
+    + ``;
+  // Parallel edges between one pair (several kinds, or both directions) fan out by an offset.
+  const pairIndex = new Map();
+  for (const e of edges) {
+    const a = pos.get(e.from), b = pos.get(e.to);
+    const pair = [e.from, e.to].sort().join("\0");
+    const i = pairIndex.get(pair) || 0;
+    pairIndex.set(pair, i + 1);
+    const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len, ny = dx / len, off = 24 + i * 18;
+    const sign = e.from < e.to ? 1 : -1;
+    const mx = (a.x + b.x) / 2 + nx * off * sign, my = (a.y + b.y) / 2 + ny * off * sign;
+    // Start and end ON the node borders: the distance from a centre to its rectangle's edge along
+    // the line, so a steep edge does not leave its arrowhead floating halfway.
+    const ux = dx / len, uy = dy / len;
+    const toEdge = Math.min(Math.abs(ux) > 1e-6 ? (nodeW / 2) / Math.abs(ux) : Infinity, Math.abs(uy) > 1e-6 ? (nodeH / 2) / Math.abs(uy) : Infinity);
+    const sx = a.x + ux * toEdge, sy = a.y + uy * toEdge;
+    const ex = b.x - ux * (toEdge + 3), ey = b.y - uy * (toEdge + 3);
+    const color = graphColor(e.kind || "?");
+    const title = `${e.from} wrote, ${e.to} claimed: ${e.n} ${e.kind} record${e.n === 1 ? "" : "s"}`;
+    // The arrowhead is drawn, not a marker: `context-stroke` is what would colour a shared marker
+    // by its edge, and it is not in every browser this page runs in.
+    const tx = ex - mx, ty = ey - my, tl = Math.hypot(tx, ty) || 1, hx = tx / tl, hy = ty / tl;
+    const head = `M${ex.toFixed(1)},${ey.toFixed(1)} L${(ex - hx * 10 - hy * 4.5).toFixed(1)},${(ey - hy * 10 + hx * 4.5).toFixed(1)} L${(ex - hx * 10 + hy * 4.5).toFixed(1)},${(ey - hy * 10 - hx * 4.5).toFixed(1)} z`;
+    s += `<g style="cursor:pointer" onclick="showDetail('${esc(e.ids[0])}','act-detail')"><path d="M${sx.toFixed(1)},${sy.toFixed(1)} Q${mx.toFixed(1)},${my.toFixed(1)} ${ex.toFixed(1)},${ey.toFixed(1)}" fill="none" stroke="${color}" stroke-width="${(1.2 + Math.log2(e.n)).toFixed(1)}" opacity=".85"/><path d="${head}" fill="${color}"/>`
+      + `<text class="halo" x="${((sx + 2 * mx + ex) / 4).toFixed(1)}" y="${((sy + 2 * my + ey) / 4 - 4).toFixed(1)}" font-size="11" text-anchor="middle" fill="${color}">${esc(e.kind)}${e.n > 1 ? ` ×${e.n}` : ""}</text>`
+      + `<title>${esc(title)}</title></g>`;
+  }
+  for (const a of shown) {
+    const p = pos.get(a), st = m.agents.get(a), earlier = a === EARLIER;
+    s += `<g style="cursor:${earlier ? "default" : "pointer"}" ${earlier ? "" : `onclick="openAgent('${esc(a)}')"`}>`
+      + `<rect x="${(p.x - nodeW / 2).toFixed(1)}" y="${(p.y - nodeH / 2).toFixed(1)}" width="${nodeW}" height="${nodeH}" rx="8" fill="var(--panel)" stroke="var(--${earlier ? "line" : "muted"})" stroke-width="1.5"${earlier ? ' stroke-dasharray="4 3"' : ""}/>`
+      + `<text x="${p.x.toFixed(1)}" y="${(p.y + 4).toFixed(1)}" font-size="11" text-anchor="middle" fill="var(--${earlier ? "muted" : "ink"})">${esc(actLabel(a, 26))}</text>`
+      + `<title>${earlier ? "records written before the log's tail reaches" : `${esc(a)}: ${st.writes} written, ${st.claims} claimed${st.own ? ` (${st.own} of its own)` : ""}. Open its definition, runs and grants`}</title></g>`;
+  }
+  s += `</svg>`;
+  const more = active.length - Math.min(active.length, ACT_MAX_AGENTS);
+  return `<div class="act-fig">${s}</div>` + (more ? `<div class="muted" style="font-size:12px">${more} less active agent${more === 1 ? "" : "s"} not drawn</div>` : "");
+}
+/** One lane per agent, time across, every event a mark, every handoff an arc from its write. */
+function renderTimeline(m, now) {
+  const lanes = [...m.agents].filter(([a]) => a !== EARLIER).sort((a, b) => b[1].events - a[1].events).slice(0, ACT_MAX_AGENTS).map(([a]) => a);
+  const W = 960, left = 170, right = 16, laneH = 30, top = 22, H = top + lanes.length * laneH + 26;
+  const x = (t) => left + ((t - m.since) / (now - m.since)) * (W - left - right);
+  const y = new Map(lanes.map((a, i) => [a, top + i * laneH + laneH / 2]));
+  const OPS = { put: "var(--avail)", take: "var(--leased)", ack: "var(--ok)", fail: "var(--err)", other: "var(--muted)" };
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="events per agent over time">`;
+  // Time axis: six ticks, labelled as seconds ago.
+  const span = now - m.since;
+  for (let i = 0; i <= 6; i++) {
+    const t = m.since + (span * i) / 6, ago = Math.round((now - t) / 1000);
+    s += `<line x1="${x(t).toFixed(1)}" y1="${top - 6}" x2="${x(t).toFixed(1)}" y2="${H - 22}" stroke="var(--line)"/>`
+      + `<text x="${x(t).toFixed(1)}" y="${H - 8}" font-size="10" text-anchor="middle" fill="var(--muted)">${ago === 0 ? "now" : `-${ago >= 60 ? Math.floor(ago / 60) + "m" + (ago % 60 ? ago % 60 + "s" : "") : ago + "s"}`}</text>`;
+  }
+  for (const a of lanes) {
+    const ly = y.get(a);
+    s += `<line x1="${left}" y1="${ly}" x2="${W - right}" y2="${ly}" stroke="var(--line)" stroke-dasharray="2 4"/>`
+      + `<text class="halo click" x="${left - 8}" y="${ly + 4}" font-size="11" text-anchor="end" fill="var(--ink)" style="cursor:pointer" onclick="openAgent('${esc(a)}')">${esc(actLabel(a, 24))}<title>${esc(a)}: its definition, runs and grants</title></text>`;
+  }
+  for (const arc of m.arcs) {
+    if (!y.has(arc.from) || !y.has(arc.to)) continue;
+    const x0 = x(arc.t0), x1 = x(arc.t1), y0 = y.get(arc.from), y1 = y.get(arc.to);
+    const bend = Math.max(24, Math.min(80, (x1 - x0) / 2));
+    s += `<path d="M${x0.toFixed(1)},${y0} C${(x0 + bend).toFixed(1)},${y0} ${(x1 - bend).toFixed(1)},${y1} ${x1.toFixed(1)},${y1}" fill="none" stroke="${graphColor(arc.kind || "?")}" stroke-width="1.3" opacity=".7" style="cursor:pointer" onclick="showDetail('${esc(arc.id)}','act-detail')">`
+      + `<title>${esc(arc.kind)} ${esc(arc.id.slice(-8))}: written by ${esc(arc.from)}, claimed by ${esc(arc.to)} ${((arc.t1 - arc.t0) / 1000).toFixed(1)}s later</title></path>`;
+  }
+  for (const k of m.marks) {
+    if (!y.has(k.agent)) continue;
+    const mx = x(k.ts).toFixed(1), my = y.get(k.agent), color = graphColor(k.kind || "?");
+    const title = `${k.operation} ${k.kind} ${k.id.slice(-8)} by ${k.agent}, ${Math.round((now - k.ts) / 1000)}s ago`;
+    let glyph;
+    if (k.op === "put") glyph = `<circle cx="${mx}" cy="${my}" r="4.5" fill="${color}"/>`;
+    else if (k.op === "take") glyph = `<circle cx="${mx}" cy="${my}" r="4.5" fill="var(--panel)" stroke="${color}" stroke-width="2"/>`;
+    else if (k.op === "ack") glyph = `<rect x="${(Number(mx) - 4).toFixed(1)}" y="${my - 4}" width="8" height="8" rx="1.5" fill="${OPS.ack}" stroke="${color}" stroke-width="1"/>`;
+    else if (k.op === "fail") glyph = `<path d="M${(Number(mx) - 4).toFixed(1)},${my - 4} l8,8 M${(Number(mx) + 4).toFixed(1)},${my - 4} l-8,8" stroke="${OPS.fail}" stroke-width="2"/>`;
+    else glyph = `<circle cx="${mx}" cy="${my}" r="3" fill="${OPS.other}"/>`;
+    s += `<g style="cursor:pointer" onclick="showDetail('${esc(k.id)}','act-detail')">${glyph}<title>${esc(title)}</title></g>`;
+  }
+  s += `</svg>`;
+  const more = m.agents.size - (m.agents.has(EARLIER) ? 1 : 0) - lanes.length;
+  return `<div class="act-fig">${s}</div>`
+    + `<div class="legend" style="margin-top:6px"><span><i style="background:var(--ink);border-radius:50%"></i>written</span><span><i style="border:2px solid var(--ink);background:none;border-radius:50%"></i>claimed</span>`
+    + `<span><i style="background:var(--ok)"></i>answered</span><span><i style="background:var(--err)"></i>handed back, expired or given up</span>`
+    + `<span>colour is the kind; an arc is a handoff</span>${more ? `<span style="margin-left:auto">${more} less active agent${more === 1 ? "" : "s"} not drawn</span>` : ""}</div>`;
 }
 
 // ---- auth (the bootstrap chain, read from records: agent_definition -> agent_run -> grant) ----

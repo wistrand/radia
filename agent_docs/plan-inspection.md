@@ -111,6 +111,18 @@ buckets on the DB clock (`PULSE_WINDOW_S`), one bar per kind, and who is listeni
 renders `ops/diagnostics` as ranked findings whose samples link to the records they rest on: a
 finding nobody can open is an assertion.
 
+**Activity** (2026-09-05). The last minutes as two pictures of one window (`#activity?window=2m|10m|1h&kind=`),
+both drawn from the same `ops/events?tail=` read the Overview strip makes, so no new server surface
+and no state of its own. The HANDOFF MAP puts agents on a ring with an arrow per (writer, claimer,
+kind): a record one agent wrote and another claimed, width by count. The TIMELINE gives each agent a
+lane, every event a mark (written, claimed, answered, failed; colour is the kind) and every
+handoff an arc from where the record was written. `activityModel` is the pure function behind
+both, pinned by `test/console.test.ts`: a take of one's own record is counted and drawn as nothing,
+a take of a record older than the tail is credited to a dashed "written earlier" source, and a full
+tail younger than the window says so rather than reading as "nothing happened before". Runs are
+named by `agentOf`. It exists because the Space tab places a record by what it IS, and the first
+question a person asks is "did the worker pick it up?", which a similarity map cannot answer.
+
 **Records.** Reads NEWEST first (the oldest-50-as-"the records" trap shipped here once). Columns come
 from the kind's own `indexedPaths`, `explain` notes are rendered, and the query playground is folded
 in (match and `order_by` under a fold). A `state` browse reads the ENVELOPE query,
