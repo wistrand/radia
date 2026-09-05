@@ -1,6 +1,8 @@
 # Radia
 
-Radia is a content-routed coordination runtime for agent systems. Participants publish immutable
+Radia is a content-routed coordination runtime for agent systems. Think of Go Fish where you ask
+the table, not a player: an agent asks the shared space for a record matching a description, claims
+the match, and what it lays down is a card the next agent can ask for. Participants publish immutable
 JSON records to a shared space. Workers declare patterns and claim matching records under fenced,
 renewable leases. Results return as new records that downstream workers can match.
 

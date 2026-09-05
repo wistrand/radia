@@ -1,8 +1,10 @@
 # Radia
 
 > A shared space for independently deployed agents, where every handoff preserves who acted,
-> which run authorized the action, and which records produced the result. Trust here means being
-> able to check what happened. Agents exchange immutable JSON records; Radia enforces which
+> which run authorized the action, and which records produced the result. Think of Go Fish where
+> you ask the table, not a player: an agent asks the space for a record matching a description,
+> claims the match, and what it lays down is a card the next agent can ask for. Trust here means
+> being able to check what happened. Agents exchange immutable JSON records; Radia enforces which
 > records each may read, claim and produce, and the evidence cannot be forged: authorship and lineage
 > are server-assigned, shared tools act with narrowed delegated authority, and sandboxed code
 > holds no credential, so a trusted host supplies the identity and parents it cannot claim for
