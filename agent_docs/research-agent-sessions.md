@@ -191,7 +191,7 @@ Run 3 repeated it in 35s with the same result and no artifact, and claimed by
 **Two-step: the requester ran what it was given, byte for byte.** `team-exec-twostep` moves the
 execution to the agent that wrote the task, and it ran first try:
 `task@claude-lab → artifact@codex-lab + note@codex-lab → tool_call@claude-lab → tool_result@lab-exec`,
-28s, `3682913`. Two things are worth keeping. The code in the `tool_call` hashes to the artifact's
+28s, `3682913`. Two things follow. The code in the `tool_call` hashes to the artifact's
 own digest (`d796b2…`, 442 bytes), so the requester passed the delivered bytes through rather than
 retyping or improving them, which is an assertion a script can compute. And the requester read the
 capability's description and wrote its constraints INTO the task ("this space's run_javascript

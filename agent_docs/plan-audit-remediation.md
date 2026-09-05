@@ -546,7 +546,7 @@ remedy, so this is the permission model rather than one platform's filesystem.
 restriction covers module loading (`denoSandbox` false, `bwrapSandbox` true), absent reads as
 unconfined, and `probeSandbox` breaks out of any spec CLAIMING confinement it does not have. Two
 cases in `extensions/conformance/workspace.test.ts`, both proved against plants; the second plant is
-the one worth knowing, since a probe without a real canary reports `held: true` for a wide-open
+the one that matters, since a probe without a real canary reports `held: true` for a wide-open
 jail.
 
 **The fix, SHIPPED 2026-08-06.** A mount namespace closes it, because an unbound path does not

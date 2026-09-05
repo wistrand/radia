@@ -358,7 +358,7 @@ drives `runCli` is the `query` output guard in `test/defaults.test.ts`.
 Ordered by MODEL RISK, the [plan-workspaces.md](plan-workspaces.md) rule: the question most
 likely to be answered "no" comes first. Phases 1 to 3 wrote NO runtime code and little of any
 kind (conventions, and the tests that prove them); 4 to 6 are the build. The numbering is kept
-because eight source files cite it, and because the plants are the part worth re-reading.
+because eight source files cite it, and because the plants are what a later change must re-run.
 
 **1. Does the compartment hold, with nothing new? It does.**
 Shipped: `test/conformance/suites/compartment.ts`, five cases on both adapters, driving the HANDLERS

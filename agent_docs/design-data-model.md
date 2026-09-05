@@ -496,7 +496,7 @@ Four properties, each with a reason:
   gone while the record, its digest and the event chain remain verifiable.
 
 Enabling encryption on an existing store does not orphan what is already there: a blob with no
-sidecar is read as plaintext, while new writes are sealed. Two consequences worth knowing: an
+sidecar is read as plaintext, while new writes are sealed. Two consequences: an
 encrypted read cannot stream (AES-GCM verifies its tag over the whole ciphertext, so the payload is
 decrypted in memory, bounded by `maxArtifactBytes`), and a space started **without** the KEK cannot
 even address its sealed blobs, so reads are `404` while the records remain intact.

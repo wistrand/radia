@@ -330,7 +330,7 @@ So the tool name carries it, and three things follow that neither candidate gave
 - discovery is the path that already exists. The capability list answers "what can this space run";
   `space_query {kind: sandbox}` answers "under what guarantees".
 
-*The `llm_call` tier precedent does not transfer,* which is the part worth keeping. A tier is a
+*The `llm_call` tier precedent does not transfer.* A tier is a
 JUDGEMENT about a turn, so it is worth delegating to a worker that can read the turn. A language is
 a fact the caller already holds. A router still earns its place for a caller stating REQUIREMENTS
 rather than a name (subsumption is not expressible as a pattern, so a worker must match); nobody
@@ -801,7 +801,7 @@ file in a tree IS an artifact reference. Putting an existing payload into a tree
 and nothing else, so no bytes move and size stops mattering. `writeWorkspace({attach})` and
 `editWorkspace({attach})` take `path → artifactId`.
 
-Three things worth keeping:
+Three things:
 
 - **The gap was in the TOOL surface, not the model.** Nothing exposed a capability the data model
   already had, so the assistant did the best available thing and correctly reported that the result

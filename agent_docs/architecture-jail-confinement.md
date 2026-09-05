@@ -299,7 +299,7 @@ case passes, and the whole matrix holds (it reads its tree and imports the stdli
 outside, the network, `subprocess` and outside writes are all refused).
 
 What changed the answer was reading prior art (mindsdb/vsbox) instead of grinding the profile out.
-The structural lesson is the one worth keeping, because the first attempt had it backwards:
+The structural lesson, which the first attempt had backwards:
 
 **A Python profile must `(deny default)`; the Deno one must not.** `(allow default)` plus targeted
 denies is right for Deno ONLY because its flags already deny net, env, run, ffi and write, leaving

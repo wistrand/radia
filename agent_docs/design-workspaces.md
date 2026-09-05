@@ -370,7 +370,7 @@ assumes); a non-unique match is an error rather than a first-match; a BATCH of e
 because a version-per-edit turns `versions` from "how many attempts" into "how many keystrokes"; and
 an optional `expectDigest` makes the lost update an error instead of a merge.
 
-Two things worth knowing before that lands. It is ERGONOMICS rather than capability — a run with
+Two things before that lands. It is ERGONOMICS rather than capability — a run with
 `write: true` can already edit a file — so it does not justify a patch format or a merge strategy.
 And the hazard it closes is not the token cost that motivates it: `writeWorkspace` builds the
 manifest from exactly what it is passed, so a partial save truncates the tree rather than patching

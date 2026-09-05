@@ -140,7 +140,7 @@ folds. The first version of that test did exactly that and stayed green against 
   OIDC mint). Returns `{run, agent, runToken, expiresAt, actingFor}`.
 - Refusals: `403` for a privileged or supervisor agent; `403` when the worker cannot read the
   naming record; `422` when the intersection is empty (a delegated run that can do nothing is a
-  configuration error worth naming, not a token to hand back); `422` on cross-product overflow.
+  configuration error to name, not a token to hand back); `422` on cross-product overflow.
 - `openapi/radia.yaml` entry (2-space path, 4-space method, for the round-trip test).
 - `sdk/ts/client.ts`: `mintDelegatedRun(recordId)` returning a token, plus the one-line factory for
   a second `RadiaClient`. `sdk/py/radia.py` at parity.
@@ -217,7 +217,7 @@ Two changes, and the second is the point:
    **Minted from the SEED `llm_call`, not from the triggering message.** The seed is the one record
    in a conversation whose author IS the person; an assistant message is authored by the INFERENCE
    worker, which acks it under its own lease and cannot ack under any other credential. That
-   constraint is worth keeping in mind generally: `ack` is performed by the lease owner, so no
+   constraint holds generally: `ack` is performed by the lease owner, so no
    ack-emitted record can carry a delegated author.
 
 2. Exec's grants over session data move to `delegable:agent:chat-exec`. Which ones is narrower than
@@ -243,7 +243,7 @@ Two changes, and the second is the point:
 the fork question too. Under delegation the write half is the worker's and the read half is the
 caller's, so both take an optional `reader` defaulting to `client` (every existing caller is
 unchanged). Missing one of `writeWorkspace`'s two internal reads produced a `forbidden` three
-frames deep in an extension, which is worth knowing before splitting a credential anywhere else:
+frames deep in an extension, which matters before splitting a credential anywhere else:
 grep the function for reads rather than trusting its name.
 
 **The tools worker: BUILT, and it split in two rather than being delegated.** `--session-token` is
@@ -259,7 +259,7 @@ gone, which is what made a fleet serve one person. The split is forced by the sa
   clearest case: a download capability is authorized at mint time against the CALLER's read grant,
   so minting it as the worker would turn an unreadable artifact into a link needing no token.
 
-Two consequences worth knowing. The session now CLAIMS work, so it needs `interest: put` (without
+Two consequences. The session now CLAIMS work, so it needs `interest: put` (without
 it `agentLoop` skips publishing and claims nothing, silently) and `tool_call: take` — the latter
 scoped by `$in` to the tool NAMES it serves, because a bare `take` would let a session claim its own
 `run_javascript` call and write the result, and a `tool_result` has to keep meaning "a worker

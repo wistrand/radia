@@ -143,7 +143,7 @@ next step needs (`i`, `of`, `assistantId`, `round`, `upToIndex`), so
 no step recomputes from a scan. The client becomes: put the user message, watch, render until
 `turn_complete`.
 
-ADDRESSING IS BY IDENTITY, ordering is by index, and conflating the two was a mistake worth naming.
+ADDRESSING IS BY IDENTITY, ordering is by index, and conflating the two was the mistake.
 A reply is found by the provider call id it answers (`{conversationId, tool_call_id}`); a round's
 assistant message by `{conversationId, turnAt, round, role}`. `index` still orders the transcript and
 bounds the context window, but nobody PREDICTS one in order to read a record. That prediction was a
