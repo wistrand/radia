@@ -35,6 +35,7 @@ export const VALUELESS = new Set([
   "--console",
   "--anonymous",
   "--follow",
+  "--no-color",
   "--retire",
   "--once",
   "--no-broker",

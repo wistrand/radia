@@ -67,7 +67,7 @@ deno task dev               # embedded space + web console at http://127.0.0.1:7
 deno task demo              # a coordination demo (planner + workers + aggregator) against it
 deno task chat              # a CLI LLM chatbot (needs OPENROUTER_API_KEY): thinking, tools, images
                             # and sandboxed code execution are all records; watch the Feed tab
-deno task stress            # fill a space with waves of activity to watch in the Space tab
+deno task stress            # fill a space with waves of activity to watch in the Activity and Space tabs
 deno task cli <verb>        # the CLI from a checkout: `deno task cli health`, `deno task cli doctor`
 deno task test              # check + every test below
 deno task test:runtime      # everything under test/, incl. the port contract suites
@@ -189,6 +189,7 @@ radia ack - --result-kind job_result --result '{"ok":true}' < claim.json
 radia watch job                               # stream wakeups
 radia doctor                                  # dead-letters, stuck leases, stale work (orphaned vs starving)
 radia flows                                   # the recurring shapes of work, mined from lineage
+radia activity --follow                       # who handed work to whom: one lane per agent, live, in ANSI
 radia integrity                               # verify the event chain, naming the first divergence
 radia reclaim --all --drain                   # un-stick every expired lease
 radia login human:alice --grant job:query     # a scoped session for a person
