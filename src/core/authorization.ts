@@ -53,7 +53,7 @@ export interface AuthorizationHost {
 }
 
 /** Every grant in force for one principal, and where they came from. The single answer behind
- *  `authorize`, `readAccess`, `authorScope`, `taintBarrier`, `authorizeWatch`, `opsScope` and
+ *  `authorize`, `readAccess`, `authorScope`, `authorizeWatch`, `opsScope` and
  *  `effectivePermissions`, so a delegated run cannot be attenuated in some of them. */
 export interface GrantAccess {
   /** Operator or the space itself: no grant is read and nothing constrains it. Never true for a
@@ -193,9 +193,9 @@ export async function authorize(h: AuthorizationHost, principal: string, op: Gra
  * THE authorization read: every grant in force for `principal` (on `kind`, or on every kind when
  * omitted), plus whether the read saw everything.
  *
- * One seam, because there are six entry points (`authorize`, `readAccess`, `authorScope`,
- * `taintBarrier`, `authorizeWatch`, `effectivePermissions`) and a delegated run must be attenuated
- * in ALL of them. Adding the branch per call site is how five of them would keep reading the
+ * One seam, because there are five entry points (`authorize`, `readAccess`, `authorScope`,
+ * `authorizeWatch`, `effectivePermissions`) and a delegated run must be attenuated in ALL of
+ * them. Adding the branch per call site is how four of them would keep reading the
  * worker's grants.
  *
  * Grants are records: for an ordinary principal this queries the ones for this (subject, kind).
@@ -319,26 +319,12 @@ function selfScoped(h: AuthorizationHost, grants: GrantDef[], op: GrantOp): bool
   return applicable.length > 0 && applicable.every((g) => g.scope?.createdBy === "self");
 }
 
-/**
- * Does this principal's own grants bar it from claiming TAINTED records of `kind`?
- *
- * A caller's own `allowTaint` is a courtesy the worker pays: a worker that omits it receives
- * tainted work normally, so containment depended on every claimant opting in. That is a
- * convention, not a control. A grant carrying `scope: {taint: …}` moves the barrier to the
- * side that assigns authority, where an operator can impose it.
- *
- * Applied only when EVERY applicable grant carries it, the same rule `authorScope` uses and for
- * the same reason: grants UNION, so one grant without the barrier already permits tainted work,
- * and enforcing it anyway would deny something that was granted.
- */
-export async function taintBarrier(h: AuthorizationHost, principal: string, op: GrantOp, kind: string): Promise<string[] | undefined> {
-  const acc = await access(h, principal, kind);
-  if (acc.privileged) return undefined; // no grants to read, so no barrier to impose
-  return barrierFrom(h, acc.defs, op);
-}
-
-/** The allowlist an already-read grant set imposes. Split from the read so `readAccess` can
- *  answer from one view. */
+/** The taint allowlist an already-read grant set imposes on `op`, or `undefined` for none. A
+ *  grant carrying `scope: {taint: …}` moves the barrier to the side that assigns authority, where
+ *  an operator can impose it; `take`'s `allowTaint` is the claimant's own opt-in and is a
+ *  convention, not a control. Applied only when EVERY applicable grant carries it, the rule
+ *  `authorScope` uses: grants UNION, so one grant without the barrier already permits tainted
+ *  work. Reached through `readAccess` only (a standalone entry point was dead code, 2026-09-05). */
 function barrierFrom(h: AuthorizationHost, grants: GrantDef[], op: GrantOp): string[] | undefined {
   const applicable = (grants as (GrantDef & { scope?: Record<string, string> })[])
     .filter((g) => Array.isArray(g.operations) && g.operations.includes(op));
@@ -523,10 +509,14 @@ export async function effectivePermissions(h: AuthorizationHost, principal: stri
   };
 }
 
+/** The operations under which a principal observes records, so a grant carrying any of them
+ *  qualifies its holder to watch the kind. `put` is not one: a writer is told nothing. */
+const WATCH_OPS: GrantOp[] = ["query", "take", "read_one"];
+
 /**
  * Authorize a watch on `kind`. A watch OBSERVES matching records (its SSE payload is record
- * existence + ids + kind + timing), so it is allowed if the principal holds ANY grant on the kind
- * (it is a participant), regardless of op (a watcher may hold only `take`, like the agentLoop, or
+ * existence + ids + kind + timing), so it is allowed if the principal holds a grant carrying any
+ * OBSERVING op on the kind (`WATCH_OPS`: a watcher may hold only `take`, like the agentLoop, or
  * only `read_one`, like a result consumer). Returns the UNION of those grants' patterns to AND
  * into the watch match (`null` = unrestricted / privileged), so a watcher only wakes on records
  * inside its grant scope, the same content-scoping `query`/`take` get. Throws `forbidden` if the
@@ -537,7 +527,13 @@ export async function authorizeWatch(h: AuthorizationHost, principal: string, ki
   // stopped `query` but left `watch` standing would revoke nothing that matters.
   const acc = await access(h, principal, kind);
   if (acc.privileged) return { constraint: null };
-  const grants = acc.defs as (GrantDef & { scope?: { createdBy?: string } })[];
+  // Only grants that let the principal OBSERVE records count, and only their patterns union. A
+  // put-only grant is not participation in the reads, and a put grant's pattern is a bound on what
+  // may be WRITTEN, so folding it in let an unscoped put widen a pattern-scoped query to the whole
+  // kind's ids and timing (2026-09-05). `readAccess` filters by one op; a watch serves every
+  // observing op at once, which is why it takes the union of the three.
+  const grants = (acc.defs as (GrantDef & { scope?: { createdBy?: string } })[])
+    .filter((g) => Array.isArray(g.operations) && WATCH_OPS.some((op) => g.operations.includes(op)));
   const subject = acc.delegated ? grantSubject(h, acc.delegated.actingFor) : grantSubject(h, principal);
   if (grants.length === 0) throw noGrant(h, principal, "grant to watch", kind);
   // A self scope narrows a watch for the same reason it narrows `query`: otherwise approving

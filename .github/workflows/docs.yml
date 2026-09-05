@@ -1,4 +1,7 @@
-# The published site's own guard, for commits that touch nothing else.
+# The docs' own guard, for commits that touch nothing else: the published site, and since
+# 2026-09-05 `agent_docs/` and every markdown file, because `test/agentdocs.test.ts` (links, source
+# paths, the em-dash ledger, CLAUDE.md's budget) guards exactly the changes `ci.yml` skips, and a
+# prose-only commit ran no workflow at all.
 #
 # `ci.yml` ignores `docs/**`, because three jobs, an apt-install and three containers is a poor
 # trade for a typo. What the site actually needs is `test/docs.test.ts` (its CLI verbs
@@ -14,9 +17,9 @@ name: docs
 on:
   push:
     branches: [main]
-    paths: ['docs/**']
+    paths: ['docs/**', 'agent_docs/**', '**/*.md']
   pull_request:
-    paths: ['docs/**']
+    paths: ['docs/**', 'agent_docs/**', '**/*.md']
 
 concurrency:
   group: docs-${{ github.ref }}

@@ -13,3 +13,4 @@ export * from "./client.ts";
 export { agentLoop, reactorLoop } from "./loop.ts";
 export type { LoopOptions, ReactorOptions } from "./loop.ts";
 export { contentKey, newer, newestByKey, oidcIdentityKey, opsGrantKey } from "./registry.ts";
+export { fnv1a, kindDefKey } from "./wire.ts";

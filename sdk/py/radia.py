@@ -415,6 +415,23 @@ class RadiaClient:
         self.put({"kind": KIND_DEF, "body": definition}, idempotency_key=kind_def_key(definition))
         return {"kind": definition["kind"]}
 
+    def publish_interest(self, pattern: Dict[str, Any], retired: bool = False) -> Dict[str, str]:
+        """Say which pattern this run claims, as an ``interest`` record (the console's routing views
+        and ``who is listening`` read them). Keyed per RUN, as ``publishInterest`` in
+        ``sdk/ts/client.ts``: an interest is live only while its author-run is, and a content-only
+        key made a restarted fleet replay a dead run's records. The exchange runs BEFORE the key is
+        computed, or a fresh client keys itself to no run and writes under one."""
+        body: Dict[str, Any] = {"kind": pattern["kind"]}
+        if pattern.get("match"):
+            body["match"] = pattern["match"]
+        if retired:
+            body["retired"] = True
+        self.ensure_credential()
+        scope = self.run or "self"
+        identity = f"{pattern['kind']}|{json.dumps(pattern.get('match'), separators=(',', ':'), sort_keys=False) if pattern.get('match') else 'null'}"
+        prefix = "interest:retire:" if retired else "interest:"
+        return self.put({"kind": "interest", "body": body}, idempotency_key=f"{prefix}{scope}:{identity}")
+
     def registry(self, kind: str, match: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """The CURRENT SET of a keyed registry kind: newest per key, retirements dropped, projected
         by the SERVER from the key the kind declares.
@@ -849,6 +866,19 @@ class RadiaClient:
         self._no_order_by(pattern, "query_oldest")
         return self.query_page(pattern, limit, dir="asc")[0]
 
+    def query_ordered(self, pattern: Dict[str, Any], limit: int = 100) -> List[Dict[str, Any]]:
+        """The first ``limit`` records in the PATTERN'S OWN order (``order_by``), which it must name:
+        without one the server answers oldest-first, the reading ``query_oldest`` exists to name.
+        No cursor is offered, since a record-id keyset cannot express that order. Mirrors
+        ``queryOrdered`` in ``sdk/ts/client.ts``."""
+        if not pattern.get("order_by") and not pattern.get("orderBy"):
+            raise ValueError(
+                f"{pattern.get('kind')!r} is queried with query_ordered but names no order_by: "
+                "use query_newest or query_oldest for the id order"
+            )
+        r = self._req("POST", "/v0/records/query", dict(pattern, limit=limit))
+        return r["records"]
+
     def query_page(
         self,
         pattern: Dict[str, Any],
@@ -1266,6 +1296,29 @@ def agent_loop(
                 say(f"[{name}] watch on '{kind}' dropped: {e}. Retrying")
                 stop.wait(1.0)
 
+    # Announce what this worker claims. A worker with no grant to write ``interest`` still works,
+    # it is just invisible to the routing views, so a refusal is reported and not fatal. Interests
+    # are live only while their author-run is, so a NEW RUN (an exchange after a lapse, a stop or
+    # the lifetime ceiling) re-announces. Matches ``agentLoop`` in ``sdk/ts/loop.ts``.
+    announced_run: List[Optional[str]] = [None]
+
+    def announce() -> None:
+        for pattern in patterns:
+            try:
+                client.publish_interest(pattern)
+            except RadiaError as e:
+                report(f"[{name}] could not publish interest in '{pattern['kind']}': {e}")
+        announced_run[0] = client.run
+
+    def retire_interests() -> None:
+        for pattern in patterns:
+            try:
+                client.publish_interest(pattern, retired=True)
+            except RadiaError:
+                pass
+
+    announce()
+
     threads = []
     for kind in dict.fromkeys(t["kind"] for t in patterns):
         t = threading.Thread(target=watcher, args=(kind,), daemon=True)
@@ -1273,6 +1326,8 @@ def agent_loop(
         threads.append(t)
 
     while not stop.is_set():
+        if client.run != announced_run[0]:
+            announce()
         claimed = None
         try:
             for pattern in patterns:
@@ -1323,6 +1378,10 @@ def agent_loop(
             # than spin against a door that will not open.
             say(f"[{name}] credential ended: the run can no longer renew")
             break
+    # Retire on a clean stop, after the last settle. A crash cannot run this, which is why a reader
+    # treats an interest as live only while its run is.
+    if not credential_lost:
+        retire_interests()
 
 
 class _Heartbeat:

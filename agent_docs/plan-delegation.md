@@ -102,8 +102,9 @@ a cross-product explosion fails AT THE MINT with a clear message rather than at 
 
 ### 1e. Enforcement: one seam, SIX call sites
 
-Not three: `authorize`, `readAccess`, `authorScope`, `taintBarrier`, `authorizeWatch` and
-`effectivePermissions` (plus `opsScope`) each began by reading the grant registry for
+Not three: `authorize`, `readAccess`, `authorScope`, `authorizeWatch` and
+`effectivePermissions` (plus `opsScope`, and `taintBarrier` until it was found dead and deleted
+on 2026-09-05) each began by reading the grant registry for
 `grantSubject(principal)`. Adding the branch per site is how five of them would have kept reading
 the worker's grants. They now share `Space.access(principal, kind?)`, which returns the delegated
 run's inline grants or the registry view; `constraintFrom`, `selfScoped` and `barrierFrom` take

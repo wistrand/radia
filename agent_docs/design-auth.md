@@ -18,9 +18,10 @@ meant a space could not have ordinary people on it at all, so the only human cre
 was god-mode. Enforcement is wired at the HTTP
 boundary (`src/server/http.ts` + the record/take/watch handlers): coordination `put`/`take`/
 `query`/`read_one` call `authorize`, and **`watch`** calls `Space.authorizeWatch` (a watch is
-allowed if the principal holds ANY grant on the kind, which makes it a participant, and the grant
-pattern is AND-ed into the watch match, so it wakes only on records inside its scope; no grant →
-`forbidden`). A watch **re-derives that scope for as long as its stream runs** (`Space.scopeWatch`
+allowed if the principal holds a grant carrying an OBSERVING operation on the kind, `query`, `take`
+or `read_one`, and the union of THOSE grants' patterns is AND-ed into the watch match, so it wakes
+only on records inside its read scope; a put grant neither qualifies nor widens, since its pattern
+bounds writes, and a put-only principal or one with no grant gets `forbidden`; 2026-09-05). A watch **re-derives that scope for as long as its stream runs** (`Space.scopeWatch`
 / `revalidateWatch`), on attach and whenever an `AUTHORIZATION_KINDS` record goes past in the event
 log, so revocation reaches an open connection instead of waiting for a disconnect. The stream also
 re-resolves the credential, so a stopped run loses it. `/v0/ops/*` requires a privileged principal

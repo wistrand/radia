@@ -1180,8 +1180,28 @@ carrying a test that fails on the planted defect.
 | 4 | Credential resolution orders by id (P2, multi-instance) | VERIFIED | `newestByHash` took the newest by ULID, minted per instance; a stop from an instance whose clock ran behind sorted before the run it stopped. Now a handful of rows by id and the newest by the DB clock through `newer`, still one narrow read. `test/credential-order.test.ts` plants the skew |
 | 5 | No body cap on JSON routes | NARROWER, fixed | Nine `req.json()` calls buffered before the size check; only artifacts had a capped reader. `src/server/body.ts` now holds that reader and `parseJsonBody`, an 8 MiB transport ceiling every JSON route reads through, refused as `413 body_too_large` while the body streams. The record limit still decides what is stored. `test/http.test.ts` posts nine megabytes at six routes |
 | 6 | Open-mode CSRF | NARROWER, fixed | The mechanism is real, but `radia dev` defaults to `--auth required` (`main.ts`, `flag(args, "--auth") ?? "required"`) and the console authenticates with Bearer tokens, so the exposure was a space started with `--auth open`. There, a write with no token whose `Sec-Fetch-Site` says `cross-site` or `same-site` is now `403 cross_site`: a browser stamps that header and a page cannot forge it, curl and the SDKs send none. Reads stay open. `test/http.test.ts` |
-| 7 | Two dead `taintBarrier` copies | NOT FOUND | One definition (`authorization.ts`) and one delegating method (`space.ts`); nothing else by that name |
+| 7 | Two dead `taintBarrier` copies | VERIFIED (2026-09-05), first refuted wrongly | The first pass counted DEFINITIONS (one function, one delegating method) and called the report's "two copies" not found. The finding was about CALLERS, and a grep finds none: the barrier is enforced through `barrierFrom` inside `readAccess`, and the standalone entry point was unreachable. Both deleted; the refutation broke this ledger's own rule, since a search for callers was the evidence and it was not run |
 | 8 | Postgres binds an undefined epoch as NULL on expired reclaim | VERIFIED, inert, fixed | `pgbase.ts` bound it raw and `sqlite.ts` bound `?? 0`; every claim sets an epoch, so the input that separated them did not exist after the backfill. Both expired paths now use NULL-safe equality with `?? null`, the binding their available paths already used, so the adapters agree on every input by construction. The lease suites on all three adapters |
+
+### Follow-up (2026-09-05), CLOSED the same day
+
+The same reviewer re-read the ledger and listed what it had not covered. Every item re-derived
+against the code, all confirmed, all fixed with a guard:
+
+| # | Claim | Fix and guard |
+|---|-------|---------------|
+| 9 | A settle skips the owner check when the row stores no owner | Both adapters' `settleGuard` fail closed when `expectOwner` is set and `lease_owner` is NULL. `test/backfill.test.ts`, the owner nulled by SQL on both dialects |
+| 10 | `authorizeWatch` unions patterns across every operation, so an unscoped put widens a scoped query's watch to the kind | Only grants carrying `query`/`take`/`read_one` count (`WATCH_OPS`, `src/core/authorization.ts`); a put-only principal is `forbidden`. `test/conformance/suites/auth.ts` |
+| 11 | `queryOrdered` accepts a pattern without `orderBy` and answers oldest-first | Refused by name in `sdk/ts/client.ts`; `query_ordered` added to the Python SDK with the same refusal |
+| 12 | `TakeResult` and `DelegatedRun` missing from the barrel; nothing imports `sdk/ts/mod.ts` | Every wire type a public method uses is re-exported (`client.ts`), `kindDefKey` joins the barrel, and `test/docs.test.ts` imports the barrel and stats every exports-map target |
+| 13 | A prose-only commit runs no workflow, so the doc guards never run on the changes they guard | `docs.yml` triggers on `agent_docs/**` and `**/*.md` as well as `docs/**` |
+| 14 | Python `agent_loop` publishes no interest records | `publish_interest` keyed per run as the TS client does; the loop announces at start, re-announces on a new run, retires on a clean stop. `examples/pipeline-py/demo.py --once` |
+| 15 | The npm tarball ships raw `.ts` with no `types` field | A stance, not a build: `sdk/README.md` names the runtimes that load it as is (Deno, Bun, Node 22.18+) and says a build step is not planned |
+
+The hardcoded chat vocabulary in `extensions/ts/inference.ts` and `encrypted.ts` was reported too
+and is not a defect as framed: every extension names its own kinds (`workspace.ts` names
+`workspace`). Whether those kinds are the chat's or the extension's is a naming decision for
+[design-workspaces.md](design-workspaces.md)'s sibling docs, not a coupling to remove.
 
 ## Deferred: low severity
 

@@ -368,6 +368,11 @@ that something was missing. A rule a caller can get wrong is one that will be go
   `kindDefKey`: include a new field there too, or a changed value won't mint a successor.
 ### Leases, claims, events and watches
 
+- **A settle that expects an owner fails CLOSED on a row that stores none.** The adapters compared
+  `lease_owner` only when one was present, so a row with NULL (claimed before the column existed)
+  let anyone holding the lease id and epoch settle as the owner. Both `settleGuard` paths now refuse
+  when `expectOwner` is set and the row has no owner; the runtime's own raw verb, which names no
+  owner, still settles it. Guard: `test/backfill.test.ts`, the owner nulled by SQL on both dialects.
 - **A watcher wakes on the COMMIT, which beats your own `put` returning.** A transcript cursor
   advanced after the write reads the client's own message as somebody else's in that round trip and
   queues a notice for it. Claim the slot in the cursor BEFORE the write and give it back only if the
@@ -838,6 +843,11 @@ tokens keep minting, while `revokeDefinition` reaches only the NEWEST record
 
 ### Grants, scopes and narrowed answers
 
+- **`authorizeWatch` unions the patterns of OBSERVING grants only (`WATCH_OPS`).** It took every
+  grant on the kind whatever its operation, so an unscoped `put` beside a pattern-scoped `query`
+  streamed the whole kind's ids and timing, the leak the same function's self-scope guards against.
+  A put grant's pattern bounds writes and says nothing about reads; a put-only principal is
+  `forbidden`. Guard: `test/conformance/suites/auth.ts`, "watch authorization".
 **The grant union `combineMatch` builds is exempt from the caller's `$or` cap, and nothing else is.**
 `MAX_OR_BRANCHES` (16) bounds what a caller asks (`400 too_many_branches`); the union is bounded by
 the grant ceiling, so `grantUnion` in `src/core/matching.ts` marks it with a symbol-keyed property

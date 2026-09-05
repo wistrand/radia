@@ -638,7 +638,14 @@ export const authSuites: Suite[] = [
       assertEquals((await space.authorizeWatch("agent:w", "task")).constraint, [{ op: "up" }]); // scopes the watch
       // privileged → unrestricted
       assertEquals((await space.authorizeWatch("human:local", "task")).constraint, null);
-      // a second, unrestricted grant widens back to the whole kind (null wins)
+      // a put grant is not observation: unscoped, it must NOT widen the take grant's pattern (an
+      // unscoped put beside a pattern-scoped query streamed the whole kind's ids and timing,
+      // 2026-09-05), and alone it is no grant to watch at all
+      await space.put({ kind: "grant", body: { principal: "agent:w", kind: "task", operations: ["put"] } });
+      assertEquals((await space.authorizeWatch("agent:w", "task")).constraint, [{ op: "up" }]);
+      await space.put({ kind: "grant", body: { principal: "agent:p", kind: "task", operations: ["put"] } });
+      assertEquals(await denied(() => space.authorizeWatch("agent:p", "task")), "forbidden");
+      // a second, unrestricted OBSERVING grant widens back to the whole kind (null wins)
       await space.put({ kind: "grant", body: { principal: "agent:w", kind: "task", operations: ["read_one"] } });
       assertEquals((await space.authorizeWatch("agent:w", "task")).constraint, null);
     },

@@ -381,3 +381,21 @@ Deno.test("docs: the SDK packages the install URLs point at are dependency-free"
     assert(!browserEntry.includes(`./${name}`), `the browser entry imports ${name}, which reaches a Node built-in a tab does not have`);
   }
 });
+
+Deno.test("docs: the npm root entry point imports, and every exports-map target is a file", async () => {
+  // Nothing in the repo imported `sdk/ts/mod.ts` (only the release script named it), so a broken
+  // re-export shipped unseen until 2026-09-05. One real import of the barrel, plus a file check on
+  // every target the exports map names, since that map is written by a shell script.
+  const release = await Deno.readTextFile(new URL("../scripts/build-release.sh", import.meta.url));
+  const exportsBlock = release.match(/"exports":\s*\{([\s\S]*?)\n {2}\}/);
+  assert(exportsBlock);
+  for (const m of exportsBlock[1].matchAll(/"([^"]+)":\s*"\.\/([^"]+)"/g)) {
+    if (m[2].includes("*")) continue;
+    const local = m[2].replace(/^sdk\//, "sdk/ts/");
+    assert(await Deno.stat(new URL(`../${local}`, import.meta.url)).then(() => true, () => false), `exports "${m[1]}" names ${m[2]}, which is not a file`);
+  }
+  const mod = await import("../sdk/ts/mod.ts");
+  for (const name of ["RadiaClient", "agentLoop", "reactorLoop", "readExhaustively", "awaitResult", "newestByKey", "kindDefKey"]) {
+    assertEquals(typeof (mod as Record<string, unknown>)[name], "function", `the barrel no longer exports ${name}`);
+  }
+});
