@@ -652,6 +652,13 @@ useful one, which is why a cheap scenario's race is wider than its work.
   person contradicted it, with `list_workspaces` and `read_workspace` available and unused: the
   "retrieve rather than recall" disposition is what that needs, not another tool.
 
+A third instance, from the chat on 2026-09-05: `generate_image`'s description said "never invent a
+link, path or URL" and the fast tier answered the person with a made-up S3 URL for the picture.
+The description is read when the model DECIDES TO CALL; the reply is written from the tool's
+RESULT, which carried an id, a size and nothing about how to refer to it. The answer now carries
+the rule (`shown: …`, `examples/chat/workers/images.ts`). The moment is the reply, so the artifact
+is the result, whatever the description already said.
+
 ## Read before
 
 Writing a tool description or a kind `usage` string, adding a lab scenario, or explaining why an

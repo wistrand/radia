@@ -183,7 +183,17 @@ async function drawImage(callId: string, b: Call, c: RadiaClient) {
       bytes,
       { mediaType, filename: "generated.png", taint: ["net"] },
     );
-    return answer({ artifactId: artifact.id, mediaType, size: artifact.size, model, prompt });
+    // The rule against inventing a link is in the description too, and a model reads that when it
+    // CHOOSES the tool; the reply is composed from this answer, so the rule rides here as well. A
+    // fast-tier model given only an id wrote an S3 URL for the person to click (2026-09-05).
+    return answer({
+      artifactId: artifact.id,
+      mediaType,
+      size: artifact.size,
+      model,
+      prompt,
+      shown: "already displayed to the person by their client. Say 'the image above'; there is no link, path or URL for it that you can see, so never write one",
+    });
   } catch (e) {
     // Don't nack: a refused or failed generation is an ANSWER (the model should see why and can
     // rephrase), not a transient fault to retry at cost.

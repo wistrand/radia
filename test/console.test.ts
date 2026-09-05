@@ -926,3 +926,43 @@ Deno.test("console: a NARROWED read says so instead of reading as an empty space
   assert(doc > 0, "the diagnostics scope line is still there");
   assert(/scopeNote\(d\.scope\)/.test(html.slice(doc - 400, doc)), "…preceded by the server's own note");
 });
+
+Deno.test("console: the Activity model credits a handoff to the writer, never to the claimer's own record", () => {
+  // The Activity tab's two pictures are drawn from `activityModel`, a pure function over the
+  // events tail. What it must get right: a `take` of a record whose `put` is in the tail and was
+  // made by ANOTHER agent is a handoff (an edge and, inside the window, an arc); a take of one's
+  // own record is `own` and draws nothing; a take of a record written before the tail reaches is
+  // credited to the `EARLIER` source; and a full tail whose oldest event is younger than the
+  // window says the window is NOT covered, since a picture that silently starts late reads as
+  // "nothing happened before".
+  const src = ["opClass", "activityModel"].map((n) => extractFunction(html, n)).join("\n")
+    + "\nconst ACT_TAIL = 4, EARLIER = '(written earlier)';\nreturn activityModel;";
+  const activityModel = new Function(src)() as (
+    events: unknown[], name: (r: string) => string, now: number, windowMs: number, kind: string,
+  ) => { agents: Map<string, { own: number; claims: number; writes: number }>; edges: { from: string; to: string; kind: string; n: number }[]; arcs: unknown[]; marks: unknown[]; covered: boolean };
+  const now = Date.parse("2026-09-05T12:00:00Z");
+  const at = (s: number) => new Date(now - s * 1000).toISOString();
+  const ev = (operation: string, runId: string, recordId: string, kind: string, ago: number, seq: number) => ({ seq, operation, runId, recordId, kind, ts: at(ago) });
+  const events = [
+    ev("put", "run:a", "r1", "task", 50, 1),
+    ev("take", "run:b", "r1", "task", 40, 2), // a handoff: A wrote, B claimed
+    ev("put", "run:b", "r2", "note", 30, 3),
+    ev("take", "run:b", "r2", "note", 20, 4), // B's own record: no edge
+    ev("take", "run:c", "old", "task", 10, 5), // written before the tail: credited to EARLIER
+  ];
+  const name = (r: string) => ({ "run:a": "agent:a", "run:b": "agent:b", "run:c": "agent:c" })[r] ?? r;
+  const m = activityModel(events, name, now, 60_000, "");
+  assertEquals(m.edges.map((e) => `${e.from}>${e.to}:${e.kind}x${e.n}`), ["agent:a>agent:b:taskx1", "(written earlier)>agent:c:taskx1"]);
+  assertEquals(m.agents.get("agent:b")!.own, 1);
+  assertEquals(m.agents.get("agent:b")!.claims, 2);
+  assertEquals(m.arcs.length, 1, "only the handoff whose write is inside the window becomes an arc");
+  assertEquals(m.marks.length, 5);
+  // Five events against a tail cap of four whose oldest is 50s old: a 60s window is cut.
+  assertEquals(m.covered, false);
+  assertEquals(activityModel(events, name, now, 45_000, "").covered, true, "a window the tail reaches past is covered");
+  // The kind filter narrows marks and edges alike, and a window excludes what is older than it.
+  const notes = activityModel(events, name, now, 60_000, "note");
+  assertEquals(notes.marks.length, 2);
+  assertEquals(notes.edges.length, 0);
+  assertEquals(activityModel(events, name, now, 15_000, "").marks.length, 1);
+});
