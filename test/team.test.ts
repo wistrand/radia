@@ -15,11 +15,11 @@ import { makeHandler } from "../src/server/http.ts";
 import { Space } from "../src/core/space.ts";
 import { SqliteAdapter } from "../src/storage/sqlite.ts";
 import { RadiaClient } from "../sdk/ts/client.ts";
-import { addMember, DEFAULT_TEAM, declareTeamKinds, definitionState, mergeKind, NOTE, readDefinition, removeMember, TASK, TEAM_FIELD, teamRoster } from "../extensions/ts/team.ts";
+import { addMember, declareKind, DEFAULT_TEAM, declareTeamKinds, definitionState, liveKinds, mergeKind, NOTE, readDefinition, removeMember, TASK, TEAM_FIELD, teamRoster } from "../extensions/ts/team.ts";
 import { configLocation, mcpInvocation, renderMcpConfig, renderMcpInstall } from "../src/surfaces/mcp/config.ts";
 import { ScopeFiller } from "../src/surfaces/mcp/scope.ts";
 import { newer, newestByKey } from "../sdk/ts/registry.ts";
-import { type KindDef, kindDefKey } from "../sdk/ts/wire.ts";
+import { canonicalKindDef, type KindDef, kindDefKey } from "../sdk/ts/wire.ts";
 import { extensionFor, mediaTypeForPath } from "../src/surfaces/media.ts";
 import { readWorkspace, summarizeWorkspaces, writeWorkspace } from "../extensions/ts/workspace.ts";
 
@@ -1089,12 +1089,50 @@ Deno.test("[team] mergeKind keeps a live contentKey that REFINES the declared on
     ["provider", "team", "tool"],
     "and the path it rests on comes with it",
   );
-
   // NARROWING is not the same move: a live key we do not contain is somebody else's identity, not a
   // refinement of ours, and adopting it silently is how a merge starts losing records.
   assertEquals(mergeKind({ ...live, contentKey: ["digest"] }, mine).contentKey, ["provider", "tool"], "unrelated key: ours stands");
   assertEquals(mergeKind({ ...live, contentKey: ["provider", "tool"] }, mine).contentKey, ["provider", "tool"], "equal: unchanged");
   assertEquals(mergeKind(live, { ...mine, contentKey: undefined }).contentKey, undefined, "no key of our own: nothing to refine");
+});
+
+Deno.test("[team] declareKind writes the CANONICAL order, and survives a key an earlier order was written under", async () => {
+  // `kindDefKey` is order-independent and the idempotency row compares bodies, so two orderings
+  // of one declaration share a key and the second put is `idempotency_conflict`. The team's merge
+  // takes the LIVE declaration's order, which is exactly how a second `--init` on a space the chat
+  // had redeclared on came to conflict with the first, for as long as the row lives.
+  const s = await newSpace();
+  try {
+    const mine = {
+      kind: "capability",
+      indexedPaths: [{ path: "tool", type: "keyword" }, { path: "provider", type: "keyword" }, { path: "team", type: "keyword" }],
+      contentKey: ["tool", "provider", "team"],
+      claimable: false,
+      usage: "a tool a worker serves",
+    } satisfies KindDef;
+    const theirs = { ...mine, indexedPaths: [...mine.indexedPaths].reverse() } satisfies KindDef;
+    assertEquals(kindDefKey(mine), kindDefKey(theirs), "one declaration, two orders, one key");
+    assertEquals(canonicalKindDef(mine), canonicalKindDef(theirs), "and one canonical body");
+    // `contentKey` is NOT reordered: `keyOf` joins its paths in order, so a different order is a
+    // different compaction identity, however equal `kindDefKey` calls the two.
+    assertEquals(canonicalKindDef({ ...mine, contentKey: ["tool", "provider", "team"] }).contentKey, ["tool", "provider", "team"]);
+    // Written raw in the other order first, as an app that does not canonicalise would.
+    await s.admin.registerKind(theirs);
+    // Declaring ours: the same key, a different body. Recovered rather than thrown, since the
+    // declaration under that key is this one.
+    await declareKind(s.admin, mine, await liveKinds(s.admin));
+    // A live declaration in canonical order dedups on a re-declare in any order.
+    const wider = { ...mine, indexedPaths: [...mine.indexedPaths, { path: "extra", type: "keyword" as const }] };
+    await declareKind(s.admin, wider, await liveKinds(s.admin));
+    const before = (await s.admin.queryAll({ kind: "kind_def", match: { kind: "capability" } })).length;
+    await declareKind(s.admin, { ...wider, indexedPaths: [...wider.indexedPaths].reverse() }, await liveKinds(s.admin));
+    const after = await s.admin.queryAll<KindDef>({ kind: "kind_def", match: { kind: "capability" } });
+    assertEquals(after.length, before, "the same declaration in another order writes nothing");
+    const newest = (await liveKinds(s.admin)).get("capability")!.def;
+    assertEquals(newest.indexedPaths.map((p) => p.path), ["extra", "provider", "team", "tool"], "what was written is canonical");
+  } finally {
+    await s.close();
+  }
 });
 
 Deno.test("[team] mergeKind is additive on paths and states everything else", () => {

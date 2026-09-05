@@ -233,6 +233,8 @@ exec_request@operator &#8594; note@agent:runner &#8594; note@agent:claude-verify
       <div class="card"><h3>Advice belongs at the decision</h3><p>A hint is read only if it sits in the text in front of the model at the moment it chooses. A record type's description is read once while orienting; advice needed twenty calls later has to live on the tool used at that moment.</p></div>
       <div class="card"><h3>Success can hide a bypass</h3><p>When tool dispatch was refused, an agent calculated the answer itself and exited zero. Calls refused inside a sandbox can disappear the same way. A correct answer does not prove the intended path ran.</p></div>
       <div class="card"><h3>Retry needs a reason</h3><p>One agent nacked permanently impossible work three times before answering it. A retry is useful only when another attempt could change the outcome; permanent failure needs an explicit answer.</p></div>
+      <div class="card"><h3>A wrong answer is not a failure</h3><p>Supervision watched for code that crashed. Code that answered "no" to every request never crashed, so nothing reported it while six agent launches were spent repeating the rejected move. Repeated refusals to the same participant are now counted, and the work is held until the code is repaired.</p></div>
+      <div class="card"><h3>Refusing must still advance the work</h3><p>A refusal that returned the turn to the agent just refused had it launched again to send the same request; a refusal that returned nothing stopped the game outright. A rejected step has to leave the next step somewhere, and with someone who can take it.</p></div>
     </div>
 
     <div class="callout">

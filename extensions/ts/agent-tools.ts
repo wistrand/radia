@@ -21,6 +21,9 @@ export interface ToolContext {
   conversationId?: string;
   /** The identity the call was made on behalf of. Stamped by the session, enforced by its pattern. */
   owner?: string;
+  /** The compartment the call carries (`team`): anything a tool writes on the caller's behalf, an
+   *  artifact above all, lands where the call was, or a scoped caller cannot read it. */
+  team?: string;
   /**
    * A client bounded by the CALLER's reach as well as this worker's: a delegated run, minted from
    * the claimed record and cached per caller (`serveTools`). Use it for anything that touches the

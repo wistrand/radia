@@ -155,7 +155,9 @@ radia team up --once --member claude-alpha             # one claim, then stop
 
 A team is one DIRECTORY (`examples/teams/<name>/`: `team.json`, `prompts/`, a README), and
 `radia team up <dir> --init --seed` is the whole bootstrap: `--init` mints the members the file
-names under its `team` label and stores their tokens, `--seed` writes the file's starting records
+names under its `team` label and stores their tokens, re-minting one whose stored token lacks a
+grant the file names (held grants are read from `permissions`, so the file converges the space
+rather than being skipped as "already minted"), `--seed` writes the file's starting records
 with the label added, and a member's `promptFile` resolves beside the file. The two examples,
 `twenty-questions` and `story-relay`, are games whose rules are the prompts: a member claims by a
 tag of its own, hands the turn on by writing the next task with the other's tag, and parents it on
@@ -216,6 +218,38 @@ Rules the design rests on:
   child note instead of the whole lineage. Templates: `BUILTIN_HARNESSES["<harness>-first"]` and
   `"<harness>-resume"`, `harnessTemplates` choosing. Contract: the two warm-session cases in
   `extensions/conformance/harness-worker.test.ts`.
+- **A team may carry SERVICES, its own kinds and per-member grants.** A member with
+  `service: true` is a process spawned once with its token in the environment and supervised
+  (restarted after a growing pause if it exits while the run lives, killed when the run ends),
+  never looped over claims: what a model-free worker is, the lab's exec worker advertising
+  `run_javascript` being the case in hand. `kinds` are `kind_def` bodies `--init` declares before
+  any member is minted, since a member holds no `kind_def: put`, MERGED over whatever the space
+  already declares under that name (`declareKind`): a raw registration of the go-fish team's
+  `tool_call` on a dev space where the chat had declared it with more paths was refused as an
+  incompatible redeclaration, rightly, since it would have stopped the chat's live grants
+  compiling, and a merge only adds paths; a member's `grants` are extra
+  team-scoped grants and `unscopedGrants` the reference-kind ones (`sandbox`, `interest`), the
+  lab's two shapes. `--once` ends the run when every LOOP member has handled a claim, which is
+  what stops the services too. Spawning goes through the platform seam (`spawnProcess`).
+- **`go-fish` is the STRESS TEST, not the introduction, and its dealer is a WORKSPACE AGENT.** It
+  puts workspace agents, the broker, a team-declared kind under pattern-scoped grants, two
+  harnesses, a service beside five per-claim launches and the repair of model-written code under
+  load at once, which is why it reads as it does; `twenty-questions` is the team to read first, and
+  the example's README opens by saying so. Four
+  players, every one a model, and a dealer that is a program one model (`author`) wrote into a
+  workspace: `dealer-host.ts` beside the team file, run as the `dealer` service member, claims
+  `task{tags: dealer}` under the dealer's own run, materialises the newest version of that
+  workspace into the jail, and runs it through the broker (architecture-workspace-agents.md,
+  minus the two operator writes: the binding lives in the host's memory and follows the author's
+  newest version, so a fix is live on the next move, and there is no promotion pin). The program
+  reads the table (a `table` kind only the dealer holds), writes hands as private notes, books as
+  public ones, the next turn as a task, and returns the reply; the host stamps the team on all of
+  it. A move is one jail spawn (about 200ms) instead of a model turn (40s, $0.2): 21 moves in
+  4.8s in `examples/teams/go-fish/smoke.ts`, which plays the game model-free against the
+  reference program in `smoke/`. When the program throws, the host hands the error to the author
+  as a `fix` task and nacks the move, so the model is in the loop for the code and never for a
+  move. Hands stay private by prompt only, and a READ LEAVES NO EVENT; the table is now closed
+  to players by grant, which a first version left open as a workspace every member could read.
 - **Leftovers are named, and `--fresh` retires them.** Unclaimed claimable work is never swept,
   so every earlier run's open tasks are claimed beside the next seed: three games once ran
   interleaved, one guesser asking one question of three keepers. `team up` counts the team's open
@@ -404,13 +438,28 @@ beta  takes  {kind:"task"}     -> never alpha's
 The refused UNLABELLED write is what makes it total. A body must carry the field its grant pattern
 names and nothing server-side will add it, because a body is the client's claim.
 
-## Three ways isolation ends, and `radia team` reports all of them
+## Four ways isolation ends: `radia team` reports three, `radia team up` the fourth
 
 1. **An UNSCOPED member.** Grants on the team kinds with no pattern: it reads every team, and adding
    teams around it changes nothing until it is rotated. Shown as `TEAMS: ANY`, because a dash reads
    as "none", the opposite of what it means.
 2. **A CROSSER.** Two `--team` values on one member, which is how work moves between teams.
 3. **`observe`.** Unscoped by definition, so a member holding it reads every OTHER team.
+4. **A FOREIGN CLAIMANT on a shared kind.** A claimable record cannot say who may claim it, so
+   another app's worker holding an UNSCOPED take on a kind the team also uses can win the race.
+   The chat fleet's exec worker took the go-fish dealer's `tool_call` on a shared dev space
+   (2026-09-05); its `tool_result` carried no `team`, so the scoped dealer watched three minutes
+   for an answer that existed, and the log showed an ordinary take. The reply now lands WHERE THE
+   CALL WAS: `toolResult` (`extensions/ts/tool-worker.ts`) copies `team` from the call as it does
+   `conversationId` and `owner`, `ToolContext.team` hands it to the tool, and the exec tool labels
+   the artifact an oversized output becomes with it (`artifactMeta`), so any `serveTools` worker
+   serves any team, whatever the output's size. What stays is a
+   claimant that does not echo (a generic `task` worker: the task is simply gone), which
+   `radia team up` names from the live interests `dryRun` lists, and only where a listener's match
+   can overlap a claim of this team's (the chat's image worker listens on `tool_call` for its own
+   tool name and is not named): kinds the loop members claim are checked before launch against
+   their patterns, kinds a service claims two seconds after, against the members' live interests.
+   A listener scoped to another team cannot claim and is not reported.
 
 `radia compartment` is NOT this audit and reads as though it is: it answers a kind-compartment
 question, so it calls every member a crosser for reading `task` and writing `artifact`.

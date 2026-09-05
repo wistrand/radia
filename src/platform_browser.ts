@@ -97,7 +97,11 @@ export function browserBackend(opts: BrowserBackendOptions = {}): Partial<Platfo
       }),
     writeStdout: (text) => console.log(text.replace(/\n$/, "")),
     stdoutIsTerminal: () => false,
+    spawnProcess: () => {
+      throw new Error("a browser cannot spawn a process");
+    },
     consoleColumns: () => undefined,
+    onResize: () => () => {},
     writeStderr: (text) => console.error(text.replace(/\n$/, "")),
     onShutdown: (handler) => {
       // `pagehide` is the closest thing a page has to SIGTERM. Best effort by nature: the

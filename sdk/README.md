@@ -36,7 +36,10 @@ build step producing `.js` plus declarations is the alternative and is not plann
 adding one.
 
 `ts/wire.ts` defines the frozen wire vocabulary and pure functions that clients and the server must
-compute identically. The runtime imports these definitions; the SDK imports nothing from `src/`.
+compute identically: `kindDefKey`, which is order-independent, and `canonicalKindDef`, the order to
+WRITE a declaration in, because the idempotency row compares bodies and two orderings of one
+declaration share a key. It orders the set-valued arrays only, never `contentKey`, whose order is
+the compaction identity. The runtime imports these definitions; the SDK imports nothing from `src/`.
 `test/layering.test.ts` enforces that direction for value and type imports.
 
 The EXTENSION conventions (workspaces, capabilities, presence, promotion) reach non-TS apps over

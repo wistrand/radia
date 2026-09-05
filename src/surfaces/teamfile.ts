@@ -40,6 +40,16 @@ export interface TeamFileMember {
   env?: Record<string, string>;
   /** A command of this member's own, in place of the harness template. */
   command?: string[];
+  /** Grants beyond the standard member set, `<kind>:<op,op>`, scoped to the team like the rest
+   *  (`radia team add --grant`). Applied by `--init` when the member is minted. */
+  grants?: string[];
+  /** Grants written WITHOUT the team pattern, for reference kinds that carry no team (`sandbox`,
+   *  `interest`); a team-scoped grant on one of those matches nothing. */
+  unscopedGrants?: string[];
+  /** A SERVICE rather than a harness: spawned once with `command` and supervised until the run
+   *  ends, never looped over claims. What a model-free worker (an exec worker advertising
+   *  `run_javascript`) is. Its `command` gets `{{token}}`, `{{url}}` and the other placeholders. */
+  service?: boolean;
   /** The durable half, for a file written where `radia team add` did not run. Otherwise the token
    *  `team add` stored on this machine is used. */
   definitionToken?: string;
@@ -60,6 +70,9 @@ export interface TeamFile {
   team?: string;
   members: TeamFileMember[];
   harnesses?: Record<string, { command: string[] }>;
+  /** Kind declarations this team needs beyond the team's own, as `kind_def` bodies, declared by
+   *  `--init` before any member is minted (a member holds no `kind_def: put`). */
+  kinds?: Record<string, unknown>[];
   /** Records the operator writes to start the work (`radia team up --seed`), the team label added. */
   seed?: SeedRecord[];
   /** What the FINAL ANSWER looks like: a pattern. `radia team up` exits once a record matching it
@@ -90,8 +103,11 @@ const MEMBER_FIELDS = new Set([
   "command",
   "definitionToken",
   "trace",
+  "grants",
+  "unscopedGrants",
+  "service",
 ]);
-const FILE_FIELDS = new Set(["url", "team", "members", "harnesses", "seed", "done"]);
+const FILE_FIELDS = new Set(["url", "team", "members", "harnesses", "seed", "done", "kinds"]);
 
 /**
  * The command templates. Placeholders: `{{model}}` (its flag is dropped when no model is set),
@@ -285,6 +301,9 @@ export function parseTeamFile(text: string, where = "team.json"): TeamFile {
   if (obj.done !== undefined && (!obj.done || typeof obj.done !== "object" || typeof (obj.done as Pattern).kind !== "string")) {
     fail(where, "'done' must be a pattern naming a kind, e.g. {\"kind\": \"note\", \"match\": {\"topic\": \"final\"}}");
   }
+  if (obj.kinds !== undefined && (!Array.isArray(obj.kinds) || !obj.kinds.every((k) => k && typeof k === "object" && typeof (k as { kind?: unknown }).kind === "string"))) {
+    fail(where, "'kinds' must be an array of kind_def bodies, each naming its kind");
+  }
   const seed: SeedRecord[] = [];
   if (obj.seed !== undefined) {
     if (!Array.isArray(obj.seed)) fail(where, "'seed' must be an array of {kind, body}");
@@ -315,12 +334,21 @@ export function parseTeamFile(text: string, where = "team.json"): TeamFile {
     const mm = m as Record<string, unknown>;
     for (const k of Object.keys(mm)) if (!MEMBER_FIELDS.has(k)) fail(where, `${at}: unknown field '${k}' (fields: ${[...MEMBER_FIELDS].join(", ")})`);
     if (typeof mm.name !== "string" || !mm.name) fail(where, `${at}.name must be a non-empty string`);
-    if (typeof mm.harness !== "string" || !mm.harness) fail(where, `${at}.harness must name a harness (claude, codex, or a key in 'harnesses')`);
-    if (!(mm.harness in BUILTIN_HARNESSES) && !(mm.harness in harnesses) && !Array.isArray(mm.command)) {
-      fail(where, `${at}.harness '${mm.harness}' is not built in and not in 'harnesses'`);
+    if (mm.service && mm.harness === undefined) mm.harness = "service";
+    const harness = mm.harness;
+    if (typeof harness !== "string" || !harness) fail(where, `${at}.harness must name a harness (claude, codex, or a key in 'harnesses')`);
+    if (!mm.service && !(harness in BUILTIN_HARNESSES) && !(harness in harnesses) && !Array.isArray(mm.command)) {
+      fail(where, `${at}.harness '${harness}' is not built in and not in 'harnesses'`);
     }
     if (mm.resume !== undefined && typeof mm.resume !== "boolean") fail(where, `${at}.resume must be true or false`);
     if (mm.frame !== undefined && typeof mm.frame !== "boolean") fail(where, `${at}.frame must be true or false`);
+    if (mm.service !== undefined && typeof mm.service !== "boolean") fail(where, `${at}.service must be true or false`);
+    if (mm.service && !Array.isArray(mm.command)) fail(where, `${at}: a service member needs its own command`);
+    for (const k of ["grants", "unscopedGrants"]) {
+      const v = mm[k];
+      if (v === undefined) continue;
+      if (!Array.isArray(v) || !v.every((g) => typeof g === "string" && /^[a-z_]+:[a-z_,]+$/.test(g))) fail(where, `${at}.${k} must be a list of '<kind>:<op,op>'`);
+    }
     for (const k of ["model", "prompt", "promptFile", "resumePrompt", "resumePromptFile", "cwd", "session", "definitionToken", "trace"]) {
       if (mm[k] !== undefined && typeof mm[k] !== "string") fail(where, `${at}.${k} must be a string`);
     }
@@ -342,7 +370,7 @@ export function parseTeamFile(text: string, where = "team.json"): TeamFile {
     seen.add(name);
     members.push({ ...(mm as unknown as TeamFileMember), name });
   });
-  return { url: obj.url as string | undefined, team: obj.team as string | undefined, members, harnesses, seed, done: obj.done as Pattern | undefined };
+  return { url: obj.url as string | undefined, team: obj.team as string | undefined, members, harnesses, seed, done: obj.done as Pattern | undefined, kinds: obj.kinds as Record<string, unknown>[] | undefined };
 }
 
 /**

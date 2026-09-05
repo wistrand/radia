@@ -164,6 +164,12 @@ different body: `idempotency_conflict`. `usage` participates as its LENGTH plus 
 600-character idempotency key is one nothing wants to store), omitted when absent so older keys stay
 byte-identical; `contentKey` and `defaultRetentionSeconds` are keyed for the same reason.
 
+**The key is order-independent and the body is not: declare in `canonicalKindDef` order.** Two
+orderings of one declaration share a `kindDefKey`, and the idempotency row compares bodies, so the
+second is `idempotency_conflict` for a week: a team's merge took the live declaration's path order
+and re-put it under the key its own order had been written with (`--init`, 2026-09-05). `declareKind`
+canonicalises, and treats a conflict whose key already exists as declared. Guard: `test/team.test.ts`.
+
 **Never pattern-scope a grant on a kind whose bodies lack the field.** `radia team` scopes members
 with `pattern: {team: …}`, and adding `kind_def: query` to that set made `space_kinds` fail exactly
 as its ABSENCE did: a `kind_def` body carries no `team`, so the pattern matches nothing and refuses
@@ -305,6 +311,7 @@ that something was missing. A rule a caller can get wrong is one that will be go
   by successors (a registry, or key material a later write extends) is read with `readNewest` (both
   SDKs), never `readOne`. It is a `query`, so a principal holding only `read_one` on the kind is
   refused: ordering is a query. Conversation keys hit it (a second machine's successor never read).
+  Inside a jail it is `space.readOne({…, dir: "desc"})`, since a brokered read has no `readNewest`.
   Guard: `test/http.test.ts`, "read-one answers with the OLDEST match".
 - **Content-key idempotency dedupes for a WINDOW, and a re-put outranks a tombstone.** The content
   key is the idempotency key (`kindDefKey`, `opsGrantKey`); past `idempotencyRetentionSeconds` (7
@@ -854,6 +861,13 @@ tokens keep minting, while `revokeDefinition` reaches only the NEWEST record
   streamed the whole kind's ids and timing, the leak the same function's self-scope guards against.
   A put grant's pattern bounds writes and says nothing about reads; a put-only principal is
   `forbidden`. Guard: `test/conformance/suites/auth.ts`, "watch authorization".
+- **A reply lands where the call was: `toolResult` copies `team` from the call, like
+  `conversationId` and `owner`, and `ToolContext.team` labels what the tool stores.** A team's
+  `tool_call` on a space shared with the chat was taken by `agent:chat-exec` (unscoped `take`) and
+  its result, without `team`, was invisible to every scoped member: the caller waited out its
+  deadline on a call that was answered. A stored output takes the same label (`artifactMeta`). A
+  claimant that does not echo is named by `team up` at start. Guards:
+  `extensions/conformance/tool-worker.test.ts`, `test/teamup.test.ts` ("foreign claimant").
 **The grant union `combineMatch` builds is exempt from the caller's `$or` cap, and nothing else is.**
 `MAX_OR_BRANCHES` (16) bounds what a caller asks (`400 too_many_branches`); the union is bounded by
 the grant ceiling, so `grantUnion` in `src/core/matching.ts` marks it with a symbol-keyed property
@@ -1174,6 +1188,12 @@ caught and reported as `TEAMS: ANY`. Same limit applies to reading `radia permis
   guard enumerates instead (`eraseConversation`, `examples/chat/space/keys.ts`).
 
 ### Executing model-written code
+
+- **The broker's reads honour `dir: "desc"`; without it both answer the OLDEST match.** Jailed code
+  reading "the current state" got the first deal ever, and the only newest-first read was `orderBy`
+  on a sortable path the kind may not declare (the read-one endpoint rejects `dir`, so the broker
+  answers newest-one as the newest page of one). `BROKER_API` states it. Guard:
+  `extensions/conformance/broker.test.ts` ("read_one answers with the record or null").
 
 **A cache that stores a PROMISE stores its REJECTION too.** `treeCache` (`extensions/ts/host.ts`)
 caches a promise, so a transient artifact-read failure reaches every later claim, and LRU never

@@ -187,30 +187,42 @@ Deno.test("[broker] a brokered write is the AGENT's, and carries the claimed rec
 Deno.test("[broker] read_one answers with the record or null, the shape that name has everywhere", async () => {
   await withSpace(async ({ operator, hostFor, agent }) => {
     // `read_one` is its own coordination verb with its own grant; the harness grants `note: put`.
-    await operator.grant(agent, "note", ["read_one"]);
-    await operator.put({ kind: "note", body: { tag: "findme" } });
+    await operator.grant(agent, "note", ["read_one", "query"]);
+    await operator.put({ kind: "note", body: { tag: "findme", n: 1 } });
+    await operator.put({ kind: "note", body: { tag: "findme", n: 2 } });
     // The entrypoint reports the SHAPE it was handed, so the assertion is about the frame format
     // rather than about what the query found. It used to be a one-element array (or an empty one),
     // which no other caller of `readOne` gets, on a surface broker.ts declares NORMATIVE.
+    // `dir: "desc"` is the newest: the read-one endpoint takes no direction, so the broker answers
+    // it as the newest page of one, and the same word on a query orders newest first. Without it
+    // both reads are OLDEST first, which is what a program reading "the current state" trips on.
     const host = await hostFor(`
       export default async (record, space) => {
         const hit = await space.readOne({ kind: "note", match: { tag: "findme" } });
+        const newest = await space.readOne({ kind: "note", match: { tag: "findme" }, dir: "desc" });
+        const page = await space.query({ kind: "note", match: { tag: "findme" }, dir: "desc" }, 5);
         const miss = await space.readOne({ kind: "note", match: { tag: "nothing-here" } });
         return {
           kind: "exec_result",
           body: {
             hitIsArray: Array.isArray(hit),
             hitTag: hit && hit.body ? hit.body.tag : null,
+            oldestN: hit && hit.body ? hit.body.n : null,
+            newestN: newest && newest.body ? newest.body.n : null,
+            pageNs: page.map((r) => r.body.n),
             missIsNull: miss === null,
           },
         };
       };
     `);
     assertEquals((await host.tick()).map((o) => o.status), ["acked"]);
-    const out = (await operator.queryNewest<{ hitIsArray: boolean; hitTag: string | null; missIsNull: boolean }>({ kind: "exec_result" }, 5))[0];
+    const out = (await operator.queryNewest<{ hitIsArray: boolean; hitTag: string | null; oldestN: number; newestN: number; pageNs: number[]; missIsNull: boolean }>({ kind: "exec_result" }, 5))[0];
     const body = out.body;
     assertEquals(body.hitIsArray, false, "a record, not a one-element array");
     assertEquals(body.hitTag, "findme");
+    assertEquals(body.oldestN, 1, "no direction: the OLDEST match");
+    assertEquals(body.newestN, 2, "dir desc: the newest");
+    assertEquals(body.pageNs, [2, 1], "dir desc on a query: newest first");
     assertEquals(body.missIsNull, true, "and null when nothing matched, never an empty array");
   });
 });

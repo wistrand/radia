@@ -423,7 +423,9 @@ head 39112 8f3c1d0ba2e47591&#8230;
     <p>
       The same lanes are available in a terminal: <code>radia activity --follow</code> redraws
       them in place every few seconds, coloured by kind, with the handoffs and their delays listed
-      below. Colour is off in a pipe or under <code>NO_COLOR</code>.
+      below. It runs in the alternate screen, so leaving it restores what was there, and it
+      repaints at the new width when the terminal is resized. Colour is off in a pipe or under
+      <code>NO_COLOR</code>.
     </p>
     <p>
       <a href="examples.html">See it running &#8594;</a>

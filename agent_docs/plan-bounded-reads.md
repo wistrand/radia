@@ -44,7 +44,11 @@ oldest-first. The console's record browser shipped the oldest-50-as-"the records
 sorts by ULID rather than the shared comparator. `currentFleetKey` took the LAST entry of a
 projection meaning the newest, so during a key rotation the chat sealed conversations to the fleet
 key about to be retired. And a five-site direction change that missed one site paged 139 records of
-25, with repeats, silently.
+25, with repeats, silently. A ninth instance, from inside a JAIL (2026-09-05): a brokered program
+read "the current state" with `readOne` and was answered the first record ever written, and the
+broker offered no direction at all, so the only newest-first read was `orderBy` on a path the kind
+need never declare sortable. `dir` now works on both brokered reads and `BROKER_API` states the
+default, since the jail cannot ask any other surface what it just got.
 
 **Key disagreement (1).** The fix for the whole class had one of its own. `keyOf` returned null for
 a record missing a keyed path, so compaction KEPT it and `registryOf` SKIPPED it: a `capability`

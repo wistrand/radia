@@ -54,8 +54,11 @@ speak under, so misbehaviour is refused at the write rather than checked for. Ph
 [agent_docs/plan-mud.md](../agent_docs/plan-mud.md); the contest over a scarce item is phase 3.
 
 **`teams/`** holds self-contained TEAMS of agent harnesses run as workers (`radia team up <dir>
---init --seed`): a two-player game and a story relay, each one directory of `team.json` plus prompts,
-where every move is a task for the other player. No code; the prompts are the rules.
+--init --seed`), each one directory of `team.json` plus prompts. Two are prompts alone, no code:
+`twenty-questions/` (the introduction, where every move is a task for the other player) and a story
+relay. `go-fish/` is the STRESS TEST rather than an example to read first: six members exercising
+workspace agents, the broker, a team-declared kind under pattern-scoped grants, two harnesses and
+the repair of model-written code, with `deno task test:teams` playing it model-free.
 
 **`chat/`** exercises the broadest surface: model routing, capability records, turn persistence,
 artifacts, delegation, encryption and sandboxed execution.
