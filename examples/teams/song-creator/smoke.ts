@@ -548,6 +548,34 @@ try {
   const wavOf = (s: Score) => render(parseScore(s).parts, s).wav;
   check("and the timbre changes the bytes, so it is really rendered", await sha(wavOf(bare)) !== await sha(wavOf(asPluck)));
 
+  // ---- no prompt may enumerate the players ----
+  // WHO IS IN THE PIECE IS THE BRIEF'S TO SAY, and a prompt that lists the parts is a routing table
+  // in prose: the arranger decides whether the piece wants drums, so a reviewer handed
+  // `<lead|harmony|bass>` cannot ask anything of a drummer who is playing. That is what
+  // `critic-resume.md` said while `critic.md` said "one of the parts in the draft" beside it, which
+  // is the shape to watch for: a resume prompt drifting from the prompt it stands in for.
+  const promptDir = new URL("./prompts/", import.meta.url);
+  const teamFile = JSON.parse(await Deno.readTextFile(new URL("./team.json", import.meta.url))) as {
+    members: { patterns?: { match?: { instrument?: string } }[] }[];
+  };
+  const cast = new Set(teamFile.members.flatMap((m) => (m.patterns ?? []).map((p) => p.match?.instrument)).filter(Boolean) as string[]);
+  let enumerated = 0;
+  for await (const entry of Deno.readDir(promptDir)) {
+    if (!entry.name.endsWith(".md")) continue;
+    const text = await Deno.readTextFile(new URL(entry.name, promptDir));
+    // `<a|b|c>` placeholders only, and only the ones naming parts: `<true|false>` is not a cast list.
+    for (const m of text.matchAll(/<([a-z]+(?:\|[a-z]+)+)>/g)) {
+      const listed = new Set(m[1].split("|"));
+      if (![...listed].some((x) => cast.has(x))) continue;
+      const missing = [...cast].filter((i) => !listed.has(i));
+      if (missing.length > 0) {
+        enumerated++;
+        check(`${entry.name} does not enumerate the players`, false, `<${m[1]}> leaves out ${missing.join(", ")}`);
+      }
+    }
+  }
+  check("no prompt hands a model a closed list of the parts", enumerated === 0, `${cast.size} players: ${[...cast].join(", ")}`);
+
   // ---- one clash is ONE ask, however long it is held ----
   // Dissonance and parallels are judged at every ONSET, so one pair a semitone apart across a bar of
   // eighths reports eight times. A live run turned that into 12 asks covering 4 distinct problems,
@@ -604,6 +632,19 @@ try {
   check("a tie into a different pitch is refused, by bar", parsePhrase("C4/2 C4/4 C4/8 C4/8~ | D4/8 C4/4 C4/4 C4/4 C4/8", M44).errors.some((e) => /same pitch/.test(e.detail)));
   check("a tied rest is refused, since silence is already continuous", parsePhrase("C4/2 C4/4 r/4~ | C4/1", M44).errors.some((e) => /cannot be tied/.test(e.detail)));
   check("and a tie with nothing after it is refused rather than dropped", parsePhrase("C4/2 C4/4 C4/4~", M44).errors.some((e) => /nothing follows/.test(e.detail)));
+
+  // ---- a refusal names the mistake, not the grammar ----
+  // A THIRD OF THE DRAFTS REAL MODELS WRITE ARE REFUSED HERE (24 of 68 in one space), and a round
+  // spent on notation is four paid turns that make no music. Three token shapes are most of it, all
+  // taken from that space rather than invented, and each used to get the same sentence restating a
+  // format `space_kinds` had already supplied.
+  const hint = (phrase: string) => parsePhrase(phrase, M44).errors.map((e) => e.detail).join(" ");
+  // The sixteenth of a dotted pair, written without repeating the octave: a gallop or a habanera.
+  check("a dropped octave is told what to write", /A2\/16/.test(hint("A2/8. A16 E3/8 C3/8")), hint("A2/8. A16").slice(0, 90));
+  // A different notation the model arrived with.
+  check("a letter duration is named as one", /letter durations/.test(hint("C5 q, D5 q")), hint("q,").slice(0, 90));
+  // A pitch with no duration at all.
+  check("and a bare pitch is told it needs a length", /has no length/.test(hint("A2 A2/16")), hint("A2").slice(0, 90));
 
   // ---- a bar may turn its harmony over ----
   const half = { bpm: 120, meter: M44, chords: ["C", "Am F", "G"], parts: [] as Score["parts"] } as unknown as Score;

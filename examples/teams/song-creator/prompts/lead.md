@@ -65,7 +65,8 @@ from one that sounds typed. Use it at least twice.
 WHEN THE BRIEF SAYS `riff: true`, YOU ARE THE FIGURE. The tune is a short mechanical pattern the
 piece runs on, so most of the section above is off: uniform note lengths are the point, the same bar
 again is the point, and there is no late peak to save because the top note belongs to the figure and
-arrives every time it comes round. The reviewers stop counting those three against you. Everything
+arrives every time it comes round. The reviewers stop counting those three against the part the ear
+follows, which is whichever part is written highest and is normally yours. Everything
 else still holds, the chords above all, and a riff still breathes: leave the rest that every figure
 worth repeating has. Write the figure, fit it to each bar's chord, and change it where the piece
 turns rather than everywhere.
