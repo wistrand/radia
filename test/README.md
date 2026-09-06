@@ -43,8 +43,8 @@ deno task test:chat           # the chat example's own suites, no API key
 deno task test:analysis       # the staged pipeline example
 deno task test:market         # request/bid/award, five scripted bidders, no models   (~15s)
 deno task test:teams          # the go-fish dealer host, played model-free           (~10s)
-deno task test:song           # the song pipeline's spine, every model half scripted  (~5s)
-deno task test:song-team      # that team's own team.json: kinds, grants, services     (~5s)
+deno task test:song           # the song pipeline, every model turn scripted; a review must move a fault count (~10s)
+deno task test:song-team      # that team's own team.json: kinds, grants, services, the share URL     (~6s)
 scripts/pg-conformance.sh     # test:runtime + a live Postgres
 RADIA_PG_URL=postgres://… scripts/pg-conformance.sh          # against your own server
 scripts/s3-conformance.sh     # + the S3 blob store, on the docker/s3/ endpoint

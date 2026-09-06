@@ -424,9 +424,16 @@ kept in step with the console's `activityModel` by `test/activity.test.ts`. `--f
 every three seconds, on a terminal in the ALTERNATE SCREEN with the cursor hidden (the way `less`
 and `top` run), restored on Ctrl-C so the shell's scrollback is untouched; `--json` prints the model. Colour is ANSI 256 and OFF into a pipe, under
 `NO_COLOR` (any value) or past `--no-color`, so a captured run is plain text, and the terminal
-size comes through the platform seam (`consoleColumns`, `stdoutIsTerminal`, `onResize`): the width
-is read per frame and a resize (SIGWINCH) repaints at once, after one full clear, since the
-terminal has reflowed the old lines and overwriting in place would leave their remnants.
+size comes through the platform seam (`consoleColumns`, `consoleRows`, `stdoutIsTerminal`,
+`onResize`): both are read per frame and a resize (SIGWINCH) repaints at once, after one full clear,
+since the terminal has reflowed the old lines and overwriting in place would leave their remnants.
+A FOLLOW FRAME IS BOUNDED BY THE HEIGHT, because painting in place loses whatever runs past the last
+row: the reader keeps the legend and loses the summary and the lanes, which is the wrong half. The
+free rows go to lanes first and the handoffs annotate them, both keeping the LATEST rather than the
+busiest (`AgentStats.last`, `Handoff.at`), lanes selected by recency but drawn by event count so a
+live view does not reshuffle under the reader. A final clamp trims from the bottom, since no
+allocation fits a terminal shorter than the frame's own furniture. A one-shot render stays whole:
+that is scrollback somebody can page.
 
 `integrity` verifies the event chain and names the FIRST divergence rather than a verdict, because
 "the chain is invalid" is not something anyone can act on. It prints the caveat when the chain is

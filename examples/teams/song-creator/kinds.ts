@@ -11,12 +11,7 @@
 // A member says `{kind: "phrase"}` and that is the whole of its routing.
 
 import type { KindDef } from "../../../sdk/ts/client.ts";
-import { TEAM_FIELD } from "../../../extensions/ts/team.ts";
-
-/** Every kind here indexes `team`, and it is not decoration: `radia team add` scopes a member's
- *  grants with a pattern on that field, and a kind that does not index it can hold no grant that
- *  compiles. The services stamp it on every write, since only the MCP adapter fills it by itself. */
-const team = { path: TEAM_FIELD, type: "keyword" } as const;
+import teamFile from "./team.json" with { type: "json" };
 
 export const SONG_REQUEST = "song_request";
 export const BRIEF = "brief";
@@ -31,70 +26,19 @@ export const NOTE = "note";
  *  take the other's job. `rules` is arithmetic, `ear` is a model. */
 export type Reviewer = "rules" | "ear";
 
-export const SONG_KINDS: KindDef[] = [
-  {
-    kind: SONG_REQUEST,
-    indexedPaths: [team, { path: "song", type: "keyword" }],
-    claimable: true,
-    usage: "A song somebody wants. body: {description, seconds?}. Claim it to write the brief: " +
-      "decide key, tempo, meter and which parts the piece needs, then emit one `part` per player.",
-  },
-  {
-    kind: BRIEF,
-    indexedPaths: [team, { path: "song", type: "keyword" }],
-    claimable: false,
-    usage: "The plan every player works from. body: {song, title, description, key, bpm, meter: " +
-      "{beats, unit}, bars, chords, parts: [instrument], maxRounds}. `chords` is ONE SYMBOL PER BAR " +
-      "(['D','G','D','Bm',…], same length as `bars`) and it is what lets parts written apart agree " +
-      "about the harmony: on the strong beats of a bar, play notes from that bar's chord. " +
-      "Reference data: read it, never claim it.",
-  },
-  {
-    kind: PART,
-    indexedPaths: [team, { path: "song", type: "keyword" }, { path: "instrument", type: "keyword" }, { path: "round", type: "integer" }],
-    claimable: true,
-    usage: "One player's job for one round. body: {song, instrument, guidance, round, notes?}. " +
-      "`notes` is present on a revision and says what the reviewers asked you to change. Answer " +
-      "with a `phrase` for this instrument and round.",
-  },
-  {
-    kind: PHRASE,
-    indexedPaths: [team, { path: "song", type: "keyword" }, { path: "instrument", type: "keyword" }, { path: "round", type: "integer" }],
-    claimable: true,
-    usage: "One player's music. body: {song, instrument, round, phrase}. The phrase is bars " +
-      "separated by |, each bar a run of PITCH/DENOM: `C4/4 E4/8 r/8 | G3/2 r/2`. PITCH is a " +
-      "letter A-G, an optional # or b, and an octave number (C4 is middle C); `r` is a rest. " +
-      "DENOM is the note value as a power of two, 1 to 64: /4 is a quarter note, /8 an eighth. A " +
-      "dot after the denominator adds half its length again (`C4/4.`). EVERY BAR MUST SUM TO THE " +
-      "METER, so four /4 notes in 4/4, and a bar that does not is refused by its number. Pitches " +
-      "outside C1..C7 are refused. The brief's `bars` says how many bars to write.",
-  },
-  {
-    kind: DRAFT,
-    indexedPaths: [team, { path: "song", type: "keyword" }, { path: "round", type: "integer" }],
-    claimable: false,
-    usage: "Every player's phrases assembled for one round, which is the first time anyone sees " +
-      "them together. body: {song, round, score}. Reference data for the reviewers to read.",
-  },
-  {
-    kind: REVIEW,
-    indexedPaths: [team, { path: "song", type: "keyword" }, { path: "round", type: "integer" }, { path: "by", type: "keyword" }],
-    claimable: true,
-    usage: "A request to review one draft. body: {song, round, by, draft}. `by` is 'rules' or " +
-      "'ear' and decides who may claim it. Reviewers work BLIND: neither sees the other's verdict, " +
-      "so what each catches is a fact the run records rather than an assumption.",
-  },
-  {
-    kind: VERDICT,
-    indexedPaths: [team, { path: "song", type: "keyword" }, { path: "round", type: "integer" }, { path: "by", type: "keyword" }],
-    claimable: true,
-    usage: "One reviewer's answer. body: {song, round, by, approve, summary, faults?, asks: " +
-      "[{instrument, note}]}. Each ask names ONE instrument and one change, since that is what the " +
-      "next round hands that player. What is measured includes DULLNESS, not only mistakes: one " +
-      "note length throughout, or the same bar played over and over, counts against a piece exactly " +
-      "as a wrong note does.",
-  },
-];
+/**
+ * The record vocabulary, READ FROM `team.json` rather than restated here.
+ *
+ * `radia team up --init` declares kinds from that file, and this module is what the services and the
+ * smokes declare from, so two copies of one vocabulary meant two things to keep in step. They did
+ * not: `brief` gained its `chords` field here and the team file went on describing a plan without
+ * one, so every agent that discovered the kind learned the old shape. One source, no drift.
+ *
+ * Every kind there indexes `team`, and that is not decoration: `radia team add` scopes a member's
+ * grants with a pattern on that field, and a kind that does not index it can hold no grant that
+ * compiles. The services stamp it on every write, since only the MCP adapter fills it by itself.
+ */
+export const SONG_KINDS: KindDef[] = teamFile.kinds as unknown as KindDef[];
 
 /** What each principal holds. The interesting ones are the two reviewers: a pattern on `by` means
  *  the model literally cannot write the rules verdict, refused by `bodyMatchesGrant` on the body. */

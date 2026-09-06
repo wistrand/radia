@@ -19,7 +19,9 @@ import { TEAM_FIELD } from "../../../extensions/ts/team.ts";
 import { writeWorkspace } from "../../../extensions/ts/workspace.ts";
 import { parseScore, type Score } from "./score.ts";
 import { durationSeconds } from "./score.ts";
-import { page, render } from "./synth.ts";
+import { render } from "./synth.ts";
+import { type HistoryInput, historyPage, renderRounds } from "./history.ts";
+import { retireRun } from "./service.ts";
 import { BRIEF, DRAFT, NOTE, PART, PHRASE, REVIEW, VERDICT } from "./kinds.ts";
 
 const flag = (n: string) => {
@@ -41,6 +43,8 @@ export interface Brief {
   meter: { beats: number; unit: number };
   /** One chord per bar, which is what lets three players written apart agree about the harmony. */
   chords?: string[];
+  /** This piece rides a repeating pulse, so a steady rhythm section is intended rather than dull. */
+  groove?: boolean;
   bars?: number;
   parts: string[];
   maxRounds?: number;
@@ -55,6 +59,7 @@ export function assemble(brief: Brief, phrases: RadiaRecord<{ instrument: string
     // CARRIED ONTO THE SCORE, so the reviewers judge against the same harmony the players were
     // given. A progression that lives only on the brief is one nothing checks.
     ...(brief.chords?.length ? { chords: brief.chords } : {}),
+    ...(brief.groove ? { groove: true } : {}),
     parts: brief.parts.filter((i) => byInstrument.has(i)).map((i) => ({ instrument: i, phrase: byInstrument.get(i)! })),
   };
 }
@@ -137,6 +142,16 @@ export async function runProducer(
         return;
       }
 
+      const drafts = await client.queryAll<{ round: number; score: Score }>({ kind: DRAFT, match: { song: b.song } });
+      // A VERDICT ON A ROUND THE SONG HAS LEFT decides nothing. Both verdicts for one round can be
+      // claimed long after the next round was assembled, and such a handler was settling the piece
+      // on ITS round's verdicts while counting every later round against the limit: the ear had not
+      // approved yet at round one, so a finished song was recorded as hitting the round limit.
+      if (drafts.some((d) => d.body.round > b.round)) {
+        say(`[producer] ${b.song} r${b.round}: a later round already exists, so this verdict decides nothing`);
+        return;
+      }
+
       // What each reviewer caught, recorded because it is the question this example exists to ask
       // and because neither reviewer can see the other's answer to bias it.
       const bodies = verdicts.map((v) => v.body);
@@ -153,12 +168,23 @@ export async function runProducer(
       const counted = typeof rules?.faults === "number" ? rules.faults : Infinity;
       const bothAgree = bodies.every((v) => v.approve);
       const earDecides = ear?.approve === true && counted <= EAR_SLACK;
-      const approved = bothAgree || earDecides || b.round >= maxRounds;
+
+      // A ROUND LOST TO NOTATION IS NOT A ROUND OF REVISION. A draft that does not parse was never
+      // heard by anyone: the count reports the bar arithmetic and stops, and the piece gets no
+      // musical reading at all. Spending the budget on those shipped a piece with 13 unexamined
+      // faults after two rounds went on one player's bar lengths. So the limit counts rounds that
+      // PARSED, with a hard ceiling at twice the budget so a team that never parses still stops.
+      const readable = [...drafts].filter((d) => parseScore(d.body.score).errors.length === 0).sort((x, y) => x.body.round - y.body.round);
+      const spent = readable.length;
+      const outOfRounds = spent >= maxRounds || b.round >= maxRounds * 2;
+      const approved = bothAgree || earDecides || outOfRounds;
       const settledBy = bothAgree
         ? "both reviewers approved"
         : earDecides
         ? `the ear approved and the count was low (${counted})`
-        : `round limit (${maxRounds}) reached`;
+        : spent >= maxRounds
+        ? `round limit (${maxRounds}) reached`
+        : `stopped after ${b.round} rounds, of which only ${spent} produced a score anyone could read`;
 
       await client.put({
         kind: NOTE,
@@ -201,25 +227,101 @@ export async function runProducer(
         say(`[producer] ${b.song}: already finished by the other verdict`);
         return;
       }
-      const draft = await client.readOne<{ score: Score; title: string }>({ kind: DRAFT, match: { song: b.song, round: b.round } });
-      if (!draft) throw new Error(`no draft to render for ${b.song} round ${b.round}`);
+      // THE NEWEST DRAFT ANYONE CAN READ, which is not always this round's. The round limit forces a
+      // settlement whatever the last draft looks like, so rendering it blindly threw on a score that
+      // did not parse, and the claim then retried until it dead-lettered: a run that could not
+      // finish and never said so. An earlier readable round is a worse piece than the team hoped
+      // for and a far better outcome than silence.
+      const draft = readable.at(-1);
+      if (!draft) {
+        // Nothing this team wrote can be played. Say that, in the record the run ends on, rather
+        // than throwing into a retry that ends in a dead letter.
+        say(`[producer] ${b.song}: no round produced a readable score; finishing with a note that says so`);
+        await client.put({
+          kind: NOTE,
+          parentIds: [record.id],
+          body: stamp({
+            song: b.song,
+            topic: "final",
+            title: brief.title,
+            ok: false,
+            rounds: b.round,
+            settledBy: `${b.round} round(s), none of which parsed: ${parseScore(drafts.at(-1)?.body.score ?? { bpm: 120, meter: brief.meter, parts: [] }).errors[0] ?? "no draft at all"}`,
+          }),
+        }, `final:${b.song}`);
+        return;
+      }
       const parsed = parseScore(draft.body.score);
-      if (parsed.errors.length > 0) throw new Error(`the approved draft does not parse: ${parsed.errors[0]}`);
-      const audio = render(parsed.parts, draft.body.score);
+      if (draft.body.round !== b.round) say(`[producer] ${b.song}: round ${b.round} does not parse; rendering round ${draft.body.round}, the newest that does`);
       const seconds = durationSeconds(parsed.parts, draft.body.score);
-      const html = page(brief.title, {
+
+      // EVERY ROUND, not only the one that shipped. The drafts and both reviewers' verdicts are all
+      // still in the space, because a round emits records rather than rewriting the last one, so the
+      // history costs one read per kind and a render per rejected take. That is what turns "the
+      // review improved it" from a number into something a person can hear.
+      const allDrafts = drafts; // already read above, to decide how many rounds actually parsed
+      const allVerdicts = await client.queryAll<{ round: number; by: string; approve: boolean; summary?: string; faults?: number; asks?: { instrument: string; note: string }[] }>(
+        { kind: VERDICT, match: { song: b.song } },
+      );
+      // WHEN each part landed, for the timeline. The record's own `createdAt` is the DATABASE clock,
+      // which is the only one every agent here shares: three harnesses on three machines would each
+      // report a different wall clock, and the picture would be of their clocks rather than the run.
+      const allPhrases = await client.queryAll<{ round: number; instrument: string }>({ kind: PHRASE, match: { song: b.song } });
+      const briefRecord = await client.readOne<Brief>({ kind: BRIEF, match: { song: b.song } });
+      const ms = (r: { runtimeMeta: { createdAt: string } }) => Date.parse(r.runtimeMeta.createdAt);
+      // EVERY AGENT GETS A LANE, not only the players: the arranger's brief is where the run starts,
+      // and the producer's drafts are what the reviewers were given. A timeline missing the agent
+      // that assembled the work shows handoffs arriving from nowhere.
+      const events = [
+        ...(briefRecord ? [{ lane: "arranger", at: ms(briefRecord), what: "wrote" as const, round: 1, detail: "wrote the brief" }] : []),
+        ...allDrafts.map((d) => ({
+          lane: "producer",
+          at: ms(d),
+          what: "wrote" as const,
+          round: d.body.round,
+          detail: `assembled round ${d.body.round} and sent it to both reviewers`,
+        })),
+        ...allPhrases.map((p) => ({
+          lane: p.body.instrument,
+          at: ms(p),
+          what: (p.body.round === 1 ? "wrote" : "rewrote") as "wrote" | "rewrote",
+          round: p.body.round,
+          detail: `${p.body.instrument} answered`,
+        })),
+        ...allVerdicts.map((v) => ({
+          lane: v.body.by === "rules" ? "the count" : "the ear",
+          at: ms(v),
+          what: (v.body.approve ? "approved" : "refused") as "approved" | "refused",
+          round: v.body.round,
+          detail: v.body.approve ? "approved the draft" : `sent it back, ${(v.body.asks ?? []).length} ask(s)`,
+        })),
+      ].sort((x, y) => x.at - y.at);
+      const history: HistoryInput = {
+        title: brief.title,
         description: brief.description,
         key: brief.key,
         bpm: brief.bpm,
-        parts: brief.parts,
-        seconds,
-      });
+        chords: brief.chords,
+        settledBy,
+        events,
+        marks: [...allDrafts].sort((x, y) => x.body.round - y.body.round).map((d) => ({ round: d.body.round, at: ms(d) })),
+        rounds: [...allDrafts]
+          .sort((x, y) => x.body.round - y.body.round)
+          .map((d) => ({
+            round: d.body.round,
+            score: d.body.score,
+            verdicts: allVerdicts.filter((v) => v.body.round === d.body.round).map((v) => v.body),
+          })),
+      };
+      const audio = renderRounds(history);
+      const html = historyPage(history);
+      say(`[producer] ${b.song}: ${history.rounds.length} round(s) rendered, ${Object.keys(audio).length} file(s)`);
       // `scope` labels the manifest AND every file's artifact, and narrows which tree of this name
       // is superseded. Without it the artifact puts carry no team and a scoped grant refuses them.
       const ws = await writeWorkspace(client, {
         name: `song-${b.song.slice(-8).toLowerCase()}`,
         owner: "agent:producer",
-        files: { "song.wav": audio.wav, "index.html": html },
+        files: { ...audio, "index.html": html },
         entrypoint: "index.html",
         ...(o.team ? { scope: { [TEAM_FIELD]: o.team } } : {}),
       });
@@ -272,10 +374,16 @@ if (import.meta.main) {
     Deno.addSignalListener("SIGINT", () => stop.abort());
   } catch { /* not on this platform */ }
   console.error(`producer: assembling, reviewing and rendering on ${url}`);
-  await runProducer(new RadiaClient(url, { definitionToken: token }), {
-    rounds: Number(flag("--rounds") ?? 2),
-    signal: stop.signal,
-    log: (m) => console.error(m),
-    team: flag("--team"),
-  });
+  const client = new RadiaClient(url, { definitionToken: token });
+  try {
+    await runProducer(client, {
+      rounds: Number(flag("--rounds") ?? 2),
+      signal: stop.signal,
+      log: (m) => console.error(m),
+      team: flag("--team"),
+    });
+  } finally {
+    // The run goes when the process does, or a dead service goes on looking alive to the next start.
+    await retireRun(client, "producer");
+  }
 }

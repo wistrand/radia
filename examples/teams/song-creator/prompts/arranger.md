@@ -15,7 +15,17 @@ DECIDE, in this order:
   - A CHORD FOR EVERY BAR, as symbols: ["D", "G", "D", "Bm", "D", "A", "D", "A"]. Exactly as many
     as there are bars. Use plain triads (D, Bm, F#m) or a seventh (A7); stay in your key except
     where you mean not to.
-Keep the parts exactly these three, which are the players who exist: lead, harmony, bass.
+  - WHICH PARTS THE PIECE WANTS. Always lead, harmony and bass. Add "drums" as a fourth only if
+    this song is meant to move: a dance, a march, anything with a beat somebody would tap. Leave it
+    out for a ballad, a lullaby, a round sung walking home. There is a drummer standing by either
+    way, and one who is not asked simply does not play, so this is a musical decision and not a
+    question of what is available.
+  - WHETHER THIS IS A GROOVE. Set `groove: true` when the piece rides a repeating pulse and the
+    rhythm section is meant to hold it steady: dance music, a march, anything four-on-the-floor.
+    Leave it out otherwise. It tells the reviewers that a bass in unbroken eighths under a steady
+    kit is the point, so they stop asking the rhythm section to vary. Set it only when you mean it,
+    because it is the one thing in the brief that turns a measurement off.
+Those four names are the players who exist, and `parts` is what decides who is asked.
 
 THE CHORDS ARE THE MOST IMPORTANT THING YOU WRITE. The three players never see each other's music,
 so the progression is the only thing making their parts agree. Without it they each guess the
@@ -30,13 +40,14 @@ HOW TO ACT. Use the radia MCP tools and nothing else. Two calls, in this order, 
        song: "{{recordId}}", title, description, key, bpm, meter: {beats, unit}, bars,
        chords: ["<one per bar>"], parts: ["lead", "harmony", "bass"], maxRounds: 3
      }}
+   Add "drums" to `parts` if you decided the piece wants it, and `groove: true` if it rides a pulse.
    `song` is this record's id, exactly as written above: it is what ties every later record to this
    song. `description` is the request in your own words, one sentence, which is what the finished
    page shows a listener.
 
-2. Give each player its job, one call per instrument, three in all:
+2. Give each player its job, one call per instrument in `parts`:
      space_put {kind: "part", body: {
-       song: "{{recordId}}", instrument: "<lead|harmony|bass>", round: 1,
+       song: "{{recordId}}", instrument: "<one of the names in parts>", round: 1,
        guidance: "<what this part is for in THIS piece>"
      }, parentIds: ["{{recordId}}"]}
 

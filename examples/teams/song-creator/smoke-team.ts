@@ -268,6 +268,37 @@ try {
     check(`every ${kind} a service wrote carries the team`, rows.length > 0 && rows.every((r) => r.body[TEAM_FIELD] === label), `${rows.length} records`);
   }
 
+  // A SERVICE RETIRES ITS OWN RUN when it stops, so its interests stop showing as live. Without it a
+  // service that exited cleanly still looked like a listener for as long as its run lasted, and the
+  // next start warned that another `team up` might be running on the evidence of two dead processes.
+  // Asserted through the real services, which this smoke starts and stops.
+  const listening = async () => {
+    const seen = new Set<string>();
+    for (const kind of [REVIEW, PHRASE, VERDICT]) {
+      for (const i of (await admin.dryRun(kind)).interests) if (i.agent === "agent:producer" || i.agent === "agent:checker") seen.add(i.agent);
+    }
+    return seen;
+  };
+  check("both services show as listening while they run", (await listening()).size === 2, [...await listening()]);
+  for (const p of services) {
+    try {
+      p.kill("SIGTERM");
+      await p.status;
+    } catch { /* already gone */ }
+  }
+  services.length = 0;
+  check("and neither does once they stop, because each retires its run", (await listening()).size === 0, [...await listening()]);
+
+  // THE FOURTH PLAYER IS OPTIONAL, and the ARRANGER decides by what it puts in `brief.parts`. This
+  // smoke's arranger asks for three, so the drummer is a member of the team that was never asked:
+  // it holds a definition and a claim pattern, and costs nothing, because a harness is launched
+  // only when a record is claimed for it.
+  const drummer = file.members.find((m) => (m.patterns ?? []).some((p) => p.match?.instrument === "drums"));
+  check("the team ships a drummer", Boolean(drummer), drummer?.name);
+  check("who is minted like any other member", tokens.has(drummer?.name ?? ""), drummer?.name);
+  const drumParts = await admin.queryAll<Record<string, unknown>>({ kind: PART, match: { [TEAM_FIELD]: label, instrument: "drums" } });
+  check("and is asked for nothing when the brief leaves drums out", drumParts.length === 0, `${drumParts.length} drum parts`);
+
   // TWO PLAYERS, ONE INSTRUMENT. Both listened on every `lead` part; the lease means exactly one
   // answered each, and the piece has one lead line rather than two.
   const phrases = await admin.queryAll<{ instrument: string; round: number }>({ kind: PHRASE, match: { [TEAM_FIELD]: label } });
@@ -285,7 +316,8 @@ try {
   // The workspace and its artifacts are labelled too, which is the failure `scope` exists to stop.
   const ws = await readWorkspace(admin, String(final.body.workspace), undefined, { [TEAM_FIELD]: label });
   check("the song's workspace is readable IN THE TEAM's compartment", Boolean(ws), final.body.workspace);
-  check("with the audio and a page in it", (ws?.files ?? []).map((f) => f.path).sort().join(",") === "index.html,song.wav");
+  const files = (ws?.files ?? []).map((f) => f.path).sort();
+  check("with a page, the song, and the rejected round beside it", files.join(",") === "index.html,round-1.wav,song.wav", files);
   const art = await admin.queryAll<Record<string, unknown>>({ kind: "artifact", match: { [TEAM_FIELD]: label } });
   check("and every artifact under it is labelled, not just the manifest", art.length >= 2, `${art.length} artifacts`);
 
