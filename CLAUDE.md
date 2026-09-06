@@ -45,7 +45,7 @@ file's own header, never here.
 
 | Path                                    | Role                                                       |
 |-----------------------------------------|------------------------------------------------------------|
-| `deno.json`                             | tasks + import map, verb-first: `dev*` runs a space, `cli` is the CLI from a checkout, `check`/`test*` verify (`test` is the aggregate; `test:quick`, `test:runtime`, `test:conformance[:pg\|:s3]`, `test:extensions`, `test:lab`, `test:chat`, `test:analysis`, `test:mud`, `test:market`, `test:teams`), `bench`/`profile` measure, `bump` stamps the next version, `compile`/`release`/`bundle-*` build |
+| `deno.json`                             | tasks + import map, verb-first: `dev*` runs a space, `cli` is the CLI from a checkout, `check`/`test*` verify (`test` is the aggregate; `test:quick`, `test:runtime`, `test:conformance[:pg\|:s3]`, `test:extensions`, `test:lab`, `test:chat`, `test:analysis`, `test:mud`, `test:market`, `test:teams`, `test:song[-team]`), `bench`/`profile` measure, `bump` stamps the next version, `compile`/`release`/`bundle-*` build |
 | `src/main.ts`                           | the `radia` entry: `dev` (laptop: embedded space + console, operator credential provisioned), `serve` (the same space in deployment posture: no credential file, nothing on stdout, persistent storage required), `mcp`, else a CLI verb. `--config` is a JSON object of the same flag names; `--ext` co-hosts the extension routes at `/ext/`. [architecture-surfaces.md](agent_docs/architecture-surfaces.md) |
 | `src/surfaces/`                         | the client layer inside the binary: every way to reach a space that is not raw HTTP. Talks `/v0` through the SDK like an external client, may import an extension, and NEVER takes a value from `src/core`/`server`/`storage` (`test/layering.test.ts`). [architecture-surfaces.md](agent_docs/architecture-surfaces.md) |
 | `src/surfaces/cli.ts`                   | the CLI verbs, public `/v0` only; `radia help` is the list. `runs --for` and `team remove` are the offboarding cascade; `git-serve` and `serve-ext` are clients that happen to listen; `git-credential` is git's helper over the stored login; `login --sso` is the RFC 8252 loopback; `activity` is the console's Activity timeline in ANSI; `team up` runs a `team.json`'s members as workers that launch their harness per claim. [architecture-surfaces.md](agent_docs/architecture-surfaces.md) |
@@ -78,7 +78,7 @@ SQLite file or PGlite dir of your choosing, in-memory otherwise), `deno task tes
 an `agent_docs/` edit needs it too, since `test/agentdocs.test.ts` checks every link and source
 path a doc names), `deno task test:runtime` (both adapters, what any `src/` change takes),
 `scripts/s3-conformance.sh` (the object-store blob columns), `deno task test:extensions`,
-`deno task test:chat` / `test:analysis` / `test:mud` / `test:market` / `test:teams` (the examples, no API key), `deno task bench`,
+`deno task test:chat` / `test:analysis` / `test:mud` / `test:market` / `test:teams` / `test:song` / `test:song-team` (the examples, no API key), `deno task bench`,
 `deno task demo` (end-to-end agent demo over HTTP; `demo:py` is the same on the Python SDKs),
 `deno task compile` (single binary), `deno task release`. Phase-by-phase status in
 [agent_docs/plan-m0-implementation.md](agent_docs/plan-m0-implementation.md); what remains in

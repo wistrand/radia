@@ -59,15 +59,18 @@ Deno.test("team up: runs a team.json member as a worker that launches its harnes
     assertStringIncludes(up.err, `record ${id}`);
     // A directory per member beside the credentials file, never under the project: Claude Code
     // applies a project's `disabledMcpServers` by name to a server passed with --mcp-config.
-    assertStringIncludes(up.err, `cwd ${dir}/team/fake`);
+    // UNDER THE TEAM, because a member name is unique only within its own file: two shipped teams
+    // both name a member `ada`, and a flat directory gave them one working directory, one config
+    // and one warm session id between them.
+    assertStringIncludes(up.err, `cwd ${dir}/team/default/fake`);
     assertStringIncludes(up.out, "1 run: 0 settled, 1 ok");
     assertEquals((await admin.getEnvelope(id))!.state, "consumed");
     // The config the harness would read names the adapter with the member's session and token.
-    const config = JSON.parse(await Deno.readTextFile(`${dir}/team/fake.mcp.json`)) as { mcpServers: { radia: { args: string[]; env: Record<string, string> } } };
+    const config = JSON.parse(await Deno.readTextFile(`${dir}/team/default/fake.mcp.json`)) as { mcpServers: { radia: { args: string[]; env: Record<string, string> } } };
     assert(config.mcpServers.radia.args.includes("--session") && config.mcpServers.radia.args.includes("fake"));
     assert(config.mcpServers.radia.env.RADIA_DEFINITION_TOKEN.length > 10);
     // It carries the definition token, so it is the owner's alone, like the credentials file.
-    assertEquals((await Deno.stat(`${dir}/team/fake.mcp.json`)).mode! & 0o777, 0o600, "the MCP config is owner-only");
+    assertEquals((await Deno.stat(`${dir}/team/default/fake.mcp.json`)).mode! & 0o777, 0o600, "the MCP config is owner-only");
     // A harness passes its MCP server only this env, so the session store must travel with it, or
     // the adapter lands on a run of its own and cannot settle the loop's claim.
     assertEquals(config.mcpServers.radia.env.RADIA_CREDENTIALS, creds);
@@ -118,8 +121,8 @@ Deno.test("team up: runs a team.json member as a worker that launches its harnes
     assert(!settled.err.includes("minting") && !settled.err.includes("minted"), settled.err);
     assertStringIncludes(again.out, "1 run: 0 settled, 1 ok");
     const upLine = again.err.split("\n").find((l) => l.includes("[agent:player] up:"))!;
-    assert(/config \/\S+\/team\/player\.mcp\.json, cwd \/\S+\/team\/player/.test(upLine), upLine);
-    const relConfig = JSON.parse(await Deno.readTextFile(`${dir}/team/player.mcp.json`)) as { mcpServers: { radia: { env: Record<string, string> } } };
+    assert(/config \/\S+\/team\/game\/player\.mcp\.json, cwd \/\S+\/team\/game\/player/.test(upLine), upLine);
+    const relConfig = JSON.parse(await Deno.readTextFile(`${dir}/team/game/player.mcp.json`)) as { mcpServers: { radia: { env: Record<string, string> } } };
     assert(relConfig.mcpServers.radia.env.RADIA_DIR.startsWith("/") && relConfig.mcpServers.radia.env.RADIA_CREDENTIALS.startsWith("/"), JSON.stringify(relConfig));
 
     // DONE: a team whose file names what the final answer looks like ends itself, no --once. The
@@ -144,12 +147,88 @@ Deno.test("team up: runs a team.json member as a worker that launches its harnes
     const { id: leftover } = await admin.put({ kind: "task", body: { team: "quiz", title: "from an earlier run", tags: ["nobody"] } });
     const warned = await cli(["team", "up", ddir, "--seed", "--once", "--url", url], env);
     assertEquals(warned.code, 0, warned.err);
-    assertStringIncludes(warned.err, `[warn] 1 open task from earlier runs will be claimed too (${leftover.slice(-6)}); --fresh retires them first`);
+    assertStringIncludes(warned.err, `[warn] 1 open record from earlier runs will be claimed too (1 task); --fresh retires them first`);
     assertEquals((await admin.getEnvelope(leftover))!.state, "available", "a warning retires nothing");
     const fresh = await cli(["team", "up", ddir, "--seed", "--fresh", "--once", "--url", url], env);
     assertEquals(fresh.code, 0, fresh.err);
-    assertStringIncludes(fresh.err, "[fresh] 1 open task from earlier runs dead-lettered");
+    assertStringIncludes(fresh.err, "[fresh] 1 open record from earlier runs dead-lettered (1 task)");
     assertEquals((await admin.getEnvelope(leftover))!.state, "dead_letter");
+
+    // A WARM SESSION IS A LEFTOVER TOO. A `resume` member's harness session id outlives the verb on
+    // purpose, so without this the first move of NEW work opens in the session that finished the
+    // last piece and the member is handed its resume prompt: measured on a real team, three members
+    // answered a fresh job as if revising one that did not exist. `--fresh` means start cold, and
+    // it must reach only THIS team's members, which is what the per-team directory is for.
+    const wdir = `${dir}/warm`;
+    await Deno.mkdir(wdir, { recursive: true });
+    await Deno.writeTextFile(`${wdir}/team.json`, JSON.stringify({
+      team: "warmteam",
+      // A NAME OF ITS OWN, not `solver` again: a member name IS the principal, so reusing one
+      // across two teams supersedes its definition and moves its grants to whichever team minted
+      // last. That is the clash the per-team directory does not fix, and it hangs this test.
+      members: [{ name: "warmer", harness: "script", command: [Deno.execPath(), "run", "-A", fixture], env: { FAKE_MODE: "exit0" }, resume: true, prompt: "go {{claimId}}", patterns: [{ kind: "task", match: { tags: { $any: "warmer" } } }] }],
+      seed: [{ kind: "task", body: { title: "warm job", tags: ["warmer"] } }],
+    }));
+    const warmFile = `${dir}/team/warmteam/warmer.harness-session`;
+    const otherTeam = `${dir}/team/quiz/warmer.harness-session`;
+    await Deno.mkdir(`${dir}/team/warmteam`, { recursive: true });
+    await Deno.mkdir(`${dir}/team/quiz`, { recursive: true });
+    await Deno.writeTextFile(warmFile, "session-from-the-last-song");
+    await Deno.writeTextFile(otherTeam, "another-team-session");
+    const cold = await cli(["team", "up", wdir, "--init", "--seed", "--fresh", "--once", "--url", url], env);
+    assertEquals(cold.code, 0, cold.err);
+    assertStringIncludes(cold.err, "[fresh] 1 warm harness session dropped (warmer); they start cold");
+    assertEquals(await Deno.stat(warmFile).then(() => true, () => false), false, "the team's own warm session is gone");
+    assertEquals(await Deno.readTextFile(otherTeam), "another-team-session", "another team's session is untouched");
+
+    // LEFTOVERS ON THE TEAM'S OWN KINDS, not just `task`. A team that routes its own kinds swept
+    // NOTHING here, so a previous run's records were claimed beside the new seed: measured live,
+    // two songs written at once and both paid for. The sweep now covers what the members' patterns
+    // claim and what any member holds a `take` grant on, which is what a service states.
+    await admin.registerKind({ kind: "errand", indexedPaths: [{ path: "team", type: "keyword" }, { path: "tags", type: "array" }], claimable: true });
+    const kdir = `${dir}/kinds`;
+    await Deno.mkdir(kdir, { recursive: true });
+    await Deno.writeTextFile(`${kdir}/team.json`, JSON.stringify({
+      team: "errands",
+      members: [
+        { name: "runner", harness: "script", command: [Deno.execPath(), "run", "-A", fixture], env: { FAKE_MODE: "exit0" }, prompt: "go {{claimId}}", patterns: [{ kind: "errand", match: { tags: { $any: "runner" } } }], grants: ["errand:take,query,read_one"] },
+        // A SERVICE claims through its own loop and states only the grant, so the sweep has to read
+        // grants as well as patterns or this kind is missed entirely.
+        { name: "sweeperservice", service: true, command: [Deno.execPath(), "eval", "await new Promise(() => {})"], grants: ["chore:take,query,read_one"] },
+      ],
+      seed: [{ kind: "errand", body: { title: "the new errand", tags: ["runner"] } }],
+    }));
+    await admin.registerKind({ kind: "chore", indexedPaths: [{ path: "team", type: "keyword" }], claimable: true });
+    const staleErrand = await admin.put({ kind: "errand", body: { team: "errands", title: "from an earlier run", tags: ["runner"] } });
+    const staleChore = await admin.put({ kind: "chore", body: { team: "errands", title: "a service's leftover" } });
+    const swept = await cli(["team", "up", kdir, "--init", "--seed", "--fresh", "--once", "--url", url], env);
+    assertEquals(swept.code, 0, swept.err);
+    assertStringIncludes(swept.err, "2 open records from earlier runs dead-lettered");
+    assertStringIncludes(swept.err, "1 errand");
+    assertStringIncludes(swept.err, "1 chore", "a kind only a SERVICE claims is swept too");
+    assertEquals((await admin.getEnvelope(staleErrand.id))!.state, "dead_letter");
+    assertEquals((await admin.getEnvelope(staleChore.id))!.state, "dead_letter", "the service's kind was swept");
+
+    // A KILLED RUN'S RECORD IS LEASED, NOT AVAILABLE, and it is the leftover that actually bites: the
+    // lease lapses lazily, on the next take, so a sweep of `available` alone reported a clean space
+    // and handed a previous song's parts to two players seconds later. Twice, on a live team.
+    const abandoned = await admin.put({ kind: "chore", body: { team: "errands", title: "held by a worker that died" } });
+    const gone = await admin.take({ pattern: { kind: "chore", match: { team: "errands" } } }, { leaseSeconds: 1 });
+    assertEquals(gone?.record.id, abandoned.id);
+    assertEquals((await admin.getEnvelope(abandoned.id))!.state, "leased");
+    await new Promise((r) => setTimeout(r, 1200)); // the lease lapses; nothing reclaims it on its own
+    const afterKill = await cli(["team", "up", kdir, "--seed", "--fresh", "--once", "--url", url], env);
+    assertEquals(afterKill.code, 0, afterKill.err);
+    assertEquals((await admin.getEnvelope(abandoned.id))!.state, "dead_letter", "an expired lease is a leftover too");
+
+    // A LIVE lease is left alone, because it may belong to a run that is still going.
+    const live = await admin.put({ kind: "chore", body: { team: "errands", title: "someone is working on this" } });
+    const holding = await admin.take({ pattern: { kind: "chore", match: { team: "errands" } } }, { leaseSeconds: 120 });
+    assertEquals(holding?.record.id, live.id);
+    const careful = await cli(["team", "up", kdir, "--seed", "--fresh", "--once", "--url", url], env);
+    assertEquals(careful.code, 0, careful.err);
+    assertStringIncludes(careful.err, "under a LIVE lease and cannot be retired");
+    assertEquals((await admin.getEnvelope(live.id))!.state, "leased", "a live lease is never fenced by --fresh");
 
     // A FOREIGN CLAIMANT: a principal outside the team, holding an UNSCOPED take on a kind a member
     // claims, listening. It wins the race and answers outside the compartment (the chat's exec

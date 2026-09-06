@@ -63,6 +63,18 @@ export function mediaTypeFor(path: string): string {
     yml: "application/yaml",
     wasm: "application/wasm",
     woff2: "font/woff2",
+    // AUDIO AND VIDEO, because the serving side already renders them (`RENDERABLE` in
+    // `src/server/handlers/artifacts.ts` admits every `audio/*` and `video/*`) while this table
+    // typed them `text/plain`. With `nosniff` set on every artifact response, a browser REFUSES to
+    // play a `text/plain` body in an `<audio>` element, so a tree holding a rendered song served a
+    // page whose player was silent and gave no reason.
+    wav: "audio/wav",
+    mp3: "audio/mpeg",
+    ogg: "audio/ogg",
+    flac: "audio/flac",
+    m4a: "audio/mp4",
+    mp4: "video/mp4",
+    webm: "video/webm",
   } as Record<string, string>)[ext] ?? "text/plain";
 }
 

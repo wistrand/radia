@@ -51,7 +51,7 @@ import { ensureParent, radiaDir } from "../paths.ts";
 import { API_VERSION, VERSION } from "../version.ts";
 import { runUpdate } from "./update.ts";
 import { activityJson, loadActivity, renderActivity, wantColor, WINDOWS } from "./activity.ts";
-import { consoleColumns, env, httpRequest, mkdirp, onResize, onShutdown, readBinaryFile, readTextFile, realPath, restrictToOwner, serve, spawnProcess, stdin, stdoutIsTerminal, UsageError, writeBinaryFile, writeStdout, writeStdoutBytes, writeTextFile } from "../platform.ts";
+import { consoleColumns, env, httpRequest, mkdirp, onResize, onShutdown, readBinaryFile, readTextFile, realPath, removeFile, restrictToOwner, serve, spawnProcess, stdin, stdoutIsTerminal, UsageError, writeBinaryFile, writeStdout, writeStdoutBytes, writeTextFile } from "../platform.ts";
 import type { Lease } from "../storage/adapter.ts";
 
 const HELP = `radia <command> [options]
@@ -89,8 +89,10 @@ Inspect
                                       launches its harness (claude, codex, …) per claim, no session
                                       needed. --init mints members not yet on this machine (and
                                       re-mints one whose token lacks a grant the file names), --seed
-                                      writes the file's starting records, --fresh retires the
-                                      team's open tasks from earlier runs first, and the file's
+                                      writes the file's starting records, --fresh retires this
+                                      team's open records from earlier runs, on every kind it
+                                      claims, AND drops its warm harness sessions so members
+                                      start cold, and the file's
                                       done pattern (or --done) ends the run with the record that
                                       matched printed as the answer (examples/teams/)
   team add <name>… [--team <t>]… [--harness claude|codex|agy|json] [--grant <kind>:<op,op>]…
@@ -2605,6 +2607,17 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
   if (!chosen.length) throw new UsageError(`no member of ${file} matches --member ${[...only].join(", ")}`);
   const once = has(argv, "--once");
   const label = team.team ?? DEFAULT_TEAM;
+  // WHAT THIS TEAM CLAIMS, from the file alone: the kinds its loop members match, and the kinds any
+  // member holds a `take` grant on. A SERVICE states only the grant, so patterns alone miss it.
+  // Read by `--fresh` (which leftovers to retire) and by the foreign-claimant check below.
+  const takes = (g: string) => (g.split(":")[1] ?? "").split(",").map((o) => o.trim()).includes("take") ? [g.split(":")[0]] : [];
+  const loopPatterns = (m: TeamFileMember) => (m.service ? [] : (m.patterns ?? [{ kind: "task" }]));
+  // Where this team's members keep their working directory, MCP config and warm session id. SCOPED
+  // BY TEAM, because a member name is only unique within its file: `go-fish` and `song-creator` both
+  // ship an `ada`, and under one flat directory they shared a working directory, a config and the
+  // session id that decides which conversation a resumed harness continues. Declared here rather
+  // than beside the workers because `--fresh` needs it first.
+  const teamDir = `${realPath(credentialsPath()).replace(/\/[^/]*$/, "")}/team/${label}`;
   // Every line stamped on the wall clock, because a run spans minutes and a harness's pause is
   // only visible as a gap between lines.
   const say = (line: string) => console.error(`${new Date().toISOString()} ${line}`);
@@ -2672,18 +2685,55 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
   // interleaved once, the guesser asking one question of three keepers. `--fresh` dead-letters
   // the team's open tasks first; without it, they are counted and named so nobody is surprised.
   if (has(argv, "--fresh") || has(argv, "--seed")) {
-    // The team's OPEN tasks: the envelope query on the ops plane answers by STATE, with every
-    // predicate applied before its cap, so an old open task (the leftover this is for) is found
-    // where a newest-200 `task` query would have missed it. The cap is stated when it is hit.
+    // The team's OPEN WORK, on EVERY kind this team claims rather than on `task` alone. The envelope
+    // query on the ops plane answers by STATE, with every predicate applied before its cap, so an
+    // old open record (the leftover this is for) is found where a newest-200 query would have
+    // missed it. The cap is stated when it is hit.
+    //
+    // WHICH KINDS: what the members' patterns claim, plus every kind a member holds a `take` grant
+    // on, which is the same union the foreign-claimant check uses below. A service states only the
+    // grant, so patterns alone miss the kinds it claims. Hardcoding `task` was the bug: a team
+    // routing its own kinds swept nothing, and a previous run's records were claimed beside the new
+    // seed. Measured on a live team: two songs written at once, both paid for.
     const CAP = 1000;
-    const rows = await admin().queryEnvelopes({ state: "available", kind: "task", limit: CAP });
-    const open = rows.filter((r) => (r.record?.body as Record<string, unknown> | undefined)?.[TEAM_FIELD] === label).map((r) => r.envelope.recordId);
-    if (rows.length >= CAP) say(`[warn] more than ${CAP} open tasks on this space; only the first ${CAP} were checked for team ${label}`);
+    const claimed = new Set([
+      ...chosen.flatMap((m) => (m.service ? [] : (m.patterns ?? [{ kind: "task" }])).map((p) => p.kind)),
+      ...chosen.flatMap((m) => [...(m.grants ?? []), ...(m.unscopedGrants ?? [])].flatMap(takes)),
+    ]);
+    // AVAILABLE **AND** EXPIRED-LEASED. A record a killed worker still holds is not `available`, and
+    // it is exactly what the next run picks up: the lease lapses lazily, on the next take. Sweeping
+    // only `available` looked clean and then handed a previous song's parts to two players seconds
+    // later. A LIVE lease is left alone and reported instead, since it may belong to another
+    // `team up` running right now, and fencing that would be worse than the leftover.
+    const open: { id: string; kind: string }[] = [];
+    let held = 0;
+    for (const kind of claimed) {
+      const mine = (r: { record: { body?: unknown } | null }) => (r.record?.body as Record<string, unknown> | undefined)?.[TEAM_FIELD] === label;
+      const free = await admin().queryEnvelopes({ state: "available", kind, limit: CAP });
+      const lapsed = await admin().queryEnvelopes({ state: "leased", expired: true, kind, limit: CAP });
+      for (const r of [...free, ...lapsed]) if (mine(r)) open.push({ id: r.envelope.recordId, kind });
+      held += (await admin().queryEnvelopes({ state: "leased", kind, limit: CAP })).filter(mine).length - lapsed.filter(mine).length;
+      if (free.length >= CAP || lapsed.length >= CAP) say(`[warn] more than ${CAP} open ${kind} records on this space; only the first ${CAP} were checked for team ${label}`);
+    }
+    if (held > 0) say(`[warn] ${held} of this team's record${held === 1 ? " is" : "s are"} under a LIVE lease and cannot be retired: another run may still hold ${held === 1 ? "it" : "them"}, and ${held === 1 ? "it" : "they"} will be claimable again when the lease lapses`);
+    const tally = [...claimed].map((k) => [k, open.filter((o) => o.kind === k).length] as const).filter(([, n]) => n > 0)
+      .map(([k, n]) => `${n} ${k}`).join(", ");
     if (open.length && has(argv, "--fresh")) {
-      for (const id of open) await admin().admin("dead-letter", id);
-      say(`[fresh] ${open.length} open task${open.length === 1 ? "" : "s"} from earlier runs dead-lettered`);
+      for (const o of open) await admin().admin("dead-letter", o.id);
+      say(`[fresh] ${open.length} open record${open.length === 1 ? "" : "s"} from earlier runs dead-lettered (${tally})`);
     } else if (open.length) {
-      say(`[warn] ${open.length} open task${open.length === 1 ? "" : "s"} from earlier runs will be claimed too (${open.map((id) => id.slice(-6)).join(", ")}); --fresh retires them first`);
+      say(`[warn] ${open.length} open record${open.length === 1 ? "" : "s"} from earlier runs will be claimed too (${tally}); --fresh retires them first`);
+    }
+    // A WARM SESSION IS A LEFTOVER TOO, and the one `--fresh` used to miss. A `resume` member keeps
+    // its harness session in a file that outlives the verb, on purpose, so the next RUN opens in the
+    // session that finished the last one and the member is handed its resume prompt for the first
+    // move of new work. Measured: three players answered a fresh song as if revising a piece that
+    // did not exist, in a format their resumed prompt never taught them. Dropping the file is what
+    // "a new game" means for a member that remembers the old one.
+    if (has(argv, "--fresh")) {
+      const warm = chosen.filter((m) => m.resume);
+      for (const m of warm) removeFile(`${teamDir}/${m.name}.harness-session`);
+      if (warm.length) say(`[fresh] ${warm.length} warm harness session${warm.length === 1 ? "" : "s"} dropped (${warm.map((m) => m.name).join(", ")}); they start cold`);
     }
   }
   if (has(argv, "--seed")) {
@@ -2708,8 +2758,6 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
   // A service claims through its own loop and the file states only the grant (the exec member's
   // `tool_call:take`, the case the first run missed), so those kinds are checked once the members
   // are up and their live interests say what they claim.
-  const takes = (g: string) => (g.split(":")[1] ?? "").split(",").map((o) => o.trim()).includes("take") ? [g.split(":")[0]] : [];
-  const loopPatterns = (m: TeamFileMember) => (m.service ? [] : (m.patterns ?? [{ kind: "task" }]));
   const loopKinds = new Set(chosen.flatMap((m) => loopPatterns(m).map((p) => p.kind)));
   const grantKinds = new Set(chosen.flatMap((m) => [...(m.grants ?? []), ...(m.unscopedGrants ?? [])].flatMap(takes)).filter((k) => !loopKinds.has(k)));
   const members = new Set(team.members.map((m) => `agent:${m.name}`));
@@ -2755,7 +2803,7 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
   // such entry. Absolute throughout, since the harness runs there and not where the verb ran.
   mkdirp(`${radiaDir()}`);
   const radiaRoot = realPath(radiaDir());
-  const dir = `${realPath(credentialsPath()).replace(/\/[^/]*$/, "")}/team`;
+  const dir = teamDir;
   mkdirp(dir);
   const runs: HarnessRun[] = [];
   const ac = new AbortController();

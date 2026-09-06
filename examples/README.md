@@ -63,7 +63,12 @@ policy lives entirely in the example while the space ranks nothing. `deno task t
 `twenty-questions/` (the introduction, where every move is a task for the other player) and a story
 relay. `go-fish/` is the STRESS TEST rather than an example to read first: six members exercising
 workspace agents, the broker, a team-declared kind under pattern-scoped grants, two harnesses and
-the repair of model-written code, with `deno task test:teams` playing it model-free.
+the repair of model-written code, with `deno task test:teams` playing it model-free. `song-creator/`
+writes a song: three players fill in one part each in parallel, a fan-in assembles them with no
+orchestrator, and two reviewers claim separate records so neither sees the other's verdict before
+writing its own. A player's instrument is its own expertise rather than something a record hands it,
+so two players can share one and the lease decides. `deno task test:song` plays the whole pipeline
+with no model in it, and `test:song-team` mints the team from its own `team.json`.
 
 **`chat/`** exercises the broadest surface: model routing, capability records, turn persistence,
 artifacts, delegation, encryption and sandboxed execution.

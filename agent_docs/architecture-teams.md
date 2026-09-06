@@ -251,18 +251,27 @@ Rules the design rests on:
   move. Hands stay private by prompt only, and a READ LEAVES NO EVENT; the table is now closed
   to players by grant, which a first version left open as a workspace every member could read.
 - **Leftovers are named, and `--fresh` retires them.** Unclaimed claimable work is never swept,
-  so every earlier run's open tasks are claimed beside the next seed: three games once ran
-  interleaved, one guesser asking one question of three keepers. `team up` counts the team's open
-  tasks at start and names them; `--fresh` dead-letters them before seeding.
+  so every earlier run's open records are claimed beside the next seed: three games once ran
+  interleaved, one guesser asking one question of three keepers. The sweep covers EVERY kind the
+  team claims, from the members' patterns plus their `take` grants, which is how a service's kinds
+  are found; hardcoding `task` swept nothing for a team routing its own kinds, and one wrote two
+  songs at once. It covers AVAILABLE and EXPIRED-LEASED records, because a killed run's work is
+  leased rather than available and the lease lapses lazily, on the next take: sweeping `available`
+  alone reported a clean space and handed the old song's parts out seconds later. A LIVE lease is
+  reported, never fenced, since it may belong to a concurrent run. A warm harness session is a leftover too, and `--fresh` drops it: without that the
+  first claim of new work opens in the session that finished the last, and the member is handed its
+  resume prompt.
 - **A run with an end ends itself.** The file's `done` (or `--done <json>`) is a pattern the
   verb watches with the CLI's own credential, the team label added: a matching record written
   after the start is printed as the answer and the verb exits 0, after up to 60s for a harness in
   flight to finish. The games end on a `note` with `topic: "final"`, an indexed path, which the
   last move's prompt asks for; a pattern cannot read prose, so the ending must be a field.
-- **Each harness runs in a directory of its own OUTSIDE every project**, `~/.radia/team/<member>/`
+- **Each harness runs in a directory of its own OUTSIDE every project**, `~/.radia/team/<team>/<member>/`
   beside the credentials file: Claude Code applies a project's `disabledMcpServers` by name to a
   `--mcp-config` server for any cwd inside the project, and this repo's entry disables `radia`
-  (gotchas.md). Its output is
+  (gotchas.md). SCOPED BY TEAM, since a member name is unique only within its file: two shipped
+  teams both name an `ada`, and one flat directory gave them a shared cwd, config and warm session.
+  The principal still is not scoped, so reusing a member name across teams supersedes its definition. Its output is
   digested to one line per event (`digestLine`), `--verbose` for the stream.
 - **Cost is bounded by the lease, the timeout and `concurrency`** (default 1 per member), never
   by the model. Contract: `extensions/conformance/harness-worker.test.ts`, every outcome driven
