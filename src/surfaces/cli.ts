@@ -51,7 +51,7 @@ import { ensureParent, radiaDir } from "../paths.ts";
 import { API_VERSION, VERSION } from "../version.ts";
 import { runUpdate } from "./update.ts";
 import { activityJson, loadActivity, renderActivity, wantColor, WINDOWS } from "./activity.ts";
-import { consoleColumns, env, httpRequest, mkdirp, onResize, onShutdown, readBinaryFile, readTextFile, realPath, removeFile, restrictToOwner, serve, spawnProcess, stdin, stdoutIsTerminal, UsageError, writeBinaryFile, writeStdout, writeStdoutBytes, writeTextFile } from "../platform.ts";
+import { consoleColumns, consoleRows, env, httpRequest, mkdirp, onResize, onShutdown, readBinaryFile, readTextFile, realPath, removeFile, restrictToOwner, serve, spawnProcess, stdin, stdoutIsTerminal, UsageError, writeBinaryFile, writeStdout, writeStdoutBytes, writeTextFile } from "../platform.ts";
 import type { Lease } from "../storage/adapter.ts";
 
 const HELP = `radia <command> [options]
@@ -84,12 +84,14 @@ Inspect
                                       session token alone; --compact-definition prints the
                                       durable one, for a tool that cannot re-authenticate
   team                                every principal that holds a definition, and what it can do
-  team up [<dir>|<team.json>] [--init] [--seed] [--fresh] [--once] [--done <json>] [--verbose] [--member <name>]…
+  team up [<dir>|<team.json>] [--init] [--seed [--seed-body <json>]] [--fresh] [--once] [--done <json>] [--verbose] [--member <name>]…
                                       run a team's members as WORKERS: each claims its patterns and
                                       launches its harness (claude, codex, …) per claim, no session
                                       needed. --init mints members not yet on this machine (and
                                       re-mints one whose token lacks a grant the file names), --seed
-                                      writes the file's starting records, --fresh retires this
+                                      writes the file's starting records (--seed-body merges your
+                                      own fields over each one, so the ask can change without
+                                      editing the file), --fresh retires this
                                       team's open records from earlier runs, on every kind it
                                       claims, AND drops its warm harness sessions so members
                                       start cold, and the file's
@@ -130,7 +132,9 @@ Inspect
   events [--after <cursor> | --tail <n>] [--limit <n>]
   activity [--window 2m|10m|1h] [--kind <kind>] [--follow] [--width <cols>] [--no-color]
                                       who handed work to whom: one lane per agent, marks coloured by
-                                      kind, handoffs listed (the console's Activity tab, in ANSI)
+                                      kind, handoffs listed (the console's Activity tab, in ANSI).
+                                      --follow fits the frame to the terminal, keeping the lanes
+                                      and handoffs that moved most recently
   otlp --to <collector> (--thread <recordId> | --follow) [--trace-root <kind>]
   watch <kind> [--match <json>]       stream wakeups until interrupted
 
@@ -590,7 +594,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
     // stops both.
     case "team": {
       const [sub] = positional(argv, 1);
-      const USAGE = "team [list [--all] | add <name>… [--team <t>]… [--harness claude|codex|agy|json] [--grant <kind>:<op,op>]… [--observe] [--rotate] | remove <name>… | up [<dir>|<team.json>] [--init] [--seed] [--fresh] [--once] [--done <json>] [--verbose] [--member <name>]…]";
+      const USAGE = "team [list [--all] | add <name>… [--team <t>]… [--harness claude|codex|agy|json] [--grant <kind>:<op,op>]… [--observe] [--rotate] | remove <name>… | up [<dir>|<team.json>] [--init] [--seed [--seed-body <json>]] [--fresh] [--once] [--done <json>] [--verbose] [--member <name>]…]";
       if (sub !== undefined && sub !== "add" && sub !== "remove" && sub !== "list" && sub !== "up") return usage(USAGE);
       if (sub === "up") return await teamUp(argv, ctx);
       // A bare name is a convenience, not a second namespace: `claude` means `agent:claude`, and
@@ -1596,12 +1600,15 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       // Read per frame rather than once, so a follow tracks the terminal as it is resized.
       const fixedWidth = Number(flag(argv, "--width")) || 0;
       const columns = () => fixedWidth || consoleColumns() || 100;
+      // HEIGHT only bounds a FOLLOW, which repaints in place and loses anything past the last row.
+      // A one-shot render is scrollback the reader can page, so it stays whole.
+      const rows = () => (has(argv, "--follow") ? consoleRows() : undefined);
       const memo = new Map<string, string>();
       const frame = async (): Promise<string> => {
         const m = await loadActivity(client, WINDOWS[windowKey], kind, memo);
         return ctx.json
           ? JSON.stringify(activityJson(m), null, 2) + "\n"
-          : renderActivity(m, { columns: columns(), color, windowLabel: `the last ${windowKey === "1h" ? "hour" : windowKey.replace("m", " minutes")}` });
+          : renderActivity(m, { columns: columns(), rows: rows(), color, windowLabel: `the last ${windowKey === "1h" ? "hour" : windowKey.replace("m", " minutes")}` });
       };
       if (!has(argv, "--follow")) {
         writeStdout(await frame());
@@ -2591,6 +2598,10 @@ async function readAllBytes(stream: ReadableStream<Uint8Array>): Promise<Uint8Ar
 
 // ---- output ----
 
+/** How long a service gets to stop on SIGTERM before it is killed. Long enough to settle a claim in
+ *  flight, short enough that Ctrl-C feels like Ctrl-C. */
+const SERVICE_GRACE_MS = 5_000;
+
 /**
  * `radia team up`: the members of a `team.json` as workers (extensions/ts/harness-worker.ts). Holds
  * nothing but each member's own durable half, which `team add` stored on this machine; setup stays
@@ -2736,10 +2747,29 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
       if (warm.length) say(`[fresh] ${warm.length} warm harness session${warm.length === 1 ? "" : "s"} dropped (${warm.map((m) => m.name).join(", ")}); they start cold`);
     }
   }
+  // THE SEED, with the caller's own fields merged over the file's. What a team is FOR is usually one
+  // field of one seed record (a song's description, a question to answer), and editing team.json to
+  // change it makes the file a scratchpad and loses it to the next `git checkout`. Shallow, applied
+  // to every seed record, and the TEAM LABEL still wins: a seed that is not this team's is one no
+  // member can read, which would look like a team that silently does nothing.
+  const seedFlag = flag(argv, "--seed-body");
+  if (seedFlag !== undefined && !has(argv, "--seed")) throw new UsageError("--seed-body only means something with --seed");
+  let seedBody: Record<string, unknown> | undefined;
+  if (seedFlag !== undefined) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(seedFlag);
+    } catch (e) {
+      throw new UsageError(`--seed-body is not JSON: ${(e as Error).message}`);
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new UsageError("--seed-body must be a JSON object, e.g. '{\"description\":\"…\"}'");
+    seedBody = parsed as Record<string, unknown>;
+  }
   if (has(argv, "--seed")) {
     for (const r of team.seed ?? []) {
-      const { id } = await admin().put({ kind: r.kind, body: { [TEAM_FIELD]: label, ...r.body }, ...(r.parentIds ? { parentIds: r.parentIds } : {}) });
-      say(`[seed] ${r.kind} ${id}`);
+      const body = { ...r.body, ...seedBody, [TEAM_FIELD]: label };
+      const { id } = await admin().put({ kind: r.kind, body, ...(r.parentIds ? { parentIds: r.parentIds } : {}) });
+      say(`[seed] ${r.kind} ${id}${seedBody ? ` (${Object.keys(seedBody).join(", ")} from --seed-body)` : ""}`);
     }
   }
   // FOREIGN CLAIMANTS. A claimable record cannot say who may claim it, so a listener on one of this
@@ -2777,6 +2807,28 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
       const va = values(a[f]), vb = values(b[f]);
       return !!va && !!vb && !va.some((x) => vb.some((y) => x === y));
     });
+  // A SECOND RUN OF THIS TEAM, which is worse than a foreign claimant: two copies of one member race
+  // for the same records and the winner decides the work, so an older process can quietly answer
+  // with older code. Measured, a service left over from an interrupted run assembled a song without
+  // a field the current one had added. Reported rather than refused, because an interest stays live
+  // as long as its RUN does and a cleanly exited service leaves one behind for a while: a refusal on
+  // that evidence would block a legitimate start.
+  const auditOwnClaimants = async (kinds: Set<string>) => {
+    const seen = new Map<string, string[]>();
+    for (const kind of kinds) {
+      const { interests } = await admin().dryRun(kind);
+      for (const i of interests) {
+        if (!i.agent || !members.has(i.agent)) continue;
+        seen.set(i.agent, [...(seen.get(i.agent) ?? []), kind]);
+      }
+    }
+    for (const [agent, kinds] of seen) {
+      say(
+        `[warn] ${agent} is ALREADY listening on ${[...new Set(kinds)].join(", ")} before this run started: another \`team up\` for team ${label} may still be running, ` +
+          `and two copies of one member race for the same records. Check for a leftover process, or ignore this if the last run only just ended (an interest outlives the process that published it, until its run expires)`,
+      );
+    }
+  };
   const auditClaimants = async (kinds: Set<string>) => {
     for (const kind of kinds) {
       const { interests } = await admin().dryRun(kind);
@@ -2796,6 +2848,9 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
     }
   };
   await auditClaimants(loopKinds);
+  // Before anything of this team's is spawned, so the interests read are the ones that were already
+  // there. Every kind the team claims, since a leftover SERVICE is the case this exists for.
+  await auditOwnClaimants(new Set([...loopKinds, ...grantKinds]));
   // The harnesses' directories live BESIDE THE CREDENTIALS FILE (`~/.radia/team/<member>/`), never
   // under the project: Claude Code applies a project's `disabledMcpServers` (in `~/.claude.json`)
   // by NAME to a server passed with `--mcp-config --strict-mcp-config`, for any cwd inside that
@@ -2872,11 +2927,23 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
           cwd: workDir,
           env: { ...(m.env ?? {}), RADIA_URL: base, RADIA_DEFINITION_TOKEN: definitionToken, RADIA_CREDENTIALS: realPath(credentialsPath()), RADIA_DIR: radiaRoot },
         });
-        const stop = () => child.kill();
+        // SIGTERM, THEN SIGKILL. A service may trap SIGTERM to finish a claim, and one that traps it
+        // and keeps polling outlives this verb: measured, two producers from two runs raced for one
+        // song's phrases and the older binary won, writing a score without a field the newer one
+        // had added. Worse, `await child.status` never resolved, so the verb hung instead of exiting.
+        let escalate: ReturnType<typeof setTimeout> | undefined;
+        const stop = () => {
+          child.kill();
+          escalate = setTimeout(() => {
+            say(`[${agent}] service did not stop on SIGTERM after ${SERVICE_GRACE_MS / 1000}s; killing it`);
+            child.kill("SIGKILL");
+          }, SERVICE_GRACE_MS);
+        };
         ac.signal.addEventListener("abort", stop, { once: true });
         const relay = (stream: ReadableStream<Uint8Array>) => pumpLines(stream, (line) => say(`[${agent}] | ${line}`));
         const startedAt = Date.now();
         const [status] = await Promise.all([child.status, relay(child.stdout), relay(child.stderr)]);
+        if (escalate !== undefined) clearTimeout(escalate);
         ac.signal.removeEventListener("abort", stop);
         if (ac.signal.aborted) break;
         backoff = Date.now() - startedAt > 60_000 ? 0 : Math.min(60_000, backoff + 5_000);

@@ -96,6 +96,25 @@ Deno.test("team up: runs a team.json member as a worker that launches its harnes
     const seeded = await admin.queryNewest<{ team?: string; title?: string }>({ kind: "task", match: { team: "game" } }, 5);
     assertEquals(seeded.length, 1);
     assertEquals(seeded[0].body.title, "opening move", "the seed carries the team label the file names");
+
+    // --seed-body: what a team is FOR is usually one field of one seed record, and editing the file
+    // to change it makes team.json a scratchpad. Merged over the file's body, never over the team
+    // label, since a seed outside the label is one no member can read.
+    const asked = await cli(["team", "up", tdir, "--seed", "--seed-body", '{"title":"a different question","team":"elsewhere"}', "--once", "--url", url], env);
+    assertEquals(asked.code, 0, asked.err);
+    assertStringIncludes(asked.err, "(title, team from --seed-body)");
+    const overridden = await admin.queryNewest<{ team?: string; title?: string }>({ kind: "task", match: { team: "game" } }, 5);
+    assertEquals(overridden[0].body.title, "a different question", "the caller's field wins over the file's");
+    assertEquals(overridden[0].body.team, "game", "the team label is not overridable");
+    // Refused by NAME rather than ignored, and non-zero: `runCli` turns every thrown error into
+    // exit 1, so what is asserted is the message and that it did not quietly seed the file's body.
+    const badJson = await cli(["team", "up", tdir, "--seed", "--seed-body", "not json", "--once", "--url", url], env);
+    assertEquals(badJson.code, 1, badJson.err);
+    assertStringIncludes(badJson.err, "--seed-body is not JSON");
+    const notObject = await cli(["team", "up", tdir, "--seed", "--seed-body", '["a"]', "--once", "--url", url], env);
+    assertStringIncludes(notObject.err, "--seed-body must be a JSON object");
+    const noSeed = await cli(["team", "up", tdir, "--seed-body", '{"title":"x"}', "--once", "--url", url], env);
+    assertStringIncludes(noSeed.err, "--seed-body only means something with --seed");
     assertEquals((await admin.getEnvelope(seeded[0].id))!.state, "consumed");
     // Running it again mints nothing (the token is stored); the seed is what gives --once a claim.
     // This run uses a RELATIVE runtime directory from the team's own folder, the way a person runs
@@ -229,6 +248,39 @@ Deno.test("team up: runs a team.json member as a worker that launches its harnes
     assertEquals(careful.code, 0, careful.err);
     assertStringIncludes(careful.err, "under a LIVE lease and cannot be retired");
     assertEquals((await admin.getEnvelope(live.id))!.state, "leased", "a live lease is never fenced by --fresh");
+
+    // A SERVICE THAT TRAPS SIGTERM is killed anyway, and the verb exits. Without the escalation both
+    // survived: measured on a live team, a producer from an interrupted run went on claiming for
+    // hours and beat the current one to a song's parts, answering with the code it started with.
+    // `await child.status` never resolved either, so the verb hung instead of stopping.
+    const stubbornDir = `${dir}/stubborn`;
+    await Deno.mkdir(stubbornDir, { recursive: true });
+    const stubbornSvc = `${stubbornDir}/svc.ts`;
+    await Deno.writeTextFile(
+      stubbornSvc,
+      `try { Deno.addSignalListener("SIGTERM", () => {}); Deno.addSignalListener("SIGINT", () => {}); } catch {}\n` +
+        `console.error("svc up");\nwhile (true) await new Promise((r) => setTimeout(r, 200));\n`,
+    );
+    await Deno.writeTextFile(`${stubbornDir}/team.json`, JSON.stringify({
+      team: "stubborn",
+      members: [{ name: "svc", service: true, command: [Deno.execPath(), "run", "-A", stubbornSvc] }],
+    }));
+    const proc = new Deno.Command(Deno.execPath(), {
+      args: ["run", "-A", new URL("../src/main.ts", import.meta.url).pathname, "team", "up", stubbornDir, "--init", "--url", url],
+      env,
+      stdout: "piped",
+      stderr: "piped",
+    }).spawn();
+    const err: string[] = [];
+    const drain = proc.stderr.pipeTo(new WritableStream({ write: (c) => void err.push(new TextDecoder().decode(c)) })).catch(() => {});
+    for (let i = 0; i < 100 && !err.join("").includes("svc up"); i++) await new Promise((r) => setTimeout(r, 100));
+    proc.kill("SIGINT");
+    // The verb must EXIT, and within the grace period plus slack rather than never.
+    const ended = await Promise.race([proc.status, new Promise((r) => setTimeout(() => r(null), 20_000))]);
+    await drain;
+    await proc.stdout.cancel();
+    assert(ended !== null, `team up did not exit after SIGINT: ${err.join("")}`);
+    assertStringIncludes(err.join(""), "did not stop on SIGTERM", "the escalation is what makes that true");
 
     // A FOREIGN CLAIMANT: a principal outside the team, holding an UNSCOPED take on a kind a member
     // claims, listening. It wins the race and answers outside the compartment (the chat's exec

@@ -15,7 +15,7 @@
 // none of them sees the others' parts, so nothing they do individually can catch a clash between
 // them: that is a coordination gap, and closing it is the review stage's whole job.
 
-import type { ParsedPart, Score } from "./score.ts";
+import { isUnpitched, type ParsedPart, type Score } from "./score.ts";
 
 /** Semitone classes of the major scale and the natural minor, from the tonic. */
 const MAJOR = [0, 2, 4, 5, 7, 9, 11];
@@ -104,8 +104,12 @@ export interface Metrics {
     durations: number;
     uniformity: number;
     /** Share of intervals that are steps (two semitones or less). Near 1 is a line that never
-     *  leaps; near 0 is the root-and-fifth pump a bass falls into. */
+     *  leaps; near 0 is the root-and-fifth pump a bass falls into. Meaningless on a drum part. */
     stepRatio: number;
+    /** A drum or percussion part: its notes pick a sound, not a pitch, so it is measured for rhythm
+     *  and left out of every harmonic count. Reported so a zero beside it reads as skipped rather
+     *  than as clean. */
+    unpitched: boolean;
   }[];
   findings: Finding[];
 }
@@ -138,12 +142,18 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
   const findings: Finding[] = [];
   const k = parseKey(key);
   const grid = onsets(parts);
+  // UNPITCHED PARTS ARE NOT HARMONY. A drum's notes choose which drum, so measuring them for
+  // clashes, parallels, key or chord tones counts nonsense as faults: a kit landing on a kick and a
+  // snare a semitone apart is a rhythm, not a mistake, and it would have flooded the count and
+  // hijacked the resolution test, which reads the LOWEST part. They are still measured for DULLNESS,
+  // because one note length repeated for eight bars is exactly as dull on a drum as anywhere else.
+  const pitched = parts.filter((p) => !isUnpitched(p.instrument));
 
   // DISSONANCE, judged only where a note BEGINS: a passing clash inside a held note is ordinary
   // music, while two parts starting a semitone apart is the thing to report.
   let dissonance = 0;
   for (const t of grid) {
-    const sounding = soundingAt(parts, t);
+    const sounding = soundingAt(pitched, t);
     for (let i = 0; i < sounding.length; i++) {
       for (let j = i + 1; j < sounding.length; j++) {
         const gap = Math.abs(sounding[i].midi - sounding[j].midi) % 12;
@@ -162,13 +172,13 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
 
   // PARALLELS between each pair of parts, across consecutive onsets.
   let parallels = 0;
-  for (let a = 0; a < parts.length; a++) {
-    for (let b = a + 1; b < parts.length; b++) {
+  for (let a = 0; a < pitched.length; a++) {
+    for (let b = a + 1; b < pitched.length; b++) {
       let prev: { x: number; y: number; interval: number } | null = null;
       for (const t of grid) {
-        const s = soundingAt([parts[a], parts[b]], t);
-        const x = s.find((n) => n.part === parts[a].instrument)?.midi;
-        const y = s.find((n) => n.part === parts[b].instrument)?.midi;
+        const s = soundingAt([pitched[a], pitched[b]], t);
+        const x = s.find((n) => n.part === pitched[a].instrument)?.midi;
+        const y = s.find((n) => n.part === pitched[b].instrument)?.midi;
         if (x === undefined || y === undefined) {
           prev = null;
           continue;
@@ -180,9 +190,9 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
             parallels++;
             findings.push({
               kind: "parallel",
-              parts: [parts[a].instrument, parts[b].instrument],
+              parts: [pitched[a].instrument, pitched[b].instrument],
               bar: barAt(t, score),
-              detail: `${parts[a].instrument} and ${parts[b].instrument} move in parallel ${interval === 0 ? "octaves" : "fifths"}`,
+              detail: `${pitched[a].instrument} and ${pitched[b].instrument} move in parallel ${interval === 0 ? "octaves" : "fifths"}`,
             });
           }
         }
@@ -207,7 +217,7 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
   let outOfKey: number | null = k ? 0 : null;
   let offChord: number | null = chordsGiven ? 0 : null;
   let leaps = 0;
-  for (const p of parts) {
+  for (const p of pitched) {
     const sounded = p.notes.filter((n) => n.midi !== null);
     for (let i = 0; i < sounded.length; i++) {
       const n = sounded[i];
@@ -280,6 +290,10 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
   // anything happening", and without them the loop drives the music toward the safest thing that
   // has no faults. Each one names a change a single player can make on its own.
   let bland = 0;
+  // THE RHYTHM SECTION: every unpitched part, plus the lowest pitched one, which is the bass by the
+  // same reading `endsOnTonic` uses. These are the parts a groove asks to hold a steady pulse.
+  const bassLine = pitched.slice().sort((x, y) => lowOf(x) - lowOf(y))[0]?.instrument;
+  const rhythmSection = new Set(parts.filter((p) => isUnpitched(p.instrument) || p.instrument === bassLine).map((p) => p.instrument));
   const shape = new Map<string, { durations: number; uniformity: number; stepRatio: number }>();
   for (const p of parts) {
     const sounded = p.notes.filter((n) => n.midi !== null);
@@ -291,8 +305,16 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
     const low = sounded.length ? Math.min(...sounded.map((n) => n.midi!)) : 0;
     const high = sounded.length ? Math.max(...sounded.map((n) => n.midi!)) : 0;
     shape.set(p.instrument, { durations: lengths.size, uniformity, stepRatio });
+    // A drum's PITCHES pick a drum, so its interval ratio and its range say nothing: a kit using
+    // three sounds is not "narrow" and a snare answering a kick is not a leap. Rhythm is what a
+    // percussion part can be dull at, so the two rhythm checks below still apply to it.
+    const rhythmOnly = isUnpitched(p.instrument);
 
-    if (sounded.length >= 4 && uniformity > 0.85) {
+    // A GROOVE EXEMPTS THE RHYTHM SECTION FROM THIS ONE RULE. A pumping eighth-note bass under a
+    // four-on-the-floor kit is the genre, not a failure to vary, and only the brief knows which was
+    // meant. The lead and the inner voices are held to it either way.
+    const steadyOnPurpose = score.groove === true && rhythmSection.has(p.instrument);
+    if (!steadyOnPurpose && sounded.length >= 4 && uniformity > 0.85) {
       bland++;
       findings.push({
         kind: "monotony",
@@ -314,16 +336,26 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
       if (seen.has(sig)) repeats++;
       seen.add(sig);
     }
-    if (cells.size >= 4 && repeats / cells.size > 0.3) {
+    // A BEAT REPEATS BY DEFINITION, so a kit is held to a far looser bound than a melody: it is
+    // flagged only when it never varies AT ALL. Measured on a real run, a four-on-the-floor pattern
+    // repeating six bars in eight was reported as a pump, which is the genre being told off for
+    // being itself. A drummer should still put a fill somewhere, and 0.85 leaves room for exactly
+    // that and nothing less.
+    // For a kit the test is EXACT rather than a ratio: every bar identical. A ratio cannot express
+    // "never varies" at short lengths, since six identical bars out of six is only 0.83.
+    const pumping = rhythmOnly ? repeats === cells.size - 1 : repeats / cells.size > 0.3;
+    if (cells.size >= 4 && pumping) {
       bland++;
       findings.push({
         kind: "monotony",
         parts: [p.instrument],
         bar: 1,
-        detail: `${p.instrument} plays the same bar ${repeats + 1} times over: vary it, or it is a pump rather than a part`,
+        detail: rhythmOnly
+          ? `${p.instrument} plays the same bar ${repeats + 1} times over and never varies: put a fill somewhere`
+          : `${p.instrument} plays the same bar ${repeats + 1} times over: vary it, or it is a pump rather than a part`,
       });
     }
-    if (sounded.length >= 6 && stepRatio > 0.95) {
+    if (!rhythmOnly && sounded.length >= 6 && stepRatio > 0.95) {
       bland++;
       findings.push({
         kind: "monotony",
@@ -332,7 +364,7 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
         detail: `${p.instrument} only ever steps: one deliberate leap would give it a shape`,
       });
     }
-    if (sounded.length >= 6 && high - low < 5) {
+    if (!rhythmOnly && sounded.length >= 6 && high - low < 5) {
       bland++;
       findings.push({
         kind: "monotony",
@@ -346,7 +378,7 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
   // Does it come home? Judged on the lowest part, which is where an ear hears the resolution.
   let endsOnTonic: boolean | null = null;
   if (k) {
-    const lowest = parts.slice().sort((x, y) => lowOf(x) - lowOf(y))[0];
+    const lowest = pitched.slice().sort((x, y) => lowOf(x) - lowOf(y))[0];
     const last = lowest?.notes.filter((n) => n.midi !== null).at(-1)?.midi ?? null;
     endsOnTonic = last === null ? null : ((last - k.tonic) % 12 + 12) % 12 === 0;
   }
@@ -371,6 +403,7 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
         durations: s.durations,
         uniformity: Number(s.uniformity.toFixed(2)),
         stepRatio: Number(s.stepRatio.toFixed(2)),
+        unpitched: isUnpitched(p.instrument),
       };
     }),
     findings,

@@ -22,7 +22,7 @@ HOW TO ACT. Use the radia MCP tools and nothing else. Two calls, in one turn.
      space_ack {claimId: "{{claimId}}", resultKind: "verdict", resultBody: {
        song: "<the song id>", round: <the round>, by: "ear",
        approve: <true|false>, summary: "<one or two sentences on how it sounds>",
-       asks: [{instrument: "<lead|harmony|bass>", note: "<one change>"}]
+       asks: [{instrument: "<one of the parts in the draft>", note: "<one change>"}]
      }}
 
 EACH ASK NAMES ONE INSTRUMENT and one change, because it is handed to that player alone and is all

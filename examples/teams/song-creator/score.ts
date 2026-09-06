@@ -131,6 +131,19 @@ export interface Part {
   phrase: string;
 }
 
+/** Instruments whose notes are HITS rather than pitches. Named here rather than in the renderer
+ *  because two things must agree about it: the synth sounds them as noise, and the analysis has to
+ *  keep them out of every harmonic measure. A drum part is written in the same notation, and its
+ *  pitches choose which drum rather than which note. */
+const UNPITCHED = ["drums", "drum", "percussion", "perc", "kit"];
+
+/** Is this part unpitched? Matched on the NAME, the same way the renderer picks a voice, so a brief
+ *  may invent `drums-b` and still be treated as percussion by both. */
+export function isUnpitched(instrument: string): boolean {
+  const key = instrument.toLowerCase();
+  return UNPITCHED.some((n) => key.includes(n));
+}
+
 export interface Score {
   bpm: number;
   meter: Meter;
@@ -140,6 +153,16 @@ export interface Score {
    *  without one a run put the bass in D major under a tune in D minor. Optional, and every
    *  chord-dependent measure is skipped when it is absent. */
   chords?: string[];
+  /**
+   * This piece is built on a repeating pulse, so a steady rhythm section is the INTENT.
+   *
+   * The one place the brief overrules a measurement, and it exists because the two were found
+   * fighting: an arranger asked a bass for "steady eighth notes throughout" and a kit for
+   * four-on-the-floor, then the count called both of them dull. A metric cannot read intent, so the
+   * brief states it. Deliberately narrow: it relaxes ONE rule (uniform note length) for the rhythm
+   * section only, and every other measure still applies to every part.
+   */
+  groove?: boolean;
 }
 
 export interface ParsedPart extends Part {

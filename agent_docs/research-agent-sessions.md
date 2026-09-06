@@ -373,6 +373,40 @@ It was told to write one note saying whether the answer was right, and "there is
 exactly the case it did not report. Same shape as an empty queue read as an empty space: the absence
 of a thing is a finding, and nothing in the instructions made it one.
 
+## What five models writing one song showed, 2026-09-06
+
+Nine live runs of `examples/teams/song-creator`, five model members each. The first team here whose
+output is MEASURED, which is what makes these observations rates rather than impressions.
+
+**Arithmetic in a notation is where models fail, not the music.** Across nine runs, three lost at
+least one round to bars that did not add up, and one wrote 122 unparseable tokens. The musical
+judgement was consistently better than the counting: the same model that wrote "a convincing
+eight-bar rise and return" could not make three bars sum to a whole note. The notation is checked by
+a parser and reported by bar, and it still cost paid rounds, so the LIMIT now counts rounds that
+parsed. A round lost to notation is not a round of revision.
+
+**A warm session outlives the work it was warm for.** The harness session id survives the verb, so
+the first claim of a NEW song opened in the session that finished the last one and the member was
+handed its RESUMED prompt: three players answered as if revising a piece that did not exist, in a
+format that prompt never taught them. Two fixes, and both were needed: `--fresh` drops the sessions,
+and every resumed prompt checks the record's own `round` rather than trusting the session.
+
+**A prompt that names the same string for a role and a job teaches the wrong lesson.** The first
+player prompt said "your instrument is your name", which reads fine and is wrong: the instrument is
+a standing property of the player, and conflating it with the principal makes two players on one
+instrument unrepresentable. Member names and instrument names are now deliberately different words.
+
+**Blind review makes the reviewers' asymmetry legible.** The `rules` reviewer is arithmetic and the
+`ear` is a model, they claim separate records, and neither sees the other's verdict. Measured: the
+count finds every parallel fifth and never notices a dull melody; the ear tracked its own earlier
+asks across rounds ("the bar-4 turn and bar-8 fill add forward motion") and approved a piece the
+count still had notes about. Requiring both to approve made the count a veto and left the ear
+advisory, which is backwards for something meant to be worth hearing.
+
+**Cost.** A round is five model turns; a three-round song is two to four minutes and roughly $1 to
+$3. That is why both smokes run the whole pipeline with no model in it, and why every bug listed in
+that example's README was found by RUNNING rather than reading.
+
 ## A defect the workspace scenario found before any model ran
 
 **`radia host` cannot broker from the compiled binary.** Building the workspace chain

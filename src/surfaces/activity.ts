@@ -34,6 +34,10 @@ export interface Handoff {
   n: number;
   /** Seconds from write to claim, for the handoffs whose write is inside the window. */
   delays: number[];
+  /** The most recent claim in this pair, so a view that cannot show them all keeps the LATEST
+   *  rather than the busiest: on a screen too short for everything, what just happened is the
+   *  thing being watched for. */
+  at: number;
 }
 
 export interface AgentStats {
@@ -41,6 +45,10 @@ export interface AgentStats {
   writes: number;
   claims: number;
   own: number;
+  /** When this agent last did anything, so a screen too short for every lane keeps the ones still
+   *  working rather than the ones that were busiest an hour ago. 0 for an agent that only ever
+   *  appeared as the WRITER of a handoff, which is not activity of its own. */
+  last: number;
 }
 
 export interface ActivityModel {
@@ -86,7 +94,7 @@ export function activityModel(
   const agents = new Map<string, AgentStats>();
   const touch = (a: string): AgentStats => {
     let s = agents.get(a);
-    if (!s) agents.set(a, s = { events: 0, writes: 0, claims: 0, own: 0 });
+    if (!s) agents.set(a, s = { events: 0, writes: 0, claims: 0, own: 0, last: 0 });
     return s;
   };
   const handoffs = new Map<string, Handoff>();
@@ -98,6 +106,7 @@ export function activityModel(
     if (ts < since || (kindFilter && e.kind !== kindFilter)) continue;
     const agent = name(e.runId), a = touch(agent);
     a.events++;
+    a.last = ts; // events arrive in order, so the last write wins
     if (e.kind) kinds.add(e.kind);
     marks.push({ ts, agent, op: opClass(e.operation), operation: e.operation, kind: e.kind ?? "", id: e.recordId });
     if (e.operation === "put") a.writes++;
@@ -112,8 +121,9 @@ export function activityModel(
     touch(from);
     const key = `${from}\0${agent}\0${e.kind ?? ""}`;
     let h = handoffs.get(key);
-    if (!h) handoffs.set(key, h = { from, to: agent, kind: e.kind ?? "", n: 0, delays: [] });
+    if (!h) handoffs.set(key, h = { from, to: agent, kind: e.kind ?? "", n: 0, delays: [], at: 0 });
     h.n++;
+    h.at = ts;
     if (w && w.ts >= since) h.delays.push((ts - w.ts) / 1000);
   }
   return {
@@ -173,6 +183,27 @@ export interface RenderOptions {
   color: boolean;
   maxAgents?: number;
   windowLabel?: string;
+  /** Terminal HEIGHT. `--follow` repaints in place, so a frame taller than the screen loses its top
+   *  to the scrollback and leaves the reader watching the legend. Absent means no bound, which is
+   *  right for a pipe and for a one-shot render somebody can scroll. */
+  rows?: number;
+}
+
+/** Lines the frame spends on everything that is not a lane or a handoff, so the two lists can be
+ *  given what is left. Counted rather than guessed, because getting it wrong by one is a frame that
+ *  scrolls. */
+function overhead(m: ActivityModel, hasHandoffs: boolean, trimmedLanes: boolean): number {
+  return 1 + // the summary
+    (m.covered ? 0 : 1) + // the window-was-cut caveat
+    1 + // blank after the summary
+    1 + // the time axis
+    (trimmedLanes ? 1 : 0) + // "N less active agents not drawn"
+    1 + // blank after the lanes
+    1 + // the handoffs header, or the line saying nothing changed hands
+    (hasHandoffs ? 1 : 0) + // "… N more"
+    1 + // blank before the legend
+    1 + // the legend
+    (m.kinds.length ? 1 : 0); // the colour key
 }
 
 /** The model as text: a summary line, the lanes with a time axis, the handoffs, a legend. */
@@ -195,8 +226,23 @@ export function renderActivity(m: ActivityModel, o: RenderOptions): string {
   if (!m.covered) lines.push(paint(`the log's last ${TAIL} events reach back only ${m.oldestAgeS}s, so the window is cut there`, color, "33"));
   lines.push("");
 
-  // Lanes: the most active agents, one row each, the window across the remaining columns.
-  const lanes = real.sort((x, y) => y[1].events - x[1].events).slice(0, maxAgents).map(([a]) => a);
+  // WHAT FITS. `--follow` paints in place, so a frame taller than the terminal loses its head: the
+  // summary and the lanes scroll off and the reader is left watching the legend. The budget splits
+  // the free rows between the two lists, lanes first because they are the picture and the handoffs
+  // annotate it, and both keep the LATEST rather than the busiest, since a view somebody is
+  // watching live is a view about what just happened.
+  const fits = o.rows !== undefined && o.rows > 8;
+  const spare = fits ? Math.max(2, o.rows! - overhead(m, m.handoffs.length > 0, real.length > maxAgents)) : Infinity;
+  // LANES FIRST: they are the picture and the handoffs annotate it, so handoffs get a third of the
+  // free rows and the lanes take the rest. Split the other way round, a 14-row terminal drew one
+  // lane and three handoffs, which is the annotation crowding out the thing annotated.
+  const laneBudget = fits ? Math.max(1, Math.min(maxAgents, spare - (m.handoffs.length ? 1 : 0))) : maxAgents;
+  const handoffRoom = fits ? Math.max(m.handoffs.length ? 1 : 0, spare - laneBudget) : 20;
+
+  // Lanes: SELECTED by recency so a lane still working survives the cut, DISPLAYED by event count so
+  // a live view does not reshuffle its rows under the reader between frames.
+  const lanes = real.slice().sort((x, y) => y[1].last - x[1].last).slice(0, laneBudget)
+    .sort((x, y) => y[1].events - x[1].events).map(([a]) => a);
   const labelW = Math.min(28, Math.max(8, ...lanes.map((a) => a.length)));
   const cols = Math.max(20, o.columns - labelW - 3);
   const span = m.now - m.since;
@@ -245,16 +291,19 @@ export function renderActivity(m: ActivityModel, o: RenderOptions): string {
 
   // Handoffs: who wrote, who claimed, how many, how long they waited.
   if (m.handoffs.length) {
+    // The same rule as the lanes: keep the most RECENT, list them by weight so the order is stable.
+    const shown = m.handoffs.slice().sort((x, y) => y.at - x.at).slice(0, Math.min(20, handoffRoom || 20))
+      .sort((x, y) => y.n - x.n);
     lines.push("handoffs (written by → claimed by):");
     const fromW = Math.max(...m.handoffs.map((h) => h.from.length)), toW = Math.max(...m.handoffs.map((h) => h.to.length));
-    for (const h of m.handoffs.slice(0, 20)) {
+    for (const h of shown) {
       const med = median(h.delays);
       lines.push(
         `  ${h.from.padEnd(fromW)}  →  ${h.to.padEnd(toW)}  ${paint(h.kind || "?", color, `38;5;${kindColor(h.kind || "?")}`)} ×${h.n}` +
           (med === undefined ? "" : paint(`  claimed ${med < 10 ? med.toFixed(1) : Math.round(med)}s after the write (median)`, color, "2")),
       );
     }
-    if (m.handoffs.length > 20) lines.push(paint(`  … ${m.handoffs.length - 20} more`, color, "2"));
+    if (m.handoffs.length > shown.length) lines.push(paint(`  … ${m.handoffs.length - shown.length} more`, color, "2"));
   } else {
     const own = real.reduce((n, [, a]) => n + a.own, 0);
     lines.push(`no record changed hands in this window${own ? ` (${own} claim${own === 1 ? "" : "s"} of an agent's own record)` : ""}`);
@@ -265,6 +314,14 @@ export function renderActivity(m: ActivityModel, o: RenderOptions): string {
       (color ? "  bold = several in one cell" : "  (a cell shows its most significant event)"),
   );
   if (m.kinds.length) lines.push("colour is the kind: " + m.kinds.map((k) => paint(k, color, `38;5;${kindColor(k)}`)).join(", "));
+  // THE GUARANTEE, not another estimate. The budget above decides what is worth keeping; this makes
+  // the fit true whatever it decided, because a terminal shorter than the overhead alone (a 6-row
+  // pane) has no allocation that works. Trimmed from the BOTTOM, so the summary and the lanes are
+  // what survive: they are what a reader is watching, and the legend is not.
+  if (o.rows !== undefined && lines.length > o.rows) {
+    lines.length = Math.max(1, o.rows - 1);
+    lines.push(paint("… trimmed to fit the terminal", color, "2"));
+  }
   return lines.join("\n") + "\n";
 }
 

@@ -101,6 +101,7 @@ export function browserBackend(opts: BrowserBackendOptions = {}): Partial<Platfo
       throw new Error("a browser cannot spawn a process");
     },
     consoleColumns: () => undefined,
+    consoleRows: () => undefined,
     onResize: () => () => {},
     writeStderr: (text) => console.error(text.replace(/\n$/, "")),
     onShutdown: (handler) => {

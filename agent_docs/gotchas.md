@@ -387,6 +387,12 @@ that something was missing. A rule a caller can get wrong is one that will be go
   `kindDefKey`: include a new field there too, or a changed value won't mint a successor.
 ### Leases, claims, events and watches
 
+- **A handler for a record the work has already MOVED PAST must decide nothing.** Both reviews of one
+  round can be claimed long after the next round exists, and that handler was settling on its own
+  round's verdicts while counting every later round against a limit: a finished song recorded as
+  hitting the round limit, with an approval ignored. Fan-in makes this ordinary, not rare. Check for
+  a successor before acting (`examples/teams/song-creator/producer.ts`); a replay guard on the write
+  does not help, because the decision was already wrong.
 - **A claim taken OUTSIDE the machinery that renews claims owns its own failure path.** A surface
   that takes and settles in one call (the marketplace's award, on the facade and as an MCP tool)
   holds a lease nothing heartbeats and no caller can name, so a throw between the take and the ack
@@ -1117,6 +1123,12 @@ caught and reported as `TEAMS: ANY`. Same limit applies to reading `radia permis
 
 ### Artifacts, blobs and erasure
 
+- **A media type the WRITER does not know defaults to `text/plain`, and `nosniff` then makes it
+  unplayable.** `mediaTypeFor` (`extensions/ts/workspace.ts`) named no audio or video, so a rendered
+  song in a workspace was served `text/plain` and no browser would play it, silently: the page
+  loaded, the player did nothing, no error anywhere. The SERVING side already admitted every
+  `audio/*` and `video/*` (`RENDERABLE`), so only the writer's table was wrong. A type is a claim,
+  and a table that guesses `text/plain` claims something false about every file it does not name.
 - **A blob's storage name is derived from the KEK, so swapping the key renames the estate.** The
   sweep's keep set is computed under the CURRENT key, so without key ids every pre-rotation payload
   is swept. `SealedKey.kid` names the key, `RADIA_BLOB_KEK_RETIRED` supplies retired keys for reads,
@@ -1807,6 +1819,21 @@ decorates); `radia get` prints the same line. Lasting attribution names the AGEN
   a different claimed digest hit the cache and skipped verification. The cache now holds the digest
   that was verified and every manifest ENTRY is checked against it: an artifact's own digest is
   server-computed, while a manifest's copy of it is ordinary record content, a claim.
+- **A review loop optimises what it COUNTS, so a score built only of mistakes converges on the
+  blandest thing that makes none.** Every measure in `examples/teams/song-creator/analysis.ts` was a
+  negative, and three models duly produced eight bars of unbroken quarter notes in two keys at once,
+  improving every round. It also punished the gestures that carry a tune, since a leap and a borrowed
+  note were faults. Count dullness too, and let the brief say when steadiness is the intent
+  (`groove`), or the loop is measuring the wrong thing perfectly.
+- **A metric must be told what it is looking at.** Drum notes pick a drum, not a pitch, so scoring a
+  kit for clashes, key and chord tones turned a clean piece into 19 faults and reported that it no
+  longer resolved, because the resolution test reads the LOWEST part. `isUnpitched` in `score.ts` is
+  the one predicate the renderer and the analysis share, so a part sounded as noise is the same one
+  left out of harmony.
+- **A test whose fixture is "good enough" stops being a test when the bar rises.** Every guard here
+  ran against a fixture of unbroken quarter notes; once dullness counted, it scored 8 rather than 0
+  and the fix was a better fixture, not a looser rule. A guard that only ever passed is one nobody
+  has calibrated: revert the fix and require the test to fail.
 - **A `freePort()` that binds port 0 and CLOSES it holds nothing, and a spawned space whose stderr
   is `"null"` cannot say so.** The lab replay lost its port to another connection during the second
   the space took to boot, then polled a port nothing was serving for its whole 10s budget and

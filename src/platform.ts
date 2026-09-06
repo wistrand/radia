@@ -79,6 +79,9 @@ export interface PlatformBackend {
   stdoutIsTerminal(): boolean;
   /** The terminal's column count, or undefined when stdout is not one. */
   consoleColumns(): number | undefined;
+  /** Terminal HEIGHT, for a view that must fit rather than scroll (`radia activity --follow`
+   *  repaints in place, so anything past the last row is lost, not scrolled to). */
+  consoleRows(): number | undefined;
   /** Called when the terminal is resized (SIGWINCH); a no-op where the host has no such signal. */
   onResize(handler: () => void): () => void;
   writeStderr(text: string): void;
@@ -88,7 +91,8 @@ export interface PlatformBackend {
   httpRequest(url: string, init: RequestInit): Promise<Response>;
   runCapture(cmd: string, args: string[], timeoutMs: number): Promise<{ code: number; stdout: string }>;
   /** A long-running child with its output streamed: what a SERVICE member of a team is. `kill`
-   *  sends SIGTERM; `status` resolves when it exits. */
+   *  sends SIGTERM by default and takes a signal so a caller can ESCALATE; `status` resolves when it
+   *  exits. */
   spawnProcess(opts: SpawnOptions): SpawnedProcess;
 }
 
@@ -103,7 +107,9 @@ export interface SpawnedProcess {
   stdout: ReadableStream<Uint8Array>;
   stderr: ReadableStream<Uint8Array>;
   status: Promise<{ code: number; signal: string | null }>;
-  kill(): void;
+  /** Default SIGTERM. A caller that must be sure the child is gone follows with `SIGKILL`, since a
+   *  service is free to trap SIGTERM and a trapped one outlives its parent. */
+  kill(signal?: "SIGTERM" | "SIGKILL"): void;
 }
 
 const encoder = new TextEncoder();
@@ -261,6 +267,13 @@ const denoBackend: PlatformBackend = {
       return undefined;
     }
   },
+  consoleRows: () => {
+    try {
+      return Deno.stdout.isTerminal() ? Deno.consoleSize().rows : undefined;
+    } catch {
+      return undefined;
+    }
+  },
   writeStdoutBytes: (bytes) => {
     // `writeSync` may write short. Bytes are the one thing here that can be megabytes, so the loop
     // is not defensive padding: a truncated artifact written to a pipe is a corrupt file.
@@ -303,9 +316,9 @@ const denoBackend: PlatformBackend = {
       stdout: child.stdout,
       stderr: child.stderr,
       status: child.status.then((st) => ({ code: st.code, signal: st.signal ?? null })),
-      kill: () => {
+      kill: (signal = "SIGTERM") => {
         try {
-          child.kill("SIGTERM");
+          child.kill(signal);
         } catch { /* already gone */ }
       },
     };
@@ -551,6 +564,10 @@ export function stdoutIsTerminal(): boolean {
 
 export function consoleColumns(): number | undefined {
   return backend.consoleColumns();
+}
+
+export function consoleRows(): number | undefined {
+  return backend.consoleRows();
 }
 
 /** RAW bytes to stdout, for a payload that is not text. Separate from `writeStdout` because the

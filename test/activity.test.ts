@@ -87,3 +87,46 @@ Deno.test("activity: a kind's colour is stable and never a dark cube entry", () 
     assert([r, g, b].filter((v) => v >= 3).length >= 2, `${k} -> ${kindColor(k)} is too dark`);
   }
 });
+
+Deno.test("activity: a follow frame fits the terminal, keeping the latest lanes", () => {
+  // `--follow` repaints in place, so a frame taller than the screen loses its HEAD: the summary and
+  // the lanes scroll away and the reader is left watching the legend. Twenty agents and twenty
+  // handoff pairs is more than any terminal shows, which is the case a live team reaches.
+  let n = 0;
+  const many: SpaceEvent[] = [];
+  for (let a = 0; a < 20; a++) {
+    for (let i = 0; i < 4; i++) {
+      // Higher-numbered agents act LATER, so recency and busyness disagree and the tie-break shows.
+      const ago = (20 - a) * 30 + i;
+      many.push(ev("put", `run:x${a}`, `p${a}-${i}`, `k${a % 5}`, ago));
+      many.push(ev("take", `run:x${a}`, `p${(a + 1) % 20}-${i}`, `k${a % 5}`, ago));
+    }
+    n++;
+  }
+  many.sort((x, y) => Date.parse(x.ts) - Date.parse(y.ts));
+  const m = activityModel(many, (r) => r.replace("run:x", "agent:x"), now, 3_600_000);
+  assertEquals(m.agents.size, 20);
+
+  const height = (rows: number | undefined) => renderActivity(m, { columns: 100, color: false, rows }).replace(/\n$/, "").split("\n").length;
+  assert(height(undefined) > 24, `unbounded should be tall: ${height(undefined)}`);
+  // Every plausible terminal, down to sizes where the overhead alone does not fit and the frame is
+  // trimmed rather than allowed to scroll.
+  for (const rows of [40, 30, 24, 20, 14, 10, 6, 3]) {
+    assert(height(rows) <= rows, `${rows} rows produced ${height(rows)} lines`);
+  }
+  assert(height(40) >= 30, `a tall terminal should be USED, not left mostly empty: ${height(40)}`);
+
+  // Prioritised by RECENCY: the agents that acted last survive the cut, and the picture keeps more
+  // rows than its annotation.
+  const short = renderActivity(m, { columns: 100, color: false, rows: 16 });
+  // A LANE line, not any mention: `agent:x0` still appears as the source of a handoff, which is a
+  // different thing from having a row of its own.
+  const laneNames = short.split("\n").filter((l) => /^\s*agent:x\d+\s+[┈●○■✕]/.test(l)).map((l) => l.trim().split(/\s+/)[0]);
+  assert(laneNames.includes("agent:x19"), `the most recent lane is drawn: ${laneNames}`);
+  assert(!laneNames.includes("agent:x0"), `the least recent lane is not: ${laneNames}`);
+  assert(short.includes("less active agents not drawn"), "and the frame says how many it dropped");
+  const laneLines = laneNames.length;
+  const handoffLines = short.split("\n").filter((l) => /→/.test(l)).length;
+  assert(laneLines > handoffLines, `lanes are the picture, handoffs annotate it: ${laneLines} vs ${handoffLines}`);
+  assert(/… \d+ more/.test(short), "the handoffs it could not fit are counted");
+});

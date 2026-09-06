@@ -11,7 +11,7 @@
 // design. The README says plainly that it sounds like a chiptune, because it does, and hiding that
 // would be the example over-promising.
 
-import { type ParsedPart, type Score, toHz, wholeNoteSeconds } from "./score.ts";
+import { isUnpitched, type ParsedPart, type Score, toHz, wholeNoteSeconds } from "./score.ts";
 
 export interface Voice {
   wave: "saw" | "square" | "triangle" | "sine" | "noise";
@@ -28,21 +28,109 @@ export interface Voice {
   /** One-pole low-pass coefficient, 1 for none. Rolling the bass off is what stops it competing
    *  with the lead for the same brightness. */
   tone: number;
+  /** How many copies of the oscillator to stack, spread by `detune` cents. Two or three slightly
+   *  out-of-tune copies beat against each other, which is most of what "thick" means in a synth and
+   *  what one bare oscillator can never sound like. Default 1. */
+  unison?: number;
+  /** Cents between the outermost unison copies. Past about 25 it stops being one note. */
+  detune?: number;
+  /** A sine an octave below, at this level. What gives a bass weight a triangle alone does not have,
+   *  and it costs one more oscillator rather than a bigger engine. Default 0. */
+  sub?: number;
+  /** Where `tone` ends up by the end of the decay. A filter that closes as the note sounds is the
+   *  difference between a pluck and a beep, and it is the single cheapest thing that stops this
+   *  sounding like a test tone. Default: no movement. */
+  toneEnd?: number;
+  /** Pitch wobble: rate in Hz and depth in cents, applied after the attack so the note starts in
+   *  tune. A little on a lead reads as expression; a lot reads as broken. */
+  vibrato?: { rate: number; depth: number };
 }
 
 /** Instruments are matched by NAME, so a brief may invent one and still render: an unknown name
  *  falls back rather than failing, because a model naming its part "pad" should not stop the song. */
 const VOICES: Record<string, Voice> = {
-  bass: { wave: "triangle", attack: 0.005, decay: 0.09, sustain: 0.75, release: 0.10, gain: 1.0, pan: 0, tone: 0.25 },
-  lead: { wave: "saw", attack: 0.004, decay: 0.07, sustain: 0.55, release: 0.14, gain: 0.75, pan: 0.35, tone: 0.75 },
-  harmony: { wave: "square", attack: 0.010, decay: 0.10, sustain: 0.45, release: 0.16, gain: 0.55, pan: -0.35, tone: 0.55 },
-  pad: { wave: "sine", attack: 0.08, decay: 0.20, sustain: 0.70, release: 0.30, gain: 0.5, pan: -0.15, tone: 0.4 },
+  // Triangle plus a sine an octave down, and a filter that shuts almost immediately: the weight is
+  // the sub, the shape is the envelope, and rolling the top off keeps it out of the lead's way.
+  bass: {
+    wave: "triangle",
+    attack: 0.004,
+    decay: 0.12,
+    sustain: 0.62,
+    release: 0.10,
+    gain: 1.0,
+    pan: 0,
+    tone: 0.42,
+    toneEnd: 0.14,
+    sub: 0.55,
+  },
+  // Three detuned saws under a closing filter, which is the sound people mean by "synth lead". The
+  // vibrato is deliberately small: enough to stop a held note sitting perfectly still.
+  lead: {
+    wave: "saw",
+    attack: 0.006,
+    decay: 0.16,
+    sustain: 0.50,
+    release: 0.18,
+    gain: 0.62,
+    pan: 0.32,
+    tone: 0.92,
+    toneEnd: 0.34,
+    unison: 3,
+    detune: 14,
+    vibrato: { rate: 5.2, depth: 7 },
+  },
+  // Squares beat harder than saws, so two are plenty, and it sits darker than the lead on purpose.
+  harmony: {
+    wave: "square",
+    attack: 0.012,
+    decay: 0.18,
+    sustain: 0.42,
+    release: 0.20,
+    gain: 0.46,
+    pan: -0.32,
+    tone: 0.62,
+    toneEnd: 0.28,
+    unison: 2,
+    detune: 9,
+  },
+  // A pad is all attack and width: slow in, wide detune, and a filter that OPENS rather than shuts.
+  pad: {
+    wave: "saw",
+    attack: 0.20,
+    decay: 0.40,
+    sustain: 0.75,
+    release: 0.45,
+    gain: 0.38,
+    pan: -0.15,
+    tone: 0.12,
+    toneEnd: 0.45,
+    unison: 3,
+    detune: 22,
+  },
   drums: { wave: "noise", attack: 0.001, decay: 0.06, sustain: 0.0, release: 0.05, gain: 0.6, pan: 0.15, tone: 0.9 },
 };
-const FALLBACK: Voice = { wave: "saw", attack: 0.006, decay: 0.09, sustain: 0.55, release: 0.14, gain: 0.6, pan: 0, tone: 0.6 };
+const FALLBACK: Voice = { wave: "saw", attack: 0.006, decay: 0.14, sustain: 0.55, release: 0.16, gain: 0.55, pan: 0, tone: 0.7, toneEnd: 0.4, unison: 2, detune: 10 };
+
+/**
+ * Which drum, from the written pitch. A percussion part uses the same notation as any other, and its
+ * pitches choose a sound rather than a note, so the register is the instrument: low is a kick, the
+ * middle is a snare, high is a hat. Without this a kit is one noise burst repeated and the rhythm
+ * has no shape; with it, `C2/4 F#2/8 F#2/8 D2/4` reads as kick, two hats, snare.
+ */
+export function drumVoiceFor(midi: number): Voice {
+  // A kick is PITCHED, not noise: a low triangle with a fast decay is what gives it a body, and the
+  // noise wave alone gives a click with no weight behind it.
+  if (midi < 40) return { wave: "triangle", attack: 0.001, decay: 0.10, sustain: 0.0, release: 0.06, gain: 1.1, pan: 0, tone: 0.12 };
+  if (midi < 60) return { wave: "noise", attack: 0.001, decay: 0.09, sustain: 0.0, release: 0.08, gain: 0.7, pan: 0.1, tone: 0.5 };
+  return { wave: "noise", attack: 0.001, decay: 0.03, sustain: 0.0, release: 0.03, gain: 0.35, pan: 0.25, tone: 0.95 };
+}
 
 export function voiceFor(instrument: string): Voice {
   const key = instrument.toLowerCase();
+  // Percussion first, and by the SHARED predicate: `score.ts` decides what is unpitched, so a part
+  // the analysis excludes from harmony is the same one sounded as noise here. Naming it `percussion`
+  // used to fall through to a pitched voice while the analysis already treated it as a drum.
+  if (isUnpitched(instrument)) return VOICES.drums;
   for (const name of Object.keys(VOICES)) if (key.includes(name)) return VOICES[name];
   return FALLBACK;
 }
@@ -108,22 +196,44 @@ export function render(parts: ParsedPart[], score: Score, o: RenderOptions = {})
   const right = new Float32Array(frames);
 
   parts.forEach((part, index) => {
-    const v = voiceFor(part.instrument);
+    const partVoice = voiceFor(part.instrument);
+    // A DRUM PART CHANGES VOICE PER NOTE, since its pitch names the drum. Every other part holds one
+    // voice for the whole line, which is what an instrument is.
+    const kit = isUnpitched(part.instrument);
     // Seeded per part index, so adding a part never changes an earlier part's noise.
     const noise = noiseGen(0x5eed + index * 7919);
-    const lgain = v.gain * Math.min(1, 1 - v.pan) * 0.5 + v.gain * 0.5 * (v.pan < 0 ? -v.pan : 0);
-    const rgain = v.gain * Math.min(1, 1 + v.pan) * 0.5 + v.gain * 0.5 * (v.pan > 0 ? v.pan : 0);
     let lp = 0;
 
     for (const note of part.notes) {
       if (note.midi === null) continue;
-      const hz = toHz(note.midi);
+      const v = kit ? drumVoiceFor(note.midi) : partVoice;
+      const lgain = v.gain * Math.min(1, 1 - v.pan) * 0.5 + v.gain * 0.5 * (v.pan < 0 ? -v.pan : 0);
+      const rgain = v.gain * Math.min(1, 1 + v.pan) * 0.5 + v.gain * 0.5 * (v.pan > 0 ? v.pan : 0);
+      // A kick is a fixed low thump rather than the written pitch: the note picked the drum, so
+      // sounding it at C2 or E2 would make one drum two.
+      const hz = kit ? (v.wave === "triangle" ? 55 : toHz(note.midi)) : toHz(note.midi);
       const start = Math.floor(note.at * whole * sr);
       const held = note.dur * whole;
       const total = held + v.release;
       const count = Math.ceil(total * sr);
-      const step = hz / sr;
-      let phase = 0;
+
+      // UNISON: copies of the oscillator spread evenly across `detune` cents. They drift in and out
+      // of phase with each other, which is the beating that makes a stack sound wide where one
+      // oscillator sounds like a test tone. Phases start spread rather than together, or the first
+      // milliseconds of every note are one loud copy.
+      const stack = Math.max(1, Math.round(v.unison ?? 1));
+      const spread = v.detune ?? 0;
+      const ratios: number[] = [];
+      const phases: number[] = [];
+      for (let u = 0; u < stack; u++) {
+        const offset = stack === 1 ? 0 : ((u / (stack - 1)) - 0.5) * spread;
+        ratios.push(Math.pow(2, offset / 1200));
+        phases.push(stack === 1 ? 0 : u / stack);
+      }
+      const perVoice = 1 / Math.sqrt(stack); // keep a stack from being louder than one oscillator
+      const sub = v.sub ?? 0;
+      let subPhase = 0;
+
       for (let i = 0; i < count; i++) {
         const f = start + i;
         if (f >= frames) break;
@@ -135,9 +245,29 @@ export function render(parts: ParsedPart[], score: Score, o: RenderOptions = {})
         else if (t < held) env = v.sustain;
         else env = v.sustain * Math.max(0, 1 - (t - held) / v.release);
 
-        phase = (phase + step) % 1;
-        const raw = waveAt(v.wave, phase, noise) * env;
-        lp += v.tone * (raw - lp);
+        // THE FILTER MOVES. Held at `tone` through the attack, then travelling to `toneEnd` across
+        // the decay: a lead that starts bright and darkens is a pluck, and one that does not is a
+        // beep. Static when the voice names no destination.
+        const cutoff = v.toneEnd === undefined
+          ? v.tone
+          : t < v.attack
+          ? v.tone
+          : v.tone + (v.toneEnd - v.tone) * Math.min(1, (t - v.attack) / Math.max(v.decay, 1e-6));
+
+        // Vibrato after the attack, so a note starts in tune and then breathes.
+        const wobble = v.vibrato && t > v.attack ? Math.pow(2, (v.vibrato.depth * Math.sin(2 * Math.PI * v.vibrato.rate * (t - v.attack))) / 1200) : 1;
+
+        let raw = 0;
+        for (let u = 0; u < stack; u++) {
+          phases[u] = (phases[u] + (hz * ratios[u] * wobble) / sr) % 1;
+          raw += waveAt(v.wave, phases[u], noise) * perVoice;
+        }
+        if (sub > 0) {
+          subPhase = (subPhase + hz / 2 / sr) % 1;
+          raw += Math.sin(2 * Math.PI * subPhase) * sub;
+        }
+        raw *= env;
+        lp += cutoff * (raw - lp);
         left[f] += lp * lgain;
         right[f] += lp * rgain;
       }

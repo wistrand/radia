@@ -18,6 +18,7 @@ import { TEAM_FIELD } from "../../../extensions/ts/team.ts";
 import { analyse, faults } from "./analysis.ts";
 import { parseScore, type Score } from "./score.ts";
 import { DRAFT, REVIEW, VERDICT } from "./kinds.ts";
+import { retireRun } from "./service.ts";
 
 const flag = (n: string) => {
   const i = Deno.args.indexOf(n);
@@ -116,22 +117,27 @@ if (import.meta.main) {
   } catch { /* not on this platform */ }
 
   console.error(`checker: reviewing ${REVIEW}{by: rules} on ${url}`);
-  await agentLoop(client, {
-    name: "checker",
-    patterns: [{ kind: REVIEW, match: { by: "rules" } }],
-    signal: stop.signal,
-    log: (m) => console.error(m),
-    handle: async (record) => {
-      const b = record.body as { song: string; round: number; draft: string; key?: string };
-      const draft = await client.readOne<{ score: Score; key: string }>({ kind: DRAFT, match: { song: b.song, round: b.round } });
-      if (!draft) throw new Error(`no draft for ${b.song} round ${b.round}`);
-      const v = judge(draft.body.score, draft.body.key ?? b.key ?? "C major");
-      console.error(`checker: ${b.song} round ${b.round}: ${v.approve ? "approved" : v.summary}`);
-      return {
-        kind: VERDICT,
-        body: { song: b.song, round: b.round, by: "rules", ...v, ...(team ? { [TEAM_FIELD]: team } : {}) },
-        parentIds: [draft.id],
-      };
-    },
-  });
+  try {
+    await agentLoop(client, {
+      name: "checker",
+      patterns: [{ kind: REVIEW, match: { by: "rules" } }],
+      signal: stop.signal,
+      log: (m) => console.error(m),
+      handle: async (record) => {
+        const b = record.body as { song: string; round: number; draft: string; key?: string };
+        const draft = await client.readOne<{ score: Score; key: string }>({ kind: DRAFT, match: { song: b.song, round: b.round } });
+        if (!draft) throw new Error(`no draft for ${b.song} round ${b.round}`);
+        const v = judge(draft.body.score, draft.body.key ?? b.key ?? "C major");
+        console.error(`checker: ${b.song} round ${b.round}: ${v.approve ? "approved" : v.summary}`);
+        return {
+          kind: VERDICT,
+          body: { song: b.song, round: b.round, by: "rules", ...v, ...(team ? { [TEAM_FIELD]: team } : {}) },
+          parentIds: [draft.id],
+        };
+      },
+    });
+  } finally {
+    // The run goes when the process does, or a dead service goes on looking alive to the next start.
+    await retireRun(client, "checker");
+  }
 }

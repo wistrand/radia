@@ -158,7 +158,9 @@ A team is one DIRECTORY (`examples/teams/<name>/`: `team.json`, `prompts/`, a RE
 names under its `team` label and stores their tokens, re-minting one whose stored token lacks a
 grant the file names (held grants are read from `permissions`, so the file converges the space
 rather than being skipped as "already minted"), `--seed` writes the file's starting records
-with the label added, and a member's `promptFile` resolves beside the file. The two examples,
+with the label added (`--seed-body '{…}'` merges the caller's own fields over each, so what a team is
+ASKED FOR changes without editing the file into a scratchpad; the team label is never overridable),
+and a member's `promptFile` resolves beside the file. The two examples,
 `twenty-questions` and `story-relay`, are games whose rules are the prompts: a member claims by a
 tag of its own, hands the turn on by writing the next task with the other's tag, and parents it on
 the previous one so the match is one thread.
@@ -273,6 +275,13 @@ Rules the design rests on:
   teams both name an `ada`, and one flat directory gave them a shared cwd, config and warm session.
   The principal still is not scoped, so reusing a member name across teams supersedes its definition. Its output is
   digested to one line per event (`digestLine`), `--verbose` for the stream.
+- **A SERVICE is killed, not merely asked to stop, and it should retire its own run.** `team up`
+  sends SIGTERM and escalates to SIGKILL after 5s: a service free to trap SIGTERM outlived the verb
+  AND hung it on `await child.status`, then went on claiming for its team with the code it started
+  with, beating the current process to the work. Exiting does not stop the RUN it minted, and an
+  `interest` is live as long as its run, so a clean shutdown still read as a live listener and the
+  next start warned about itself. A service stops its own run on the way out
+  (`examples/teams/song-creator/service.ts`), which is what makes that warning worth reading.
 - **Cost is bounded by the lease, the timeout and `concurrency`** (default 1 per member), never
   by the model. Contract: `extensions/conformance/harness-worker.test.ts`, every outcome driven
   with a harness that has no model.
