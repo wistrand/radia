@@ -134,6 +134,38 @@ Deno.test("[layering] nothing under src/ reaches for Deno.* outside the platform
   assertEquals(violations, [], "add the operation to src/platform.ts instead");
 });
 
+Deno.test("[layering] every process spawn is on the list, and none of them inherits a credential", async () => {
+  // The seam's rule stops at `src/`, and an extension cannot import `src/platform.ts` at all, so
+  // `spawnProcess` has a twin: `extensions/ts/harness-worker.ts` builds its own `Deno.Command`
+  // with different stdin and kill semantics, and nothing noticed it drift. This is the list, and a
+  // new spawn site has to be added here on purpose.
+  //
+  // The second half is what the list is FOR: a child inherits the whole environment unless the set
+  // is cleared, so a launcher holding an operator `RADIA_TOKEN` hands it to whatever it starts.
+  // Each site below either clears the set outright (a jail) or filters the credentials out of it.
+  const spawners: Record<string, "clears" | "filters"> = {
+    "extensions/ts/harness-worker.ts": "filters", // withoutCredentials + clearEnv
+    "extensions/ts/broker.ts": "clears",
+    "extensions/ts/sandbox.ts": "clears",
+  };
+  const found: string[] = [];
+  for (const [dir, prefix] of [[new URL("../extensions/ts/", import.meta.url), "extensions/ts/"]] as const) {
+    for (const file of await tsFiles(dir)) {
+      const text = code(await Deno.readTextFile(new URL(file, dir)));
+      if (!/new Deno\.Command\(/.test(text)) continue;
+      const path = prefix + file;
+      found.push(path);
+      const how = spawners[path];
+      if (!how) continue;
+      // Textual, because the alternative is running a harness: what it holds is that every spawn
+      // site states the environment it hands over rather than falling through to inheritance.
+      assertEquals(/clearEnv:\s*true/.test(text), true, `${path}: a spawn must state its child's environment (clearEnv)`);
+      if (how === "filters") assertEquals(/withoutCredentials\(/.test(text), true, `${path}: filter the runtime's credentials out of the inherited environment`);
+    }
+  }
+  assertEquals(found.sort(), Object.keys(spawners).sort(), "a new subprocess site: add it here with how it handles the child's environment");
+});
+
 Deno.test("[layering] a surface is a /v0 client, so it takes no runtime VALUE from src", async () => {
   // The property that made moving these two out of `src/` cheap, kept honest now that it is
   // load-bearing. A surface may import shared host infrastructure (platform, flags, credentials)

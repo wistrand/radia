@@ -142,23 +142,65 @@ export async function pumpLines(stream: ReadableStream<Uint8Array>, sink: (line:
   await pump(stream, sink, []);
 }
 
-/** Drain a stream line by line into `sink`, keeping a bounded tail. */
-async function pump(stream: ReadableStream<Uint8Array>, sink: (line: string) => void, tail: string[]): Promise<void> {
-  let rest = "";
-  for await (const chunk of stream) {
-    rest += decoder.decode(chunk, { stream: true });
-    const lines = rest.split("\n");
-    rest = lines.pop() ?? "";
-    for (const line of lines) {
-      sink(line);
-      tail.push(line);
-      if (tail.length > 8) tail.shift();
-    }
-  }
-  if (rest) {
-    sink(rest);
-    tail.push(rest);
+/** Credentials a spawned harness must not INHERIT. `RADIA_TOKEN` is the variable `radia dev`
+ *  prints the operator token for and the one `resolveToken` ranks above everything else, so a
+ *  launcher shell holding one would hand it to every member, each of which can run a shell. */
+export const CREDENTIAL_ENV = ["RADIA_TOKEN", "RADIA_DEFINITION_TOKEN", "RADIA_DEFINITION_TOKEN_FILE"];
+
+/**
+ * `env` without the variables above, for a child spawned with `clearEnv`.
+ *
+ * WHAT THIS DOES NOT CLAIM: a harness runs as the same user, so it can still open the credentials
+ * file `radia dev` wrote and read the operator token out of it (`src/surfaces/mcp/server.ts` says
+ * the same about its own config). What this closes is the credential that exists ONLY in the
+ * environment, which is how a deployment and CI hold one.
+ */
+export function withoutCredentials(env: Record<string, string>): Record<string, string> {
+  const out = { ...env };
+  for (const k of CREDENTIAL_ENV) delete out[k];
+  return out;
+}
+
+/**
+ * Drain a stream line by line into `sink`, keeping a bounded tail.
+ *
+ * ABANDONABLE, because a pipe outlives the process that was killed: a grandchild inheriting stdout
+ * holds the write end open after the child is gone, and waiting for end-of-stream then never
+ * returns while the claim's lease heartbeats on. `signal` gives up on the read and cancels it.
+ */
+async function pump(
+  stream: ReadableStream<Uint8Array>,
+  sink: (line: string) => void,
+  tail: string[],
+  signal?: AbortSignal,
+): Promise<void> {
+  const reader = stream.getReader();
+  const abandoned = signal && new Promise<null>((r) => {
+    if (signal.aborted) return r(null);
+    signal.addEventListener("abort", () => r(null), { once: true });
+  });
+  const emit = (line: string) => {
+    sink(line);
+    tail.push(line);
     if (tail.length > 8) tail.shift();
+  };
+  let rest = "";
+  try {
+    while (true) {
+      // The read's own rejection is folded into "done" here, so abandoning below cannot leave a
+      // pending promise to reject unhandled after nobody is listening.
+      const read = reader.read().catch(() => ({ done: true, value: undefined } as ReadableStreamReadResult<Uint8Array>));
+      const next = abandoned ? await Promise.race([read, abandoned]) : await read;
+      if (next === null) return;
+      if (next.done) break;
+      rest += decoder.decode(next.value, { stream: true });
+      const lines = rest.split("\n");
+      rest = lines.pop() ?? "";
+      for (const line of lines) emit(line);
+    }
+    if (rest) emit(rest);
+  } finally {
+    reader.cancel().catch(() => {});
   }
 }
 
@@ -210,7 +252,11 @@ export async function runHarnessMember(client: RadiaClient, m: HarnessMember, o:
       child = new Deno.Command(argv[0], {
         args: argv.slice(1),
         cwd: m.cwd,
-        env: { ...(m.env ?? {}), RADIA_URL: c.base, RADIA_RECORD_ID: record.id, RADIA_CLAIM_ID: claimId },
+        // THE PARENT'S ENVIRONMENT MINUS THE RUNTIME'S OWN CREDENTIALS (`withoutCredentials`). A
+        // harness needs the rest of it (PATH, HOME, its model API key), so this filters where the
+        // broker and the sandbox clear outright.
+        clearEnv: true,
+        env: { ...withoutCredentials(Deno.env.toObject()), ...(m.env ?? {}), RADIA_URL: c.base, RADIA_RECORD_ID: record.id, RADIA_CLAIM_ID: claimId },
         stdin: inArgv ? "null" : "piped",
         stdout: "piped",
         stderr: "piped",
@@ -260,7 +306,17 @@ export async function runHarnessMember(client: RadiaClient, m: HarnessMember, o:
         const shown = o.verbose ? line : digestLine(line);
         if (shown !== undefined) o.log(`[${m.agent}] ${short(record.id)} | ${shown}`);
       };
-      const [status] = await Promise.all([child.status, pump(child.stdout, say, tail), pump(child.stderr, say, tail)]);
+      // THE PIPES OUTLIVE THE CHILD. Awaiting the exit status and both pumps together hangs
+      // forever when a grandchild inherited stdout and survives the kill: the child is gone, the
+      // write end is not, end-of-stream never arrives, and this claim's lease heartbeats on with
+      // the loop's slot held. So wait for the exit, then give the pumps a bounded flush and
+      // abandon them. Any output still coming belongs to a process nobody is waiting for.
+      const drained = new AbortController();
+      const drain = Promise.all([pump(child.stdout, say, tail, drained.signal), pump(child.stderr, say, tail, drained.signal)]);
+      const status = await child.status;
+      const flush = setTimeout(() => drained.abort(), 2000);
+      await drain;
+      clearTimeout(flush);
       code = status.signal ? null : status.code; // a signal death is no exit code, whatever the shell number
     } finally {
       clearTimeout(timer);

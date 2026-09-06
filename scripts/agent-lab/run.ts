@@ -519,6 +519,10 @@ for (const a of agents) {
   };
   await Deno.mkdir(configPath.replace(/\/[^/]*$/, ""), { recursive: true });
   await Deno.writeTextFile(configPath, JSON.stringify(config, null, 2));
+  // THE SAME TOKEN BY REFERENCE, for Codex, which takes its MCP server's environment on the
+  // command line where every local user can read it (`{{tokenFile}}`, and
+  // `resolveDefinitionToken` reads it back). Written for every harness so a scenario can switch.
+  await Deno.writeTextFile(tokenPathOf(a), a.token + "\n", { mode: 0o600 });
   for (const [name, content] of Object.entries(a.files ?? {})) {
     const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
     const path = name.startsWith("/") ? name : `${a.dir}/${name}`;
@@ -587,6 +591,11 @@ function modelOf(a: AgentSpec): string {
   return modelOverrides.get(a.name) ?? modelForAll ?? a.model ?? "";
 }
 
+/** Where an agent's definition token is kept as a file, owner-only, beside its config. */
+function tokenPathOf(a: { dir: string }): string {
+  return `${a.dir}/definition-token`;
+}
+
 function substitute(argv: string[], a: typeof agents[number], configPath: string): string[] {
   const values: Record<string, string> = {
     "{{config}}": configPath,
@@ -598,6 +607,7 @@ function substitute(argv: string[], a: typeof agents[number], configPath: string
     // Codex's `-c` and a JSON config alike.
     "{{mcpArgs}}": JSON.stringify(a.invocation.args),
     "{{token}}": a.token,
+    "{{tokenFile}}": tokenPathOf(a),
     // Codex's per-tool approvals as one TOML inline table, from the live tool list.
     "{{codexTools}}": `{ ${tools.map((t) => `${t} = { approval_mode = "approve" }`).join(", ")} }`,
     "{{model}}": modelOf(a),

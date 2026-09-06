@@ -101,6 +101,11 @@ export interface SpawnOptions {
   args: string[];
   cwd?: string;
   env?: Record<string, string>;
+  /** Variables the child must NOT inherit from this process. A child otherwise gets the whole
+   *  environment, credentials included, and dropping one takes clearing the set and rebuilding it,
+   *  which only the backend may do (`Deno.env` lives here). `env` above still wins, so a caller
+   *  can drop an inherited credential and pass a different one under the same name. */
+  dropEnv?: string[];
 }
 
 export interface SpawnedProcess {
@@ -311,7 +316,20 @@ const denoBackend: PlatformBackend = {
   },
   httpRequest: (url, init) => fetch(url, init),
   spawnProcess: (o) => {
-    const child = new Deno.Command(o.command, { args: o.args, cwd: o.cwd, env: o.env, stdin: "null", stdout: "piped", stderr: "piped" }).spawn();
+    // `env` MERGES with the parent's unless the set is cleared, so dropping one means building the
+    // whole environment here: inherit, delete what the caller named, then apply its own.
+    const inherited = o.dropEnv?.length ? Deno.env.toObject() : undefined;
+    if (inherited) for (const k of o.dropEnv!) delete inherited[k];
+    const env = inherited ? { ...inherited, ...(o.env ?? {}) } : o.env;
+    const child = new Deno.Command(o.command, {
+      args: o.args,
+      cwd: o.cwd,
+      env,
+      clearEnv: !!inherited,
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).spawn();
     return {
       stdout: child.stdout,
       stderr: child.stderr,

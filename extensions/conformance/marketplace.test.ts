@@ -12,9 +12,12 @@ import { RadiaClient } from "../../sdk/ts/client.ts";
 import { bootSpace, uniq } from "./space.ts";
 import {
   BID,
+  type BidBody,
   bidderGrants,
   declareMarketKinds,
   eligibleBids,
+  forgedBidRefusal,
+  lateBidRefusal,
   openAuction,
   placeBid,
   reawardFailed,
@@ -189,6 +192,45 @@ Deno.test("[marketplace] a bid past the current close is held over rather than c
   assertEquals(eligible.length, 0, "created after the close, so not this round's business");
   const later = await eligibleBids(requester, id, new Date(Date.now() + 60_000).toISOString());
   assertEquals(later.eligible.length, 1, "and eligible once the window it belongs to arrives");
+});
+
+Deno.test("[marketplace] a bid NAMED BY ID is judged by the window too, not only by its auction", async () => {
+  const topic = uniq("topic");
+  const { requester, bids } = await market(2);
+  const id = await auctionWith(requester, topic, [{ ...bids[0], price: 10 }]);
+  // An awarder that PICKS gets the window from `eligibleBids`. One handed a bid id does not, and
+  // both such paths (`space_award`, `POST .../award`) checked only that the bid named this
+  // auction, so this bid would have won by being asked for by name.
+  const { id: lateId } = await placeBid(bids[1].client, id, bids[1].agent, { price: 1 });
+  const late = (await operator.getRecord<BidBody>(lateId))!;
+  const inTime = (await operator.queryAll<BidBody>({ kind: BID, match: { request: id } })).find((b) => b.id !== lateId)!;
+
+  assertEquals(await lateBidRefusal(operator, id, inTime), null, "a bid from inside the window is awardable by id");
+  const refusal = await lateBidRefusal(operator, id, late);
+  assert(refusal?.includes("after this round closed"), String(refusal));
+  // Unreadable is a refusal, never a fallback to now: the same wrong answer, silently.
+  assert((await lateBidRefusal(bids[0].client, id, inTime))?.includes("cannot read the window"), "no envelope, no award");
+});
+
+Deno.test("[marketplace] a bid's `bidder` is checked against who WROTE it, where the caller can tell", async () => {
+  const topic = uniq("topic");
+  const { requester, bids } = await market(2);
+  const { id } = await openAuction(requester, { topic, windowSeconds: 60 });
+  // `bidder` is an ordinary body field, so this bid offers another agent's services.
+  const { id: forgedId } = await placeBid(bids[0].client, id, bids[1].agent, { price: 1 });
+  const { id: honestId } = await placeBid(bids[1].client, id, bids[1].agent, { price: 9 });
+  const forged = (await operator.getRecord<BidBody>(forgedId))!;
+  const honest = (await operator.getRecord<BidBody>(honestId))!;
+
+  assert((await forgedBidRefusal(operator, forged))?.includes("never bid"), "the operator can resolve the run and refuses");
+  assertEquals(await forgedBidRefusal(operator, honest), null);
+  // A PRIVILEGED submitter bidding for somebody is not forgery: an operator seeds auctions this
+  // way and a broker submits for an agent with no client of its own.
+  const { id: onBehalf } = await placeBid(operator, id, bids[1].agent, { price: 5 });
+  assertEquals(await forgedBidRefusal(operator, (await operator.getRecord<BidBody>(onBehalf))!), null);
+  // FAIL-SOFT, and the limit is the point: attribution needs `agent_run`, which a requester does
+  // not hold, so it awards as before rather than refusing work it cannot check.
+  assertEquals(await forgedBidRefusal(requester, forged), null, "a caller that cannot attribute says nothing");
 });
 
 Deno.test("[marketplace] a failed winner is RE-AWARDED from the preserved bids, never re-auctioned", async () => {

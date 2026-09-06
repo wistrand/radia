@@ -45,7 +45,7 @@ import { mediaTypeForPath } from "../media.ts";
 // (`extensions/conformance/`), which is also why a model cannot hand-write a manifest.
 import { editWorkspace, readWorkspace, summarizeWorkspaces, writeWorkspace } from "../../../extensions/ts/workspace.ts";
 import { newer } from "../../../sdk/ts/registry.ts";
-import { eligibleBids, REQUEST as MARKET_REQUEST, TASK as MARKET_TASK } from "../../../extensions/ts/marketplace.ts";
+import { type BidBody, eligibleBids, forgedBidRefusal, lateBidRefusal, REQUEST as MARKET_REQUEST, TASK as MARKET_TASK } from "../../../extensions/ts/marketplace.ts";
 import { ARTIFACT } from "../../../sdk/ts/wire.ts";
 import { flag } from "../../flags.ts";
 import { readBinaryFile, stdin, writeStdout } from "../../platform.ts";
@@ -784,7 +784,7 @@ async function call(
     case "space_award": {
       const request = str(a, "request");
       const bid = str(a, "bid");
-      const winning = await client.getRecord<{ bidder?: string; request?: string }>(bid);
+      const winning = await client.getRecord<BidBody>(bid);
       if (!winning) return `no bid ${bid}`;
       if (!winning.body.bidder) return `bid ${bid} names no bidder, so there is nobody to award it to`;
       // A bid from another auction would make the award's own record trail misleading: it would
@@ -796,6 +796,15 @@ async function call(
       // Three different situations, one answer, because the caller acts the same way on all of
       // them: wait, or look at who won.
       if (!claimed) return "not awarded: the bidding window is still open, somebody else is awarding it, or it is already awarded";
+      // THE WINDOW, after the claim, because a nack rewrote it and this round's close is the one
+      // that binds. Without it a bid placed after the close won by being named here, which is
+      // exactly what `space_auction_bids` above refuses to hide. The claim goes back so the round
+      // is not spent on a refusal.
+      const refusal = (await lateBidRefusal(client, request, winning)) ?? (await forgedBidRefusal(client, winning));
+      if (refusal) {
+        await client.release(claimed.lease).catch(() => {});
+        return `not awarded: ${refusal}`;
+      }
       const kind = typeof a.kind === "string" ? a.kind : MARKET_TASK;
       // This lease is NOT in the claims map and so is not heartbeaten: it is taken and settled in
       // one call by design, and the model never learns of it. That makes giving it back on failure

@@ -1923,6 +1923,11 @@ paths:
                         operations: { type: array, items: { type: string } }
                         readsScopedToSelf: { type: boolean }
                         patterns: { type: array, items: { type: object } }
+                        unpatterned:
+                          type: boolean
+                          description: >-
+                            At least one grant on this kind carries no pattern. `patterns` is a
+                            union over grants, so it cannot answer this on its own.
         "400": { $ref: "#/components/responses/Problem" }
 
   /ops/records/{recordId}/children:

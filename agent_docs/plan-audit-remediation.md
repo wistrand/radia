@@ -6,8 +6,10 @@
 > share one shape, and every one of the five was already a rule written in code that did not follow
 > it. Read it before picking a request field by name. CLOSED same day. **Package Y (2026-08-29)** is
 > the fourth audit, run by CLASS rather than by file; **Package Z (2026-09-04)** is the fifth, an
-> external review re-derived line by line. Both CLOSED the day they opened. **NO PACKAGE IS OPEN as
-> of 2026-09-04**, and no P0 ever stayed open (K closed 2026-08-03: definitions are revocable).
+> external review re-derived line by line. Both CLOSED the day they opened. **Package AB (2026-09-06)**
+> is the sixth, an external review of the team and market surfaces: nine findings, all nine held.
+> **NO PACKAGE IS OPEN as
+> of 2026-09-06**, and no P0 ever stayed open (K closed 2026-08-03: definitions are revocable).
 >
 > **A third audit opened package W on 2026-08-22 and CLOSED it the same day** (fourteen
 > findings across seven root causes, five guards proved red first; two reported findings did not
@@ -79,6 +81,26 @@ three places and all three are the ledger; a reviewer reads whichever one they l
 close recorded in one of them is not recorded. Closed lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
+
+## Package AB: an external review of the team and market surfaces (2026-09-06), CLOSED 2026-09-06
+
+Nine findings, each re-derived in source before anything changed, and all nine held. Two shapes
+account for seven of them: **a rule enforced on the path that computes and skipped on the path
+handed the answer** (the award window, the bid's author), and **a child process inheriting what
+its parent holds** (the environment, a pipe). The eighth is a comment that was true when written;
+the ninth is a cache that remembers a failure forever.
+
+| # | Claim | Verdict | Fix and guard |
+|---|-------|---------|---------------|
+| 1 | Late bids win through the model and HTTP award paths (P2) | VERIFIED | `runAuction` judged the window, `space_award` and `POST .../award` checked only that the bid named this auction. `lateBidRefusal` in `extensions/ts/marketplace.ts` is that check for a bid named by ID, called after the claim (the close is the CURRENT round's, so a nack rewrote it) with the claim released on refusal. Unreadable stays a refusal, never a fallback to now. Guard: `extensions/conformance/marketplace.test.ts`, "a bid NAMED BY ID is judged by the window too" |
+| 2 | `promptFile` is joined without validation (P3) | VERIFIED | Absolute paths were honoured and `..` was never checked, so a copied team file could read anything the launcher can and put it in a prompt. `loadTeamFile` refuses both (`src/surfaces/teamfile.ts`). Bounded severity, and worth stating: a team file already carries `command`, so running an untrusted one is already arbitrary execution. Guard: `test/teamfile.test.ts` |
+| 3 | The Codex template puts the definition token in argv (P2) | VERIFIED | argv is world-readable through the process list, beside a config file `team up` deliberately chmods to owner-only. The templates now name `RADIA_DEFINITION_TOKEN_FILE` and `{{tokenFile}}`; `radia team up` writes `<member>.token` owner-only and `resolveDefinitionToken` reads it. Same change in the lab's eight Codex scenarios. Guard: `test/teamfile.test.ts` asserts no command line carries the value |
+| 4 | The harness child inherits the whole parent environment (P2) | VERIFIED | `extensions/ts/harness-worker.ts` spawned without `clearEnv` while the broker and the sandbox both set it, so a launcher holding an operator `RADIA_TOKEN` handed it to every member with shell access. `withoutCredentials` filters `RADIA_TOKEN`/`RADIA_DEFINITION_TOKEN`/`_FILE` out of the inherited set; `SpawnOptions.dropEnv` does the same for the service path at the platform seam. WHAT IT DOES NOT CLAIM: a harness runs as the same user and can still read the credentials file, so this closes the credential that exists only in the environment (a deployment, CI) |
+| 5 | The harness worker can hang after a kill (P2) | VERIFIED | It awaited the exit status and both pipe pumps together, so a grandchild holding stdout survived the SIGKILL, end-of-stream never came, and the lease heartbeat ran forever with the loop's slot held. The pumps are now abandonable (`pump` takes a signal): wait for the exit, allow 2s to flush, then cancel |
+| 6 | The seam has two spawn paths and nothing catches it (P2) | VERIFIED | An extension cannot import `src/platform.ts`, so `harness-worker.ts` builds its own `Deno.Command`, and the `Deno.*` guard walks `src/` only. `test/layering.test.ts` now lists every subprocess site under `extensions/ts/` and asserts each states its child's environment |
+| 7 | A comment in `team up` is false (P3) | VERIFIED | It called `--init`/`--seed` the one place the verb uses the operator, while both claimant audits call `dryRun` and `permissions` on every plain start. Comment corrected, and the audits made fail-soft: losing a warning is not a reason to refuse to run a team |
+| 8 | A bid's `bidder` is never checked against its author (P3) | VERIFIED | `forgedBidRefusal` compares `bidder` to the agent behind `created_by`. FAIL-SOFT by construction: `created_by` names a RUN and only `agent_run` maps it, which no bidder or requester holds, so this catches a forged bid for an operator or an `observe` session and nothing else. Granting every requester `agent_run: query` would be a larger hole than the one it shuts. Misattribution rather than theft: the task's take grant is `{assignee: self}`, so a forged bid presents as a no-show |
+| 9 | Three smaller items (P3) | VERIFIED | The activity view memoized a failed run lookup permanently and never retried it (now provisional, 30s); `--follow` died on the first thrown frame (now caught, last frame kept, backoff to 30s); the missing-grants check compared kind and operations only, so a team-scoped grant satisfied an `unscopedGrants` ask and the member failed at claim time. That last one needed the enforcement view to be able to answer: `EffectivePermissions.kinds[].unpatterned` is new, because `patterns` is a UNION and a non-empty list never meant an unpatterned grant is absent. The foreign-claimant warning read it the same wrong way and now reads `unpatterned` |
 
 ## Package AA: building a second convention over shared code (2026-09-06), CLOSED 2026-09-06
 

@@ -174,6 +174,11 @@ establish a mechanism and cannot establish its aftermath.
 - **An award could name a bid from another auction**, on both the HTTP route and the MCP tool, which
   would make the record trail claim a winner chosen from bids that were never in the running. Both
   refuse it now.
+- **And both then admitted a LATE bid** (found 2026-09-06, package AB), because that was the only
+  check they made: an awarder that PICKS gets the window from `eligibleBids`, one handed a bid id
+  got nothing. `lateBidRefusal` is the check for a named bid, called after the claim so the close
+  it judges is the current round's. The shape to look for: a rule enforced where the answer is
+  computed and skipped where the answer is supplied.
 - **A zero-length window is an auction nobody can win**: claimable at once, every bid necessarily
   late, reopening until the attempt ceiling. `openAuction` refuses it, and that guard immediately
   failed three tests that had been leaning on the degenerate case.
@@ -356,6 +361,18 @@ bids are sealed to the requester's key (question 7).
    missed round N competes in round N+1. Refusing at write would throw away a bid that becomes
    valid moments later. A bid arriving between the close and the claim behaves the same way:
    excluded this round, eligible next.
+
+   **"At award time" means EVERY award path**, which shipped as `runAuction` only. A path handed a
+   bid id (`space_award`, `POST .../award`) calls `lateBidRefusal` for the same comparison, after
+   the claim, and refuses when the window cannot be read.
+
+   **`bidder` is a body field, so it is a CLAIM about who bid.** `forgedBidRefusal` compares it to
+   the agent behind `created_by`, and can only do so for a caller that may read `agent_run`
+   (`created_by` names a run), which no bidder or requester holds: an operator or an `observe`
+   session catches a forged bid, everyone else awards as before. The exposure that leaves is
+   misattribution, not theft, because `task: take {assignee: self}` still binds and a forged bid
+   presents as the no-show of question 2. Closing it properly needs a run-to-agent answer that is
+   not the whole `agent_run` registry.
 6. **SETTLED (2026-09-05): `bid` declares `defaultRetentionSeconds`, and that value IS the audit
    window for awards.** Nothing else can retire them: compaction serves keyed registries and every
    bid is distinct, so there is no content key to compact on, and retention GC sweeps only what

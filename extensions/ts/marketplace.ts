@@ -21,6 +21,7 @@
 // and every auction looks empty.
 
 import type { KindDef, Pattern, RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
+import { AGENT_RUN } from "../../sdk/ts/wire.ts";
 // `declareKind`/`liveKinds` live in team.ts and are not about teams: any app declaring over a kind
 // another app owns needs them, and `task` is exactly that here (the teams convention indexes it on
 // `team`, `assignee` and `tags`, and this one adds `request`). Their own doc comment says so.
@@ -188,6 +189,85 @@ export async function eligibleBids(
   return { all: [...all], eligible };
 }
 
+/**
+ * Why a bid NAMED BY ID may not be awarded, or `null`.
+ *
+ * An awarder that picks gets the window applied by `eligibleBids`; one handed a bid id does not,
+ * and both paths that take one (`space_award`, `POST .../award`) checked only that the bid named
+ * this auction, so a late bid won by being asked for by name. Call it AFTER the claim, because
+ * `available_at` is the CURRENT round's close and a nack rewrote it.
+ *
+ * Unreadable is a REFUSAL, never a fallback to now: that would silently admit exactly what the
+ * window excludes (question 5).
+ */
+export async function lateBidRefusal(
+  client: RadiaClient,
+  request: string,
+  winning: RadiaRecord<BidBody>,
+): Promise<string | null> {
+  const env = await client.getEnvelope(request).catch(() => null);
+  if (!env?.availableAt) {
+    return `cannot read the window of auction ${request}, so whether bid ${winning.id} arrived in time is unknowable; ` +
+      `awarding needs a self-scoped 'request: query' grant for the envelope`;
+  }
+  if (winning.runtimeMeta.createdAt > env.availableAt) {
+    return `bid ${winning.id} arrived ${winning.runtimeMeta.createdAt}, after this round closed ${env.availableAt}. ` +
+      `It is eligible in the NEXT round: award a bid from this one, or let the auction reopen`;
+  }
+  return null;
+}
+
+/** One probe per client: a caller with no read grant on `agent_run` cannot attribute any bid, and
+ *  retrying it per award would spend a forbidden round trip on every single one. */
+const unattributable = new WeakSet<RadiaClient>();
+
+/**
+ * The agent behind a bid, or `undefined` when this caller cannot tell.
+ *
+ * `created_by` names a RUN (`run:<ulid>`, `Space.opsScope`), and only `agent_run` maps it to an
+ * agent, so an awarder without a read grant on that reserved kind gets `undefined`. That is the
+ * common case and the reason the check below is fail-soft.
+ */
+export async function bidAuthor(client: RadiaClient, bid: RadiaRecord<BidBody>): Promise<string | undefined> {
+  const run = bid.runtimeMeta.createdBy;
+  if (!run.startsWith("run:")) return run; // already an agent id
+  if (unattributable.has(client)) return undefined;
+  try {
+    const rows = await client.queryNewest<{ agent?: string }>({ kind: AGENT_RUN, match: { run } }, 1);
+    return rows[0]?.body.agent;
+  } catch {
+    unattributable.add(client);
+    return undefined;
+  }
+}
+
+/**
+ * Why a bid's `bidder` may not be believed, or `null`.
+ *
+ * `bidder` is an ordinary body field, so a bid can name somebody who never placed it and the award
+ * then assigns that agent work it never offered to do. It is misattribution rather than theft: the
+ * task's `take` grant is scoped `{assignee: self}`, so the named agent still has to claim it, and a
+ * forged bid presents as the no-show an awarder cannot tell from a crash (question 2).
+ *
+ * FAIL-SOFT BY CONSTRUCTION, and the limit is the point: attribution needs `agent_run`, which is a
+ * reserved kind no bidder or requester holds by default, so this catches a forged bid only for a
+ * caller that already has the reach (an operator, an `observe` session). Granting every requester
+ * `agent_run: query` to close it would hand the whole fleet's run metadata to each of them, which
+ * is a larger hole than the one it shuts.
+ */
+export async function forgedBidRefusal(client: RadiaClient, winning: RadiaRecord<BidBody>): Promise<string | null> {
+  const author = await bidAuthor(client, winning);
+  if (!author || author === winning.body.bidder) return null;
+  // A PRIVILEGED submitter may write a bid on somebody's behalf, and that is not an edge case: an
+  // operator seeding an auction and a broker submitting for an agent that has no client both do
+  // it. Unknown counts as privileged, because refusing an award over a lookup this caller could
+  // not make would turn a missing grant into a lost auction.
+  const privileged = await client.permissions(author).then((p) => p.privileged).catch(() => undefined);
+  if (privileged !== false) return null;
+  return `bid ${winning.id} names bidder ${winning.body.bidder} but was written by ${author}. ` +
+    `Awarding it would address the work to an agent that never bid`;
+}
+
 export type Select = (bids: RadiaRecord<BidBody>[], request: RadiaRecord<RequestBody>) => RadiaRecord<BidBody> | null;
 export type Work = (request: RadiaRecord<RequestBody>, winner: RadiaRecord<BidBody>) => Record<string, unknown>;
 
@@ -233,7 +313,21 @@ export async function runAuction(
       );
     }
     const { all, eligible } = await eligibleBids(client, request.id, env.availableAt);
-    const winner = eligible.length > 0 ? o.select(eligible, request) : null;
+    // DROP A FORGED PICK AND RE-SELECT rather than reopening: another bid in the same auction may
+    // be honest, and reopening would let one forged bid deny the whole round. Costs one lookup per
+    // rejection, and none at all for a caller that cannot attribute (`bidAuthor`).
+    let pool = eligible;
+    let winner: RadiaRecord<BidBody> | null = null;
+    while (pool.length > 0) {
+      const pick = o.select(pool, request);
+      if (!pick) break;
+      const forged = await forgedBidRefusal(client, pick);
+      if (!forged) {
+        winner = pick;
+        break;
+      }
+      pool = pool.filter((b) => b.id !== pick.id);
+    }
     if (!winner) {
       await client.nack(claimed.lease, { backoffSeconds: o.reopenSeconds });
       return { status: "reopened", request: request.id, bids: all.length, considered: eligible.length };
@@ -329,8 +423,19 @@ export async function reawardFailed(
       (await client.queryAll<{ assignee?: string; request?: string }>({ kind: TASK, match: { request: body.request } }))
         .map((t) => t.body.assignee).filter(Boolean) as string[],
     );
-    const fresh = eligible.filter((b) => !tried.has(b.body.bidder));
-    const next = fresh.length > 0 ? o.select(fresh, request) : null;
+    // Same selection rule as the auction itself, forged pick included: a repair that skipped the
+    // attribution check would be the way around it.
+    let pool = eligible.filter((b) => !tried.has(b.body.bidder));
+    let next: RadiaRecord<BidBody> | null = null;
+    while (pool.length > 0) {
+      const pick = o.select(pool, request);
+      if (!pick) break;
+      if (!(await forgedBidRefusal(client, pick))) {
+        next = pick;
+        break;
+      }
+      pool = pool.filter((b) => b.id !== pick.id);
+    }
     if (!next) {
       out.push({ failed: row.envelope.recordId, request: body.request, exhausted: true });
       continue;

@@ -44,7 +44,7 @@ import { beatPresence, livePresence, presenceKind, presenceSpec, retirePresence 
 import { declareExecRequest, EXEC_REQUEST, type Pin, pinnedDigests, promote, rollback } from "../../extensions/ts/promotion.ts";
 import { declareBinding, readBindings } from "../../extensions/ts/host.ts";
 import { auditCompartment } from "../../extensions/ts/compartment.ts";
-import { BID, declareMarketKinds, eligibleBids, REQUEST, TASK } from "../../extensions/ts/marketplace.ts";
+import { BID, type BidBody, declareMarketKinds, eligibleBids, forgedBidRefusal, lateBidRefusal, REQUEST, TASK } from "../../extensions/ts/marketplace.ts";
 import { UsageError } from "../platform.ts";
 
 export interface ExtServeLog {
@@ -822,7 +822,7 @@ async function dispatch(
           const b = await body();
           rejectUnknownFields(b, fieldsOf("marketplace/v1/auctions/{request}/award"), "POST award");
           const bid = requireString(b.bid, "bid");
-          const winning = await client.getRecord<{ bidder?: string; request?: string }>(bid);
+          const winning = await client.getRecord<BidBody>(bid);
           if (!winning) throw new UsageError(`no bid ${bid}`);
           if (!winning.body.bidder) throw new UsageError(`bid ${bid} names no bidder`);
           // The bid must belong to THIS auction. Without the check an award can name a bid from
@@ -838,6 +838,16 @@ async function dispatch(
           // Not claimable means the window is still open, somebody else holds it, or it is already
           // awarded. All three are the caller's answer rather than an error here.
           if (!claimed) return json(409, { awarded: false, reason: "not claimable: still open, held, or already awarded" });
+          // THE WINDOW, read after the claim because a nack rewrote it and this round's close is the
+          // one that binds. The bids route above refuses rather than defaulting to now for exactly
+          // this reason, and awarding by id went around it: a bid placed after the close won by
+          // being named here. The claim goes back so a refusal does not spend one of the auction's
+          // bounded rounds.
+          const refusal = (await lateBidRefusal(client, request, winning)) ?? (await forgedBidRefusal(client, winning));
+          if (refusal) {
+            await client.release(claimed.lease).catch(() => {});
+            return json(409, { awarded: false, reason: refusal });
+          }
           // The claim goes back if the settle fails, or the auction sits leased until the lease
           // lapses and burns one of its bounded rounds for a network blip.
           let acked;

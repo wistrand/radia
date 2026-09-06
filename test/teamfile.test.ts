@@ -37,7 +37,7 @@ Deno.test("teamfile: a file may bring its own harness template, or a member its 
 });
 
 Deno.test("teamfile: substitution fills every placeholder but the prompt, and drops the model flag with no model", () => {
-  const values = { model: "", config: "/tmp/m.json", url: "http://x", binary: "radia", mcpArgs: "[]", token: "t", codexTools: "{}", session: "s", credentials: "/c.json", radiaDir: "/r" };
+  const values = { model: "", config: "/tmp/m.json", url: "http://x", binary: "radia", mcpArgs: "[]", token: "t", tokenFile: "/t.token", codexTools: "{}", session: "s", credentials: "/c.json", radiaDir: "/r" };
   const claude = substitute(BUILTIN_HARNESSES.claude, values);
   assert(!claude.includes("--model"), claude.join(" "));
   assert(!claude.includes("{{model}}"));
@@ -45,7 +45,10 @@ Deno.test("teamfile: substitution fills every placeholder but the prompt, and dr
   const withModel = substitute(BUILTIN_HARNESSES.claude, { ...values, model: "opus" });
   assertEquals(withModel.slice(withModel.indexOf("--model"), withModel.indexOf("--model") + 2), ["--model", "opus"]);
   const codex = substitute(BUILTIN_HARNESSES.codex, { ...values, model: "gpt" });
-  assert(codex.some((s) => s === 'mcp_servers.radia.env={ RADIA_DEFINITION_TOKEN = "t", RADIA_CREDENTIALS = "/c.json", RADIA_DIR = "/r" }'), codex.join(" "));
+  // BY REFERENCE, never the value: Codex takes its MCP server's environment on the command line,
+  // and argv is readable by every local user through the process list.
+  assert(codex.some((s) => s === 'mcp_servers.radia.env={ RADIA_DEFINITION_TOKEN_FILE = "/t.token", RADIA_CREDENTIALS = "/c.json", RADIA_DIR = "/r" }'), codex.join(" "));
+  assert(!codex.some((s) => s.includes('= "t"')), "no command line carries the token itself");
   assertEquals(substitute(["x", "{{prompt}}"], values), ["x", "{{prompt}}"], "the prompt is filled per claim, not here");
   for (const f of [FRAME, RESUME_FRAME]) assert(f.includes("{{claimId}}") && f.includes("{{body}}") && f.includes("{{recordId}}") && f.includes("{{job}}"), f);
 });
@@ -69,6 +72,13 @@ Deno.test("teamfile: a team is a directory, with the label, the seed and prompts
   assert(/missing\/team.json: not found/.test(e.message), e.message);
   const bad = assertThrows(() => loadTeamFile("t", (p) => (p === "t/prompts/a.md" ? undefined : files[p])), UsageError);
   assert(/promptFile prompts\/a.md, which is not beside it/.test(bad.message), bad.message);
+  // A PROMPT COMES FROM THE TEAM DIRECTORY. Team files are copied in and run, so an absolute path
+  // or a `..` segment would read whatever the launcher can and put it in a model's prompt.
+  for (const rel of ["/etc/passwd", "../../secrets.md"]) {
+    const away = { ...files, "t/team.json": JSON.stringify({ members: [{ name: "a", harness: "claude", promptFile: rel }] }), [rel]: "secret" };
+    const e = assertThrows(() => loadTeamFile("t", (p) => away[p]), UsageError);
+    assert(/leaves the team directory/.test(e.message), e.message);
+  }
   assertThrows(() => parseTeamFile(JSON.stringify({ members: [{ name: "a", harness: "claude" }], seed: [{ kind: "task" }] })), UsageError, "must be {kind, body}");
   assertThrows(() => parseTeamFile(JSON.stringify({ members: [{ name: "a", harness: "claude" }], seed: [{ kind: "task", body: {}, tags: [] }] })), UsageError, "unknown field 'tags'");
   assertEquals(parseTeamFile(JSON.stringify({ members: [{ name: "a", harness: "claude" }], done: { kind: "note", match: { topic: "final" } } })).done, { kind: "note", match: { topic: "final" } });

@@ -112,9 +112,12 @@ const FILE_FIELDS = new Set(["url", "team", "members", "harnesses", "seed", "don
 /**
  * The command templates. Placeholders: `{{model}}` (its flag is dropped when no model is set),
  * `{{config}}` (an MCP config JSON file naming the adapter with the member's token and session),
- * `{{binary}}`/`{{mcpArgs}}`/`{{token}}`/`{{credentials}}`/`{{radiaDir}}` (the same, for a harness
- * configured on its command line; the file and directory are what let the adapter resume the
- * loop's session, since a harness passes its MCP server only the env it is given),
+ * `{{binary}}`/`{{mcpArgs}}`/`{{tokenFile}}`/`{{credentials}}`/`{{radiaDir}}` (the same, for a
+ * harness configured on its command line; the file and directory are what let the adapter resume
+ * the loop's session, since a harness passes its MCP server only the env it is given).
+ * `{{tokenFile}}` rather than `{{token}}`: argv is world-readable, so a command line names an
+ * owner-only file and `resolveDefinitionToken` reads it. `{{token}}` survives for a SERVICE, whose
+ * command is spawned here and whose token travels in its environment,
  * `{{codexTools}}` (Codex's per-tool approval table), `{{prompt}}` (in argv; absent, stdin).
  */
 export const BUILTIN_HARNESSES: Record<string, string[]> = {
@@ -178,7 +181,10 @@ export const BUILTIN_HARNESSES: Record<string, string[]> = {
     "-c",
     "mcp_servers.radia.args={{mcpArgs}}",
     "-c",
-    'mcp_servers.radia.env={ RADIA_DEFINITION_TOKEN = "{{token}}", RADIA_CREDENTIALS = "{{credentials}}", RADIA_DIR = "{{radiaDir}}" }',
+    // The token BY REFERENCE. Codex takes its MCP server's environment on the command line, and
+    // argv is readable by every local user through the process list, so the value here would
+    // undo the owner-only mode `team up` sets on the config file holding the same credential.
+    'mcp_servers.radia.env={ RADIA_DEFINITION_TOKEN_FILE = "{{tokenFile}}", RADIA_CREDENTIALS = "{{credentials}}", RADIA_DIR = "{{radiaDir}}" }',
     "-c",
     "mcp_servers.radia.tools={{codexTools}}",
   ],
@@ -204,7 +210,10 @@ export const BUILTIN_HARNESSES: Record<string, string[]> = {
     "-c",
     "mcp_servers.radia.args={{mcpArgs}}",
     "-c",
-    'mcp_servers.radia.env={ RADIA_DEFINITION_TOKEN = "{{token}}", RADIA_CREDENTIALS = "{{credentials}}", RADIA_DIR = "{{radiaDir}}" }',
+    // The token BY REFERENCE. Codex takes its MCP server's environment on the command line, and
+    // argv is readable by every local user through the process list, so the value here would
+    // undo the owner-only mode `team up` sets on the config file holding the same credential.
+    'mcp_servers.radia.env={ RADIA_DEFINITION_TOKEN_FILE = "{{tokenFile}}", RADIA_CREDENTIALS = "{{credentials}}", RADIA_DIR = "{{radiaDir}}" }',
     "-c",
     "mcp_servers.radia.tools={{codexTools}}",
   ],
@@ -389,7 +398,16 @@ export function loadTeamFile(path: string, read: (p: string) => string | undefin
     for (const [fileKey, promptKey] of [["promptFile", "prompt"], ["resumePromptFile", "resumePrompt"]] as const) {
       const rel = m[fileKey];
       if (!rel) continue;
-      const at = rel.startsWith("/") ? rel : `${team.dir}/${rel}`;
+      // BESIDE THE TEAM FILE, enforced rather than merely documented. An absolute path or a `..`
+      // segment reads any file the launcher can and puts it in a model's prompt, and team files
+      // are routinely copied in from elsewhere and run without being read line by line.
+      if (rel.startsWith("/") || rel.split("/").includes("..")) {
+        throw new UsageError(
+          `${file}: members '${m.name}' names ${fileKey} ${rel}, which leaves the team directory. ` +
+            `It must be a relative path beside ${file}, since a team is one folder that can be copied`,
+        );
+      }
+      const at = `${team.dir}/${rel}`;
       const text = read(at);
       if (text === undefined) throw new UsageError(`${file}: members '${m.name}' names ${fileKey} ${rel}, which is not beside it`);
       m[promptKey] = text;
