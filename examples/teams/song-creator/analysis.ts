@@ -79,7 +79,7 @@ export interface Metrics {
    *  it drove the writing toward the plainest possible scale. Null when the key could not be parsed. */
   outOfKey: number | null;
   /** Notes on a STRONG beat that are not in that bar's chord, when the brief names a progression.
-   *  This is what stops three parts written apart from disagreeing about the harmony: a run where
+   *  This is what stops parts written apart from disagreeing about the harmony: a run where
    *  the bass played D major while the tune played D minor scored zero here only because there was
    *  no progression to score against. Null when the brief names none. */
   offChord: number | null;
@@ -240,7 +240,17 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
         // PASSING means stepped into and stepped out of, briefly, off the strong beat. Anything
         // else outside the key is a decision the piece has to own.
         const passing = n.dur < beat + 1e-9 && !strong(n.at) && (inFrom ?? 99) <= 2 && (outTo ?? 99) <= 2;
-        if (!passing) {
+        // A CHORD TONE IS NEVER OUT OF KEY. The progression is the local harmony and the key
+        // signature is the default it may leave: `E7` in A minor is `E G# B D`, and its G# is the
+        // leading tone that makes it a dominant at all. Without this the two rules contradicted each
+        // other on one note, since `offChord` REQUIRES a chord tone on a strong beat and this
+        // punished the same note for being outside the scale. Measured on a live run: 13, 10 and 8
+        // faults across three rounds, every one of them a correct G# over E7, the players spent
+        // every round removing the feature a listener said made the song, and it settled on the
+        // round limit. This also covers the raised sevenths of harmonic and melodic minor, because
+        // the chord that wants one supplies it.
+        const ofTheChord = chordTones(chordAt(score, n.at) ?? "")?.includes(((n.midi! % 12) + 12) % 12) === true;
+        if (!passing && !ofTheChord) {
           outOfKey = (outOfKey ?? 0) + 1;
           findings.push({
             kind: "out-of-key",
@@ -349,15 +359,17 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
       if (seen.has(sig)) repeats++;
       seen.add(sig);
     }
-    // A BEAT REPEATS BY DEFINITION, so a kit is held to a far looser bound than a melody. A ratio is
-    // the wrong shape for it: four-on-the-floor for six bars of eight is 0.75 and is the genre, not
-    // a fault. What a kit owes is VARIETY IN THE SET of bars it plays, so it is counted instead. Two
-    // distinct bars over eight is a loop with one fill on the end, which is what a run produced when
-    // the test was "every bar identical": seven copies plus a bar that split one hat into two
-    // sixteenths passed a rule meant to require a fill.
-    const distinct = seen.size;
+    // RHYTHM IS WHAT A KIT VARIES, so counting its distinct BARS asked the wrong question. A drum's
+    // pitches pick which drum, so moving a hit from hat to snare makes a new bar out of the same
+    // rhythm: two live runs shipped 16 bars holding 5 and 4 distinct bars but ONE and THREE
+    // rhythms, and the rule passed a part that is one bar sixteen times. Counted on rhythm alone it
+    // also subsumes the case that motivated the previous wording, since seven copies plus a bar
+    // that split one hat into two sixteenths is two rhythms, not two bars.
+    const rhythms = [...cells.entries()].sort((a, b) => a[0] - b[0])
+      .map(([, cell]) => cell.map((s) => s.split("/")[1]).join(" "));
+    const distinctRhythms = new Set(rhythms).size;
     const pumping = rhythmOnly
-      ? (cells.size >= 4 && distinct === 1) || (cells.size >= 8 && distinct <= 2)
+      ? (cells.size >= 4 && distinctRhythms === 1) || (cells.size >= 8 && distinctRhythms <= 2)
       : repeats / cells.size > 0.3;
     if ((rhythmOnly || cells.size >= 4) && pumping) {
       bland++;
@@ -366,8 +378,8 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
         parts: [p.instrument],
         bar: 1,
         detail: rhythmOnly
-          ? `${p.instrument} plays only ${distinct} different bar${distinct === 1 ? "" : "s"} in ${cells.size}: ` +
-            `keep the pulse, but put a real fill at the end of each four`
+          ? `${p.instrument} plays only ${distinctRhythms} rhythm${distinctRhythms === 1 ? "" : "s"} in ${cells.size} bars ` +
+            `(moving a hit between drums is the same rhythm): keep the pulse, but put a real fill at the end of each four`
           : `${p.instrument} plays the same bar ${repeats + 1} times over: vary it, or it is a pump rather than a part`,
       });
     }
@@ -377,9 +389,6 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
     // pushed the other way, and a lead answered with eight bars in eight different rhythms, which is
     // as hard to remember as eight identical ones. Measured on RHYTHM alone so that a cell repeated
     // a third higher counts as the same cell, which is what a sequence is.
-    const rhythms = [...cells.entries()].sort((a, b) => a[0] - b[0])
-      .map(([, cell]) => cell.map((s) => s.split("/")[1]).join(" "));
-    const distinctRhythms = new Set(rhythms).size;
     if (!rhythmOnly && cells.size >= 4 && distinctRhythms / cells.size > 0.75) {
       bland++;
       findings.push({

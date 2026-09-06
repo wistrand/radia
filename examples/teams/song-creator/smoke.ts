@@ -17,7 +17,7 @@ import { resolveToken } from "../../../src/credentials.ts";
 import { readWorkspace, WORKSPACE_KIND } from "../../../extensions/ts/workspace.ts";
 import { analyse, faults } from "./analysis.ts";
 import { chordAt, parsePhrase, parseScore, type Score } from "./score.ts";
-import { drumVoiceFor, render, voiceFor } from "./synth.ts";
+import { drumVoiceFor, render, TIMBRE_NAMES, voiceFor } from "./synth.ts";
 import { judge } from "./checker.ts";
 import { type Brief, runProducer } from "./producer.ts";
 import { historyPage } from "./history.ts";
@@ -385,6 +385,13 @@ try {
   const noneAtAll = await brokenSong(() => false, "nothing");
   check("a run where NO round parses ends too, saying so", noneAtAll?.ok === false, noneAtAll?.settledBy);
   check("with no workspace, because there is nothing to play", noneAtAll?.workspace === undefined);
+  // AND IT NEVER ASKED THE EAR. Nobody can hear a score the renderer refuses, so a model asked to
+  // judge one answers about nothing: a live run carries four ear verdicts approving "the late C6
+  // payoff" on drafts that would not render, each a paid turn and a false line in the history.
+  const brokenReviews = await operator.queryAll<{ round: number; by: string }>({ kind: REVIEW, match: { song: noneAtAll!.song as string } });
+  check("and no round of it was ever put to the ear", brokenReviews.every((r) => r.body.by === "rules"), [...new Set(brokenReviews.map((r) => r.body.by))]);
+  const readableReviews = await operator.queryAll<{ by: string }>({ kind: REVIEW, match: { song: fellBack!.song as string, round: 1 } });
+  check("while the round that DID parse got both", new Set(readableReviews.map((r) => r.body.by)).size === 2, [...new Set(readableReviews.map((r) => r.body.by))].sort());
 
   // ---- percussion is rhythm, not harmony ----
   // A drum's notes pick a drum, so measuring them for clashes, key or chord tones counts nonsense.
@@ -433,6 +440,69 @@ try {
   const waver = Math.sqrt(peaks.reduce((a, b) => a + (b - avg) ** 2, 0) / peaks.length) / avg;
   check("so a held note breathes instead of sitting still", waver > 0.1, `${(waver * 100).toFixed(0)}% amplitude movement`);
 
+  // ---- the brief says what the piece is PLAYED ON ----
+  // The renderer picks a voice per ROLE, so before `timbre` a brief asking for a harp got the same
+  // three-saw lead stack as a dance track, and neither the arranger nor a player could say otherwise.
+  const plucked = voiceFor("lead", "plucked"), soft = voiceFor("lead", "soft");
+  check("a timbre reshapes the voice a role is played on", plucked.wave !== leadV.wave && soft.wave !== leadV.wave, `${leadV.wave} -> ${plucked.wave} / ${soft.wave}`);
+  check("plucked is struck and left to ring: no sustain, a long decay", plucked.sustain === 0 && plucked.decay > leadV.decay, `sustain ${plucked.sustain}, decay ${plucked.decay}`);
+  check("soft arrives late and holds", soft.attack > leadV.attack * 5 && soft.sustain > leadV.sustain, `attack ${soft.attack}, sustain ${soft.sustain}`);
+  // A TIMBRE MAY NOT REARRANGE THE PIECE. Pan, gain and the parts' relative placement are the
+  // arrangement and have to survive a change of sound, or picking `plucked` would silently remix it.
+  for (const t of TIMBRE_NAMES) {
+    const b = voiceFor("bass", t), l = voiceFor("lead", t);
+    check(`${t} keeps the mix: the parts stay where the arrangement put them`, b.pan === bassV.pan && l.pan === leadV.pan && l.gain === leadV.gain);
+  }
+  check("an unknown timbre renders as synth rather than failing", JSON.stringify(voiceFor("lead", "harpsichord")) === JSON.stringify(leadV));
+  check("and a kit is a kit whatever the piece is played on", JSON.stringify(voiceFor("drums", "plucked")) === JSON.stringify(voiceFor("drums")));
+  // It has to reach the AUDIO, not just the voice table: the score carries it and `render` reads it.
+  const bare = { ...held, parts: [{ instrument: "lead", phrase: "A4/1" }] } as unknown as Score;
+  const asPluck = { ...bare, timbre: "plucked" } as Score;
+  const wavOf = (s: Score) => render(parseScore(s).parts, s).wav;
+  check("and the timbre changes the bytes, so it is really rendered", await sha(wavOf(bare)) !== await sha(wavOf(asPluck)));
+
+  // ---- one clash is ONE ask, however long it is held ----
+  // Dissonance and parallels are judged at every ONSET, so one pair a semitone apart across a bar of
+  // eighths reports eight times. A live run turned that into 12 asks covering 4 distinct problems,
+  // told a player the same thing four times, and spent the whole budget before reaching the rest of
+  // the faults. The COUNT still counts every occurrence: a clash held through eight onsets is worse
+  // than one, and only the INSTRUCTION must not repeat.
+  const rubbing = {
+    bpm: 120,
+    meter: { beats: 4, unit: 4 },
+    chords: ["C", "C"],
+    parts: [
+      { instrument: "lead", phrase: `${Array(8).fill("C5/8").join(" ")} | ${Array(8).fill("E5/8").join(" ")}` },
+      { instrument: "harmony", phrase: `${Array(8).fill("B4/8").join(" ")} | ${Array(8).fill("F5/8").join(" ")}` },
+    ],
+  } as unknown as Score;
+  const sustained = judge(rubbing, "C major");
+  const clashAsks = (sustained.asks ?? []).filter((a) => /apart/.test(a.note));
+  check("a clash held all bar is ONE instruction per part, not one per onset", clashAsks.length === 4, clashAsks.map((a) => `${a.instrument}: ${a.note}`));
+  check("and it names both bars it happens in, since they are different problems", new Set(clashAsks.map((a) => a.note)).size === 2, [...new Set(clashAsks.map((a) => a.note))]);
+  check("while the COUNT still counts every occurrence, because holding it is worse", (sustained.metrics as { dissonance?: number }).dissonance === 16, (sustained.metrics as { dissonance?: number }).dissonance);
+
+  // ---- one mistake is ONE ask, however many bars it is in ----
+  // A live run spent FOUR rounds on this. One part had eight bars a quarter too long; the dedupe
+  // keyed on the message INCLUDING its bar number, so eight copies of one mistake read as eight
+  // distinct places, the per-instrument cap handed over two, and the player fixed exactly the two it
+  // was told about, four times. A parse error is mechanical and the whole part can be fixed at once.
+  const overlong = (bars: number[]) => ({
+    bpm: 118,
+    meter: { beats: 4, unit: 4 },
+    parts: [
+      { instrument: "lead", phrase: Array(16).fill("A4/4 C5/4 E5/4 A4/4").join(" | ") },
+      { instrument: "harmony", phrase: Array.from({ length: 16 }, (_, i) => bars.includes(i + 1) ? "A3/4 C4/4 E4/4 A3/4 C4/4" : "A3/4 C4/4 E4/4 A3/4").join(" | ") },
+    ],
+  }) as unknown as Score;
+  const drip = judge(overlong([1, 2, 4, 9, 11, 12, 14, 16]), "A minor");
+  check("eight bars of one mistake is ONE ask, not four rounds of two", (drip.asks ?? []).length === 1, (drip.asks ?? []).length);
+  check("and it names every bar the mistake is in", /bars 1, 2, 4, 9, 11, 12, 14 and 16/.test(drip.asks![0].note), drip.asks![0].note.slice(-70));
+  check("counting the errors, not the places, so the summary stays honest", /8 error\(s\) in 1 distinct place/.test(drip.summary), drip.summary);
+  // The cap still exists, and still counts DISTINCT RULES per instrument rather than occurrences.
+  const oneBar = judge(overlong([5]), "A minor");
+  check("a single bad bar is still asked about once, without the list", (oneBar.asks ?? []).length === 1 && !/The same mistake/.test(oneBar.asks![0].note));
+
   // ---- a note may arrive before the beat ----
   // The notation had no way to write an anticipation, so every note in every run landed on or after
   // a beat, and eight bars of that is why a piece the brief called pop came back sounding typed.
@@ -453,6 +523,26 @@ try {
   check("one chord governs a whole bar", chordAt(half, 0) === "C" && chordAt(half, 0.75) === "C");
   check("two split it evenly, so a progression can move mid-bar", chordAt(half, 1) === "Am" && chordAt(half, 1.5) === "F", `${chordAt(half, 1)} then ${chordAt(half, 1.5)}`);
   check("and a bar past the end holds the last one rather than escaping the check", chordAt(half, 9) === "G");
+
+  // ---- the chord is the local harmony, the key is only the default ----
+  // TWO RULES CONTRADICTED EACH OTHER ON ONE NOTE. `E7` in A minor is E G# B D, and its G# is the
+  // leading tone that makes it a dominant; `offChord` requires a chord tone on a strong beat while
+  // out-of-key punished the same note for leaving the natural minor. A live run was charged 13, 10
+  // and 8 faults over three rounds, every one of them a correct G#, spent every round removing it,
+  // and settled on the round limit at 21 while a listener called it the best song the team had made.
+  const inMinor = (chords: string[], phrase: string) => {
+    const s = { bpm: 122, meter: { beats: 4, unit: 4 }, chords, parts: [{ instrument: "lead", phrase }] } as unknown as Score;
+    return analyse(parseScore(s).parts, s, "A minor");
+  };
+  const dominant = inMinor(["Am", "E7"], "A4/4 C5/4 E5/4 A4/4 | E4/4 G#4/4 B4/4 E5/4");
+  check("a chord tone is never out of key, so E7's G# is right in A minor", (dominant.outOfKey ?? 0) === 0, dominant.findings.filter((f) => f.kind === "out-of-key").map((f) => f.detail));
+  check("and it is not off-chord either, since it IS the chord", (dominant.offChord ?? 0) === 0, dominant.offChord);
+  // The rule narrows nothing else: the same pitch over a chord that does not contain it still counts.
+  const wrong = inMinor(["Am", "G"], "A4/4 C5/4 E5/4 A4/4 | G4/4 G#4/4 B4/4 D5/4");
+  check("while the same G# over a plain G chord is still out of key", (wrong.outOfKey ?? 0) > 0, wrong.findings.find((f) => f.kind === "out-of-key")?.detail);
+  // With no progression there is nothing local to defer to, so the key is all the analysis has.
+  const noChords = { bpm: 122, meter: { beats: 4, unit: 4 }, parts: [{ instrument: "lead", phrase: "E4/4 G#4/4 B4/4 E5/4" }] } as unknown as Score;
+  check("and with no chords at all the key still decides", (analyse(parseScore(noChords).parts, noChords, "A minor").outOfKey ?? 0) > 0);
 
   // ---- a hook is a rhythm that comes back ----
   // The counterpart to the repetition rule, and the one the loop was missing: every dullness measure
@@ -524,15 +614,29 @@ try {
   };
   const BEAT = "C2/4 C4/4 D3/4 C4/4", FILL = "C2/4 C4/4 D3/8 D3/8 C4/4";
   const never = kitOf(Array(6).fill(BEAT).join(" | "));
-  check("nor a kit that never varies at all, which still wants a fill", never.findings.some((f) => /different bar/.test(f.detail)), `bland=${never.bland}`);
+  check("nor a kit that never varies at all, which still wants a fill", never.findings.some((f) => /rhythm/.test(f.detail)), `bland=${never.bland}`);
   // THE LOOPHOLE A REAL RUN WALKED THROUGH. The rule was once "every bar identical", and a kit
   // answered it with seven copies and a last bar that split one hat into two sixteenths: a fill by
   // the letter, a metronome by ear. Two distinct bars in eight is now the bound, and a part with a
   // real fill on each four clears it.
   const oneTweak = kitOf([...Array(7).fill(BEAT), "C2/4 C4/4 D3/4 C4/8 C4/8"].join(" | "));
-  check("nor eight bars that are really two, however the last one is dressed up", oneTweak.findings.some((f) => /different bar/.test(f.detail)), `bland=${oneTweak.bland}`);
+  check("nor eight bars that are really two, however the last one is dressed up", oneTweak.findings.some((f) => /rhythm/.test(f.detail)), `bland=${oneTweak.bland}`);
   const realFills = kitOf([BEAT, BEAT, BEAT, FILL, BEAT, BEAT, BEAT, "C2/4 D3/8 D3/8 D3/8 D3/8 C4/4"].join(" | "));
-  check("but a steady beat with a fill on each four is a part, not a pump", !realFills.findings.some((f) => /different bar/.test(f.detail)), `bland=${realFills.bland}`);
+  check("but a steady beat with a fill on each four is a part, not a pump", !realFills.findings.some((f) => /rhythm/.test(f.detail)), `bland=${realFills.bland}`);
+  // MOVING A HIT BETWEEN DRUMS IS NOT A FILL. A drum's pitch picks which drum, so counting distinct
+  // BARS let a kit vary the pitches and keep one rhythm: this is a live part that shipped, eight
+  // bars holding five distinct bars and a single rhythm, and the old rule passed it.
+  const samePulse = kitOf([
+    "C2/8 C4/8 D3/8 C4/8 C2/8 C4/8 D3/8 C4/8",
+    "C2/8 C4/8 D3/8 C4/8 C2/8 C4/8 D3/8 C2/8",
+    "C2/8 C4/8 D3/8 C4/8 C2/8 C4/8 D3/8 D3/8",
+    "C2/8 D3/8 D3/8 C4/8 C2/8 C4/8 D3/8 C4/8",
+    "C2/8 C4/8 D3/8 C4/8 C2/8 C4/8 C4/8 C4/8",
+    "C2/8 C4/8 D3/8 C4/8 C2/8 C4/8 D3/8 C4/8",
+    "C2/8 C4/8 D3/8 C4/8 C2/8 C4/8 D3/8 C4/8",
+    "C2/8 C4/8 D3/8 C4/8 C2/8 D3/8 D3/8 C4/8",
+  ].join(" | "));
+  check("and eight different bars in ONE rhythm is still a pump", samePulse.findings.some((f) => /only 1 rhythm/.test(f.detail)), samePulse.findings.filter((f) => f.parts[0] === "drums").map((f) => f.detail));
 
   console.log(failures === 0 ? "\nall checks passed" : `\n${failures} FAILED`);
 } finally {

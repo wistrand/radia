@@ -48,16 +48,27 @@ export function judge(score: Score, key: string): RulesVerdict {
     // format produces an error per note: a real run made 122 of them, and unbounded they became 122
     // instructions on the next round's record, which is a prompt nobody can act on. What the player
     // needs is the rule, once, with a count saying how much of the part it applies to.
-    const distinct = new Map<string, { instrument: string; note: string; n: number }>();
+    const distinct = new Map<string, { instrument: string; note: string; bars: number[]; n: number }>();
     for (const e of parsed.errors) {
       const instrument = e.split(":")[0];
-      // A parse error is already addressed to an instrument by `parseScore`, which prefixes it, and
-      // the quoted token is the only part that varies between repeats of one mistake.
-      const k = `${instrument}|${e.replace(/'[^']*' /, "")}`;
+      // A parse error is already addressed to an instrument by `parseScore`, which prefixes it. Two
+      // things vary between repeats of ONE mistake and neither makes it a different mistake: the
+      // quoted token, and the BAR NUMBER. Leaving the bar in the key was the expensive half: eight
+      // overlong bars read as eight distinct places, the cap below handed over two, and a live run
+      // spent FOUR rounds fixing one part two bars at a time while the player did exactly as asked.
+      const k = `${instrument}|${e.replace(/'[^']*' /, "").replace(/\bbar \d+\b/g, "bar N")}`;
+      const bar = Number(/\bbar (\d+)\b/.exec(e)?.[1] ?? 0);
       const hit = distinct.get(k);
-      if (hit) hit.n++;
-      else distinct.set(k, { instrument, note: e, n: 1 });
+      if (hit) {
+        hit.n++;
+        if (bar) hit.bars.push(bar);
+      } else distinct.set(k, { instrument, note: e, bars: bar ? [bar] : [], n: 1 });
     }
+    /** "1, 2 and 4", so an ask can name every bar the mistake is in rather than the first. */
+    const listBars = (b: number[]) => {
+      const s = [...new Set(b)].sort((x, y) => x - y);
+      return s.length > 1 ? `${s.slice(0, -1).join(", ")} and ${s.at(-1)}` : String(s[0] ?? "");
+    };
     return {
       approve: false,
       summary: `the score does not parse: ${parsed.errors.length} error(s) in ${distinct.size} distinct place(s)`,
@@ -67,7 +78,11 @@ export function judge(score: Score, key: string): RulesVerdict {
       asks: [...new Set([...distinct.values()].map((a) => a.instrument))].flatMap((instrument) =>
         [...distinct.values()].filter((a) => a.instrument === instrument).slice(0, 2).map((a) => ({
           instrument,
-          note: a.n > 1 ? `${a.note} (and ${a.n - 1} more like it: fix every note in your part)` : a.note,
+          note: a.bars.length > 1
+            ? `${a.note} The same mistake is in bars ${listBars(a.bars)}: fix ALL of them this round, not one at a time.`
+            : a.n > 1
+            ? `${a.note} (and ${a.n - 1} more like it: fix every note in your part)`
+            : a.note,
         }))
       ),
       faults: 999,
@@ -76,9 +91,22 @@ export function judge(score: Score, key: string): RulesVerdict {
   }
   const m = analyse(parsed.parts, score, key);
   const asks: { instrument: string; note: string }[] = [];
+  // ONE PROBLEM IS ONE FINDING, however long it lasts. Dissonance and parallels are judged at every
+  // ONSET, so one clash between the same pair held across a bar is reported once per note start:
+  // a live run produced 12 asks covering 4 distinct problems, handed a player the same instruction
+  // four times, and spent the whole budget below before the rest of the faults were reached. The
+  // COUNT still counts every occurrence, because a clash sustained through four onsets really is
+  // worse than one; it is the INSTRUCTION that must not repeat.
+  const seen = new Set<string>();
+  const distinct = m.findings.filter((f) => {
+    const k = `${f.kind}|${f.bar}|${[...f.parts].sort().join("+")}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
   // Bounded, and the bound is a kindness rather than a cost saving: a player handed thirty notes
   // rewrites everything and the next round is a different piece, not a fixed one.
-  for (const f of m.findings.slice(0, 6)) {
+  for (const f of distinct.slice(0, 6)) {
     const targets = f.parts.length > 0 ? f.parts : [parsed.parts[0]?.instrument ?? "lead"];
     for (const t of targets) asks.push({ instrument: t, note: `bar ${f.bar}: ${f.detail}` });
   }

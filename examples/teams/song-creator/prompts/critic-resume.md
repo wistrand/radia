@@ -28,7 +28,7 @@ Answer:
   }}
 
 Do not repeat an ask that was already done. Do not invent new work to look thorough: a round of
-revision costs three players a turn each, and the song settles when both reviewers approve. If it is
+revision costs every player a turn, and the song settles when both reviewers approve. If it is
 good enough to hear, approve it and say what finally made it work.
 
 Stop with one line on whether your asks landed.

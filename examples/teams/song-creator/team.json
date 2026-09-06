@@ -29,7 +29,7 @@
         }
       ],
       "claimable": false,
-      "usage": "The plan every player works from. body: {song, title, description, key, bpm, meter: {beats, unit}, bars, chords, parts, maxRounds, groove?}. `parts` decides WHO is asked: lead, harmony and bass always, plus 'drums' when the piece wants a beat. `chords` is ONE ENTRY PER BAR (['Am','F','C','G'], as many as there are bars): on a bar's strong beats play notes from its chord. An entry may hold two chords ('Bm G'), splitting that bar between them. `groove: true` says the piece rides a pulse, so a steady bass and kit are the point rather than dull. Reference data: read it, never claim it."
+      "usage": "The plan every player works from. body: {song, title, description, key, bpm, meter: {beats, unit}, bars, chords, parts, maxRounds, groove?, timbre?}. `parts` decides WHO is asked: lead, harmony and bass always, plus 'drums' when the piece wants a beat. `chords` is ONE ENTRY PER BAR, as many as there are bars: on a bar's strong beats play notes from its chord. An entry may hold two chords ('Bm G'), splitting that bar. `groove: true` says the piece rides a pulse, so a steady bass and kit are the point. `timbre` is the sound family: 'synth', 'plucked' or 'soft'. Read it, never claim it."
     },
     {
       "kind": "part",
@@ -75,7 +75,7 @@
         }
       ],
       "claimable": true,
-      "usage": "One player's music. body: {song, instrument, round, phrase}. Bars separated by |, each a run of PITCH/DENOM: `C4/4 E4/8 r/8 | G3/2 r/2`. PITCH is A-G, an optional # or b, and an octave (C4 is middle C); `r` is a rest. DENOM is a power of two, 1 to 64: /4 a quarter, /8 an eighth. A dot adds half again (`C4/4.`). A trailing ~ ties a note into the next of the same pitch and may cross a barline (`G4/8~ | G4/4`), so a note can arrive before the beat. EVERY BAR MUST SUM TO THE METER; one that does not is refused by its number. Pitches outside C1..C7 are refused. The brief's `bars` says how many."
+      "usage": "One player's music. body: {song, instrument, round, phrase}. Bars separated by |, each a run of PITCH/DENOM: `C4/4 E4/8 r/8 | G3/2 r/2`. PITCH is A-G, an optional # or b, and an octave (C4 is middle C); `r` is a rest. DENOM is a power of two, 1 to 64: /4 a quarter, /8 an eighth. A dot adds half again (`C4/4.`). A trailing ~ ties a note into the NEXT one of the same pitch and may cross a barline: `G4/8~ | G4/4` is one note starting before the beat. Only the first carries the ~. EVERY BAR MUST SUM TO THE METER; one that does not is refused by number. Pitches outside C1..C7 are refused."
     },
     {
       "kind": "draft",
@@ -222,7 +222,10 @@
       ],
       "promptFile": "prompts/arranger.md",
       "frame": false,
-      "timeoutSeconds": 300
+      "timeoutSeconds": 300,
+      "env": {
+        "MAX_THINKING_TOKENS": "0"
+      }
     },
     {
       "name": "ada",
@@ -245,7 +248,11 @@
       "resumePromptFile": "prompts/player-resume.md",
       "frame": false,
       "resume": true,
-      "timeoutSeconds": 600
+      "timeoutSeconds": 600,
+      "env": {
+        "MAX_THINKING_TOKENS": "0"
+      },
+      "leaseSeconds": 300
     },
     {
       "name": "ben",
@@ -291,7 +298,11 @@
       "resumePromptFile": "prompts/player-resume.md",
       "frame": false,
       "resume": true,
-      "timeoutSeconds": 600
+      "timeoutSeconds": 600,
+      "env": {
+        "MAX_THINKING_TOKENS": "0"
+      },
+      "leaseSeconds": 300
     },
     {
       "name": "pip",
@@ -314,7 +325,11 @@
       "resumePromptFile": "prompts/player-resume.md",
       "frame": false,
       "resume": true,
-      "timeoutSeconds": 600
+      "timeoutSeconds": 600,
+      "env": {
+        "MAX_THINKING_TOKENS": "0"
+      },
+      "leaseSeconds": 300
     },
     {
       "name": "critic",

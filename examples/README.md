@@ -67,8 +67,9 @@ the repair of model-written code, with `deno task test:teams` playing it model-f
 writes a song, and is the only example whose output has a measurable quality: players fill in one
 part each in parallel, a fan-in assembles them with no orchestrator, two reviewers claim separate
 records so neither sees the other's verdict, and a revision has to move a counted fault. That number
-is what makes "the review improved it" a test rather than a claim, and chasing it found four bugs in
-shared code. `deno task test:song` plays the whole pipeline with no model in it, and `test:song-team`
+is what makes "the review improved it" a test rather than a claim. Chasing it found bugs in shared
+code, and one thing worth more than any of them: a run the count scored WORST was the one a listener
+called best, because two of the metric's own rules disagreed about one note. `deno task test:song` plays the whole pipeline with no model in it, and `test:song-team`
 mints the team from its own `team.json`.
 
 **`chat/`** exercises the broadest surface: model routing, capability records, turn persistence,

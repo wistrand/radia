@@ -657,3 +657,63 @@ Deno.test("loop: watch:false claims on the tick alone, and opens no stream at al
     await s.close();
   }
 });
+
+// A RENEWAL THAT FAILS IS IGNORED FOR THE FENCE AND NEVER FOR THE OPERATOR. Ignoring it is right:
+// the lease holds until it expires, and guessing "lost" would cancel work that is still ours. Doing
+// it silently is what cost a diagnosis: a harness ran 320s and was killed `lease_lost` with nothing
+// before it in any log, while the space could show only two takes and no nack between them, because
+// a lapse is lazy and writes no event. The three lines below are the whole contract.
+Deno.test("loop: a failing renewal is reported, does not fence the handler, and says when it recovers", async () => {
+  let failing = true;
+  const s = await newWorkerSpace((req) =>
+    failing && new URL(req.url).pathname === "/v0/leases/renew"
+      ? new Response("upstream is having a moment", { status: 503 })
+      : undefined
+  );
+  const stop = new AbortController();
+  const said: string[] = [];
+  const observed = { cancelled: false, timedOut: false };
+  let entered!: () => void;
+  const claimed = new Promise<void>((r) => (entered = r));
+  const finished = agentLoop(s.client, {
+    name: "w",
+    patterns: [{ kind: "task" }],
+    // Six seconds: the heartbeat ticks every two, so a failure is seen while the lease still holds.
+    leaseSeconds: 6,
+    pollMs: 200,
+    signal: stop.signal,
+    log: (m) => said.push(m),
+    handle: (_r, _c, signal) =>
+      new Promise<void>((resolve) => {
+        entered();
+        const done = () => {
+          observed.cancelled = signal.aborted;
+          resolve();
+        };
+        signal.addEventListener("abort", done, { once: true });
+        setTimeout(() => {
+          observed.timedOut = true;
+          done();
+        }, 20_000);
+      }),
+  });
+  try {
+    await s.space.put({ kind: "task", body: { tag: "x" } });
+    await claimed;
+
+    await finished_or(finished, () => said.some((m) => /renewal failed, retrying/.test(m)));
+    assert(said.some((m) => /renewal failed, retrying/.test(m)), `no failure was reported: ${said.join(" | ")}`);
+    assertEquals(observed.cancelled, false, "a 503 on renew is transient and must not fence a live claim");
+
+    failing = false;
+    await finished_or(finished, () => said.some((m) => /renewal recovered/.test(m)));
+    assert(said.some((m) => /renewal recovered after \d+s/.test(m)), `no recovery was reported: ${said.join(" | ")}`);
+    assertEquals(observed.timedOut, false, "the handler was still running, so nothing waited out its failsafe");
+    // Every line names the claim, so a worker running several at once says WHICH one is at risk.
+    assert(said.filter((m) => /renewal/.test(m)).every((m) => /^\[w\] \w{6}: renewal/.test(m)), said.join(" | "));
+  } finally {
+    stop.abort();
+    await finished.catch(() => {});
+    await s.close();
+  }
+});

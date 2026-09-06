@@ -6,7 +6,7 @@
 // answered, assembling their phrases, dispatching two reviews, counting rounds, and rendering. The
 // models decide what the music should be; this decides nothing.
 //
-// THE FAN-IN IS THE ONLY SUBTLE PART. Three players work in parallel, so something must notice when
+// THE FAN-IN IS THE ONLY SUBTLE PART. The players work in parallel, so something must notice when
 // the last one lands. It does NOT poll: a claim that nacks while it waits burns the record's bounded
 // attempts on waiting, which is how a slow player becomes a dead-lettered song. Instead every
 // claimed `phrase` asks whether the round is now complete, and the completing claim writes the
@@ -19,7 +19,6 @@ import { TEAM_FIELD } from "../../../extensions/ts/team.ts";
 import { writeWorkspace } from "../../../extensions/ts/workspace.ts";
 import { parseScore, type Score } from "./score.ts";
 import { durationSeconds } from "./score.ts";
-import { render } from "./synth.ts";
 import { type HistoryInput, historyPage, renderRounds } from "./history.ts";
 import { retireRun } from "./service.ts";
 import { BRIEF, DRAFT, NOTE, PART, PHRASE, REVIEW, VERDICT } from "./kinds.ts";
@@ -41,10 +40,12 @@ export interface Brief {
   key: string;
   bpm: number;
   meter: { beats: number; unit: number };
-  /** One chord per bar, which is what lets three players written apart agree about the harmony. */
+  /** One chord per bar, which is what lets players written apart agree about the harmony. */
   chords?: string[];
   /** This piece rides a repeating pulse, so a steady rhythm section is intended rather than dull. */
   groove?: boolean;
+  /** Which family of sounds it is played on: `synth`, `plucked` or `soft`. See `Score.timbre`. */
+  timbre?: string;
   bars?: number;
   parts: string[];
   maxRounds?: number;
@@ -60,6 +61,9 @@ export function assemble(brief: Brief, phrases: RadiaRecord<{ instrument: string
     // given. A progression that lives only on the brief is one nothing checks.
     ...(brief.chords?.length ? { chords: brief.chords } : {}),
     ...(brief.groove ? { groove: true } : {}),
+    // CARRIED for the same reason as the chords, one stage further on: the renderer picks a voice
+    // per role, so without this a brief asking for a harp renders on the default synth stack.
+    ...(brief.timbre ? { timbre: brief.timbre } : {}),
     parts: brief.parts.filter((i) => byInstrument.has(i)).map((i) => ({ instrument: i, phrase: byInstrument.get(i)! })),
   };
 }
@@ -95,7 +99,7 @@ export async function runProducer(
 
   await agentLoop(client, {
     name: "producer",
-    // Three patterns, one loop: this member is the only thing that has to see every stage.
+    // Two patterns, one loop: this member is the only thing that has to see every stage.
     patterns: [{ kind: PHRASE }, { kind: VERDICT }],
     signal: o.signal,
     log: say,
@@ -121,13 +125,21 @@ export async function runProducer(
           { kind: DRAFT, body: stamp({ song: b.song, round: b.round, key: brief.key, title: brief.title, score }) },
           `draft:${b.song}:${b.round}`,
         );
-        for (const by of ["rules", "ear"] as const) {
+        // A DRAFT THAT DOES NOT PARSE GETS NO EAR. Nobody can hear a score the renderer refuses, so
+        // asking a model to judge one buys a verdict about nothing: four rounds of a live run carry
+        // an ear approving "the late C6 payoff" on a piece that would not render, which is a paid
+        // turn and a false signal in the same record. The count alone is enough to send it back.
+        const unreadable = parseScore(score).errors.length > 0;
+        for (const by of unreadable ? (["rules"] as const) : (["rules", "ear"] as const)) {
           await client.put(
             { kind: REVIEW, body: stamp({ song: b.song, round: b.round, by, draft: draft.id, key: brief.key }), parentIds: [draft.id] },
             `review:${b.song}:${b.round}:${by}`,
           );
         }
-        say(`[producer] ${b.song} r${b.round}: draft ${draft.id.slice(-6)}, two reviews out`);
+        say(
+          `[producer] ${b.song} r${b.round}: draft ${draft.id.slice(-6)}, ` +
+            (unreadable ? "one review out: it does not parse, so there is nothing to hear" : "two reviews out"),
+        );
         return;
       }
 
@@ -136,13 +148,18 @@ export async function runProducer(
         kind: VERDICT,
         match: { song: b.song, round: b.round },
       });
+      const drafts = await client.queryAll<{ round: number; score: Score }>({ kind: DRAFT, match: { song: b.song } });
+      // WHICH VERDICTS THIS ROUND IS OWED, decided the same way the dispatch above decided it and
+      // from the same evidence, so the two cannot drift: an unreadable round was sent one review, so
+      // waiting for two would hang it forever.
+      const mine = drafts.find((d) => d.body.round === b.round);
+      const owedEar = mine ? parseScore(mine.body.score).errors.length === 0 : true;
       const by = new Set(verdicts.map((v) => v.body.by));
-      if (!by.has("rules") || !by.has("ear")) {
+      if (!by.has("rules") || (owedEar && !by.has("ear"))) {
         say(`[producer] ${b.song} r${b.round}: ${[...by].join("+") || "no"} verdict in, waiting for the other`);
         return;
       }
 
-      const drafts = await client.queryAll<{ round: number; score: Score }>({ kind: DRAFT, match: { song: b.song } });
       // A VERDICT ON A ROUND THE SONG HAS LEFT decides nothing. Both verdicts for one round can be
       // claimed long after the next round was assembled, and such a handler was settling the piece
       // on ITS round's verdicts while counting every later round against the limit: the ear had not

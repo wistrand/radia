@@ -1605,6 +1605,46 @@ decorates); `radia get` prints the same line. Lasting attribution names the AGEN
   "NO TOOLS", and from `/tmp` all 24 (2026-09-05, traced after a scratch directory under
   `.radia/` failed the same way). `radia team up` runs members in `~/.radia/team/<member>/`, the
   lab in `~/.radia-lab/<run>/<agent>/`. Guard: `test/teamup.test.ts`.
+- **Ignoring a failed renewal is right for the FENCE and wrong for the operator, so report it.**
+  `startHeartbeat` must not read a 5xx as `lease_lost` (that would cancel work still ours), but
+  ignoring it SILENTLY meant renewals failed for minutes, the lease lapsed, and the first output was
+  the fence: a harness killed at 320s with nothing before it in any log, and a lapse writes no event
+  either, so the space showed two takes and no nack. It now reports the first failure, the streak
+  passing half the lease, and recovery. Guard: `test/loop.test.ts`, "a failing renewal is reported".
+- **`timeoutSeconds` larger than `leaseSeconds` means the claim can be lost before the work ends.**
+  A member allowed 600s on a 120s lease keeps its claim only if 15 consecutive renewals succeed, and
+  the symptom is a fence that reads like a timeout. Set both together (`song-creator/team.json`).
+- **A harness inherits the OPERATOR's settings, so a team's timing is set by a file the team cannot
+  see.** `~/.claude/settings.json` `alwaysThinkingEnabled` reaches every `claude` a member spawns:
+  the song lead spent 19k thinking tokens per phrase, hit `timeoutSeconds: 300` and nacked, while an
+  operator without it got a 3.5x faster team from the same `team.json`. Declare it: a member's `env`
+  merges into the spawn (`cli.ts`, `SpawnOptions.env`). `MAX_THINKING_TOKENS` is a SWITCH, not a cap
+  (1024 spent 2934), and players run in parallel, so only the SLOWEST member's thinking counts.
+- **Two rules that judge one thing must agree about it, or the loop cannot converge.** In
+  `analysis.ts` `offChord` REQUIRED a chord tone on a strong beat while `outOfKey` punished the same
+  note for leaving the scale: `E7` in A minor is `E G# B D`, and its G# is what makes it a dominant.
+  A live run was charged 13, 10 and 8 faults over three rounds, all of them correct G#s, spent every
+  round removing them and settled on the round limit at 21 while a listener called it the best song
+  the team had produced. The chord is the LOCAL harmony and the key is the default it may leave, so
+  a chord tone is never out of key. Same run after the fix: 14, 6, 14, settling on the ear at round 2.
+- **A cap on feedback must count DISTINCT MISTAKES, not occurrences, or it drips.** `checker.ts`
+  deduped parse errors by their message, which carries the BAR NUMBER, so one part with eight
+  overlong bars read as eight distinct places; the per-instrument cap of 2 handed over two, and a
+  live run spent FOUR rounds fixing one part two bars at a time while the player did exactly as
+  asked each round. Key on the RULE (strip the token and the bar), then name every bar in one ask.
+  The same defect sat in the other branch: dissonance is judged at every ONSET, so one clash held
+  across a bar gave 12 asks covering 4 problems and the budget was spent before the rest were
+  reached. Dedupe by `(kind, bar, parts)`. The COUNT still counts occurrences, since a clash held
+  through eight onsets IS worse; it is the INSTRUCTION that must not repeat.
+- **Never ask a model to judge an artefact the deterministic stage already refused.** A draft that
+  does not parse cannot be heard, and the ear duly approved four of them, praising a "late C6 payoff"
+  on scores the renderer rejects: a paid turn and a false line in the history. The producer now emits
+  the `ear` review only for a draft that parses, and derives what a round is OWED from the same
+  parse, so dispatch and the wait cannot drift.
+- **An EXAMPLE is tuned for the path it demonstrates, not for output quality.** Thinking made the
+  song better (1 fault vs 5) and the example worse: nothing was ever refused, so the refusal, the
+  per-instrument repair ask and the re-round never ran. `song-creator` ships it OFF, so two rounds
+  are lost to notation on purpose and the recovery path is what a reader sees.
 - **A word a tool description defines is what that word MEANS to the model.** `save_procedure` says
   a saved procedure "becomes one of your tools", so "list tools" routed to the saved-code listing,
   came back empty, and the assistant reported having no tools with 39 in front of it. The

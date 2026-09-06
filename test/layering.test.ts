@@ -291,3 +291,36 @@ Deno.test("[layering] no doc comment is stranded above another doc comment", asy
   }
   assertEquals(violations, [], "a doc comment ends and another begins with no code between them; the first is orphaned");
 });
+
+// ── source stays TEXT, so the tools that read it keep working ────────────────────────────────────
+//
+// `history.ts` used a NUL as a two-part map-key separator. Valid TypeScript, and it type-checked and
+// ran for weeks; what it broke was everything that reads source as text. `git diff` reported
+// "Bin 16518 -> 16624 bytes" and showed nothing, `grep` returned no matches for strings the file
+// plainly contained, and `file` called it data. The failure is SILENT in both directions: grep exits
+// 1 as if the string were absent, so a search says "not here" rather than "I cannot read this".
+//
+// NUL is the byte every one of those tools uses to decide binary, so that is what this forbids,
+// along with the other C0 controls that have no business in source. Tab, newline and carriage
+// return are ordinary text and are allowed.
+Deno.test("[layering] no source file contains a control byte that makes it read as binary", async () => {
+  const roots = [
+    { url: SRC, name: "src" },
+    { url: new URL("../sdk/ts/", import.meta.url), name: "sdk/ts" },
+    { url: new URL("../extensions/", import.meta.url), name: "extensions" },
+    { url: new URL("../examples/", import.meta.url), name: "examples" },
+    { url: new URL("./", import.meta.url), name: "test" },
+  ];
+  const offenders: string[] = [];
+  for (const root of roots) {
+    for (const file of await tsFiles(root.url)) {
+      const bytes = await Deno.readFile(new URL(file, root.url));
+      // \t \n \r are text; everything else below 0x20, and DEL, is not.
+      const bad = bytes.findIndex((b) => (b < 0x20 && b !== 9 && b !== 10 && b !== 13) || b === 0x7f);
+      if (bad >= 0) {
+        offenders.push(`${root.name}/${file} byte ${bad} = 0x${bytes[bad].toString(16).padStart(2, "0")}`);
+      }
+    }
+  }
+  assertEquals(offenders, [], `a control byte here makes git, grep and file treat the source as binary:\n${offenders.join("\n")}`);
+});

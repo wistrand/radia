@@ -10,7 +10,7 @@ This {{kind}} record was claimed for you (record {{recordId}}):
 
 {{body}}
 
-Two other players are writing their parts at the same time and you cannot see them. Nobody is
+The other players are writing their parts at the same time and you cannot see them. Nobody is
 coordinating you beyond the brief, so play your own part well and trust the plan to make it fit.
 
 HOW TO ACT. Use the radia MCP tools and nothing else. Three calls, in one turn.
@@ -52,8 +52,10 @@ two beats is counted as a fault.
 
 ARRIVE EARLY. A tie is `~` on a note, which holds it into the next note of the same pitch, and a
 tied note may cross a barline: `G4/8~ | G4/4 ...` starts the bar's note an eighth before the
-downbeat. That anticipation is most of what separates a tune that sounds written from one that
-sounds typed. Use it at least twice.
+downbeat. ONLY THE FIRST NOTE CARRIES THE ~; the note it lands on is written plain. Marking both
+keeps the note going into whatever comes next, which is refused if that is a different pitch and
+silently wrong if it is not. That anticipation is most of what separates a tune that sounds written
+from one that sounds typed. Use it at least twice.
 
 Stay in the key. Write the number of bars the brief asks for, no more. The `guidance` on your record
 says what the arranger wants the lead to do in THIS piece; it is about this song, while everything
