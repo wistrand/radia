@@ -81,13 +81,19 @@ files (`readTextFile`, `writeTextFile`, `mkdirp`, `removeFile`, `restrictToOwner
 terminal (`stdoutIsTerminal`, `consoleColumns`, `onResize`: what decides colour, width, the
 alternate screen and the repaint on SIGWINCH in `radia activity`), signals (`onShutdown`), processes (`runCapture` for a short command
 with its output, `spawnProcess` for a long-running child with its streams: a team's service
-member), and HTTP in both directions: `serve` for the socket the space listens on,
+member, whose `dropEnv` names the variables the child must not INHERIT, since an environment can
+only be subtracted from by clearing it and rebuilding it here), and HTTP in both directions: `serve` for the socket the space listens on,
 `httpGetJson` for OIDC discovery and JWKS, and `httpRequest` for the S3 blob store, which needs four
 verbs, headers it signs itself and a response body it streams to the caller.
 
 The binary group is the seam's one exception to its own sync rule, documented there: artifact
 payloads are megabyte-scale and read while serving a request, so downloads stream instead of
 materializing a blob in memory.
+
+**The seam has a twin it cannot absorb.** An extension may not import `src/`, so
+`extensions/ts/harness-worker.ts` builds its own `Deno.Command` with different stdin and kill
+semantics, and the `Deno.*` guard walks `src/` only. `test/layering.test.ts` lists every subprocess
+site under `extensions/ts/` and holds each to stating its child's environment.
 
 Why: the CLAUDE.md invariant is *maximal platform independence*. `Deno.exit` and
 `Deno.readTextFileSync` scattered through `src/` bind every module to one runtime for operations

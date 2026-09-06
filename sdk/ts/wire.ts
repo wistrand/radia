@@ -526,6 +526,10 @@ export interface EffectivePermissions {
     operations: GrantOp[];
     readsScopedToSelf: boolean;
     patterns: Record<string, unknown>[];
+    /** True when at least one grant on this kind carries NO pattern, so the authority is unbounded
+     *  by body match. `patterns` is a union and cannot answer this: a non-empty list says a
+     *  pattern-scoped grant exists, never that an unpatterned one does not. */
+    unpatterned: boolean;
     /** Set when NO such kind is declared on this space, so the grant authorizes nothing. A grant
      *  may legitimately precede its kind (an operator bootstraps an agent before the fleet declares
      *  its kinds), so this is a flag rather than an error. But an agent that guessed a kind name

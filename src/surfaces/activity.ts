@@ -327,27 +327,48 @@ export function renderActivity(m: ActivityModel, o: RenderOptions): string {
 
 // ---- loading ----
 
+/**
+ * Run id to the agent behind it, across the frames of one `--follow`.
+ *
+ * A FAILED LOOKUP IS PROVISIONAL (`until`), because this cache is consulted once per frame and a
+ * permanent negative entry is never retried: one refusal or one blip during a follow left those
+ * runs showing as raw ids for the rest of the session, and the lane a reader wanted named stayed
+ * anonymous while the space was answering again.
+ */
+export type RunNames = Map<string, { agent: string; until?: number }>;
+
+/** How long a failed run lookup stands before it is tried again. */
+const RETRY_MS = 30_000;
+
+const known = (memo: RunNames, run: string): boolean => {
+  const hit = memo.get(run);
+  return !!hit && (hit.until === undefined || hit.until > Date.now());
+};
+
 /** The two reads, with runs resolved to agents fail-soft: a session that may not read `agent_run`
  *  keeps the run id in the lane rather than losing the lane. */
 export async function loadActivity(
   client: RadiaClient,
   windowMs: number,
   kind?: string,
-  memo: Map<string, string> = new Map(),
+  memo: RunNames = new Map(),
 ): Promise<ActivityModel> {
   const [page, health] = await Promise.all([client.getEventsPage("0", TAIL, { tail: TAIL }), client.health()]);
   const events = page.events;
   const now = health.now ? Date.parse(health.now) : Date.now();
-  const runs = [...new Set(events.map((e) => e.runId).filter((r) => r && r.startsWith("run:") && !memo.has(r)))];
+  const runs = [...new Set(events.map((e) => e.runId).filter((r) => r && r.startsWith("run:") && !known(memo, r)))];
   await Promise.all(runs.map(async (run) => {
     try {
       const rows = await client.queryNewest<{ agent?: string }>({ kind: "agent_run", match: { run } }, 1);
-      memo.set(run, rows[0]?.body.agent ?? run);
+      const agent = rows[0]?.body.agent;
+      // An EMPTY answer is provisional too, not just a throw: the record is written at mint, so
+      // nothing here means it is not readable yet or not readable by this session, and both change.
+      memo.set(run, agent ? { agent } : { agent: run, until: Date.now() + RETRY_MS });
     } catch {
-      memo.set(run, run);
+      memo.set(run, { agent: run, until: Date.now() + RETRY_MS });
     }
   }));
-  return activityModel(events, (r) => memo.get(r) ?? r, now, windowMs, kind);
+  return activityModel(events, (r) => memo.get(r)?.agent ?? r, now, windowMs, kind);
 }
 
 /** The model as JSON: the same figures the text shows, for a script. */

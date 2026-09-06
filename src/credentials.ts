@@ -233,6 +233,11 @@ export function resolveToken(base: string): string | undefined {
  * The durable half for this base URL, if one was stored. `RADIA_DEFINITION_TOKEN` overrides, for
  * the same reasons `RADIA_TOKEN` does: CI, a remote space, a credential that never touches disk.
  *
+ * `RADIA_DEFINITION_TOKEN_FILE` is the same credential by REFERENCE, for a harness that configures
+ * its MCP server on a command line: argv is world-readable through the process list, so the value
+ * would otherwise sit beside a config file this codebase takes care to make owner-only. Same
+ * shape as `--operator-token-file`. The variable wins, so a caller can still override the file.
+ *
  * Handed to `RadiaClient` alongside the run token so a client whose short credential lapses mints
  * another instead of ending the session. An explicit `RADIA_TOKEN` does NOT suppress it: the two
  * answer different questions, and a run token supplied by hand still expires in 15 minutes.
@@ -241,7 +246,12 @@ export function resolveDefinitionToken(base: string): string | undefined {
   // `||`, not `??`: an EMPTY variable is an absent one. Wrapper scripts and harness configs set
   // every variable they know about, empty ones included, and `??` keeps `""` and hands it over as
   // a credential, so the stored one below is never consulted and every request 401s.
-  return env("RADIA_DEFINITION_TOKEN") || read(credentialsPath())[baseKey(base)]?.definitionToken;
+  const fromFile = () => {
+    const path = env("RADIA_DEFINITION_TOKEN_FILE");
+    if (!path) return undefined;
+    return readTextFile(path)?.trim() || undefined;
+  };
+  return env("RADIA_DEFINITION_TOKEN") || fromFile() || read(credentialsPath())[baseKey(base)]?.definitionToken;
 }
 
 // ---- a person's login, kept apart from the operator's credential ----

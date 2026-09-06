@@ -725,6 +725,16 @@ since 2026-08-21 beside `excludeKinds` and `scope`; planted in `test/conformance
   exposes no socket option (raw TCP only, not `fetch`/`Deno.serve`); drop it once the driver does.
 ### Credentials, tokens and sessions
 
+- **A credential on a command line is public: use `RADIA_DEFINITION_TOKEN_FILE`.** Codex takes its
+  MCP server's environment through `-c` flags, so the Codex member template put a member's
+  definition token in argv, readable by every local user through the process list, beside a config
+  file `team up` chmods to owner-only for the same secret. Templates name `{{tokenFile}}`;
+  `resolveDefinitionToken` reads the file. Guard: `test/teamfile.test.ts`.
+- **A spawned child inherits the whole environment unless the set is CLEARED.** `harness-worker.ts`
+  handed every member's harness whatever the launcher held, `RADIA_TOKEN` (the variable `radia dev`
+  prints the OPERATOR token for, and the one `resolveToken` ranks first) included. Filter with
+  `withoutCredentials` + `clearEnv`, or `SpawnOptions.dropEnv` at the seam. It does not make a
+  harness credential-free: it runs as the same user and can read the credentials file.
 - **Renewal is a LIVENESS protocol, so it only serves holders that are alive.** `renewRun` needs a
   process awake inside the window: not a laptop that slept, a fresh CLI process, a closed tab, or a
   replayed stored secret. An `agent_definition` has no expiry, `POST /v0/agent-runs` mints a run
@@ -882,6 +892,12 @@ tokens keep minting, while `revokeDefinition` reaches only the NEWEST record
 
 ### Grants, scopes and narrowed answers
 
+- **`patterns` on a permissions row is a UNION, so a non-empty list never means "no unpatterned
+  grant".** Two readers concluded it did: `team up` accepted a team-scoped grant as the
+  `unscopedGrants` entry a file asked for (the member then failed at claim time on a reference
+  kind), and the foreign-claimant warning skipped exactly the agent it is about when that agent
+  held a scoped take beside an unscoped one. Ask `EffectivePermissions.kinds[].unpatterned`, which
+  is recorded per grant in `effectivePermissions` where the answer exists.
 - **`authorizeWatch` unions the patterns of OBSERVING grants only (`WATCH_OPS`).** It took every
   grant on the kind whatever its operation, so an unscoped `put` beside a pattern-scoped `query`
   streamed the whole kind's ids and timing, the leak the same function's self-scope guards against.
@@ -1433,6 +1449,21 @@ report absent, not present, or the banner advertises a tool that can only hang a
   the program. A router fits REQUIREMENTS, not a name ([design-execution.md](design-execution.md)).
 ### Surfaces: HTTP, console, CLI and the SDKs
 
+- **A rule enforced where an answer is COMPUTED must also be enforced where one is SUPPLIED.**
+  `runAuction` judged a bid against the auction's window; `space_award` and `POST .../award` take a
+  bid id and judged only that it named this auction, so a late bid won by being asked for by name
+  (package AB). Both call `lateBidRefusal` now. Look for this wherever a convenience path accepts
+  the result of a computation the library performs.
+- **`Promise.all([child.status, pump(stdout), pump(stderr)])` never resolves if a grandchild holds
+  the pipe.** Killing the child does not close a descriptor another process owns, so the harness
+  worker's claim heartbeated forever with the loop's slot held. Await the exit, allow a bounded
+  flush, then abandon the pumps (`pump` takes an AbortSignal). Every subprocess site is listed in
+  `test/layering.test.ts`, because an extension cannot use the `platform.ts` seam.
+- **A cache of a FAILED lookup must expire, or one blip lasts the session.** `loadActivity`
+  memoized the run id itself on a throw or an empty answer and its `!memo.has` filter never retried,
+  so a `--follow` showed raw run ids for every affected lane until it was restarted. Negative
+  entries carry `until` (30s). The same view's follow loop died on the first thrown frame; a
+  follow keeps the last frame and backs off instead.
 - **Never assume a `Request` has a body STREAM; Firefox has no `Request.body` getter.** Deno always
   does, so a reader built on `req.body.getReader()` passes every suite here and answers EMPTY in
   the one place a browser runs the handler, the playground space (`src/browser.ts`): every put

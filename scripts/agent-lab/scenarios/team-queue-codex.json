@@ -79,7 +79,7 @@
         "-c",
         "mcp_servers.radia.args={{mcpArgs}}",
         "-c",
-        "mcp_servers.radia.env={ RADIA_DEFINITION_TOKEN = \"{{token}}\" }",
+        "mcp_servers.radia.env={ RADIA_DEFINITION_TOKEN_FILE = \"{{tokenFile}}\" }",
         "-c",
         "mcp_servers.radia.tools={{codexTools}}"
       ],
@@ -106,7 +106,7 @@
         "-c",
         "mcp_servers.radia.args={{mcpArgs}}",
         "-c",
-        "mcp_servers.radia.env={ RADIA_DEFINITION_TOKEN = \"{{token}}\" }",
+        "mcp_servers.radia.env={ RADIA_DEFINITION_TOKEN_FILE = \"{{tokenFile}}\" }",
         "-c",
         "mcp_servers.radia.tools={{codexTools}}"
       ],

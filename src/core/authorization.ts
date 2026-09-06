@@ -451,11 +451,14 @@ export async function effectivePermissions(h: AuthorizationHost, principal: stri
       complete: true,
     };
   }
-  const byKind = new Map<string, { kind: string; operations: GrantOp[]; scoped: boolean; unscoped: boolean; opsEligible: boolean; patterns: Record<string, unknown>[] }>();
+  const byKind = new Map<
+    string,
+    { kind: string; operations: GrantOp[]; scoped: boolean; unscoped: boolean; opsEligible: boolean; patterns: Record<string, unknown>[]; unpatterned: boolean }
+  >();
   for (const g of acc.defs as (GrantDef & { scope?: { createdBy?: string } })[]) {
     if (typeof g.kind !== "string" || !Array.isArray(g.operations)) continue;
     const row = byKind.get(g.kind) ??
-      { kind: g.kind, operations: [], scoped: false, unscoped: false, opsEligible: false, patterns: [] };
+      { kind: g.kind, operations: [], scoped: false, unscoped: false, opsEligible: false, patterns: [], unpatterned: false };
     for (const op of g.operations) if (!row.operations.includes(op)) row.operations.push(op);
     if (g.scope?.createdBy === "self") row.scoped = true;
     else row.unscoped = true;
@@ -464,6 +467,12 @@ export async function effectivePermissions(h: AuthorizationHost, principal: stri
     // other way here reports a plane the caller is then refused.
     if (g.scope?.createdBy === "self" && g.operations.includes("query")) row.opsEligible = true;
     if (g.pattern && Object.keys(g.pattern).length > 0) row.patterns.push(g.pattern);
+    // A row's `patterns` is the UNION over grants, so an empty list means "no pattern-scoped grant
+    // here" and a non-empty one says nothing about whether an UNPATTERNED grant also exists. A
+    // reader asking "does this principal hold this kind without a pattern" (a team checking that
+    // an unscoped grant on a reference kind survived) cannot answer it from the union, and every
+    // such reader guessed instead. Recorded per grant, where the answer is.
+    else row.unpatterned = true;
     byKind.set(g.kind, row);
   }
   // The ops plane is reachable for kinds holding ONE grant that is both a `query` grant and
@@ -488,6 +497,7 @@ export async function effectivePermissions(h: AuthorizationHost, principal: stri
       // because it is believed.
       readsScopedToSelf: (await authorScope(h, principal, "query", r.kind)) !== undefined,
       patterns: r.patterns,
+      unpatterned: r.unpatterned,
     });
   }
   return {

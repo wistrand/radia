@@ -28,7 +28,7 @@ import { addMember, DEFAULT_TEAM, declareKind, declareTeamKinds, liveKinds, type
 import { configLocation, type Harness, mcpInvocation, renderMcpConfig, renderMcpInstall } from "./mcp/config.ts";
 import { TOOLS } from "./mcp/tools.ts";
 import { framePrompt, harnessTemplates, loadTeamFile, substitute, type TeamFileMember } from "./teamfile.ts";
-import { type HarnessRun, learnCodexThread, pumpLines, runHarnessMember } from "../../extensions/ts/harness-worker.ts";
+import { CREDENTIAL_ENV, type HarnessRun, learnCodexThread, pumpLines, runHarnessMember } from "../../extensions/ts/harness-worker.ts";
 import { extensionFor, mediaTypeForPath } from "./media.ts";
 import {
   CREDENTIAL_STALE_DAYS,
@@ -50,7 +50,7 @@ import { flag, flags, has, positional } from "../flags.ts";
 import { ensureParent, radiaDir } from "../paths.ts";
 import { API_VERSION, VERSION } from "../version.ts";
 import { runUpdate } from "./update.ts";
-import { activityJson, loadActivity, renderActivity, wantColor, WINDOWS } from "./activity.ts";
+import { activityJson, loadActivity, renderActivity, type RunNames, wantColor, WINDOWS } from "./activity.ts";
 import { consoleColumns, consoleRows, env, httpRequest, mkdirp, onResize, onShutdown, readBinaryFile, readTextFile, realPath, removeFile, restrictToOwner, serve, spawnProcess, stdin, stdoutIsTerminal, UsageError, writeBinaryFile, writeStdout, writeStdoutBytes, writeTextFile } from "../platform.ts";
 import type { Lease } from "../storage/adapter.ts";
 
@@ -1603,7 +1603,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       // HEIGHT only bounds a FOLLOW, which repaints in place and loses anything past the last row.
       // A one-shot render is scrollback the reader can page, so it stays whole.
       const rows = () => (has(argv, "--follow") ? consoleRows() : undefined);
-      const memo = new Map<string, string>();
+      const memo: RunNames = new Map();
       const frame = async (): Promise<string> => {
         const m = await loadActivity(client, WINDOWS[windowKey], kind, memo);
         return ctx.json
@@ -1626,6 +1626,8 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         screen ? "\x1b[H" + text.split("\n").map((l) => l + "\x1b[K").join("\n") + "\x1b[J" : text;
       let stopped = false;
       let resized = false;
+      let failures = 0;
+      let lastText: string | undefined;
       let resolveWake: (() => void) | undefined;
       const off = onShutdown(() => {
         stopped = true;
@@ -1641,14 +1643,29 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       if (screen) writeStdout("\x1b[?1049h\x1b[?25l");
       try {
         while (!stopped) {
-          const text = await frame();
+          // A FAILED FRAME IS NOT THE END OF THE FOLLOW. One 500, one restarted space, one dropped
+          // connection used to throw straight out of this loop and end the session, which is the
+          // opposite of what a follow is for. The last good frame stays on screen, the error goes
+          // in its place only when there is nothing to keep, and the wait backs off to 30s so a
+          // space that is down is not polled every three seconds.
+          let text: string;
+          try {
+            text = await frame();
+            failures = 0;
+          } catch (e) {
+            failures++;
+            text = lastText ?? `radia activity: ${(e as Error).message}\n`;
+            if (lastText) text = lastText + `\n[${new Date().toISOString()}] reading the space failed (${(e as Error).message}); retrying\n`;
+          }
           if (stopped) break;
           const clear = screen && resized ? "\x1b[2J" : "";
           resized = false;
+          if (failures === 0) lastText = text;
           writeStdout(clear + paint(text));
+          const wait = failures === 0 ? 3000 : Math.min(30_000, 3000 * 2 ** Math.min(failures, 4));
           await new Promise<void>((r) => {
             resolveWake = r;
-            setTimeout(r, 3000);
+            setTimeout(r, wait);
           });
         }
       } finally {
@@ -2632,12 +2649,15 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
   // Every line stamped on the wall clock, because a run spans minutes and a harness's pause is
   // only visible as a gap between lines.
   const say = (line: string) => console.error(`${new Date().toISOString()} ${line}`);
-  // --init and --seed are the PRIVILEGED half, and the one place this verb uses the operator: the
-  // client it was built with. A member with no token on this machine is minted the way `team add`
-  // does, under the file's team, and its token stored; one already defined elsewhere is refused
-  // with the rotation named, since a second definition is not a rotation.
-  // The OPERATOR's client, for the three privileged steps; built once, since each construction
-  // would exchange the durable half again.
+  // --init and --seed are the PRIVILEGED half: a member with no token on this machine is minted the
+  // way `team add` does, under the file's team, and its token stored; one already defined elsewhere
+  // is refused with the rotation named, since a second definition is not a rotation.
+  // THEY ARE NOT THE ONLY USE OF THIS CLIENT. Both claimant audits run on every plain start and
+  // call `dryRun` and `permissions`, which are ops reads, so a start without operator reach loses
+  // those warnings (a foreign unscoped claimant, a leftover copy of a member). Losing them is what
+  // it does: the audits are advisory and each read is fail-soft, since refusing to run a team over
+  // a missing warning would be worse than starting without it.
+  // Built once, since each construction would exchange the durable half again.
   const adminFor = () => new RadiaClient(base, resolveDefinitionToken(base) ? { definitionToken: resolveDefinitionToken(base)!, reuseRun: true } : { token: resolveToken(base) });
   let adminClient: RadiaClient | undefined;
   const admin = () => (adminClient ??= adminFor());
@@ -2666,7 +2686,16 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
       const agent = `agent:${m.name}`;
       if (m.definitionToken) continue;
       const prior = await readDefinition(admin, agent);
-      const wanted = [...(m.grants ?? []), ...(m.unscopedGrants ?? [])].map(parseGrant);
+      // SCOPED AND UNSCOPED ARE DIFFERENT ASKS. `unscopedGrants` exist because a reference kind
+      // carries no team, so a team-scoped grant on one matches nothing; comparing kind and
+      // operations alone let the scoped grant stand in for the unscoped one the file asked for,
+      // and the member came up looking provisioned and failed at claim time. An unscoped ask is
+      // satisfied only by a row with NO pattern; a scoped ask still accepts either, since an
+      // unscoped grant is the wider authority.
+      const wanted = [
+        ...(m.grants ?? []).map((g) => ({ ...parseGrant(g), unscoped: false })),
+        ...(m.unscopedGrants ?? []).map((g) => ({ ...parseGrant(g), unscoped: true })),
+      ];
       if (storedMember(base, agent)) {
         // CONVERGE rather than skip. A token stored by an earlier file (or an earlier version of
         // this one) lacks the grants this file adds, and a definition removed on the space cannot
@@ -2674,9 +2703,20 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
         // time. Held grants are read from enforcement (`permissions`), never from what a setup
         // once assigned, and a shortfall is a ROTATION: the stored token is replaced.
         const held = prior.state === "active" ? (await admin.permissions(agent)).kinds : [];
-        const missing = wanted.filter((w) => !held.some((k) => k.kind === w.kind && w.operations.every((o) => (k.operations as string[]).includes(o))));
+        const missing = wanted.filter((w) =>
+          !held.some((k) =>
+            k.kind === w.kind && w.operations.every((o) => (k.operations as string[]).includes(o)) &&
+            (!w.unscoped || k.unpatterned)
+          )
+        );
         if (prior.state === "active" && missing.length === 0) continue;
-        say(`[${agent}] re-minting: ${prior.state !== "active" ? "its definition is not live on this space" : `it lacks ${missing.map((w) => `${w.kind}:${w.operations.join(",")}`).join(" ")}`}`);
+        say(
+          `[${agent}] re-minting: ${
+            prior.state !== "active"
+              ? "its definition is not live on this space"
+              : `it lacks ${missing.map((w) => `${w.kind}:${w.operations.join(",")}${w.unscoped ? " (unscoped)" : ""}`).join(" ")}`
+          }`,
+        );
       } else if (prior.state === "active") {
         throw new UsageError(`${agent} is already defined on this space but its token is not on this machine; run \`radia team add ${m.name} --team ${label} --rotate\` here`);
       }
@@ -2813,10 +2853,24 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
   // a field the current one had added. Reported rather than refused, because an interest stays live
   // as long as its RUN does and a cleanly exited service leaves one behind for a while: a refusal on
   // that evidence would block a legitimate start.
+  // FAIL-SOFT, once. `dryRun` is an ops read, so a start without operator reach cannot run these
+  // audits at all; saying so beats either a crash or silence that reads as "nobody else is here".
+  let auditNoted = false;
+  const interestsOn = async (kind: string) => {
+    try {
+      return (await admin().dryRun(kind)).interests;
+    } catch (e) {
+      if (!auditNoted) {
+        auditNoted = true;
+        say(`[warn] cannot check who else claims ${kind} (${(e as Error).message}): this start has no ops read, so a foreign or leftover claimant would go unreported`);
+      }
+      return [];
+    }
+  };
   const auditOwnClaimants = async (kinds: Set<string>) => {
     const seen = new Map<string, string[]>();
     for (const kind of kinds) {
-      const { interests } = await admin().dryRun(kind);
+      const interests = await interestsOn(kind);
       for (const i of interests) {
         if (!i.agent || !members.has(i.agent)) continue;
         seen.set(i.agent, [...(seen.get(i.agent) ?? []), kind]);
@@ -2831,7 +2885,7 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
   };
   const auditClaimants = async (kinds: Set<string>) => {
     for (const kind of kinds) {
-      const { interests } = await admin().dryRun(kind);
+      const interests = await interestsOn(kind);
       const ours: Record<string, unknown>[] = [
         ...chosen.flatMap((m) => loopPatterns(m).filter((p) => p.kind === kind).map((p) => ({ [TEAM_FIELD]: label, ...(p.match ?? {}) }))),
         ...interests.filter((i) => i.agent && members.has(i.agent)).map((i) => ({ [TEAM_FIELD]: label, ...(i.match ?? {}) })),
@@ -2840,9 +2894,12 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
       for (const agent of new Set(foreign.map((i) => i.agent!))) {
         const hit = foreign.filter((i) => i.agent === agent).find((i) => ours.length === 0 || ours.some((o) => !disjoint(o, i.match ?? {})));
         if (!hit) continue;
-        const perms = await admin().permissions(agent);
-        const k = perms.kinds.find((x) => x.kind === kind && x.operations.includes("take"));
-        if (!k || k.patterns.length > 0) continue;
+        const perms = await admin().permissions(agent).catch(() => null);
+        const k = perms?.kinds.find((x) => x.kind === kind && x.operations.includes("take"));
+        // `unpatterned`, not an empty `patterns`: a claimant holding a scoped take BESIDE an
+        // unscoped one has a non-empty union and can still claim anything, and the union alone
+        // suppressed the warning for exactly the agent it is about.
+        if (!k || !k.unpatterned) continue;
         say(`[warn] ${agent} listens on ${kind} as ${JSON.stringify(hit.match ?? {})} with an UNSCOPED take and is not a member of team ${label}: it can claim this team's ${kind} records first. A reply that does not carry the team label is invisible to every member (a serveTools worker echoes it; a claimed task is simply gone). If that is not intended, stop it or run this team on a space of its own (radia dev --port 7790, then --url http://127.0.0.1:7790)`);
       }
     }
@@ -2925,6 +2982,10 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
           command: command[0],
           args: command.slice(1),
           cwd: workDir,
+          // The member's OWN token and nothing inherited: the same rule the harness worker applies
+          // (`withoutCredentials`), so a launcher shell holding an operator `RADIA_TOKEN` does not
+          // hand it to a service that was granted one team.
+          dropEnv: CREDENTIAL_ENV,
           env: { ...(m.env ?? {}), RADIA_URL: base, RADIA_DEFINITION_TOKEN: definitionToken, RADIA_CREDENTIALS: realPath(credentialsPath()), RADIA_DIR: radiaRoot },
         });
         // SIGTERM, THEN SIGKILL. A service may trap SIGTERM to finish a claim, and one that traps it
@@ -2986,6 +3047,12 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
     // file and `--operator-token-file`: `writeTextFile` creates at the umask, which is 644 here.
     writeTextFile(configPath, JSON.stringify({ mcpServers: { radia: { command: invocation.command, args: mcpArgs, env: adapterEnv } } }, null, 2));
     restrictToOwner(configPath);
+    // THE SAME TOKEN BY REFERENCE, for a harness configured on its command line (Codex). argv is
+    // world-readable through the process list, so the file is what travels and
+    // `RADIA_DEFINITION_TOKEN_FILE` is what reads it back. Owner-only like the config beside it.
+    const tokenPath = `${dir}/${m.name}.token`;
+    writeTextFile(tokenPath, definitionToken + "\n");
+    restrictToOwner(tokenPath);
     const values = {
       model: m.model ?? "",
       config: configPath,
@@ -2993,6 +3060,7 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
       binary: invocation.command,
       mcpArgs: JSON.stringify(mcpArgs),
       token: definitionToken,
+      tokenFile: tokenPath,
       credentials: realPath(credentialsPath()),
       radiaDir: radiaRoot,
       codexTools: `{ ${TOOLS.map((t) => `${t.name} = { approval_mode = "approve" }`).join(", ")} }`,

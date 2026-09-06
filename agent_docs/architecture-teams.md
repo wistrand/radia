@@ -185,6 +185,16 @@ Rules the design rests on:
   its config, so that config carries `RADIA_CREDENTIALS` and `RADIA_DIR` as well as the token:
   the first lab run omitted them, the adapter minted a run of its own, and Codex's `space_ack`
   was refused as an unknown claim after it had done the work.
+- **A member's token travels as a FILE, and the harness inherits no credential.** The config
+  (`<member>.mcp.json`) and the token (`<member>.token`, for a harness configured on its command
+  line, `RADIA_DEFINITION_TOKEN_FILE`) are both owner-only, because argv is readable by every local
+  user through the process list. The harness itself is spawned with `withoutCredentials`, so a
+  launcher shell holding an operator `RADIA_TOKEN` does not pass it to a member with a shell. What
+  that does not do: a harness runs as the same user and can open the credentials file.
+- **The two claimant audits are OPS reads and are fail-soft.** `dryRun` and `permissions` run on
+  every plain start, not only under `--init`/`--seed`, so a start without operator reach loses the
+  foreign-claimant and leftover-member warnings and says which. Losing a warning is not a reason to
+  refuse to run a team.
 - **Every way a harness ends is one settlement.** Settled by the harness: the loop's own settle
   loses the lease on purpose and the log says so. Clean exit without settling: the loop acks with
   no result. Non-zero exit: nack. Past `timeoutSeconds` (default 600): killed and nacked. Lease lost
