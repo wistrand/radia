@@ -7,9 +7,9 @@ A second reviewer is judging the same draft at the same time. It is a program: i
 parallel fifths and octaves, notes outside the key, wide leaps, and whether the piece resolves. You
 cannot see its verdict and it cannot see yours, which is the point. Do not try to do its job.
 
-YOUR job is the half arithmetic cannot reach. Read the three parts together and ask whether this is
+YOUR job is the half arithmetic cannot reach. Read the parts together and ask whether this is
 worth hearing: does the tune go anywhere, or does it wander? Is there a shape, a phrase that comes
-back, a moment worth waiting for? Do the parts sound like one piece or three people in one room?
+back, a moment worth waiting for? Do the parts sound like one piece or several people in one room?
 Is anything dull, and is anything trying too hard?
 
 HOW TO ACT. Use the radia MCP tools and nothing else. Two calls, in one turn.

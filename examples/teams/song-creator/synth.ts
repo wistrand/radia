@@ -125,15 +125,66 @@ export function drumVoiceFor(midi: number): Voice {
   return { wave: "noise", attack: 0.001, decay: 0.03, sustain: 0.0, release: 0.03, gain: 0.35, pan: 0.25, tone: 0.95 };
 }
 
-export function voiceFor(instrument: string): Voice {
+/**
+ * How a `timbre` reshapes every PITCHED voice. Overrides rather than a second voice table: the
+ * relationships between the parts (the bass rolled off, the lead panned wide, the harmony quieter)
+ * are the arrangement and must survive a change of sound, so a timbre may say what the oscillator
+ * and the envelope do and may not say how the parts sit against each other.
+ *
+ * A family, never an instrument. The engine is a tracker with four waveforms, so it can be a plucked
+ * string or a soft sustained tone and it cannot be a harp; naming families is the honest promise.
+ * The drums are untouched: a kit is a kit whatever the piece is played on.
+ */
+const TIMBRES: Record<string, Partial<Voice>> = {
+  // Struck and left to ring: instant attack, no sustain, a long decay. This is the one the brief
+  // could not previously reach, and the reason a run asked for a harp and got three detuned saws.
+  plucked: {
+    wave: "triangle",
+    attack: 0.002,
+    decay: 0.85,
+    sustain: 0.0,
+    release: 0.45,
+    unison: 1,
+    detune: 0,
+    toneEnd: 0.12,
+    vibrato: undefined,
+  },
+  // Bowed or breathed: the note arrives late and holds. The unison stays, because two near-copies
+  // are what stop a sustained sine reading as a test tone.
+  soft: {
+    wave: "sine",
+    attack: 0.14,
+    decay: 0.30,
+    sustain: 0.78,
+    release: 0.40,
+    unison: 2,
+    detune: 7,
+    vibrato: { rate: 4.6, depth: 5 },
+  },
+};
+
+/** The voice for one part, under this piece's timbre. `timbre` is optional so the renderer, the
+ *  smoke and any caller holding only an instrument name all keep working: absent or unknown is the
+ *  synth set, because a piece should not fail to sound over a word nobody defined. */
+export function voiceFor(instrument: string, timbre?: string): Voice {
   const key = instrument.toLowerCase();
   // Percussion first, and by the SHARED predicate: `score.ts` decides what is unpitched, so a part
   // the analysis excludes from harmony is the same one sounded as noise here. Naming it `percussion`
   // used to fall through to a pitched voice while the analysis already treated it as a drum.
   if (isUnpitched(instrument)) return VOICES.drums;
-  for (const name of Object.keys(VOICES)) if (key.includes(name)) return VOICES[name];
-  return FALLBACK;
+  let base = FALLBACK;
+  for (const name of Object.keys(VOICES)) {
+    if (key.includes(name)) {
+      base = VOICES[name];
+      break;
+    }
+  }
+  const over = timbre ? TIMBRES[timbre.toLowerCase()] : undefined;
+  return over ? { ...base, ...over } : base;
 }
+
+/** The timbres a brief may name, for the kind's `usage` and the smoke. */
+export const TIMBRE_NAMES = ["synth", ...Object.keys(TIMBRES)];
 
 /** A deterministic noise source. `Math.random` here would make every render of one score a different
  *  artifact and quietly cost the digest assertion the smoke rests on. */
@@ -187,7 +238,7 @@ export function render(parts: ParsedPart[], score: Score, o: RenderOptions = {})
 
   let end = 0;
   for (const p of parts) {
-    const v = voiceFor(p.instrument);
+    const v = voiceFor(p.instrument, score.timbre);
     for (const n of p.notes) if (n.midi !== null) end = Math.max(end, (n.at + n.dur) * whole + v.release);
   }
   const seconds = end + tail;
@@ -196,7 +247,7 @@ export function render(parts: ParsedPart[], score: Score, o: RenderOptions = {})
   const right = new Float32Array(frames);
 
   parts.forEach((part, index) => {
-    const partVoice = voiceFor(part.instrument);
+    const partVoice = voiceFor(part.instrument, score.timbre);
     // A DRUM PART CHANGES VOICE PER NOTE, since its pitch names the drum. Every other part holds one
     // voice for the whole line, which is what an instrument is.
     const kit = isUnpitched(part.instrument);
@@ -300,39 +351,4 @@ export function render(parts: ParsedPart[], score: Score, o: RenderOptions = {})
     dv.setInt16(44 + i * 4 + 2, Math.max(-32768, Math.min(32767, Math.round(right[i] * norm * 32767))), true);
   }
   return { wav, seconds, sampleRate: sr, peak };
-}
-
-/**
- * The page that plays it, deliberately inert.
- *
- * A shared workspace is served from the isolated artifact origin under `default-src 'none'`, so this
- * page may load its own files and can reach nothing else: no CDN, no fetch, no analytics. That is a
- * constraint to write for rather than discover, and for an audio player it costs nothing.
- */
-export function page(title: string, meta: { description: string; key: string; bpm: number; parts: string[]; seconds: number }): string {
-  const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string));
-  return `<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(title)}</title>
-<style>
-  :root { color-scheme: light dark; }
-  body { font: 15px/1.6 system-ui, sans-serif; max-width: 34rem; margin: 4rem auto; padding: 0 1rem; }
-  h1 { font-size: 1.4rem; margin-bottom: .2rem; }
-  p.brief { color: #666; margin-top: 0; }
-  audio { width: 100%; margin: 1.5rem 0; }
-  dl { display: grid; grid-template-columns: auto 1fr; gap: .3rem 1rem; margin: 0; }
-  dt { color: #666; }
-  dd { margin: 0; }
-</style>
-<h1>${esc(title)}</h1>
-<p class="brief">${esc(meta.description)}</p>
-<audio controls preload="metadata" src="song.wav"></audio>
-<dl>
-  <dt>key</dt><dd>${esc(meta.key)}</dd>
-  <dt>tempo</dt><dd>${meta.bpm} bpm</dd>
-  <dt>parts</dt><dd>${esc(meta.parts.join(", "))}</dd>
-  <dt>length</dt><dd>${meta.seconds.toFixed(1)}s</dd>
-</dl>
-`;
 }

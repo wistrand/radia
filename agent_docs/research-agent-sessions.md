@@ -375,8 +375,8 @@ of a thing is a finding, and nothing in the instructions made it one.
 
 ## What five models writing one song showed, 2026-09-06
 
-Nine live runs of `examples/teams/song-creator`, five model members each. The first team here whose
-output is MEASURED, which is what makes these observations rates rather than impressions.
+Twenty finished songs on one space, five model members each. The first team here whose output is
+MEASURED, which is what makes these observations rates rather than impressions.
 
 **Arithmetic in a notation is where models fail, not the music.** Across nine runs, three lost at
 least one round to bars that did not add up, and one wrote 122 unparseable tokens. The musical
@@ -402,6 +402,22 @@ count finds every parallel fifth and never notices a dull melody; the ear tracke
 asks across rounds ("the bar-4 turn and bar-8 fill add forward motion") and approved a piece the
 count still had notes about. Requiring both to approve made the count a veto and left the ear
 advisory, which is backwards for something meant to be worth hearing.
+
+**A metric can move against the thing it measures, and only a person catches it.** One song scored
+21 faults, the worst of any settled run, and the listener called it the best the team had made. The
+`ear` had approved it three times; the count was the outlier. The cause was two rules disagreeing
+about one note (`E7`'s G# is required by the chord check and was punished by the key check), so the
+players spent three rounds removing the feature that made it good and it settled on the round limit.
+Fixing that took the same drafts to 14, 6, 14. The guard the metric exists to be is real, and it is
+not self-validating: 11 of 20 songs settled on the ear rather than the count, and the count refused
+the piece a human liked best.
+
+**Extended thinking is a demo decision, not an optimisation.** `alwaysThinkingEnabled` in the
+operator's `~/.claude/settings.json` reaches every spawned harness and nothing in `team.json` can see
+it, so two operators ran materially different teams from one directory. Measured on one request: 15
+minutes with, 4m18s without; 1 fault with, 5 without; and 0 rounds lost to notation with, 2 without.
+Thinking buys bar ARITHMETIC, not taste. The example ships it OFF, because with it nothing was ever
+refused and the refusal, the per-instrument repair ask and the re-round never ran.
 
 **Cost.** A round is five model turns; a three-round song is two to four minutes and roughly $1 to
 $3. That is why both smokes run the whole pipeline with no model in it, and why every bug listed in

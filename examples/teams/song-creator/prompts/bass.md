@@ -10,7 +10,7 @@ This {{kind}} record was claimed for you (record {{recordId}}):
 
 {{body}}
 
-Two other players are writing their parts at the same time and you cannot see them. Nobody is
+The other players are writing their parts at the same time and you cannot see them. Nobody is
 coordinating you beyond the brief, so play your own part well and trust the plan to make it fit.
 
 HOW TO ACT. Use the radia MCP tools and nothing else. Three calls, in one turn.
@@ -48,7 +48,8 @@ against you. A run of this team lost its drive when a bass answered a parallel-m
 replacing its eighths with half notes; do not do that. Keep the engine and change the notes.
 
 ANTICIPATE THE CHANGE. A tie is `~` on a note, which holds it into the next note of the same pitch
-and may cross a barline: `F2/8~ | F2/4 ...` puts the new root an eighth ahead of the downbeat. That
+and may cross a barline: `F2/8~ | F2/4 ...` puts the new root an eighth ahead of the downbeat.
+Only the FIRST note carries the ~; the one it lands on is written plain. That
 push is most of what makes a bass line feel like it is driving rather than marking time.
 
 Stay in the key. Write the number of bars the brief asks for, no more. The `guidance` on your record

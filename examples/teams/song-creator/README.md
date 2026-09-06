@@ -64,13 +64,28 @@ borrowed note was out of key. Four changes:
 - **Dullness is a fault.** One note length throughout, the same bar repeated, or a range under a
   fourth. The loop optimises what it measures.
 - **Character is not punished.** A leap counts only if unanswered; an out-of-key note only if landed
-  on rather than passed through.
+  on rather than passed through, and never when it is a tone of that bar's chord. `E7` in A minor is
+  `E G# B D`, so the G# that makes it a dominant is required by `offChord` and was being punished by
+  `outOfKey` at the same time: two rules with opposite verdicts on one note, which no revision can
+  satisfy. A live run spent three rounds removing them and settled on the round limit at 21 faults,
+  on a piece a listener called the best the team had made. The chord is the local harmony; the key
+  is the default it may leave.
 - **The ear settles the piece** once the count is low, instead of needing the arithmetic perfect.
 
 `groove: true` on the brief is the field that turns measurements off: it exempts the rhythm section
 from the one-note-length rule and the bass from the parallel-motion rule, because a pumping
 eighth-note bass locked to the harmony under a four-on-the-floor kit is the genre and only the brief
 knows that was meant.
+
+Measured across live runs of the same request:
+
+| | first run | after these four changes |
+|---|---|---|
+| total faults, final round | 56 | 2 |
+| off the bar's chord | 25 | 0 |
+| out of key | 12 | 0 |
+| dull parts | 4 | 0 |
+| rounds to settle | 3, on the limit | 3, on the ear |
 
 ## The second correction: dullness is not the same as no repetition
 
@@ -96,8 +111,10 @@ Six more changes, each with a guard in `smoke.ts`:
   only, since an inner voice sitting still is doing its job.
 - **A groove exempts the bass from parallel motion.** The rule is species counterpoint; a rhythm
   section locked in fifths and octaves is the idiom, and enforcing it cost the run its drive.
-- **A kit is counted by how many different bars it plays,** not by whether any two are identical.
-  Two in eight is a loop with a bar tacked on.
+- **A kit is counted by how many different RHYTHMS it plays,** not by whether any two bars are
+  identical. A drum's pitch picks which drum, so moving a hit from hat to snare makes a new bar out
+  of the same rhythm: two runs shipped 16 bars holding 5 and 4 distinct bars but one and three
+  rhythms each, and the rule passed a part that is one bar sixteen times.
 - **A chord entry may name two chords,** `"Bm G"`, splitting the bar. A progression that can only
   turn over on a downbeat cannot write a pre-chorus, and every run before this returned one chord per
   bar because that was all the field could hold.
@@ -106,15 +123,33 @@ The lesson generalises past music: **a loop optimises what it measures, and the 
 metric that rewards blandness is not simply to punish sameness.** The second metric has to name the
 thing you actually want, and repetition and monotony are not opposites.
 
-Measured across live runs of the same request:
+## The third correction: the shape of the feedback, not the metric
 
-| | first run | after the four changes |
+The measurements were then right and the loop still burned rounds, because of how the asks were
+BUILT. Three fixes, all in `checker.ts` and `producer.ts`:
+
+- **A cap must count distinct MISTAKES, not occurrences.** Parse errors were deduped by their
+  message, which carries the bar number, so one part with eight overlong bars read as eight distinct
+  places; the cap of two per instrument handed over two and the player fixed exactly those, four
+  rounds running. Key on the RULE and name every bar in one ask.
+- **The same, one branch over.** Dissonance is judged at every ONSET, so a clash held across a bar
+  reported once per note start: 12 asks covering 4 problems, the budget spent before the rest were
+  reached. Deduped by `(kind, bar, parts)`. The COUNT still counts occurrences, because a clash held
+  through eight onsets IS worse; only the INSTRUCTION must not repeat.
+- **Never ask a model to judge what the deterministic stage already refused.** A draft that does not
+  parse cannot be heard, and the ear duly approved four of them, praising a "late C6 payoff" on
+  scores the renderer rejects: a paid turn and a false line in the history. The `ear` review is now
+  emitted only for a draft that parses, and what a round is OWED comes from the same parse, so
+  dispatch and the wait cannot drift.
+
+Same request, before and after all three corrections:
+
+| | before | after |
 |---|---|---|
-| total faults, final round | 56 | 2 |
-| off the bar's chord | 25 | 0 |
-| out of key | 12 | 0 |
-| dull parts | 4 | 0 |
-| rounds to settle | 3, on the limit | 3, on the ear |
+| rounds | 6, on the ceiling | 3, on agreement |
+| rounds lost to notation | 4 | 1 |
+| ear verdicts on unreadable drafts | 4 | 0 |
+| final faults | 21 | 4 |
 
 ## The page
 
@@ -142,6 +177,14 @@ radia workspace-git song-XXXXXXXX --dir /tmp/song && git clone /tmp/song ~/song 
 It sounds like a chiptune with a beat. The renderer is a tracker: detuned oscillator stacks, one
 filter that closes as a note sounds, a sub under the bass, and a kit whose pitch picks the drum.
 Nothing in the pipeline can hear it; the `ear` critic reads the score.
+
+The brief's `timbre` picks which family the pitched parts are played on: `synth`, `plucked` (struck
+and left to ring) or `soft` (slow to arrive and held). Voices are chosen by ROLE, so before this
+field a brief asking for a harp rendered on the same three-saw lead stack as a dance track and
+nothing could say otherwise. It names a FAMILY rather than an instrument, because a tracker with
+four waveforms can be a plucked string and cannot be a harp, and a timbre may change the oscillator
+and the envelope but never the pan or the gain: those are the arrangement and must survive a change
+of sound.
 
 ## What each file is
 
@@ -177,6 +220,31 @@ shared code, all fixed and guarded:
 - `~/.radia/team/<member>/` was flat, so `go-fish` and this team shared a working directory, an MCP
   config and a warm session between members that happen to share a name.
 - A service that traps SIGTERM outlived `team up` and hung it, then went on claiming with old code.
+
+## The team declares thinking OFF, and that is a demo decision
+
+Every `claude` member carries `env: {"MAX_THINKING_TOKENS": "0"}`. Two reasons, and the first is
+about reproducibility: `~/.claude/settings.json` `alwaysThinkingEnabled` reaches a spawned harness
+and nothing in `team.json` can see it, so two operators running this same directory got materially
+different members. A team states its own policy.
+
+The second is what the example is FOR. The same request run both ways:
+
+| | thinking on | thinking off |
+|---|---|---|
+| wall clock | ~15 min | 4m18s |
+| rounds lost to notation | 0 | 2 |
+| final faults | 1 | 5 |
+
+Thinking buys bar arithmetic, so it produced better music AND a worse demonstration: nothing was
+ever refused, so the refusal path, the per-instrument repair ask and the re-round never ran. Off, the
+checker refuses two rounds, names the bar that does not add up, each player fixes only its own, and
+the piece still settles. THAT is the behaviour this example exists to show, and it is watchable in
+four minutes. The music is the workload, not the point.
+
+Two facts before changing it. The value is a SWITCH, not a cap (`1024` produced 2934 thinking
+tokens, and a live lead spent 19k). And the players run in PARALLEL, so a round costs
+`max(ada, ben, cy, pip)`.
 
 ## Where it caused friction
 

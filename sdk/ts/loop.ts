@@ -221,7 +221,7 @@ export async function agentLoop<T = unknown>(client: RadiaClient, o: LoopOptions
       }
       log(`[${o.name}] lease lost on ${short(claimed.record.id)} (${reason}): cancelling the handler`);
       claim.abort(new Error(`lease_lost: ${reason}`));
-    });
+    }, (msg) => report(`[${o.name}] ${short(claimed.record.id)}: ${msg}`));
     try {
       // THE ONE CAST. `T` is the caller's claim about the bodies its patterns match, asserted here
       // rather than re-asserted by every handler. The runtime still decides what a body may be; this
@@ -410,14 +410,25 @@ type LostReason = "lease_lost" | "credential";
  * 401/403, where a stopped or quarantined run lands, since revoking it kills the token before
  * anything answers `lease_lost`. Everything else (a blip, a 5xx) is transient and ignored — the
  * lease has until its expiry, and guessing "lost" would cancel work that is still ours.
+ *
+ * IGNORED IS NOT SILENT. Ignoring a failed renewal is right for the FENCE decision and wrong for
+ * the operator: renewals that keep failing let the lease lapse, and the first output was the fence
+ * that followed. A harness ran 320s and was killed `lease_lost` with nothing before it in any log,
+ * and the space could only show two takes with no nack between them, because a lapse is lazy and
+ * writes no event. `report` says a renewal failed, says when the streak passes half the lease and
+ * the claim is genuinely at risk, and says when it recovers. Three lines at most, never per tick.
  */
 function startHeartbeat(
   client: RadiaClient,
   claimed: { lease: Parameters<RadiaClient["renew"]>[0] },
   leaseSeconds: number,
   onLost: (reason: LostReason) => void,
+  report: (msg: string) => void = () => {},
 ) {
   let stopped = false;
+  /** When the current run of failures began, and whether the at-risk line has been said for it. */
+  let failingSince: number | null = null;
+  let warned = false;
   const stop = () => {
     if (stopped) return;
     stopped = true;
@@ -430,12 +441,30 @@ function startHeartbeat(
       if (res.status === "lease_lost") {
         stop();
         onLost("lease_lost");
+        return;
+      }
+      if (failingSince !== null) {
+        report(`renewal recovered after ${((Date.now() - failingSince) / 1000).toFixed(0)}s of failures`);
+        failingSince = null;
+        warned = false;
       }
     } catch (e) {
       if (stopped) return;
       if (e instanceof RadiaClientError && (e.status === 401 || e.status === 403)) {
         stop();
         onLost("credential");
+        return;
+      }
+      const now = Date.now();
+      if (failingSince === null) {
+        failingSince = now;
+        report(`renewal failed, retrying (the lease holds until it expires): ${describeFailure(e, client.base)}`);
+      } else if (!warned && now - failingSince > (leaseSeconds / 2) * 1000) {
+        warned = true;
+        report(
+          `renewal has failed for ${((now - failingSince) / 1000).toFixed(0)}s of a ${leaseSeconds}s lease: ` +
+            `the claim is about to be lost, and the handler will be fenced`,
+        );
       }
     }
   }, Math.max(1000, (leaseSeconds / 3) * 1000));

@@ -285,6 +285,14 @@ Rules the design rests on:
 - **Cost is bounded by the lease, the timeout and `concurrency`** (default 1 per member), never
   by the model. Contract: `extensions/conformance/harness-worker.test.ts`, every outcome driven
   with a harness that has no model.
+- **`timeoutSeconds` larger than `leaseSeconds` means the claim can be lost before the work ends**,
+  and the symptom reads like a timeout rather than a fence. A member allowed 600s on the default 120s
+  lease keeps its claim only if 15 consecutive renewals succeed; one live member was fenced at 320s
+  with `0 timeout` in the run tally. Set both together (`song-creator/team.json`: 600 and 300).
+- **A member's `env` is how a team declares what it inherits.** It merges into the spawn, so the
+  operator's own settings no longer decide the team's behaviour: `alwaysThinkingEnabled` in
+  `~/.claude/settings.json` reaches every spawned `claude` and nothing in `team.json` could see it,
+  which made one directory run as two materially different teams. Measured at 3.5x wall clock.
 - **The first real run is a lab scenario**, `scripts/agent-lab/scenarios/team-up.json`: a Claude
   Code session asks for a program, and the Codex member is a worker that launches `codex exec` only
   when the task is claimed. The scenario writes the worker's `team.json` through the runner's new
