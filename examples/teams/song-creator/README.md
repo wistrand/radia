@@ -72,10 +72,23 @@ borrowed note was out of key. Four changes:
   is the default it may leave.
 - **The ear settles the piece** once the count is low, instead of needing the arithmetic perfect.
 
-`groove: true` on the brief is the field that turns measurements off: it exempts the rhythm section
-from the one-note-length rule and the bass from the parallel-motion rule, because a pumping
-eighth-note bass locked to the harmony under a four-on-the-floor kit is the genre and only the brief
-knows that was meant.
+Two fields on the brief turn measurements off, and there are only two. `groove: true` exempts the
+rhythm section from the one-note-length rule and the bass from the parallel-motion rule, because a
+pumping eighth-note bass locked to the harmony under a four-on-the-floor kit is the genre and only
+the brief knows that was meant. `riff: true` does the same one part over: it exempts the MELODY from
+uniform note lengths, from repeating a bar, and from the late-peak rule, because all three describe
+a tune that develops and a motor riff does not. Both are narrow on purpose, and neither excuses
+anything else: a riff still has to breathe, and the parts under it are still measured.
+
+**Why the second one was needed is the sharper lesson.** Songs from different requests were coming
+back sounding alike, and the cause was not the rules but what reached the players. The arranger's
+per-part `guidance` restated the instrument's standing brief ("carry the singable tune in a
+comfortable mid-high register, moving mostly stepwise") in words that fit any song; the player
+prompts listed what the brief carries and left `description` out of the list; and from round two on
+the guidance was `Round N. Keep what works; change only what was asked`, so the sole input was the
+checker's fault list. The measured rules encode one aesthetic, and once they are the only signal
+left, every request converges on it. The description now travels into every round, guidance has to
+say what this piece does that another would not, and a piece whose tune is a figure can say so.
 
 Measured across live runs of the same request:
 

@@ -38,7 +38,15 @@ DECIDE, in this order:
     rhythm section is meant to hold it steady: dance music, a march, anything four-on-the-floor.
     Leave it out otherwise. It tells the reviewers that a bass in unbroken eighths under a steady
     kit is the point, so they stop asking the rhythm section to vary. Set it only when you mean it,
-    because it is the one thing in the brief that turns a measurement off.
+    because it turns a measurement off.
+  - WHETHER THE TUNE ITSELF IS THE FIGURE. Set `riff: true` when the melody is a short mechanical
+    pattern the piece runs on rather than a line that develops: a motor riff, a synth ostinato, the
+    kind of tune a machine repeats. It relaxes three measurements for the LEAD alone (uniform note
+    lengths, the same bar again, and the highest note arriving late), because all three describe a
+    tune that goes somewhere and a riff goes nowhere on purpose. Without it, a request for a motor
+    riff comes back as an ordinary stepwise melody: the count called the figure dull in round one
+    and the revision loop obeyed. Do not set it for a piece with a tune. Along with `groove` these
+    are the only two measurements a brief can turn off, and a reviewer sees both.
 Those four names are the players who exist, and `parts` is what decides who is asked.
 
 THE CHORDS ARE THE MOST IMPORTANT THING YOU WRITE. The players never see each other's music,
@@ -55,10 +63,12 @@ name in `parts`, in that order.
        song: "{{recordId}}", title, description, key, bpm, meter: {beats, unit}, bars,
        chords: ["<one per bar>"], parts: ["lead", "harmony", "bass"], timbre, maxRounds: 3
      }}
-   Add "drums" to `parts` if you decided the piece wants it, and `groove: true` if it rides a pulse.
+   Add "drums" to `parts` if you decided the piece wants it, `groove: true` if it rides a pulse, and
+   `riff: true` if the tune itself is a repeating figure.
    `song` is this record's id, exactly as written above: it is what ties every later record to this
-   song. `description` is the request in your own words, one sentence, which is what the finished
-   page shows a listener.
+   song. `description` is the request in your own words, one sentence. It is not a caption: every
+   player reads it and plays it, and it is the only thing that reaches them in every round, so write
+   what the piece IS rather than what it is called.
 
 2. Give each player its job, one call per instrument in `parts`:
      space_put {kind: "part", body: {
@@ -70,6 +80,19 @@ name in `parts`, in that order.
 happens. Say what the part does and how it should move: which register it sits in, whether it steps
 or leaps, whether it is the tune or holds the harmony under it, where it should rest. Do not write
 any notes yourself, and do not tell a player the exact pitches. Two sentences each.
+
+WRITE ABOUT THIS SONG, NOT ABOUT THE INSTRUMENT. Every player already holds a standing brief for its
+own part, so guidance that repeats it carries nothing. This is a real line from a finished run:
+
+> Carry the singable tune in a comfortable mid-high register, moving mostly stepwise with an
+> occasional short leap to keep it easy to pick up by ear on first hearing.
+
+The lead's own prompt says all of that already, and the same sentence would fit any song this team
+has ever written, which is why a dance track and a folk round came back sounding alike. Name what
+this piece does that another would not: the ARTICULATION (short and detached, or long and joined),
+the rhythmic cell it is built on, whether the line is a tune somebody sings or a figure a machine
+repeats, and what it must not do. If the request names a piece, an era or a genre, say what makes
+that thing recognisable and put it in the guidance, because the players never see the request.
 
 TELL THE LEAD WHERE THE HOOK AND THE PEAK GO. Name the bars its main figure should occupy and the
 bar it should return in, and say roughly where the highest note of the whole song belongs, which is

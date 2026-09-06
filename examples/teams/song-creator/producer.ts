@@ -44,6 +44,9 @@ export interface Brief {
   chords?: string[];
   /** This piece rides a repeating pulse, so a steady rhythm section is intended rather than dull. */
   groove?: boolean;
+  /** The tune itself is a repeating mechanical figure, so a melody that does not develop is
+   *  intended rather than dull. See `Score.riff`. */
+  riff?: boolean;
   /** Which family of sounds it is played on: `synth`, `plucked` or `soft`. See `Score.timbre`. */
   timbre?: string;
   bars?: number;
@@ -61,6 +64,7 @@ export function assemble(brief: Brief, phrases: RadiaRecord<{ instrument: string
     // given. A progression that lives only on the brief is one nothing checks.
     ...(brief.chords?.length ? { chords: brief.chords } : {}),
     ...(brief.groove ? { groove: true } : {}),
+    ...(brief.riff ? { riff: true } : {}),
     // CARRIED for the same reason as the chords, one stage further on: the renderer picks a voice
     // per role, so without this a brief asking for a harp renders on the default synth stack.
     ...(brief.timbre ? { timbre: brief.timbre } : {}),
@@ -225,7 +229,15 @@ export async function runProducer(
               song: b.song,
               instrument,
               round: b.round + 1,
-              guidance: `Round ${b.round + 1}. Keep what works; change only what was asked.`,
+              // THE SONG'S CHARACTER TRAVELS INTO EVERY ROUND. This said only "keep what works;
+              // change only what was asked", so from round 2 on the sole input any player had was
+              // the checker's faults, and those encode one aesthetic: a stepwise tune with a late
+              // peak over a common progression. Measured across a space of finished songs, the
+              // later rounds of a techno request and a folk request converge on the same shape.
+              // Restating what the piece IS costs one line and is the only thing pulling the other
+              // way (agent_docs/research-agent-sessions.md, "the loop optimises what it measures").
+              guidance: `Round ${b.round + 1} of "${brief.title}", which is ${brief.description} ` +
+                `Keep what works AND keep that character; change only what was asked.`,
               notes: notes?.length ? notes : ["nothing was asked of your part: send it back unchanged"],
             }),
           }, `part:${b.song}:${b.round + 1}:${instrument}`);

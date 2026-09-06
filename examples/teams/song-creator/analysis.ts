@@ -337,7 +337,12 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
     // four-on-the-floor kit is the genre, not a failure to vary, and only the brief knows which was
     // meant. The lead and the inner voices are held to it either way.
     const steadyOnPurpose = score.groove === true && rhythmSection.has(p.instrument);
-    if (!steadyOnPurpose && sounded.length >= 4 && uniformity > 0.85) {
+    // A RIFF EXEMPTS THE MELODY FROM THE SAME RULE, and from two more below. `groove` says the
+    // rhythm section holds the pulse; this says the TUNE is the pulse, which is a different piece
+    // and needs the exemption to reach a different part. Uniform note lengths are what a motor
+    // figure is made of.
+    const motorRiff = score.riff === true && p.instrument === melody;
+    if (!steadyOnPurpose && !motorRiff && sounded.length >= 4 && uniformity > 0.85) {
       bland++;
       findings.push({
         kind: "monotony",
@@ -371,7 +376,9 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
     const pumping = rhythmOnly
       ? (cells.size >= 4 && distinctRhythms === 1) || (cells.size >= 8 && distinctRhythms <= 2)
       : repeats / cells.size > 0.3;
-    if ((rhythmOnly || cells.size >= 4) && pumping) {
+    // The same bar again IS the figure when the piece is a riff, so the exemption reaches here too:
+    // a motor tune that varies its bars is not the thing that was asked for.
+    if ((rhythmOnly || cells.size >= 4) && pumping && !motorRiff) {
       bland++;
       findings.push({
         kind: "monotony",
@@ -424,8 +431,11 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
       // WHERE THE HIGHEST NOTE FALLS. A tune has one peak and it arrives late; spending it in bar 2
       // and never returning leaves the remaining six bars with nowhere to go. A real run did exactly
       // that, and nothing measured it.
+      // A RIFF HAS NO PEAK TO SPEND. Its top note is part of the figure and arrives in bar one by
+      // construction, every time the figure comes round, so this rule fires on every motor tune
+      // ever written and tells it to do the one thing it must not.
       const peak = sounded.find((n) => n.midi === high)!;
-      if (peak.bar <= Math.ceil(cells.size / 4)) {
+      if (!motorRiff && peak.bar <= Math.ceil(cells.size / 4)) {
         bland++;
         findings.push({
           kind: "monotony",
