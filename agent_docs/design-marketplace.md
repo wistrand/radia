@@ -1,9 +1,16 @@
 # Capability marketplace (design)
 
-Spec and rationale for request/bid/award coordination and the timing it needs. Origin:
-outline §7. The marketplace is not implemented (M2; see
-[plan-milestones.md](plan-milestones.md)); the timing half is, under a different name and a
-different mechanism (see "Delayed visibility" below).
+Spec and rationale for request/bid/award coordination and the timing it needs. Origin: outline §7.
+
+**BUILT 2026-09-05 as a CONVENTION, with no runtime change at all**: `extensions/ts/marketplace.ts`,
+its contract in `extensions/conformance/marketplace.test.ts`, and `examples/market/` as the worked
+market (`deno task test:market`). Reachable from three surfaces as of 2026-09-06: the library, the
+HTTP facade (`marketplace/v1`, the fold and the award only, per
+[plan-extension-http.md](plan-extension-http.md)), and a model (`space_auction_bids`, `space_award`,
+plus the two wire fields the MCP adapter had never exposed, without which a model could not open an
+auction at all; see [architecture-surfaces.md](architecture-surfaces.md)). What M2 still owes is nothing here; the design asked the kernel
+for nothing, which is the result this doc set out to test. The timing half was already built under
+a different name (see "Delayed visibility").
 
 ## Contents
 - Invariants
@@ -11,7 +18,8 @@ different mechanism (see "Delayed visibility" below).
 - Protocol
 - Delayed visibility (what "durable timers" became)
 - The mechanism, in built primitives
-- Open questions (all eight settled 2026-09-05; unbuilt)
+- What building it changed
+- Open questions (all eight settled 2026-09-05)
 
 ## Invariants
 
@@ -96,8 +104,9 @@ read by nothing.
 
 ## The mechanism, in built primitives
 
-Designed 2026-09-05, nothing built. What it establishes is that the protocol above needs no new
-kernel verb, which is the question [design-algebra.md](design-algebra.md) says to settle first.
+Designed and built 2026-09-05 (`extensions/ts/marketplace.ts`). What it establishes is that the
+protocol above needs no new kernel verb, which is the question
+[design-algebra.md](design-algebra.md) says to settle first.
 
 **The bidding window is `availableAt` ON THE REQUEST, and nothing else.** A request put with
 `availableAt` set to its own closing time is READABLE for the whole window (`query`, `read_one`,
@@ -143,13 +152,50 @@ survive is a second awarder, since `bid: query` cannot be self-scoped: open ques
 currently writes. The winner's take grant is pattern-scoped to its own name, so an awarded task is
 claimable by the winner and by nobody else.
 
+## What building it changed
+
+Two adversarial passes over the finished code (2026-09-06) found a dozen defects, and their
+distribution is the finding worth keeping: **not one was in the happy path.** The eight questions
+below reason about what the protocol IS and settled well; every defect was in what happens when a
+winner dies, a policy throws, a window cannot be read, or a repair runs twice. A design review can
+establish a mechanism and cannot establish its aftermath.
+
+- **`reawardFailed` re-awarded the same job on every pass.** A dead-lettered task stays
+  dead-lettered, so each run found it again and assigned the work to the next bidder while the
+  previous successor still held it. The already-tried filter does not stop this; the successor,
+  parented on the failure, is the record of "already repaired". The idempotency key then made it
+  worse rather than safe: the second put differed in `assignee`, so it THREW rather than collapsing,
+  and a caller looping repairs crashed. Found by probing with three bidders where the test used two,
+  which is the cheapest technique in this whole exercise.
+- **A repair judged bids against NOW**, so a bid that arrived after the close, and was rightly kept
+  out of the auction, could win the work by attrition. It judges the auction's own window.
+- **A repair handed the caller's policy the failed TASK wearing the request's type**, because it
+  looked the auction up by a body field a task does not carry.
+- **An award could name a bid from another auction**, on both the HTTP route and the MCP tool, which
+  would make the record trail claim a winner chosen from bids that were never in the running. Both
+  refuse it now.
+- **A zero-length window is an auction nobody can win**: claimable at once, every bid necessarily
+  late, reopening until the attempt ceiling. `openAuction` refuses it, and that guard immediately
+  failed three tests that had been leaning on the degenerate case.
+- The rest are in [plan-audit-remediation.md](plan-audit-remediation.md) package AA, because they
+  outlive this convention: `mergeKind` erasing a co-declared kind's `usage`, two wire fields no
+  model could reach, and a lease taken outside the heartbeat and leaked on failure.
+
+**The tests that passed did so for reasons nobody had stated.** The two-bidder re-award case was
+green because the bidder list ran out before the missing check mattered. Three cases used a
+zero-length window as a convenience. An ack that never fails hid three leaked leases. A test whose
+passing reason is unstated is not a guard, and the tell is cheap: a new guard that immediately
+fails your own tests is telling you they were resting on the defect.
+
 ## Open questions
 
 Roughly in the order they blocked work, and all eight settled on 2026-09-05. Each keeps its number
 and its rejected alternatives, so a discarded shape does not get rediscovered as a new idea.
 
-**What is NOT settled is the code.** The design asks the runtime for nothing, so building it is a
-convention on the extensions tier plus an example. Two things carry forward. `claim_until` would
+**The code is now built** (`extensions/ts/marketplace.ts`, eight contract cases, and
+`examples/market/`), and building it changed one answer: see question 7, where the awarder's
+missing `bid: query` turned out to fail LOUDLY on the recommended read and silently only on the
+rejected one. Two things carry forward. `claim_until` would
 turn a winner's no-show into a crisp fact rather than an inference from silence, and it is the one
 runtime change this design would ever ask for (question 2). And an awarder reads bids it did not
 write, so several requesters in one space can read each other's, which weakens sealed bidding until
@@ -364,8 +410,12 @@ bids are sealed to the requester's key (question 7).
 
    **What this costs, and it is a REQUIREMENT rather than a wrinkle.** An awarder reads bids it did
    not write, so it must hold `bid: query`, which cannot be self-scoped, and scoping it per auction
-   would mean a grant per request. Without it the awarder reads nothing at all and every auction
-   looks empty ("Reading the bids"). The unavoidable consequence: where several requesters share a
+   would mean a grant per request. Building it improved the story: the two reads fail DIFFERENTLY,
+   and the recommended one fails loudly. `queryAll` without the grant is refused outright
+   (`no 'query' grant for kind 'bid'`), which is a bug report; `children` returns an empty list and
+   nacks a perfectly good auction towards `dead_letter` while looking correct. Both halves are
+   asserted in `extensions/conformance/marketplace.test.ts`, which is the argument for mandating
+   one read rather than leaving it to taste. The unavoidable consequence: where several requesters share a
    space, each can read the others' bids, so sealing holds against bidders and not against fellow
    awarders. Sealing a bid to the requester's key is the path
    ([plan-encryption.md](plan-encryption.md) already does this for chat prose, per conversation),

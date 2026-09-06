@@ -147,12 +147,16 @@ pinned in `test/http.test.ts` and the horizon derivation per adapter in
 
 ### M2: coordination protocols
 
-- [~] request/bid/award (see [design-marketplace.md](design-marketplace.md)): **GATED, not queued.**
-  Speculative ahead of a first user; gate behind a measured baseline like the scheduler, not
-  build-on-spec (see [plan-validation.md](plan-validation.md)). Its TIMING half already shipped under
-  another name: "durable timers" became delayed visibility (`PutRequest.availableAt`), and the
-  sweeper that section describes was deliberately not built. Read design-marketplace.md before
-  proposing a timer, a sweeper, or anything that fires at a deadline.
+- [x] request/bid/award (2026-09-05, [design-marketplace.md](design-marketplace.md)): **BUILT as a
+  CONVENTION, and it never became milestone work.** It was gated here as speculative, which was the
+  right call for a runtime feature and the wrong frame for what it turned out to be: designing it
+  established that the protocol asks the kernel for NOTHING, so it shipped on the extensions tier
+  (`extensions/ts/marketplace.ts`, `examples/market/`, `deno task test:market`) with zero changes
+  under `src/` or `sdk/`. The bidding window is `availableAt`, selection is `take`+`ack`, and the
+  award is the assigned task's shape rather than a kind. Its TIMING half had already shipped under
+  another name: "durable timers" became delayed visibility, and the sweeper that section describes
+  was deliberately not built. What M2 still owes is nothing here. Read design-marketplace.md before
+  proposing a timer, a sweeper, an award record, or a bid-ranking rule.
 - [x] **retention GC + registry compaction** (2026-08-05, [plan-gc.md](plan-gc.md)): `Space.gc` /
   `POST /v0/ops/gc` / `radia gc`, on demand only. `retention_until` is finally consulted: writers
   declare expiry, the sweep deletes settled/reference records past it (never a held lease, never

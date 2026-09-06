@@ -344,7 +344,18 @@ export function mergeKind(existing: KindDef | undefined, declared: KindDef): Kin
   const mine = declared.contentKey ?? [];
   const live = existing.contentKey ?? [];
   const refines = mine.length > 0 && live.length > mine.length && mine.every((k) => live.includes(k));
-  return { ...declared, indexedPaths: paths, ...(refines ? { contentKey: live } : {}) };
+  return {
+    ...declared,
+    indexedPaths: paths,
+    // NO OPINION MUST NOT ERASE ONE. `usage` stays single-valued and this build's when it HAS one,
+    // but an absent field is a default rather than a competing answer, and treating it as an answer
+    // deleted prose that is load-bearing: a kind's usage is how a model learns to use it, so a
+    // second convention adding one indexed path to `task` silently emptied the first convention's
+    // instructions for every agent on that space. Measured; guard in `test/team.test.ts`.
+    // `claimable` is deliberately NOT treated this way: absent means claimable, which IS an opinion.
+    ...(declared.usage === undefined && existing.usage !== undefined ? { usage: existing.usage } : {}),
+    ...(refines ? { contentKey: live } : {}),
+  };
 }
 
 /**

@@ -441,10 +441,29 @@ means "bad credential".
 
 ## The MCP adapter: `src/surfaces/mcp/`
 
-`radia mcp` serves the space to an MCP-capable harness over stdio: newline-delimited JSON-RPC 2.0,
-19 tools. `server.ts` is the transport and dispatch; `tools.ts` is the tool definitions;
-`config.ts` renders the harness config that points an agent here; `scope.ts` fills in body fields
-the caller's own grants require; `trace.ts` is `--trace`.
+`radia mcp` serves the space to an MCP-capable harness over stdio: newline-delimited JSON-RPC 2.0.
+`server.ts` is the transport and dispatch; `tools.ts` is the tool definitions; `config.ts` renders
+the harness config that points an agent here; `scope.ts` fills in body fields the caller's own
+grants require; `trace.ts` is `--trace`.
+
+**Two wire fields were missing here until 2026-09-06, and each made a whole SHAPE impossible
+rather than merely awkward.** `space_put` took no `availableAt`, so a model could not write work
+that becomes claimable later: delayed visibility is how a bidding or comment window is expressed
+and how anything is scheduled, and without it such a record is claimable the instant it exists and
+the window silently is not one. `space_ack` forwarded only `resultKind` and `resultBody`, so a
+model could answer but could not say what its answer RESTED ON, since the claimed record is the
+only parent the settle path adds by itself. Both were found by asking what a model would need to
+run the marketplace and discovering it could not; neither is marketplace-specific. The guard is
+`test/mcpwire.test.ts`, which drives a real `radia mcp` over stdio, because a schema advertising a
+field the handler drops passes any assertion made against the schema alone.
+
+**Which conventions get tools, and the test is the same one the HTTP facade uses.** Workspaces have
+tools because a workspace write is choreography a model would get wrong with raw puts; the
+marketplace has two for the same reason (`space_auction_bids`, the exhaustive read that
+`space_children` answers WRONGLY and silently, and `space_award`, the claim-and-emit that is only
+correct as one step). Opening an auction and placing a bid stayed plain `space_put`s, because
+vocabulary belongs in a kind's `usage` string where it is discovered rather than in a tool list
+that must be kept in step.
 
 **`--trace <file>` records what the model ASKED FOR, which nothing else can see.** A `take` appends
 its event only after it wins a record and reads append none, so a claim that matched nothing is

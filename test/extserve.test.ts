@@ -384,3 +384,69 @@ Deno.test("[extserve] a caller discovers its own pattern scopes, through the def
     await s.close();
   }
 });
+
+Deno.test("[extserve] the marketplace serves the fold and the choreography, and ranks nothing", async () => {
+  const s = await newSpace();
+  try {
+    assertEquals((await s.call("POST", "/ext/marketplace/v1/declare")).body.declared, ["request", "bid", "task"]);
+
+    // A window that is open while the bids arrive and closed when the award is attempted. This is
+    // `availableAt` doing both jobs, which is the whole timing half of the design.
+    const closesAt = new Date(Date.now() + 700).toISOString();
+    const { id: request } = await s.direct.put({ kind: "request", body: { topic: "haul", closesAt }, availableAt: closesAt });
+    const bids: string[] = [];
+    for (const [bidder, price] of [["agent:a", 30], ["agent:b", 10], ["agent:c", 20]] as const) {
+      const { id } = await s.direct.put({ kind: "bid", body: { request, bidder, price }, parentIds: [request] });
+      bids.push(id);
+    }
+
+    // Awarding before the close is refused BY THE CLAIM, not by a rule this facade invented.
+    const early = await s.call("POST", `/ext/marketplace/v1/auctions/${request}/award`, { bid: bids[1] });
+    assertEquals(early.status, 409, JSON.stringify(early.body));
+    assertStringIncludes(early.body.reason, "not claimable");
+
+    await new Promise((r) => setTimeout(r, 800));
+    const listed = await s.call("GET", `/ext/marketplace/v1/auctions/${request}/bids`);
+    assertEquals(listed.status, 200);
+    assertEquals(listed.body.bids.length, 3, "every bid, exhaustively");
+    assertEquals(listed.body.ineligible, 0);
+    // The caller ranks. The facade returned the bids and no opinion about them.
+    assert(listed.body.bids.every((b: { body: { price: number } }) => typeof b.body.price === "number"));
+
+    const cheapest = listed.body.bids.slice().sort((a: any, b: any) => a.body.price - b.body.price)[0];
+    const awarded = await s.call("POST", `/ext/marketplace/v1/auctions/${request}/award`, {
+      bid: cheapest.id,
+      body: { title: "haul it" },
+    });
+    assertEquals(awarded.status, 200, JSON.stringify(awarded.body));
+    assertEquals(awarded.body.winner, "agent:b");
+
+    // One transaction: the request is consumed and the task carries both parents.
+    assertEquals((await s.direct.getEnvelope(request))!.state, "consumed");
+    const task = (await s.direct.getRecord<{ assignee: string; request: string }>(awarded.body.task))!;
+    assertEquals(task.body.assignee, "agent:b");
+    assertEquals(task.body.request, request);
+    assert(task.runtimeMeta.parentIds.includes(request) && task.runtimeMeta.parentIds.includes(cheapest.id));
+
+    // And a second award is refused, because the right to award was the claim and it is spent.
+    const again = await s.call("POST", `/ext/marketplace/v1/auctions/${request}/award`, { bid: bids[0] });
+    assertEquals(again.status, 409, JSON.stringify(again.body));
+
+    // A bid from ANOTHER auction cannot be awarded here, however the caller came by its id.
+    const other = await s.direct.put({ kind: "request", body: { topic: "other", closesAt }, availableAt: closesAt });
+    const foreign = await s.direct.put({ kind: "bid", body: { request: other.id, bidder: "agent:z", price: 0 }, parentIds: [other.id] });
+    const crossed = await s.call("POST", `/ext/marketplace/v1/auctions/${other.id}/award`, { bid: bids[0] });
+    assertEquals(crossed.status, 400, JSON.stringify(crossed.body));
+    assertStringIncludes(JSON.stringify(crossed.body), "not");
+    assert(foreign);
+
+    // A late bid is held over rather than counted: the window is judged, not assumed.
+    const { id: late } = await s.direct.put({ kind: "bid", body: { request, bidder: "agent:d", price: 1 }, parentIds: [request] });
+    const after = await s.call("GET", `/ext/marketplace/v1/auctions/${request}/bids?closesAt=${encodeURIComponent(closesAt)}`);
+    assertEquals(after.body.bids.length, 3, "still the three that were inside the window");
+    assertEquals(after.body.ineligible, 1);
+    assert(late);
+  } finally {
+    await s.close();
+  }
+});

@@ -101,13 +101,23 @@ export const TOOLS: McpTool[] = [
       "Write a new record. Records are immutable once written. To 'update' something, consume it " +
       "and emit a successor rather than trying to modify it. Set parentIds to record which records " +
       "this one was derived from (data lineage; it grants no authority). Pass idempotencyKey if a " +
-      "retry must not create a second record.",
+      "retry must not create a second record. Pass availableAt to write work that nobody may claim " +
+      "until later.",
     inputSchema: {
       type: "object",
       properties: {
         kind: KIND,
         body: { type: "object", description: "The record body: any JSON object." },
         parentIds: { type: "array", items: { type: "string" }, description: "Record ids this was derived from." },
+        availableAt: {
+          type: "string",
+          description:
+            "ISO time before which nobody may CLAIM this record. It stays READABLE the whole time, " +
+            "so this defers when work may start and never whether it can be seen: that is how a " +
+            "bidding or comment window is expressed, and how work is scheduled for later. Nothing " +
+            "fires at that instant; the record simply becomes claimable. A time already past is " +
+            "moved to now, and one too far ahead is refused.",
+        },
         idempotencyKey: { type: "string", description: "Retry-safe key: the same key returns the first result." },
       },
       required: ["kind", "body"],
@@ -192,6 +202,14 @@ export const TOOLS: McpTool[] = [
         claimId: CLAIM_ID,
         resultKind: KIND,
         resultBody: { type: "object", description: "Body of the result record. Requires resultKind." },
+        resultParentIds: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Extra lineage for the result, beyond the claimed record, which is always its parent. " +
+            "Use it when the answer rests on records the claim does not name: what you selected, " +
+            "what you measured, what you accepted. Data lineage only; it grants no authority.",
+        },
       },
       required: ["claimId"],
     },
@@ -431,5 +449,47 @@ export const TOOLS: McpTool[] = [
       "plain query of the workspace kind cannot answer this, since it returns every version, so " +
       "three versions of one tree read as three trees.",
     inputSchema: { type: "object", properties: { scope: WORKSPACE_SCOPE } },
+  },
+  {
+    name: "space_auction_bids",
+    description:
+      "Every bid on one auction, all of them, with the ones that arrived too late marked. Use this " +
+      "and never space_children for the same question: children answers only with records YOU may " +
+      "already read, so an auction full of rival bids comes back empty and looks unbid, and it " +
+      "returns one page, so a busy auction would be decided on whichever bids happen to come " +
+      "first. Neither failure says anything is wrong. Returns {request, closesAt, bids, " +
+      "ineligible}; you choose the winner yourself, since nothing here ranks them.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        request: { type: "string", description: "The auction's record id." },
+        closesAt: {
+          type: "string",
+          description:
+            "Judge the window as of this time. Defaults to the auction's own close, which after a " +
+            "reopening is the CURRENT round's, so bids that missed a round compete in the next.",
+        },
+      },
+      required: ["request"],
+    },
+  },
+  {
+    name: "space_award",
+    description:
+      "Award an auction to one bid: claims the request and writes the assigned work in a SINGLE " +
+      "step, so two awarders cannot both win and a retry cannot assign the work twice. Do not do " +
+      "this by hand with space_take and space_put, which is neither. The winner is the bid's " +
+      "bidder, and the work you pass is addressed to them. Refused while the bidding window is " +
+      "still open, and refused once somebody has already awarded it: both are answers, not faults.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        request: { type: "string", description: "The auction's record id." },
+        bid: { type: "string", description: "The winning bid's record id. Its bidder becomes the assignee." },
+        kind: KIND,
+        body: { type: "object", description: "The work itself. Who it is for, and which auction it came from, are added for you." },
+      },
+      required: ["request", "bid"],
+    },
   },
 ];

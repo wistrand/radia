@@ -132,6 +132,21 @@ serves today. Never: direct run endpoints for host/tool-worker/inference (they w
 claiming, leases, lineage and delegation), or any central service for `encrypted.ts` (key
 custody contradicts the per-machine person keys, [plan-encryption.md](plan-encryption.md)).
 
+**The marketplace (added 2026-09-06) is the four categories working as a filter**, which is why it
+is worth recording as a worked example rather than as three more routes. It serves exactly two of
+its convention's calls plus a declare. The FOLD is
+`GET /marketplace/v1/auctions/{request}/bids`, and it earns the category's own argument, that a
+served fold cannot be re-derived wrong: reading those bids through `children` returns only what the
+CALLER may already read, so an awarder without `bid: query` sees an empty auction and reopens a
+perfectly good one, and `children` is a page, so a busy auction would be decided on an arbitrary
+prefix. The CHOREOGRAPHY is `POST …/award`, which claims the request and emits the assigned task in
+one transaction; split into two calls it is neither fenced nor single. What does NOT cross: opening
+an auction and placing a bid, which are single puts whose rules belong in the kinds' `usage`
+strings, and RANKING, because a facade that ranked would be deciding rather than relaying
+([design-marketplace.md](design-marketplace.md) question 4). The zero-credential rule carries the
+design's own constraint through unchanged: the facade relays the caller's token, so a requester's
+self-scoped `request: take` still means it can award its auctions and nobody else's.
+
 ## Contract discipline
 
 - The routes are a BINDING of the conformance contract, never the definition: the normative

@@ -44,6 +44,7 @@ import { beatPresence, livePresence, presenceKind, presenceSpec, retirePresence 
 import { declareExecRequest, EXEC_REQUEST, type Pin, pinnedDigests, promote, rollback } from "../../extensions/ts/promotion.ts";
 import { declareBinding, readBindings } from "../../extensions/ts/host.ts";
 import { auditCompartment } from "../../extensions/ts/compartment.ts";
+import { BID, declareMarketKinds, eligibleBids, REQUEST, TASK } from "../../extensions/ts/marketplace.ts";
 import { UsageError } from "../platform.ts";
 
 export interface ExtServeLog {
@@ -112,6 +113,7 @@ export const EXTENSIONS = {
   promotion: "v1",
   host: "v1",
   compartment: "v1",
+  marketplace: "v1",
 } as const;
 
 export interface ExtRoute {
@@ -168,6 +170,9 @@ export const EXT_ROUTES: readonly ExtRoute[] = [
   { method: "POST", path: "host/v1/declare" },
   { method: "GET", path: "host/v1/bindings", query: ["agent"] },
   { method: "GET", path: "compartment/v1/audit", query: ["inside", "field"] },
+  { method: "POST", path: "marketplace/v1/declare" },
+  { method: "GET", path: "marketplace/v1/auctions/{request}/bids", query: ["closesAt"] },
+  { method: "POST", path: "marketplace/v1/auctions/{request}/award", fields: ["bid", "kind", "body", "leaseSeconds"] },
 ];
 
 function fieldsOf(path: string): readonly string[] {
@@ -430,7 +435,7 @@ export function extHandler(
       return json(200, { ok: true, service: "radia-ext", extensions: EXTENSIONS });
     }
 
-    const route = path.match(/^\/ext\/(workspace|capability|presence|turn|permissions|promotion|host|compartment)\/v1\/(.+)$/);
+    const route = path.match(/^\/ext\/(workspace|capability|presence|turn|permissions|promotion|host|compartment|marketplace)\/v1\/(.+)$/);
     if (!route) {
       log(404);
       return problem(404, "not_found", "expected /health, or /ext/<extension>/v1/… for one of: " + Object.keys(EXTENSIONS).join(", "));
@@ -775,6 +780,80 @@ async function dispatch(
         // better when the intent is in the path. Grant writes are operator-only, and the relay
         // keeps that the space's decision: a non-operator caller is refused there, not here.
         return json(200, rest === "promote" ? await promote(client, opts) : await rollback(client, opts));
+      }
+      break;
+    }
+
+    // The marketplace serves the two halves an app gets WRONG, and nothing else
+    // (agent_docs/design-marketplace.md, agent_docs/plan-extension-http.md's four categories).
+    // Opening an auction and placing a bid are single puts whose rules live in the kinds' `usage`
+    // strings, so they stay vocabulary; ranking bids never crosses, because the runtime does not
+    // rank and a facade that did would be deciding rather than relaying.
+    case "marketplace": {
+      if (post && rest === "declare") {
+        await declareMarketKinds(client);
+        return json(200, { declared: [REQUEST, BID, TASK] });
+      }
+      const auction = /^auctions\/([^/]+)\/(bids|award)$/.exec(rest);
+      if (auction) {
+        const request = decodeURIComponent(auction[1]);
+        if (get && auction[2] === "bids") {
+          // THE FOLD, and the reason this route exists at all: read it any other way and it is
+          // silently wrong. `children` is filtered to what the caller may read, so an awarder
+          // without `bid: query` sees an empty auction; `getChildren` is a page, so a big auction
+          // is decided on an arbitrary prefix. Served, neither can be re-derived wrong.
+          // Never default to NOW when the window cannot be read: that silently admits the late
+          // bids the window exists to exclude, which is the same shape of wrong answer this route
+          // was added to remove. Refuse and name the fix instead.
+          const closesAt = url.searchParams.get("closesAt") ??
+            (await client.getEnvelope(request).catch(() => null))?.availableAt;
+          if (!closesAt) {
+            throw new UsageError(
+              `cannot read the window of auction ${request} (no grant for its envelope, or no such record); pass closesAt explicitly`,
+            );
+          }
+          const { all, eligible } = await eligibleBids(client, request, closesAt);
+          return json(200, { request, closesAt, bids: eligible, ineligible: all.length - eligible.length });
+        }
+        if (post && auction[2] === "award") {
+          // THE CHOREOGRAPHY: claim the request (the exclusive right to award it, fenced) and ack
+          // the assigned task in the SAME transaction. Split across two calls it is neither, so an
+          // app that puts the task separately gets an unfenced write that a redelivery duplicates.
+          const b = await body();
+          rejectUnknownFields(b, fieldsOf("marketplace/v1/auctions/{request}/award"), "POST award");
+          const bid = requireString(b.bid, "bid");
+          const winning = await client.getRecord<{ bidder?: string; request?: string }>(bid);
+          if (!winning) throw new UsageError(`no bid ${bid}`);
+          if (!winning.body.bidder) throw new UsageError(`bid ${bid} names no bidder`);
+          // The bid must belong to THIS auction. Without the check an award can name a bid from
+          // another one, and the record trail then says the winner was chosen from bids that were
+          // never in the running, which is precisely the audit the losing bids exist to support.
+          if (winning.body.request !== request) {
+            throw new UsageError(`bid ${bid} was placed on auction ${winning.body.request}, not ${request}`);
+          }
+          const claimed = await client.take(
+            { recordId: request, pattern: { kind: REQUEST } },
+            { leaseSeconds: typeof b.leaseSeconds === "number" ? b.leaseSeconds : 60 },
+          );
+          // Not claimable means the window is still open, somebody else holds it, or it is already
+          // awarded. All three are the caller's answer rather than an error here.
+          if (!claimed) return json(409, { awarded: false, reason: "not claimable: still open, held, or already awarded" });
+          // The claim goes back if the settle fails, or the auction sits leased until the lease
+          // lapses and burns one of its bounded rounds for a network blip.
+          let acked;
+          try {
+            acked = await client.ack(claimed.lease, {
+              kind: typeof b.kind === "string" ? b.kind : TASK,
+              body: { ...(b.body as Record<string, unknown> ?? {}), assignee: winning.body.bidder, request },
+              parentIds: [bid],
+            });
+          } catch (e) {
+            await client.release(claimed.lease).catch(() => {});
+            throw e;
+          }
+          if (acked.status !== "ok") return json(409, { awarded: false, reason: acked.status });
+          return json(200, { awarded: true, request, winner: winning.body.bidder, task: acked.resultId, bid });
+        }
       }
       break;
     }

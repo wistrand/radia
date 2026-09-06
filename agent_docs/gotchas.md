@@ -169,6 +169,13 @@ different body: `idempotency_conflict`. `usage` participates as its LENGTH plus 
 600-character idempotency key is one nothing wants to store), omitted when absent so older keys stay
 byte-identical; `contentKey` and `defaultRetentionSeconds` are keyed for the same reason.
 
+**A declaration with NO `usage` used to ERASE the one already there** (`mergeKind`). Paths merge,
+and `usage` was taken from this build's declaration whether or not it had one, so a second
+convention adding a single indexed path to a shared kind silently emptied the first convention's
+instructions for every agent reading `space_kinds`. An absent field is a DEFAULT, not a competing
+answer; a present one still wins. `claimable` is deliberately not treated this way, since absent
+means claimable. Measured on `task` (teams + marketplace). Guard: `test/team.test.ts`.
+
 **The key is order-independent and the body is not: declare in `canonicalKindDef` order.** Two
 orderings of one declaration share a `kindDefKey`, and the idempotency row compares bodies, so the
 second is `idempotency_conflict` for a week: a team's merge took the live declaration's path order
@@ -380,6 +387,14 @@ that something was missing. A rule a caller can get wrong is one that will be go
   `kindDefKey`: include a new field there too, or a changed value won't mint a successor.
 ### Leases, claims, events and watches
 
+- **A claim taken OUTSIDE the machinery that renews claims owns its own failure path.** A surface
+  that takes and settles in one call (the marketplace's award, on the facade and as an MCP tool)
+  holds a lease nothing heartbeats and no caller can name, so a throw between the take and the ack
+  parks the record until the lease lapses. Self-healing, and it still spends one of the record's
+  bounded attempts on a network blip. Release on failure, best effort, without masking the error;
+  `agentLoop` and the MCP claims map do this for every claim they own. Guard:
+  `extensions/conformance/marketplace.test.ts`, a policy that throws leaves the record `available`
+  with `attempt` unchanged.
 - **A settle that expects an owner fails CLOSED on a row that stores none.** The adapters compared
   `lease_owner` only when one was present, so a row with NULL (claimed before the column existed)
   let anyone holding the lease id and epoch settle as the owner. Both `settleGuard` paths now refuse
@@ -1565,6 +1580,13 @@ decorates); `radia get` prints the same line. Lasting attribution names the AGEN
 
 ### Agent- and model-facing design
 
+- **A wire field the SDK has and the MCP adapter does not makes a SHAPE impossible, not a call
+  awkward.** `space_put` had no `availableAt` and `space_ack` could not parent its result, so a
+  model could not express a window at all (any deferred record was claimable at once, and silently
+  not a window) and could not record what an answer rested on. Both were reachable from the SDK
+  throughout. The probe that finds this class costs nothing and is worth repeating per convention:
+  take one protocol and ask what a MODEL would need to run it. Guard: `test/mcpwire.test.ts`, over
+  real stdio, since a schema advertising a field the handler drops passes a schema-only assertion.
 - **Launch a harness OUTSIDE every project: Claude Code disables a `--mcp-config` server by NAME
   from the project's `disabledMcpServers`.** `~/.claude.json` held `disabledMcpServers: ["radia"]`
   for this repo, so from any cwd inside it the server named `radia` in a strict `--mcp-config` gave

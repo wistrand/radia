@@ -45,6 +45,7 @@ import { mediaTypeForPath } from "../media.ts";
 // (`extensions/conformance/`), which is also why a model cannot hand-write a manifest.
 import { editWorkspace, readWorkspace, summarizeWorkspaces, writeWorkspace } from "../../../extensions/ts/workspace.ts";
 import { newer } from "../../../sdk/ts/registry.ts";
+import { eligibleBids, REQUEST as MARKET_REQUEST, TASK as MARKET_TASK } from "../../../extensions/ts/marketplace.ts";
 import { ARTIFACT } from "../../../sdk/ts/wire.ts";
 import { flag } from "../../flags.ts";
 import { readBinaryFile, stdin, writeStdout } from "../../platform.ts";
@@ -413,6 +414,10 @@ async function call(
           kind,
           body: { ...extra, ...obj(a, "body") },
           parentIds: Array.isArray(a.parentIds) ? a.parentIds as string[] : undefined,
+          // Delayed visibility, which was unreachable from here until 2026-09-06: without it a
+          // model cannot write work that becomes claimable later, so a bidding window (or any
+          // scheduled record) is claimable the instant it exists and the window silently is not one.
+          ...(typeof a.availableAt === "string" ? { availableAt: a.availableAt } : {}),
         }, a.idempotencyKey ? String(a.idempotencyKey) : undefined));
       return pretty(r);
     }
@@ -750,6 +755,65 @@ async function call(
       return answer("workspaces", r.workspaces, { more: !r.complete, limit: r.workspaces.length });
     }
 
+    // The two marketplace calls a model gets WRONG, and nothing else: opening an auction and
+    // placing a bid are plain `space_put`s whose rules live in the kinds' usage strings, and
+    // ranking bids is the caller's policy, which is why neither is a tool
+    // (agent_docs/design-marketplace.md).
+    case "space_auction_bids": {
+      const request = str(a, "request");
+      // Never fall back to NOW: that would quietly admit the bids the window exists to exclude,
+      // and a model has no way to notice it happened.
+      const closesAt = typeof a.closesAt === "string"
+        ? a.closesAt
+        : (await client.getEnvelope(request).catch(() => null))?.availableAt;
+      if (!closesAt) {
+        return `cannot tell when auction ${request} closed, so the bids cannot be judged. Pass closesAt, or ask whoever opened it.`;
+      }
+      const { all, eligible } = await eligibleBids(client, request, closesAt);
+      // `more` is deliberately false: this read is exhaustive, which is the whole reason the tool
+      // exists rather than leaving a model to walk `space_children`.
+      return answer("bids", eligible, {
+        more: false,
+        limit: eligible.length,
+        notes: all.length > eligible.length
+          ? [`${all.length - eligible.length} bid(s) arrived after the window closed; they are held over for the next round rather than dropped`]
+          : [],
+      });
+    }
+
+    case "space_award": {
+      const request = str(a, "request");
+      const bid = str(a, "bid");
+      const winning = await client.getRecord<{ bidder?: string; request?: string }>(bid);
+      if (!winning) return `no bid ${bid}`;
+      if (!winning.body.bidder) return `bid ${bid} names no bidder, so there is nobody to award it to`;
+      // A bid from another auction would make the award's own record trail misleading: it would
+      // name a winner chosen from bids that were never in this running.
+      if (winning.body.request !== request) {
+        return `bid ${bid} was placed on auction ${winning.body.request}, not on ${request}. Award a bid from this auction's own bids.`;
+      }
+      const claimed = await client.take({ recordId: request, pattern: { kind: MARKET_REQUEST } }, { leaseSeconds: 60 });
+      // Three different situations, one answer, because the caller acts the same way on all of
+      // them: wait, or look at who won.
+      if (!claimed) return "not awarded: the bidding window is still open, somebody else is awarding it, or it is already awarded";
+      const kind = typeof a.kind === "string" ? a.kind : MARKET_TASK;
+      // This lease is NOT in the claims map and so is not heartbeaten: it is taken and settled in
+      // one call by design, and the model never learns of it. That makes giving it back on failure
+      // the whole of its lifecycle management, since nothing else here ever will.
+      try {
+        const r = await scope.fill(kind, (extra) =>
+          client.ack(claimed.lease, {
+            kind,
+            body: { ...extra, ...(a.body ?? {}) as Record<string, unknown>, assignee: winning.body.bidder, request },
+            parentIds: [bid],
+          }, `award:${request}:${claimed.lease.epoch}`));
+        return pretty({ ...r, winner: winning.body.bidder, request, bid });
+      } catch (e) {
+        await client.release(claimed.lease).catch(() => {});
+        throw e;
+      }
+    }
+
     case "space_artifact_meta": {
       const m = await client.artifactMeta(recordId(a));
       return m ? pretty(m) : "no artifact with that record id (or no grant to read it)";
@@ -856,9 +920,17 @@ async function call(
       // The RESULT body is a write like any other and needs the same fill: acking a scoped task
       // with an unlabelled note is refused, and that refusal would land after the work was done.
       // Per-attempt idempotency key: a retried ack after a dropped response is not double work.
+      // The claimed record is prepended by the settle path; these are the OTHER records the answer
+      // rests on, which were unsayable from here until 2026-09-06. Without them a model can answer
+      // but cannot record what its answer was based on.
+      const resultParents = Array.isArray(a.resultParentIds) ? (a.resultParentIds as unknown[]).map(String) : undefined;
       const r = kind
         ? await scope.fill(kind, (extra) =>
-          client.ack(c.lease, { kind, body: { ...extra, ...(a.resultBody ?? {}) as Record<string, unknown> } }, `ack:${c.record.id}:${c.lease.epoch}`))
+          client.ack(c.lease, {
+            kind,
+            body: { ...extra, ...(a.resultBody ?? {}) as Record<string, unknown> },
+            ...(resultParents?.length ? { parentIds: resultParents } : {}),
+          }, `ack:${c.record.id}:${c.lease.epoch}`))
         : await client.ack(c.lease, undefined, `ack:${c.record.id}:${c.lease.epoch}`);
       return pretty(r);
     }
