@@ -13,7 +13,7 @@ Bootstrap and run is two commands, from the repo root, with a space up (`radia d
 
 ```bash
 radia team up examples/teams/<name> --init --seed    # first time: mint the members, seed, run
-radia team up examples/teams/<name> --seed --fresh   # a new game: retire the last one's open tasks, seed again
+radia team up examples/teams/<name> --seed --fresh   # a new game: retire the last one's leftovers, seed again
 radia team up examples/teams/<name>                  # later: run
 ```
 
@@ -21,9 +21,10 @@ radia team up examples/teams/<name>                  # later: run
 whose stored token lacks a grant the file names, so editing a member's grants is a matter of
 running it again (setup, the one
 privileged step); `--seed` writes the file's starting records under the team's label; `--fresh`
-dead-letters the team's open tasks from earlier runs first, since unclaimed work is never swept and
-would be claimed beside the new seed (a run without it says how many it found). All three are
-idempotent enough to leave on. The workers run until the file's `done` pattern matches a record
+dead-letters the team's open records from earlier runs first, on every kind it claims, and drops its
+warm harness sessions so members start cold, since neither is swept by anything else and both
+otherwise carry the last run into the new one (a run without it says how many leftovers it found).
+All three are idempotent enough to leave on. The workers run until the file's `done` pattern matches a record
 written after the start (the verb prints that record as the answer and exits 0), or until Ctrl-C,
 and cost nothing while idle: a harness is launched only when a record is claimed for it. Every team
 here ends on a `note` with `topic: "final"`, which the last move's prompt asks for.
@@ -45,6 +46,7 @@ like one.
 | `twenty-questions/` | the introduction: two players, every move a task for the other, routed by `tags`, the match one lineage |
 | `story-relay/` | a fixed number of rounds with one shared prompt: the baton names who writes next |
 | `go-fish/` | six members exercising workspace agents, the broker, a team-declared kind under pattern-scoped grants, two harnesses, a service beside five per-claim launches, and repair of model-written code as ordinary coordination. Not a first example; its README opens with what it puts under load |
+| `song-creator/` | five models and two services: three players writing parts in parallel, a fan-in that needs no orchestrator, and two reviewers claiming separate records so neither sees the other's verdict. A player's instrument is its own expertise, so two players may share one. `deno task test:song` plays the pipeline model-free and `test:song-team` checks the team file itself |
 
 Every team runs WARM SESSIONS (`"resume": true`): one harness session per member across moves,
 so a later move starts with the game in context and reads only the other side's newest answer

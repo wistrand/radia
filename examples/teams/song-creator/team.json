@@ -1,0 +1,222 @@
+{
+  "team": "song-creator",
+  "kinds": [
+    {
+      "kind": "song_request",
+      "indexedPaths": [
+        { "path": "team", "type": "keyword" },
+        { "path": "song", "type": "keyword" }
+      ],
+      "claimable": true,
+      "usage": "A song somebody wants. body: {description, seconds?}. Claim it to write the brief: decide key, tempo, meter and which parts the piece needs, then emit one `part` per player."
+    },
+    {
+      "kind": "brief",
+      "indexedPaths": [
+        { "path": "team", "type": "keyword" },
+        { "path": "song", "type": "keyword" }
+      ],
+      "claimable": false,
+      "usage": "The plan every player works from. body: {song, title, description, key, bpm, meter: {beats, unit}, bars, parts: [instrument], maxRounds}. Reference data: read it, never claim it."
+    },
+    {
+      "kind": "part",
+      "indexedPaths": [
+        { "path": "team", "type": "keyword" },
+        { "path": "song", "type": "keyword" },
+        { "path": "instrument", "type": "keyword" },
+        { "path": "round", "type": "integer" }
+      ],
+      "claimable": true,
+      "usage": "One player's job for one round. body: {song, instrument, guidance, round, notes?}. `notes` is present on a revision and says what the reviewers asked you to change. Answer with a `phrase` for this instrument and round."
+    },
+    {
+      "kind": "phrase",
+      "indexedPaths": [
+        { "path": "team", "type": "keyword" },
+        { "path": "song", "type": "keyword" },
+        { "path": "instrument", "type": "keyword" },
+        { "path": "round", "type": "integer" }
+      ],
+      "claimable": true,
+      "usage": "One player's music. body: {song, instrument, round, phrase}. The phrase is bars separated by |, each bar a run of PITCH/DENOM: `C4/4 E4/8 r/8 | G3/2 r/2`. PITCH is a letter A-G, an optional # or b, and an octave number (C4 is middle C); `r` is a rest. DENOM is the note value as a power of two, 1 to 64: /4 is a quarter note, /8 an eighth. A dot after the denominator adds half its length again (`C4/4.`). EVERY BAR MUST SUM TO THE METER, so four /4 notes in 4/4, and a bar that does not is refused by its number. Pitches outside C1..C7 are refused. The brief's `bars` says how many bars to write."
+    },
+    {
+      "kind": "draft",
+      "indexedPaths": [
+        { "path": "team", "type": "keyword" },
+        { "path": "song", "type": "keyword" },
+        { "path": "round", "type": "integer" }
+      ],
+      "claimable": false,
+      "usage": "Every player's phrases assembled for one round, which is the first time anyone sees them together. body: {song, round, score}. Reference data for the reviewers to read."
+    },
+    {
+      "kind": "review",
+      "indexedPaths": [
+        { "path": "team", "type": "keyword" },
+        { "path": "song", "type": "keyword" },
+        { "path": "round", "type": "integer" },
+        { "path": "by", "type": "keyword" }
+      ],
+      "claimable": true,
+      "usage": "A request to review one draft. body: {song, round, by, draft}. `by` is 'rules' or 'ear' and decides who may claim it. Reviewers work BLIND: neither sees the other's verdict, so what each catches is a fact the run records rather than an assumption."
+    },
+    {
+      "kind": "verdict",
+      "indexedPaths": [
+        { "path": "team", "type": "keyword" },
+        { "path": "song", "type": "keyword" },
+        { "path": "round", "type": "integer" },
+        { "path": "by", "type": "keyword" }
+      ],
+      "claimable": true,
+      "usage": "One reviewer's answer. body: {song, round, by, approve, summary, asks: [{instrument, note}]}. Each ask names ONE instrument and says what to change, since that is what the next round hands to that player."
+    },
+    {
+      "kind": "note",
+      "indexedPaths": [
+        { "path": "team", "type": "keyword" },
+        { "path": "topic", "type": "keyword" },
+        { "path": "song", "type": "keyword" }
+      ],
+      "claimable": false,
+      "usage": "What the team says about a song. topic 'review' records what each reviewer caught in one round; topic 'final' is the finished song and names the workspace holding it."
+    }
+  ],
+  "members": [
+    {
+      "name": "producer",
+      "service": true,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/examples/teams/song-creator/producer.ts",
+        "--url",
+        "{{url}}",
+        "--team",
+        "song-creator",
+        "--rounds",
+        "3"
+      ],
+      "grants": [
+        "phrase:take,query,read_one",
+        "verdict:take,query,read_one",
+        "brief:query,read_one",
+        "draft:put,query,read_one",
+        "review:put,query,read_one",
+        "part:put,query,read_one"
+      ]
+    },
+    {
+      "name": "checker",
+      "service": true,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/examples/teams/song-creator/checker.ts",
+        "--url",
+        "{{url}}",
+        "--team",
+        "song-creator"
+      ],
+      "grants": [
+        "review:take,query,read_one",
+        "draft:query,read_one",
+        "verdict:put"
+      ]
+    },
+    {
+      "name": "arranger",
+      "harness": "claude",
+      "model": "sonnet",
+      "patterns": [{ "kind": "song_request" }],
+      "grants": [
+        "song_request:take,query,read_one",
+        "brief:put,query,read_one",
+        "part:put"
+      ],
+      "promptFile": "prompts/arranger.md",
+      "frame": false,
+      "timeoutSeconds": 300
+    },
+    {
+      "name": "ada",
+      "harness": "claude",
+      "model": "sonnet",
+      "patterns": [{ "kind": "part", "match": { "instrument": "lead" } }],
+      "grants": [
+        "part:take,query,read_one",
+        "brief:query,read_one",
+        "phrase:put"
+      ],
+      "promptFile": "prompts/lead.md",
+      "resumePromptFile": "prompts/player-resume.md",
+      "frame": false,
+      "resume": true,
+      "timeoutSeconds": 300
+    },
+    {
+      "name": "ben",
+      "harness": "codex",
+      "model": "gpt-5.6-luna",
+      "patterns": [{ "kind": "part", "match": { "instrument": "harmony" } }],
+      "grants": [
+        "part:take,query,read_one",
+        "brief:query,read_one",
+        "phrase:put"
+      ],
+      "promptFile": "prompts/harmony.md",
+      "resumePromptFile": "prompts/player-resume.md",
+      "frame": false,
+      "resume": true,
+      "timeoutSeconds": 300
+    },
+    {
+      "name": "cy",
+      "harness": "claude",
+      "model": "sonnet",
+      "patterns": [{ "kind": "part", "match": { "instrument": "bass" } }],
+      "grants": [
+        "part:take,query,read_one",
+        "brief:query,read_one",
+        "phrase:put"
+      ],
+      "promptFile": "prompts/bass.md",
+      "resumePromptFile": "prompts/player-resume.md",
+      "frame": false,
+      "resume": true,
+      "timeoutSeconds": 300
+    },
+    {
+      "name": "critic",
+      "harness": "codex",
+      "model": "gpt-5.6-luna",
+      "patterns": [{ "kind": "review", "match": { "by": "ear" } }],
+      "grants": [
+        "review:take,query,read_one",
+        "draft:query,read_one",
+        "verdict:put"
+      ],
+      "promptFile": "prompts/critic.md",
+      "resumePromptFile": "prompts/critic-resume.md",
+      "frame": false,
+      "resume": true,
+      "timeoutSeconds": 300
+    }
+  ],
+  "done": {
+    "kind": "note",
+    "match": { "topic": "final" }
+  },
+  "seed": [
+    {
+      "kind": "song_request",
+      "body": {
+        "description": "a bright folk round in three parts, the kind a group could sing walking home"
+      }
+    }
+  ]
+}
