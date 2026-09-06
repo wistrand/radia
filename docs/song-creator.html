@@ -202,7 +202,7 @@ Ben may claim the part under a fenced lease</code></pre>
   "bpm": 104,
   "meter": { "beats": 3, "unit": 4 },
   "bars": 8,
-  "chords": ["D", "G", "D", "A7", "Bm", "G", "A7", "D"],
+  "chords": ["D", "G", "D", "Bm A7", "Bm", "G", "A7", "D"],
   "parts": ["lead", "harmony", "bass"]
 }</code></pre>
     </div>
@@ -215,6 +215,12 @@ Ben may claim the part under a fenced lease</code></pre>
       Players write a compact notation such as <code>C4/4 E4/8 G4/8</code>. The parser checks every
       bar against the meter and names the offending bar. That turns “the output sounds broken” into
       a repair request a player can act on.
+    </p>
+    <p>
+      What the notation cannot express, no prompt can ask for. Runs kept returning parts whose every
+      note landed on a beat, because there was no tie to write an anticipation with, and progressions
+      that only turned over on a downbeat, because a chord entry held one chord per bar. Both are
+      now expressible.
     </p>
   </div>
 </section>
@@ -305,14 +311,25 @@ Ben may claim the part under a fenced lease</code></pre>
       from one that returns. The loop must leave room for the gestures it is meant to improve.
     </p>
     <p>
-      Intent can qualify one measurement. <code>groove: true</code> exempts the rhythm section from
-      the one-note-length dullness rule because a steady pulse may be the requested style. It does
-      not disable the rest of the analysis.
+      Intent can qualify a measurement. <code>groove: true</code> exempts the rhythm section from the
+      one-note-length rule and the bass from the parallel-motion rule, because a steady pulse locked
+      to the harmony may be the requested style. It does not disable the rest of the analysis.
     </p>
     <div class="callout">
       <strong>A review loop optimizes its measurements.</strong> A score containing only prohibitions
       rewards the least adventurous output that avoids them. Song Creator guards the metric with a
       model-free test that requires the revised fixture's fault count to fall.
+    </div>
+    <p>
+      Correcting that overshot, which is the more useful finding. Every dullness rule pushed away
+      from repetition, so a lead returned eight bars in eight different rhythms, as hard to remember
+      as eight identical ones. The metric now also counts rhythms that never recur, where the melody
+      puts its highest note, and how many different bars a kit plays.
+    </p>
+    <div class="callout">
+      <strong>The counterweight to a bad proxy is the real property, not its negation.</strong>
+      Repetition and monotony are not opposites, so a rule against sameness does not produce the
+      thing sameness was standing in for. That holds for any scored review loop.
     </div>
   </div>
 </section>

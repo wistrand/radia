@@ -1825,6 +1825,17 @@ decorates); `radia get` prints the same line. Lasting attribution names the AGEN
   improving every round. It also punished the gestures that carry a tune, since a leap and a borrowed
   note were faults. Count dullness too, and let the brief say when steadiness is the intent
   (`groove`), or the loop is measuring the wrong thing perfectly.
+- **Punishing sameness is not the same as rewarding what you want.** The fix above overshot: every
+  dullness rule in `analysis.ts` pushed AWAY from repetition, and a lead answered with eight bars in
+  eight rhythms, which is as unmemorable as eight identical ones. A hook is a cell that RECURS, so
+  the second metric has to name that (distinct bar rhythms over bars, measured on rhythm alone so a
+  transposed figure still counts) and leave a window with the repetition rule rather than opposing
+  it. Same shape wherever a loop is scored: the counterweight to a bad proxy is the real property,
+  not its negation.
+- **A rule from the wrong genre destroys the thing that was asked for.** `parallels` is species
+  counterpoint; a bass locked to the harmony in fifths and octaves is what a rhythm section does. A
+  live run answered the complaint by replacing its driving eighths with half notes, in a piece whose
+  brief said driving. Under `groove` the bass is now exempt, like the note-length rule beside it.
 - **A metric must be told what it is looking at.** Drum notes pick a drum, not a pitch, so scoring a
   kit for clashes, key and chord tones turned a clean piece into 19 faults and reported that it no
   longer resolved, because the resolution test reads the LOWEST part. `isUnpitched` in `score.ts` is

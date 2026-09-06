@@ -67,9 +67,44 @@ borrowed note was out of key. Four changes:
   on rather than passed through.
 - **The ear settles the piece** once the count is low, instead of needing the arithmetic perfect.
 
-`groove: true` on the brief is the one field that turns a measurement off: it exempts the rhythm
-section from the one-note-length rule, because a pumping eighth-note bass under a four-on-the-floor
-kit is the genre and only the brief knows that was meant.
+`groove: true` on the brief is the field that turns measurements off: it exempts the rhythm section
+from the one-note-length rule and the bass from the parallel-motion rule, because a pumping
+eighth-note bass locked to the harmony under a four-on-the-floor kit is the genre and only the brief
+knows that was meant.
+
+## The second correction: dullness is not the same as no repetition
+
+A later run of "a modern pop song with memorable melody" settled at 8 faults and was still weak. The
+first correction had overshot: every rule now pushed AWAY from repeating anything, and a hook is a
+rhythm that comes back. Reading the settled draft out of the space showed what the count had done:
+
+- the lead spent its highest note in bar 2 of 8 and never went higher
+- it never rested once in eight bars, because rests were legal but nothing asked for them
+- the bass answered a parallel-motion complaint by replacing its driving eighths with half notes
+- the kit played two distinct bars in eight and passed a rule meant to require a fill
+- every note in every part landed on or after a beat, because the notation had no tie
+
+Six more changes, each with a guard in `smoke.ts`:
+
+- **A tie, written `~`.** A note may now hold into the next of the same pitch and cross a barline, so
+  a part can arrive before the downbeat. That anticipation is most of what separates a pop line from
+  an exercise, and it was unwritable.
+- **No cell coming back is a fault.** Measured on RHYTHM alone, so the same figure moved to fit the
+  next chord counts as the same figure. It leaves a window with the existing repetition rule: some,
+  not all.
+- **The tune's peak has to be late,** and the tune has to breathe. Both apply to the highest part
+  only, since an inner voice sitting still is doing its job.
+- **A groove exempts the bass from parallel motion.** The rule is species counterpoint; a rhythm
+  section locked in fifths and octaves is the idiom, and enforcing it cost the run its drive.
+- **A kit is counted by how many different bars it plays,** not by whether any two are identical.
+  Two in eight is a loop with a bar tacked on.
+- **A chord entry may name two chords,** `"Bm G"`, splitting the bar. A progression that can only
+  turn over on a downbeat cannot write a pre-chorus, and every run before this returned one chord per
+  bar because that was all the field could hold.
+
+The lesson generalises past music: **a loop optimises what it measures, and the correction for a
+metric that rewards blandness is not simply to punish sameness.** The second metric has to name the
+thing you actually want, and repetition and monotony are not opposites.
 
 Measured across live runs of the same request:
 

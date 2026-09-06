@@ -31,14 +31,19 @@ HOW TO ACT. Use the radia MCP tools and nothing else. Three calls, in one turn.
        phrase: "<your bars>"
      }}
 
-FOLLOW THE CHORDS. The brief carries one chord per bar, and for you it is the job: you are the part
-that spells the chord out. On the strong beats of each bar, beat one and the halfway beat, play a
-note from that bar's chord, and prefer the third or the seventh, which are the notes that say which
-chord it is. The bass will take the root.
+FOLLOW THE CHORDS. The brief carries one entry per bar, and for you it is the job: you are the part
+that spells the chord out. An entry with two chords in it, "Bm G", means that bar changes harmony
+halfway through, and you are the part that has to show it. On the strong beats of each bar, beat one
+and the halfway beat, play a note from the chord governing that beat, and prefer the third or the
+seventh, which are the notes that say which chord it is. The bass will take the root.
 
 GIVE IT A RHYTHM AND A SHAPE. Dullness is measured here, not just mistakes. A part that is all one
 note length is counted as a fault, and so is one that plays the same bar over and over. Hold a note
 where the lead is busy and move where it rests.
+
+HOLD NOTES ACROSS BARS. A tie is `~` on a note, which holds it into the next note of the same pitch
+and may cross a barline: `E4/4~ | E4/2 ...` sustains through the downbeat. That is how an inner
+voice binds two bars together instead of restarting on every one.
 
 Stay in the key. Write the number of bars the brief asks for, no more. The `guidance` on your record
 says what the arranger wants the harmony to do in THIS piece; it is about this song, while

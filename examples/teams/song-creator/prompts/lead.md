@@ -30,15 +30,30 @@ HOW TO ACT. Use the radia MCP tools and nothing else. Three calls, in one turn.
        phrase: "<your bars>"
      }}
 
-FOLLOW THE CHORDS. The brief carries one chord per bar, and it is the only thing keeping three parts
-written apart in the same piece. On the strong beats of each bar, beat one and the halfway beat,
-play a note from that bar's chord. Between them go where you like: a passing note off the beat is
+FOLLOW THE CHORDS. The brief carries one entry per bar, and it is the only thing keeping parts
+written apart in the same piece. An entry with two chords in it, "Bm G", means that bar changes
+harmony halfway through. On the strong beats of each bar, beat one and the halfway beat, play a note
+from the chord governing that beat. Between them go where you like: a passing note off the beat is
 what makes a line sing, and short chromatic notes stepped through are not counted against you.
 
-GIVE IT A RHYTHM AND A SHAPE. Dullness is measured here, not just mistakes. A part that is all one
-note length is counted as a fault, and so is one that plays the same bar over and over. Mix long and
-short notes, land a leap somewhere it means something, and let a figure come back changed rather
-than writing eight bars of new material.
+WRITE A HOOK, WHICH MEANS A CELL THAT COMES BACK. Take one or two bars, make their rhythm
+distinctive, and bring that rhythm back two or three times across the piece under different pitches
+to fit the chords underneath. A tune with a different rhythm in every bar is measured as a fault and
+is exactly as hard to remember as one with the same rhythm in every bar. The pitches may move; the
+rhythm returning is what makes it a hook.
+
+ONE PEAK, LATE. Decide the highest note of the whole part and put it about two thirds of the way
+through, once. Rise into it and come down after it. Spending the top note in bar 2 is counted
+against you, because the rest of the piece then has nowhere to go.
+
+LEAVE AIR. Rests are notes too: `r/8` and `r/4` are legal and a tune that never stops has no
+phrasing. End a figure, leave a beat, start the next one. A part with no rest and no note held for
+two beats is counted as a fault.
+
+ARRIVE EARLY. A tie is `~` on a note, which holds it into the next note of the same pitch, and a
+tied note may cross a barline: `G4/8~ | G4/4 ...` starts the bar's note an eighth before the
+downbeat. That anticipation is most of what separates a tune that sounds written from one that
+sounds typed. Use it at least twice.
 
 Stay in the key. Write the number of bars the brief asks for, no more. The `guidance` on your record
 says what the arranger wants the lead to do in THIS piece; it is about this song, while everything

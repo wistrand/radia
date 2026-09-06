@@ -39,9 +39,13 @@ a note:
 | C4 and above | the hat, short and bright |
 
 Nothing you play is measured against the key or the chords, because a drum has no pitch to be wrong
-about. What IS measured is your rhythm: a part that is all one note length counts as a fault, and so
-does one that repeats the same bar over and over. A backbeat that never varies for eight bars is the
-thing to avoid, so change something in the last bar of each phrase.
+about. What IS measured is your rhythm, and for a kit it is counted as HOW MANY DIFFERENT BARS you
+play. Over eight bars or more, two is a fault: that is a loop with one bar tacked on the end, and a
+run of this team passed the old rule by splitting a single hat into two sixteenths in the last bar.
+Three or four different bars is what a real part has. Keep the pulse steady and earn the variety at
+the ends: a fill in the last bar of each four, an open hat or an extra kick where the phrase turns
+over. Under `groove: true` your note lengths may stay uniform, so the variety has to come from the
+pattern rather than from the note values.
 
 IF THIS IS A REVISION, the record carries `notes`: what the reviewers asked of your part. Change what
 was asked and keep the rest.
