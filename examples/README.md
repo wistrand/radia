@@ -53,6 +53,11 @@ bug in the example.
 speak under, so misbehaviour is refused at the write rather than checked for. Phase 1 of
 [agent_docs/plan-mud.md](../agent_docs/plan-mud.md); the contest over a scarce item is phase 3.
 
+**`market/`** is request/bid/award with no models in it: five scripted bidders with strategies that
+CROSS OVER, so which one leads depends on the sequence of jobs and on what each has already won. It
+is the worked form of `extensions/ts/marketplace.ts`, and the point it makes is that the buyer's
+policy lives entirely in the example while the space ranks nothing. `deno task test:market`.
+
 **`teams/`** holds self-contained TEAMS of agent harnesses run as workers (`radia team up <dir>
 --init --seed`), each one directory of `team.json` plus prompts. Two are prompts alone, no code:
 `twenty-questions/` (the introduction, where every move is a task for the other player) and a story

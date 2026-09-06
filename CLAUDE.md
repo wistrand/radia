@@ -45,7 +45,7 @@ file's own header, never here.
 
 | Path                                    | Role                                                       |
 |-----------------------------------------|------------------------------------------------------------|
-| `deno.json`                             | tasks + import map, verb-first: `dev*` runs a space, `cli` is the CLI from a checkout, `check`/`test*` verify (`test` is the aggregate; `test:quick`, `test:runtime`, `test:conformance[:pg\|:s3]`, `test:extensions`, `test:lab`, `test:chat`, `test:analysis`, `test:mud`, `test:teams`), `bench`/`profile` measure, `bump` stamps the next version, `compile`/`release`/`bundle-*` build |
+| `deno.json`                             | tasks + import map, verb-first: `dev*` runs a space, `cli` is the CLI from a checkout, `check`/`test*` verify (`test` is the aggregate; `test:quick`, `test:runtime`, `test:conformance[:pg\|:s3]`, `test:extensions`, `test:lab`, `test:chat`, `test:analysis`, `test:mud`, `test:market`, `test:teams`), `bench`/`profile` measure, `bump` stamps the next version, `compile`/`release`/`bundle-*` build |
 | `src/main.ts`                           | the `radia` entry: `dev` (laptop: embedded space + console, operator credential provisioned), `serve` (the same space in deployment posture: no credential file, nothing on stdout, persistent storage required), `mcp`, else a CLI verb. `--config` is a JSON object of the same flag names; `--ext` co-hosts the extension routes at `/ext/`. [architecture-surfaces.md](agent_docs/architecture-surfaces.md) |
 | `src/surfaces/`                         | the client layer inside the binary: every way to reach a space that is not raw HTTP. Talks `/v0` through the SDK like an external client, may import an extension, and NEVER takes a value from `src/core`/`server`/`storage` (`test/layering.test.ts`). [architecture-surfaces.md](agent_docs/architecture-surfaces.md) |
 | `src/surfaces/cli.ts`                   | the CLI verbs, public `/v0` only; `radia help` is the list. `runs --for` and `team remove` are the offboarding cascade; `git-serve` and `serve-ext` are clients that happen to listen; `git-credential` is git's helper over the stored login; `login --sso` is the RFC 8252 loopback; `activity` is the console's Activity timeline in ANSI; `team up` runs a `team.json`'s members as workers that launch their harness per claim. [architecture-surfaces.md](agent_docs/architecture-surfaces.md) |
@@ -60,7 +60,7 @@ file's own header, never here.
 | `src/core/`                             | storage-agnostic logic. `space.ts` is the one facade; `as(principal)` returns the authorized handle every caller holds. Authorization, identity, the seal chain, gc, flows, artifacts and inspection are delegated through narrow host ports. [design-auth.md](agent_docs/design-auth.md), [design-observability.md](agent_docs/design-observability.md), [plan-gc.md](agent_docs/plan-gc.md) |
 | `sdk/ts/`, `sdk/py/radia.py`            | the TS SDK (`mod.ts` is the entry; `wire.ts` defines the frozen vocabulary and `src/` imports it, never the reverse; `loop.ts` has `agentLoop` and `reactorLoop`) and the stdlib-only Python SDK at parity. [sdk/README.md](sdk/README.md) |
 | `extensions/`                           | conventions built ON the space (workspaces, sandboxes, git, teams and their harness workers, presence, encryption, the broker host, OTLP). Imports the SDK, never `src/`; three surfaces are normative and `extensions/conformance/` is their contract. [extensions/README.md](extensions/README.md) |
-| `examples/`                             | runnable apps, one README each: `pipeline/` (+ `pipeline-py/`), `stress/`, `analysis/`, `chat/` (the full LLM agent, where bugs surface first), `mud/`, `teams/` (harness teams as one directory each, for `radia team up`; `twenty-questions/` is the introduction and `go-fish/` the stress test, a workspace-agent dealer under `deno task test:teams`). `operator.ts` is the credential they bootstrap with. [examples/README.md](examples/README.md) |
+| `examples/`                             | runnable apps, one README each: `pipeline/` (+ `pipeline-py/`), `stress/`, `analysis/`, `chat/` (the full LLM agent, where bugs surface first), `mud/`, `market/` (scripted bidders competing through request/bid/award, no models), `teams/` (harness teams as one directory each, for `radia team up`; `twenty-questions/` is the introduction and `go-fish/` the stress test, a workspace-agent dealer under `deno task test:teams`). `operator.ts` is the credential they bootstrap with. [examples/README.md](examples/README.md) |
 | `scripts/agent-lab/`                    | real harnesses run against a fresh binary on a script (`deno task lab`). A client that reads nothing private. [plan-agent-lab.md](agent_docs/plan-agent-lab.md) |
 | `scripts/build-release.sh`              | `deno compile` per OS plus SDK-only npm/pip packages as release assets (`deno task release`); the install is `curl \| sh`. [architecture-surfaces.md](agent_docs/architecture-surfaces.md), [design-storage.md](agent_docs/design-storage.md) "Distribution" |
 | `bench/`                                | throughput, latency and scaling per adapter, in-process; `chatload.ts` is the app-shaped one, `deployment.ts` the over-HTTP one. Nothing asserts. README there |
@@ -78,7 +78,7 @@ SQLite file or PGlite dir of your choosing, in-memory otherwise), `deno task tes
 an `agent_docs/` edit needs it too, since `test/agentdocs.test.ts` checks every link and source
 path a doc names), `deno task test:runtime` (both adapters, what any `src/` change takes),
 `scripts/s3-conformance.sh` (the object-store blob columns), `deno task test:extensions`,
-`deno task test:chat` / `test:analysis` / `test:mud` / `test:teams` (the examples, no API key), `deno task bench`,
+`deno task test:chat` / `test:analysis` / `test:mud` / `test:market` / `test:teams` (the examples, no API key), `deno task bench`,
 `deno task demo` (end-to-end agent demo over HTTP; `demo:py` is the same on the Python SDKs),
 `deno task compile` (single binary), `deno task release`. Phase-by-phase status in
 [agent_docs/plan-m0-implementation.md](agent_docs/plan-m0-implementation.md); what remains in
@@ -99,7 +99,7 @@ Architecture and design:
 - [design-api.md](agent_docs/design-api.md): delivery guarantee, leases + fencing, idempotency ordering, the ten operations, the wire protocol, the agent loop (§4–5).
 - [design-algebra.md](agent_docs/design-algebra.md): the kernel as a signature and laws (descriptive draft). Read before proposing a new kernel verb or endpoint; its review test decides element vs. new generator.
 - [design-scheduler.md](agent_docs/design-scheduler.md): cost-aware admission control (§6), unbuilt (M3).
-- [design-marketplace.md](agent_docs/design-marketplace.md): request/bid/award (§7), unbuilt (M2) but DESIGNED, 8 questions settled 2026-09-05 with their rejected alternatives kept. It asks the runtime for nothing: the bidding window is `availableAt`, selection is `take`+`ack`, there is no `award` kind (the award is the assigned task's shape), a failed winner is re-awarded from the preserved bids, and no bids is a `nack` whose backoff is the next window. Read before proposing a timer, a sweeper, an award record, a bid-ranking rule, or an interest per auction.
+- [design-marketplace.md](agent_docs/design-marketplace.md): request/bid/award (§7), BUILT 2026-09-05 as a convention that asks the runtime for nothing (`extensions/ts/marketplace.ts`, `examples/market/`); its 8 design questions are settled with the rejected alternatives kept. Window is `availableAt`, selection is `take`+`ack`, the award is the assigned task's shape. Read before proposing a timer, a sweeper, an award record, a bid-ranking rule, or an interest per auction.
 - [design-taint.md](agent_docs/design-taint.md): why the taint boolean saturates and the closed label set that replaced it. Read before adding a label or relying on `scope: {taint: …}`.
 - [design-auth.md](agent_docs/design-auth.md): principals, grants, delegation, taint, revocation, budgets, and which layer enforces each verb (§8). Auth is built (M1); budgets deferred.
 - [design-observability.md](agent_docs/design-observability.md): the event log, audit, re-execution, livelock detection, integrity and confidentiality (§9).
@@ -430,8 +430,9 @@ docs with it rather than by hand.
 
 Subsystem docs are `design-*` (spec + rationale). Built ones now open with an "M0/M1
 status" note pointing into `src/`; **auth is substantially built (M1)** and its doc carries a
-status note (OIDC shipped 2026-08-11; budgets and the chain-intersection policy stay deferred). Still pure design:
-scheduler (M3), marketplace (M2). A blanket rename to `architecture-*` is still deferred to avoid
+status note (OIDC shipped 2026-08-11; budgets and the chain-intersection policy stay deferred). The marketplace
+shipped 2026-09-05 as a CONVENTION with no runtime change, so its doc is spec plus a build record rather than
+a future. Still pure design: the scheduler (M3). A blanket rename to `architecture-*` is still deferred to avoid
 link churn; the status note + source pointers serve the same purpose. Rename INDIVIDUALLY when a
 doc stops describing a future: `plan-workspace-agents.md` became
 [architecture-workspace-agents.md](agent_docs/architecture-workspace-agents.md) once all six

@@ -1135,6 +1135,21 @@ Deno.test("[team] declareKind writes the CANONICAL order, and survives a key an 
   }
 });
 
+Deno.test("[team] a declaration with NO usage does not erase the one already there", () => {
+  // Measured on a space running both the teams convention and the marketplace: the second declared
+  // `task` to add one indexed path, said nothing about usage, and emptied the first convention's
+  // instructions for every agent reading `space_kinds`. Paths merged; the prose that tells a model
+  // how to use the kind did not. An absent field is a DEFAULT, not a competing answer.
+  const live = { kind: "task", indexedPaths: [{ path: "tags", type: "array" }], usage: "Route with tags." } satisfies KindDef;
+  const adds = { kind: "task", indexedPaths: [{ path: "request", type: "keyword" }] } satisfies KindDef;
+  assertEquals(mergeKind(live, adds).usage, "Route with tags.", "no opinion must not erase one");
+  assertEquals(mergeKind(live, adds).indexedPaths.map((p) => p.path).sort(), ["request", "tags"]);
+  // A declaration that HAS an opinion still states it: that is a real conflict and this build wins.
+  assertEquals(mergeKind(live, { ...adds, usage: "Mine." }).usage, "Mine.");
+  // `claimable` is not treated this way, because absent means claimable, which is an opinion.
+  assertEquals(mergeKind({ ...live, claimable: false }, adds).claimable, undefined);
+});
+
 Deno.test("[team] mergeKind is additive on paths and states everything else", () => {
   // Paths are a SET, so a union is the one merge that is always safe. `claimable` and `usage` are
   // single-valued and are this build's opinion: merging them means picking a winner with no basis.

@@ -232,7 +232,8 @@ and it is omitted entirely when absent so every key minted before the field exis
 byte-identical.
 
 **Suggested names, which the runtime has never heard of:** `task` · `fact` / `hypothesis` ·
-`request` / `bid` / `award` (see [design-marketplace.md](design-marketplace.md)) · `result`. These
+`request` / `bid` (see [design-marketplace.md](design-marketplace.md); there is deliberately no
+`award` kind, since the award is the assigned task's shape) · `result`. These
 are naming conventions from the origin outline. Declaring one is an ordinary `kind_def` and carries
 no special behaviour; an application is free to ignore them entirely, and `examples/chat` does,
 owning `message`/`llm_call`/`tool_call`/`check` and so on.

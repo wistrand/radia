@@ -21,6 +21,22 @@ console and three examples. At least three security-relevant. Sources: [gotchas.
 [plan-audit-remediation.md](plan-audit-remediation.md), two found while writing this, and two found
 migrating the readers onto step 3.
 
+**Twenty-five as of 2026-09-06, and the last five came from ONE build**, the marketplace
+([design-marketplace.md](design-marketplace.md)), which is the most useful thing this census has
+recorded about itself: a single new convention, written by someone who had read this document that
+week, reproduced the class five times. The shape is always a read that answers PLAUSIBLY instead of
+refusing. (21) The design specified reading an auction's bids through `children`, which filters to
+what the caller may already read, so an awarder without `bid: query` sees an empty auction and
+reopens a perfectly good one. (22) `children` is also a PAGE, so a busy auction would be decided on
+whichever bids happened to come first. (23) Where the bidding window could not be read, two callers
+defaulted it to NOW, which silently admits the late bids the window exists to exclude. (24) A third
+fell back to the window in the request BODY, which is round one's close, so after any reopening the
+auction could never be won. (25) And the sibling disease below, a dropped FIELD rather than a
+truncated read: a kind declaration that said nothing about `usage` erased the `usage` another
+convention had written, so `space_kinds` stopped explaining a shared kind (package AA1). Fixes:
+`queryAll` on an indexed body field, and a refusal rather than a default wherever the window is
+unknown.
+
 The census names symbols AS THEY WERE. `readRegistry` became `readCompletely` and then
 `readExhaustively` (2026-08-25) and lost its projection half; a rename applied across historical
 prose is how this section briefly claimed that `readExhaustively` callers page ascending, which

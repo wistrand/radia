@@ -13,8 +13,12 @@
 Show that content-routed coordination (and specifically the agenda scheduler) earns its
 place, and that the durability guarantees hold under failure.
 
-The same "earns its place" bar gates M2's marketplace: build it behind a measured baseline, not on
-spec. Durable execution is Temporal's ground, and Radia does not reimplement it (see
+The same "earns its place" bar gated M2's marketplace, and the bar turned out to be the wrong shape
+for it: designing it first (2026-09-05) established that the protocol asks the RUNTIME for nothing,
+so what needed gating was never there. It shipped as a convention on the extensions tier with zero
+changes under `src/`, which is the outcome this bar should be looking for. Gate runtime surface
+behind a measured baseline; a convention costs the kernel nothing and is gated by whether anyone
+uses it. Durable execution is Temporal's ground, and Radia does not reimplement it (see
 [research-positioning.md](research-positioning.md)).
 
 The timing half is settled and needed no baseline, because it turned out not to be machinery.

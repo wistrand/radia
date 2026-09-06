@@ -378,6 +378,54 @@ paths:
       responses:
         "200":
           description: "`{crossers, unscopedArtifact, opsPowers, caveats}`; caveats always populated."
+  /marketplace/v1/declare:
+    post:
+      summary: Declare the `request` and `bid` kinds, and extend `task` with `request` (setup).
+      responses:
+        "200":
+          description: "`{declared: [\"request\", \"bid\", \"task\"]}`."
+  /marketplace/v1/auctions/{request}/bids:
+    get:
+      summary: >
+        Every eligible bid on one auction, exhaustively. Served because both other ways of reading
+        them are silently wrong: `children` is filtered to what the caller may read, so an awarder
+        lacking `bid: query` sees an empty auction, and it is a page, so a large auction would be
+        decided on an arbitrary prefix.
+      parameters:
+        - name: request
+          in: path
+          required: true
+          schema: { type: string }
+        - name: closesAt
+          in: query
+          description: >
+            The window to judge against; defaults to the request's current `availableAt`, which
+            after a reopening nack is the CURRENT round's close.
+          schema: { type: string }
+      responses:
+        "200":
+          description: "`{request, closesAt, bids, ineligible}`; `bids` is every bid the window admits."
+  /marketplace/v1/auctions/{request}/award:
+    post:
+      summary: >
+        Claim the request and emit the assigned task in ONE transaction. The claim is the exclusive
+        right to award, so this cannot double-award; split into two calls it would be an unfenced
+        write a redelivery duplicates. The winner is chosen by the CALLER: nothing here ranks bids.
+      parameters:
+        - name: request
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MarketAward" }
+      responses:
+        "200":
+          description: "`{awarded: true, request, winner, task, bid}`."
+        "409":
+          description: Not claimable (still open, held by another awarder, or already awarded).
 components:
   securitySchemes:
     bearerAuth:
@@ -385,6 +433,21 @@ components:
       scheme: bearer
       description: A run token, or a definition token the facade exchanges for the caller.
   schemas:
+    MarketAward:
+      type: object
+      additionalProperties: false
+      required: [bid]
+      properties:
+        bid:
+          type: string
+          description: The winning bid's record id; its `bidder` becomes the task's `assignee`.
+        kind:
+          type: string
+          description: The assigned work's kind (default `task`).
+        body:
+          type: object
+          description: The work itself. `assignee` and `request` are set by the facade, not the caller.
+        leaseSeconds: { type: number }
     WorkspaceWrite:
       type: object
       additionalProperties: false

@@ -68,14 +68,60 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | ~~Y~~ | ~~Fourth audit, by class: a write bound on one of two write paths~~ | ~~P2/P3~~ | **CLOSED 2026-08-29** |
 | ~~Z~~ | ~~External review of v2026.8.5: sandbox claims the code did not deliver~~ | ~~P1~~ | **CLOSED 2026-09-02** |
 | ~~Z~~ | ~~External review re-derived: ops gate parse, event cursor, grant `$or` cap, `newestByHash` order~~ | ~~P1/P2~~ | **CLOSED 2026-09-04** (7 of 8 fixed; 1 not found) |
+| ~~AA~~ | ~~Self-audit while building the marketplace: shared code a second convention exposed~~ | ~~P2/P3~~ | **CLOSED 2026-09-06** |
 
-**Every package is closed as of 2026-09-04**, T included (2026-08-06; this line said otherwise until
+**Every package is closed as of 2026-09-06**, AA included (a self-audit rather than a review: the
+marketplace was the first convention to declare over a kind another convention owned, and the
+second to be driven through the MCP adapter, which is what exposed both). T included (2026-08-06; this line said otherwise until
 2026-08-30), Y (2026-08-29) and both Z entries (2026-09-02 and 2026-09-04, external reviews, each
 closed the same day). When a package closes, the heading, the table row and this summary line are
 three places and all three are the ledger; a reviewer reads whichever one they land on, so a
 close recorded in one of them is not recorded. Closed lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
+
+## Package AA: building a second convention over shared code (2026-09-06), CLOSED 2026-09-06
+
+Not a review. Building request/bid/award (`extensions/ts/marketplace.ts`) made it the first
+convention to DECLARE OVER a kind another convention owns, and the second to be driven through the
+MCP adapter, and each of those firsts found something the single-convention case had hidden for
+months. The marketplace's own defects are not here; they never shipped and are in
+[design-marketplace.md](design-marketplace.md). These three outlive it.
+
+### AA1. `mergeKind` erased a co-declared kind's `usage` (P2), FIXED
+
+Two conventions share `task`: teams routes it by `tags`, the marketplace adds `request`. The merge
+unions indexed paths and took every other field from the INCOMING declaration, `usage` included, so
+a declaration that said nothing about usage replaced the other convention's string with nothing.
+Silent, and the loss is the prose a model reads to learn the kind at all (`space_kinds`), so the
+symptom is agents misusing a kind weeks later with no error anywhere. An absent field is a DEFAULT,
+not a competing answer; a present one still wins, and `claimable` is deliberately excluded because
+absent there means claimable. Fix in `mergeKind`; guard in `test/team.test.ts`, proved red against
+the pre-fix merge.
+
+### AA2. Two wire fields were unreachable from a model (P3), FIXED
+
+Package Q's theme, recurring: `space_put` took no `availableAt` and `space_ack` could not parent its
+result. Each made a SHAPE impossible rather than a call awkward. Without the first a model cannot
+write work that becomes claimable later, so any window (a bidding window, a comment period,
+scheduled work) is claimable the instant it exists and silently is not a window; without the second
+a model can answer but cannot record what its answer rested on, since the settle path contributes
+only the claimed record. Both had been reachable from the SDK since they existed. Found by asking
+what a model would need to run one convention, which is a cheap probe worth repeating on the next.
+Guard: `test/mcpwire.test.ts`, driving a real `radia mcp` over stdio, because a schema advertising a
+field the handler drops passes any assertion made against the schema alone.
+
+### AA3. A lease taken outside the heartbeat leaked on failure (P3), FIXED
+
+New code in three surfaces (the convention's `runAuction`, the `marketplace/v1/award` route, the
+`space_award` tool) claimed a record and then ran code that can throw before settling: the caller's
+own selection policy in one case, the ack in the others. A throw left the record leased until the
+lease lapsed. Self-healing, but it spends one of the auction's bounded rounds on a network blip, and
+in the adapter that lease is not in the claims map, so nothing was ever going to heartbeat or
+release it. All three now release, best effort, without masking the original error. The general
+rule this states: a claim taken outside the machinery that renews claims owns its own lifecycle,
+including the failure path. Guard: `extensions/conformance/marketplace.test.ts`, a policy that
+throws leaves the record `available` with `attempt` unchanged.
 
 ## Package Z: an external review of v2026.8.5 (2026-09-02), CLOSED 2026-09-02
 
