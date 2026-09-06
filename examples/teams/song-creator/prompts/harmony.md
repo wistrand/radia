@@ -18,7 +18,9 @@ HOW TO ACT. Use the radia MCP tools and nothing else. Three calls, in one turn.
 
 1. Read the plan:
      space_read_one {kind: "brief", match: {song: "<the song id in the record above>"}}
-   It gives you the key, the tempo, the meter and how many bars to write.
+   It gives you the key, the tempo, the meter, how many bars to write, and `description`: what this
+   piece is meant to BE. Read that first and play it. Everything below is how this part behaves in
+   general, and the description is this song in particular; where the two disagree, the song wins.
 
 2. Learn the notation you must answer in:
      space_kinds {kind: "phrase"}

@@ -699,6 +699,45 @@ try {
   ].join(" | "));
   check("and eight different bars in ONE rhythm is still a pump", samePulse.findings.some((f) => /only 1 rhythm/.test(f.detail)), samePulse.findings.filter((f) => f.parts[0] === "drums").map((f) => f.detail));
 
+  // ---- a riff is the tune, and it repeats on purpose ----
+  // THE SECOND AND LAST MEASUREMENT THE BRIEF CAN TURN OFF, and the reason is the same as `groove`'s
+  // but one part over: three rules describe a tune that develops, and a motor figure does not. A
+  // request for a mechanical riff came back as an ordinary stepwise melody every time, because the
+  // count called the figure dull in round one and the revision loop obeyed. Measured across a space
+  // of finished songs, the later rounds of any request converged on one shape.
+  const motorBar = "A4/8 G4/8 A4/8 E4/8 C4/8 E4/8 A4/8 r/8";
+  const motorG = "G4/8 F4/8 G4/8 D4/8 B3/8 D4/8 G4/8 r/8";
+  const motor = {
+    bpm: 128,
+    meter: { beats: 4, unit: 4 },
+    chords: ["Am", "Am", "G", "G", "Am", "Am", "G", "G"],
+    parts: [
+      { instrument: "lead", phrase: [motorBar, motorBar, motorG, motorG, motorBar, motorBar, motorG, motorG].join(" | ") },
+      // Under the same chords the lead is over, so the only thing wrong with this bass is that it
+      // repeats, which is the point of the narrowness check below.
+      { instrument: "bass", phrase: Array(2).fill("A2/4 A2/8 E3/8 A2/4 E2/4 | A2/4 A2/8 E3/8 A2/4 E2/4 | G2/4 G2/8 D3/8 G2/4 D2/4 | G2/4 G2/8 D3/8 G2/4 D2/4").join(" | ") },
+    ],
+  };
+  const leadFaults = (s: typeof motor) => analyse(parseScore(s).parts, s, "A minor").findings.filter((f) => f.parts.includes("lead")).map((f) => f.detail);
+  const plain = leadFaults(motor);
+  check(
+    "a motor tune is called dull three ways when nothing says otherwise",
+    ["one note length", "the same bar", "highest note"].every((w) => plain.some((d) => d.includes(w))),
+    plain,
+  );
+  const asRiff = leadFaults({ ...motor, riff: true } as typeof motor);
+  check("and none of the three once the brief says the tune IS the riff", asRiff.length === 0, asRiff);
+  // NARROW IN BOTH DIRECTIONS, like `groove`: one part, three rules.
+  const riffBass = analyse(parseScore({ ...motor, riff: true }).parts, { ...motor, riff: true } as typeof motor, "A minor")
+    .findings.filter((f) => f.parts.includes("bass"));
+  check("a riff never excuses the parts under it", riffBass.some((f) => /the same bar/.test(f.detail)), riffBass.map((f) => f.detail));
+  const airless = { ...motor, riff: true, parts: [{ instrument: "lead", phrase: Array(8).fill("A4/8 G4/8 A4/8 E4/8 C4/8 E4/8 A4/8 C5/8").join(" | ") }] };
+  check(
+    "nor the tune's need to breathe, which every riff worth the name already does",
+    leadFaults(airless as typeof motor).some((d) => /breathe/.test(d)),
+    leadFaults(airless as typeof motor),
+  );
+
   console.log(failures === 0 ? "\nall checks passed" : `\n${failures} FAILED`);
 } finally {
   stop.abort();

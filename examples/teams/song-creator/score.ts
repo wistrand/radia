@@ -212,6 +212,18 @@ export interface Score {
    * section only, and every other measure still applies to every part.
    */
   groove?: boolean;
+  /**
+   * The TUNE is a repeating mechanical figure, so a melody that does not develop is the INTENT.
+   *
+   * The second and last place the brief overrules a measurement, and the same shape of problem as
+   * `groove`: three rules describe a tune that goes somewhere, and a motor riff goes nowhere on
+   * purpose. A request for one came back as an ordinary stepwise melody every time, because the
+   * count called the riff dull in round one and the revision loop obeyed. Deliberately narrow: it
+   * relaxes THREE rules (uniform note length, the same bar repeated, and the late peak) for the
+   * MELODY only, and every other measure still applies to every part. `groove` says the rhythm
+   * section holds a pulse; this says the tune itself is the pulse.
+   */
+  riff?: boolean;
 }
 
 export interface ParsedPart extends Part {
