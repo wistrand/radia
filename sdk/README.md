@@ -17,14 +17,14 @@ deferred for now ([design-storage.md "Distribution"](../agent_docs/design-storag
 reasons); the release's `SHA256SUMS` lists both files:
 
 ```sh
-npm install https://github.com/wistrand/radia/releases/download/v2026.9.4/radia-2026.9.4.tgz
-pip install https://github.com/wistrand/radia/releases/download/v2026.9.4/radia_space-2026.9.4-py3-none-any.whl
+npm install https://github.com/wistrand/radia/releases/download/v2026.9.5/radia-2026.9.5.tgz
+pip install https://github.com/wistrand/radia/releases/download/v2026.9.5/radia_space-2026.9.5-py3-none-any.whl
 ```
 
 The URL is the pin: npm records it with an integrity hash in the lockfile, and pip verifies
 against the release when the URL carries `#sha256=<digest>` from `SHA256SUMS` (satisfies
 `--require-hashes`). Deno apps skip the tarball and import the tagged sources directly:
-`https://raw.githubusercontent.com/wistrand/radia/v2026.9.4/sdk/ts/mod.ts`.
+`https://raw.githubusercontent.com/wistrand/radia/v2026.9.5/sdk/ts/mod.ts`.
 
 The npm tarball ships the TypeScript SOURCES, with no compiled `.js`, no `.d.ts` and no `types`
 field: the exports map points at `.ts` files, which is one of the zero-build rules of this repo.
