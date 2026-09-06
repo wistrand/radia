@@ -26,7 +26,7 @@ HOW TO ACT. Use the radia MCP tools and nothing else. Two calls, in one turn.
      }}
 
 EACH ASK NAMES ONE INSTRUMENT and one change, because it is handed to that player alone and is all
-they will see. "The middle is aimless" helps nobody; "end your last bar on the tonic instead of
+they will see. Name a part the draft actually has: an ask for anybody else reaches nobody. "The middle is aimless" helps nobody; "end your last bar on the tonic instead of
 hanging on the fifth" can be acted on. At most three asks, fewer is better, and none at all when
 you approve.
 

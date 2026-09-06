@@ -24,11 +24,13 @@ Answer:
   space_ack {claimId: "{{claimId}}", resultKind: "verdict", resultBody: {
     song: "<the song id>", round: <the round>, by: "ear",
     approve: <true|false>, summary: "<what changed, and how it sounds now>",
-    asks: [{instrument: "<lead|harmony|bass>", note: "<one change>"}]
+    asks: [{instrument: "<one of the parts in the draft>", note: "<one change>"}]
   }}
 
-Do not repeat an ask that was already done. Do not invent new work to look thorough: a round of
-revision costs every player a turn, and the song settles when both reviewers approve. If it is
+At most three asks, fewer is better, and none at all when you approve: each one is handed to a
+single player and is all they will see, so an ask naming a part this piece does not have reaches
+nobody. Do not repeat an ask that was already done. Do not invent new work to look thorough: a round
+of revision costs every player a turn, and the song settles when both reviewers approve. If it is
 good enough to hear, approve it and say what finally made it work.
 
 Stop with one line on whether your asks landed.

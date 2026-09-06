@@ -70,6 +70,35 @@ export function toHz(midi: number): number {
  * Every error is collected rather than thrown on the first, because a model fixing one mistake at a
  * time costs a turn per mistake; the whole list in one refusal costs one turn for all of them.
  */
+/**
+ * What to write instead of this token.
+ *
+ * Measured over the drafts of real runs: a third of them are refused on notation, and two shapes
+ * account for most of it. `A16` is a sixteenth whose octave and slash were dropped, and it turns up
+ * where a part writes the dotted-eighth pair a gallop or a habanera is made of; `q`, `q,` and
+ * `E4(q)` are a different notation the model arrived with. Both used to get the same sentence
+ * restating the grammar, which is the sentence `space_kinds` had already given it.
+ */
+function hintFor(token: string): string {
+  const grammar = "expected PITCH/DENOM like C4/4, a rest r/8, a dotted C4/4. or a tied C4/8~";
+  const noSlash = /^([A-Ga-g][#b]?)(\d+)$/.exec(token);
+  if (noSlash && Number(noSlash[2]) > 8) {
+    return `'${token}' is missing its octave and its slash: a ${noSlash[2]}th of ${noSlash[1]} in octave 2 is '${noSlash[1]}2/${noSlash[2]}'. ` +
+      `The octave is repeated on every note, so a dotted-eighth pair is 'A2/8. A2/16', never 'A2/8. A16'`;
+  }
+  // A pitch with no length. The commonest single shape after the two above, and the fix is the same
+  // sentence every time: nothing here is a bare pitch, because a note is a pitch AND a duration.
+  if (noSlash) {
+    return `'${token}' has no length. Every note carries one after a slash: '${token}/4' is a quarter, ` +
+      `'${token}/8' an eighth. A pitch on its own is not a note here`;
+  }
+  if (/^[a-z][.,)]?$/i.test(token) || /\((?:q|e|h|w|s)\)/i.test(token)) {
+    return `'${token}' is a note length written the way another notation writes it. Here the length is a slash and a number after the pitch: ` +
+      `a quarter is C4/4, an eighth C4/8, a sixteenth C4/16. There are no letter durations and no commas between notes`;
+  }
+  return grammar;
+}
+
 export function parsePhrase(text: string, meter: Meter): { notes: Note[]; errors: ParseError[] } {
   const notes: Note[] = [];
   const errors: ParseError[] = [];
@@ -92,7 +121,13 @@ export function parsePhrase(text: string, meter: Meter): { notes: Note[]; errors
         errors.push({
           bar: barNo,
           token,
-          detail: "expected PITCH/DENOM like C4/4, a rest r/8, a dotted C4/4. or a tied C4/8~",
+          // NAME THE MISTAKE, not the grammar. A third of the drafts written by real models are
+          // refused here, and the two shapes below are most of them: `A16` for `A2/16` (the
+          // sixteenth of a dotted-eighth pair, written without repeating the octave) and `q` or
+          // `(q)` for a quarter, which is a different notation the model brought with it. A round
+          // spent on notation is four paid turns that make no music, so the message says what to
+          // write rather than restating the format the same way `space_kinds` already did.
+          detail: hintFor(token),
         });
         continue;
       }

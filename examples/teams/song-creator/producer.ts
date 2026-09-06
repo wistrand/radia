@@ -179,6 +179,7 @@ export async function runProducer(
       const rules = bodies.find((v) => v.by === "rules");
       const ear = bodies.find((v) => v.by === "ear");
       const asks = mergeAsks(bodies);
+      const unrouted = [...asks.keys()].filter((i) => !brief.parts.includes(i));
       const maxRounds = brief.maxRounds ?? o.rounds;
       // WHO SETTLES THE PIECE. Requiring both reviewers made the fault count a veto and left the ear
       // advisory, which is backwards for something meant to be worth hearing: a real run had the
@@ -217,8 +218,17 @@ export async function runProducer(
           ear: ear?.summary ?? "",
           agreed: Boolean(rules?.approve) === Boolean(ear?.approve),
           asked: [...asks.keys()],
+          // AN ASK NAMING A PART THAT IS NOT IN THE PIECE GOES NOWHERE, and it used to go nowhere
+          // silently: the loop below writes one record per instrument in `brief.parts` and reads
+          // `asks` by that name, so a reviewer asking "melody" or asking the drummer of a piece
+          // with no kit had its ask dropped between the verdict and the player. Recorded here and
+          // logged, because a reviewer spending one of its asks on nothing is worth seeing.
+          ...(unrouted.length > 0 ? { unrouted } : {}),
         }),
       }, `review-note:${b.song}:${b.round}`);
+      if (unrouted.length > 0) {
+        say(`[producer] ${b.song} r${b.round}: ${unrouted.length} ask(s) name a part this piece does not have (${unrouted.join(", ")}); they reach nobody`);
+      }
 
       if (!approved) {
         for (const instrument of brief.parts) {

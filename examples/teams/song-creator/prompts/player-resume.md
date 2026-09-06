@@ -8,11 +8,16 @@ CHECK ITS `round` FIRST, because a warm session outlives a song.
 
 IF `round` IS 1 THIS IS A NEW SONG and nothing above this line applies to it. There is nothing to
 revise and no earlier part of yours in it. Start clean:
-  - `space_read_one {kind: "brief", match: {song: "<the song id in the record>"}}` for the key,
-    tempo, meter and how many bars this piece wants. It is a different piece from the last one.
+  - `space_read_one {kind: "brief", match: {song: "<the song id in the record>"}}` for the tempo,
+    meter, how many bars this piece wants, and `description`: what it is meant to BE, which is the
+    thing most likely to differ from the last one. The key and chords too, if your part uses them.
+    It is a different piece from the last one, so play what THIS one asks for.
   - `space_kinds {kind: "phrase"}` for the notation, and follow its `usage` exactly. Do not write
     from memory of how you formatted the last song: a phrase that does not parse is refused by bar
     number, and every note in your part comes back for rework.
+  - the `guidance` on the record above, which is what the arranger wants YOUR part to do in this
+    piece. It is the other half of the description and it changes with every song, so read it even
+    though the record looks like the last one.
   - then answer with the call at the bottom, and stop.
 
 OTHERWISE it is a revision of the song you have been working on, and the rest of this applies.

@@ -42,10 +42,12 @@ a note:
 | F#5 and above, so A#5 or C6 | the OPEN hat, the same sound held and ringing |
 
 Nothing you play is measured against the key or the chords, because a drum has no pitch to be wrong
-about. What IS measured is your rhythm, and for a kit it is counted as HOW MANY DIFFERENT BARS you
-play. Over eight bars or more, two is a fault: that is a loop with one bar tacked on the end, and a
-run of this team passed the old rule by splitting a single hat into two sixteenths in the last bar.
-Three or four different bars is what a real part has. Keep the pulse steady and earn the variety at
+about. What IS measured is your rhythm, counted as HOW MANY DIFFERENT RHYTHMS you play, not how many
+different bars: a pitch picks which drum, so moving a hit from the hat to the snare writes a new bar
+out of the same rhythm and counts as nothing. Over eight bars or more, two rhythms is a fault: that
+is a loop with one bar tacked on the end. Two live runs shipped 16 bars holding five and four
+distinct BARS but one and three RHYTHMS, and the rule that counted bars passed both. Three or four
+real rhythms is what a part has. Keep the pulse steady and earn the variety at
 the ends: a fill in the last bar of each four, an open hat (write it high, see the table) or an
 extra kick where the phrase turns over. Under `groove: true` your note lengths may stay uniform, so the variety has to come from the
 pattern rather than from the note values.
