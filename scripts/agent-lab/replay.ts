@@ -400,8 +400,12 @@ export async function replay(
     if (!quietly) console.log(`${elapsed().padStart(5)} ${who.padEnd(width)} ${what}`);
   };
 
-  const port = freePort();
-  const base = `http://127.0.0.1:${port}`;
+  // `freePort` asks the kernel for a port and CLOSES it, so nothing holds it during the second or
+  // more that the space takes to boot: any outbound connection in this suite can be handed the same
+  // number first. That is why the start below retries rather than reporting a stolen port, and why
+  // `base` is not a constant.
+  let port = freePort();
+  let base = `http://127.0.0.1:${port}`;
   const work = await Deno.makeTempDir({ prefix: "radia-replay-" });
   const env = (extra: Record<string, string> = {}) => {
     const e = { ...Deno.env.toObject() };
@@ -418,26 +422,73 @@ export async function replay(
     return dec.decode(out.stdout);
   };
 
-  const server = new Deno.Command(build.cmd, {
-    args: [...build.pre, "dev", "--port", String(port), "--db", `${work}/space`, "--auth", "required"],
-    env: env(),
-    stdout: "null",
-    stderr: "null",
-  }).spawn();
+  /** One attempt at a space: spawn, keep its stderr, and answer when it serves or why it did not. */
+  const startSpace = async (attempt: number) => {
+    const errPath = `${work}/space.${attempt}.err`;
+    const server = new Deno.Command(build.cmd, {
+      args: [...build.pre, "dev", "--port", String(port), "--db", `${work}/space`, "--auth", "required"],
+      env: env(),
+      stdout: "null",
+      // KEPT, not discarded. `dev` explains a taken port and a locked database precisely, and with
+      // this on "null" a space that never started surfaced as `cannot reach a space` from whichever
+      // CLI call ran next, naming no cause. Same reasoning as `run.ts`, which writes `space.err`.
+      stderr: "piped",
+    }).spawn();
+    const errFile = await Deno.open(errPath, { create: true, write: true, truncate: true });
+    const draining = server.stderr.pipeTo(errFile.writable).catch(() => {});
+    // A space that EXITED is not a slow space. Without this a crashed process is polled for the
+    // whole budget and reported as a timeout, sending the reader after the wrong problem.
+    let exit: Deno.CommandStatus | undefined;
+    const ended = server.status.then((s) => (exit = s, s));
+    // 60s, because the budget only costs time when the space is genuinely slow: a crash is caught on
+    // the next tick. A cold PGlite boot is ~1s here and several times that on a loaded CI runner,
+    // where a 10s ceiling was reached by a fifth sequential space.
+    const deadline = Date.now() + 60_000;
+    while (!await fetch(`${base}/v0/health`).then((r) => r.ok, () => false)) {
+      if (exit || Date.now() > deadline) {
+        await draining;
+        // The space's OWN words, quoted rather than pointed at: the work directory is deleted on the
+        // way out, so a path here would name a file the reader cannot open.
+        const lines = (await Deno.readTextFile(errPath).catch(() => "")).trim().split("\n").filter((l) => l.trim());
+        const why = (lines.filter((l) => !/\bINFO\b/.test(l))[0] ?? lines.at(-1) ?? "").trim();
+        const how = exit ? `exited with code ${exit.code}` : "never answered within 60s";
+        return { ok: false as const, why, how, taken: /already in use/.test(why) };
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return { ok: true as const, server, ended, draining };
+  };
+
+  let running: Extract<Awaited<ReturnType<typeof startSpace>>, { ok: true }> | undefined;
   const adapters = new Map<string, Adapter>();
   const stop = async () => {
     for (const a of adapters.values()) await a.close();
-    try {
-      server.kill("SIGTERM");
-    } catch { /* already gone */ }
-    await server.status;
+    if (running) {
+      try {
+        running.server.kill("SIGTERM");
+      } catch { /* already gone */ }
+      await running.ended;
+      await running.draining;
+    }
     if (!keepWork) await Deno.remove(work, { recursive: true }).catch(() => {});
   };
 
   try {
-    for (let i = 0; i < 100; i++) {
-      if (await fetch(`${base}/v0/health`).then((r) => r.ok, () => false)) break;
-      await new Promise((r) => setTimeout(r, 100));
+    // Three tries, because losing the port twice to the same race is already unlikely and a third
+    // loss is a signal rather than noise. Only a TAKEN port is retried: every other reason a space
+    // refuses to start is reported as itself, since retrying it would just repeat.
+    for (let attempt = 1;; attempt++) {
+      const started = await startSpace(attempt);
+      if (started.ok) {
+        running = started;
+        break;
+      }
+      if (started.taken && attempt < 3) {
+        port = freePort();
+        base = `http://127.0.0.1:${port}`;
+        continue;
+      }
+      throw new Error(`the space at ${base} ${started.how}${started.why ? `:\n  ${started.why}` : " and said nothing"}`);
     }
     const team = scenario.team ?? "lab";
     if (!quietly) console.log(`space  ${base}  (replaying ${dir})`);

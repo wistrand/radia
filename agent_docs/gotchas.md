@@ -1807,6 +1807,12 @@ decorates); `radia get` prints the same line. Lasting attribution names the AGEN
   a different claimed digest hit the cache and skipped verification. The cache now holds the digest
   that was verified and every manifest ENTRY is checked against it: an artifact's own digest is
   server-computed, while a manifest's copy of it is ordinary record content, a claim.
+- **A `freePort()` that binds port 0 and CLOSES it holds nothing, and a spawned space whose stderr
+  is `"null"` cannot say so.** The lab replay lost its port to another connection during the second
+  the space took to boot, then polled a port nothing was serving for its whole 10s budget and
+  surfaced as `cannot reach a space` from the next CLI call. `scripts/agent-lab/replay.ts` now keeps
+  stderr, ends the wait when the process EXITS, and retries a taken port on a fresh one. Never poll
+  a spawned process without watching it exit, and never discard the stream that names the cause.
 
 ## Rejected approaches
 
