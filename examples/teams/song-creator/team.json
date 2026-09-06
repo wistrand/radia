@@ -245,7 +245,7 @@
       "resumePromptFile": "prompts/player-resume.md",
       "frame": false,
       "resume": true,
-      "timeoutSeconds": 300
+      "timeoutSeconds": 600
     },
     {
       "name": "ben",
@@ -291,7 +291,7 @@
       "resumePromptFile": "prompts/player-resume.md",
       "frame": false,
       "resume": true,
-      "timeoutSeconds": 300
+      "timeoutSeconds": 600
     },
     {
       "name": "pip",
@@ -314,7 +314,7 @@
       "resumePromptFile": "prompts/player-resume.md",
       "frame": false,
       "resume": true,
-      "timeoutSeconds": 300
+      "timeoutSeconds": 600
     },
     {
       "name": "critic",
