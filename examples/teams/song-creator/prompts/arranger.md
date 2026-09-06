@@ -32,6 +32,8 @@ DECIDE, in this order:
       `synth`   detuned oscillators under a closing filter. Dance, pop, anything electronic.
       `plucked` struck and left to ring, no sustain. A harp, a guitar, a music box, a lullaby.
       `soft`    slow to arrive and held. Strings, voices, anything gentle and sustained.
+      `heavy`   driven into a clipper and rolled off after it, the way an amp feeds a speaker.
+                Distorted guitars, an overdriven organ: rock, metal, anything aggressive.
     Pick from the REQUEST, not from habit: a run asked for a harp and got the synth stack, because
     nothing in the brief could say otherwise. Leave it out only when `synth` is genuinely right.
   - WHETHER THIS IS A GROOVE. Set `groove: true` when the piece rides a repeating pulse and the

@@ -512,8 +512,34 @@ try {
   // arrangement and have to survive a change of sound, or picking `plucked` would silently remix it.
   for (const t of TIMBRE_NAMES) {
     const b = voiceFor("bass", t), l = voiceFor("lead", t);
-    check(`${t} keeps the mix: the parts stay where the arrangement put them`, b.pan === bassV.pan && l.pan === leadV.pan && l.gain === leadV.gain);
+    // WIDTH IS PLACEMENT TOO, and that had to be learned: `heavy` set the spread of a
+    // double-tracked rhythm guitar, which is right for a guitar and pushed the BASS out to the
+    // edges of a mix that needs it in the middle.
+    check(
+      `${t} keeps the mix: the parts stay where the arrangement put them`,
+      b.pan === bassV.pan && l.pan === leadV.pan && l.gain === leadV.gain && b.spread === bassV.spread && l.spread === leadV.spread,
+    );
   }
+  // DISTORTION IS NOT SATURATION, and the difference is measurable rather than a matter of taste: a
+  // held note through a soft curve keeps a saw's crest factor, and one driven into a clipper comes
+  // out flat-topped. The first version of `heavy` used `drive` and measured DARKER than the plain
+  // synth lead, because rounding a saw's ramp removes harmonics rather than adding them.
+  const heavy = voiceFor("lead", "heavy");
+  check("heavy is driven into a clipper, not merely saturated", (heavy.crunch ?? 0) > 0 && !heavy.drive, `crunch ${heavy.crunch}, drive ${heavy.drive}`);
+  const crestOf = (timbre?: string) => {
+    const s = { bpm: 60, meter: { beats: 4, unit: 4 }, ...(timbre ? { timbre } : {}), parts: [{ instrument: "lead", phrase: "E3/1" }] } as unknown as Score;
+    const w = render(parseScore(s).parts, s).wav;
+    const pcm = new Int16Array(w.buffer, w.byteOffset + 44, (w.length - 44) / 2);
+    let peak = 0, sq = 0;
+    for (let i = 0; i < 8192; i++) {
+      const v = pcm[(Math.floor(0.35 * 44100) + i) * 2] / 32768;
+      peak = Math.max(peak, Math.abs(v));
+      sq += v * v;
+    }
+    return 20 * Math.log10(peak / Math.sqrt(sq / 8192));
+  };
+  const plainCrest = crestOf(), heavyCrest = crestOf("heavy");
+  check("and it reaches the audio flat-topped, which is what a driven amp sounds like", heavyCrest < plainCrest - 3, `${plainCrest.toFixed(1)}dB clean, ${heavyCrest.toFixed(1)}dB heavy`);
   check("an unknown timbre renders as synth rather than failing", JSON.stringify(voiceFor("lead", "harpsichord")) === JSON.stringify(leadV));
   check("and a kit is a kit whatever the piece is played on", JSON.stringify(voiceFor("drums", "plucked")) === JSON.stringify(voiceFor("drums")));
   // It has to reach the AUDIO, not just the voice table: the score carries it and `render` reads it.

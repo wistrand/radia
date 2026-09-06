@@ -100,6 +100,20 @@ export interface Voice {
   /** Soft saturation before the mix, 0 to 1. Harmonics a filter cannot add back, and what makes a
    *  kick hit rather than merely move. Default 0. */
   drive?: number;
+  /**
+   * Gain into a HARD clipper, before the filter. 0 for none.
+   *
+   * Distortion, where `drive` is saturation, and the difference is not a matter of degree: a soft
+   * curve applied to a saw mostly compresses it, because a saw is already full of harmonics and
+   * rounding its ramp REMOVES them. Measured, a heavy voice built on `drive` alone came out with a
+   * thousandth of the upper-harmonic energy of the plain synth lead: darker, not dirtier. Clipping
+   * the waveform FLAT is what adds the odd harmonics a driven amplifier is heard by.
+   *
+   * It runs before the filter for the same reason an amp feeds a speaker: the cabinet is what tames
+   * what the gain stage just made. That filter is also what keeps the aliasing in hand, since a
+   * hard clipper generates harmonics past Nyquist that no oscillator correction can help with.
+   */
+  crunch?: number;
   /** How much of this voice goes to the room, 0 to 1. A send rather than a global wet level,
    *  because a kick in a hall is a mess and a pad without one is a wall. Default 0. */
   send?: number;
@@ -310,8 +324,14 @@ export function drumVoiceFor(midi: number): Voice {
  * and the envelope do and may not say how the parts sit against each other.
  *
  * A family, never an instrument. The engine is a tracker with four waveforms, so it can be a plucked
- * string or a soft sustained tone and it cannot be a harp; naming families is the honest promise.
+ * string or a driven one and it cannot be a harp; naming families is the honest promise.
  * The drums are untouched: a kit is a kit whatever the piece is played on.
+ *
+ * PAN, GAIN AND SPREAD ARE ALL PLACEMENT, so none of them belongs here. Width was the one that had
+ * to be learned: `heavy` set a spread of 0.75, which is how a rhythm guitar is double-tracked and
+ * which also pushed the BASS to the edges of a mix that needs it in the middle. The same shape of
+ * error as the high-pass it used to carry, and the rule that prevents both is that a timbre says
+ * what a voice sounds like and never where it sits.
  */
 const TIMBRES: Record<string, Partial<Voice>> = {
   // Struck and left to ring: instant attack, no sustain, a long decay. This is the one the brief
@@ -324,7 +344,6 @@ const TIMBRES: Record<string, Partial<Voice>> = {
     release: 0.45,
     unison: 2,
     detune: 4,
-    spread: 0.25,
     toneEnd: 0.12,
     resonance: 0.14,
     shimmer: 0.12,
@@ -334,6 +353,34 @@ const TIMBRES: Record<string, Partial<Voice>> = {
   // Bowed or breathed: the note arrives late and holds. The unison stays, because two near-copies
   // are what stop a sustained sine reading as a test tone, and a sine holding flat with an octave
   // over it is the closest thing in this file to a drawbar, so it gets a moving filter instead.
+  // Driven and saturated: distorted strings, an overdriven organ, anything heavy. A FAMILY like the
+  // others, and one this engine can actually be, because saturation is what it does well: two
+  // copies detuned and panned hard is how a rhythm guitar is double-tracked, the distortion runs
+  // BEFORE the filter the way an amp feeds a speaker, and the high-pass keeps the low end clear for
+  // the bass. It exists because a death metal request rendered on the same three saws as a dance
+  // track, and the arranger had no word for what it wanted.
+  heavy: {
+    wave: "saw",
+    attack: 0.002,
+    decay: 0.10,
+    sustain: 0.55,
+    release: 0.08,
+    unison: 2,
+    detune: 11,
+    tone: 0.62,
+    toneEnd: 0.50,
+    resonance: 0.05,
+    // NO HIGH-PASS, though a guitar wants one. A timbre reshapes EVERY pitched part, so the 140Hz
+    // cut that keeps a rhythm guitar out of the bass's way also took the fundamental off the bass
+    // itself (E2 is 82Hz) and the mix measured 5dB quieter with a hole where its weight had been.
+    // A filter set in absolute Hz cannot serve two registers; the roles' own `tone` settings do it.
+    crunch: 0.55,
+    drive: 0,
+    humanize: 0.5,
+    filterLfo: undefined,
+    vibrato: undefined,
+    send: 0.12,
+  },
   soft: {
     wave: "sine",
     attack: 0.14,
@@ -342,7 +389,6 @@ const TIMBRES: Record<string, Partial<Voice>> = {
     release: 0.45,
     unison: 2,
     detune: 7,
-    spread: 0.35,
     resonance: 0.08,
     filterLfo: { rate: 0.15, depth: 0.30 },
     humanize: 0.8,
@@ -498,6 +544,12 @@ function panGains(pan: number): [number, number] {
 function shape(v: number): number {
   const c = Math.max(-3, Math.min(3, v));
   return c * (27 + c * c) / (27 + 9 * c * c);
+}
+
+/** Flat at the rails. The whole of a distortion pedal, and unlike `soften` it makes harmonics
+ *  rather than removing them. */
+function clip(x: number): number {
+  return x > 1 ? 1 : x < -1 ? -1 : x;
 }
 
 function soften(x: number, drive: number): number {
@@ -663,6 +715,10 @@ export function render(parts: ParsedPart[], score: Score, o: RenderOptions = {})
       const noiseMix = v.noiseMix ?? 0;
       const send = v.send ?? 0;
       const drive = v.drive ?? 0;
+      const crunch = v.crunch ?? 0;
+      // 1 is unity into the clipper and nothing happens; the useful range is well past it, since a
+      // note has to be driven above the rails before any of it flattens.
+      const crunchGain = 1 + crunch * 11;
       const k = 2 - 1.8 * Math.min(0.95, Math.max(0, v.resonance ?? 0));
       const hpCut = v.hpTone === undefined ? 0 : 1 - Math.exp(-2 * Math.PI * toneHz(v.hpTone, sr) / sr);
       let subPhase = 0;
@@ -746,6 +802,10 @@ export function render(parts: ParsedPart[], score: Score, o: RenderOptions = {})
         rawL *= env;
         rawR *= env;
 
+        if (crunch > 0) {
+          rawL = clip(rawL * crunchGain);
+          rawR = clip(rawR * crunchGain);
+        }
         let outL = svfLow(fL, rawL, a1, a2, a3);
         let outR = svfLow(fR, rawR, a1, a2, a3);
         if (hpCut > 0) {

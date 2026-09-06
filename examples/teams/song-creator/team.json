@@ -29,7 +29,7 @@
         }
       ],
       "claimable": false,
-      "usage": "The plan every player works from. body: {song, title, description, key, bpm, meter, bars, chords, parts, maxRounds, groove?, riff?, timbre?}. `description` is what the piece IS, and every player plays it. `parts` is who is asked: lead, harmony, bass, plus 'drums' for a beat. `chords` is ONE PER BAR, played on its strong beats; an entry may hold two ('Bm G'), splitting the bar. `groove: true`: the piece rides a pulse, so a steady bass and kit are the point. `riff: true`: the TUNE is a repeating figure and need not develop. `timbre`: 'synth', 'plucked', 'soft'. Read it, never claim it."
+      "usage": "The plan every player works from. body: {song, title, description, key, bpm, meter, bars, chords, parts, maxRounds, groove?, riff?, timbre?}. `description` is what the piece IS, and every player plays it. `parts` is who is asked: lead, harmony, bass, plus 'drums' for a beat. `chords` is ONE PER BAR, played on its strong beats; an entry may hold two ('Bm G'), splitting the bar. `groove: true`: the piece rides a pulse; a steady bass and kit are the point. `riff: true`: the TUNE is a repeating figure and need not develop. `timbre`: 'synth', 'plucked', 'soft' or 'heavy'. Read it, never claim it."
     },
     {
       "kind": "part",
