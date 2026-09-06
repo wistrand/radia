@@ -17,6 +17,13 @@
 - [Adoption guide](adoption.html) - choosing when and how to move credentials out of callers and into narrow capability workers
 - [Workspaces](workspaces.html)
 - [Inspection](inspection.html)
+- [Debugging a run](debugging.html) - a run that goes wrong on a shared space can stall without throwing, so
+  this is which read answers which question, three defects found that way while building a team
+  that writes music, and how to keep the paid loop small enough to iterate in
+- [Song Creator](song-creator.html) - a worked content-routed application: an arranger and parallel
+  players write from one structured brief, a program and a model review the result blind, and a
+  deterministic producer revises or renders it; includes the measured feedback and concurrency
+  decisions the runnable example established
 - [Agent findings](agent-findings.html) - what real MCP harnesses did on a shared space: two agents
   contending over one queue, three models authoring, editing, deploying and verifying one workspace,
   how the runs are recorded and replayed without a model, and what changed in the runtime because

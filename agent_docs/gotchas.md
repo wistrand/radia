@@ -1830,6 +1830,23 @@ decorates); `radia get` prints the same line. Lasting attribution names the AGEN
   longer resolved, because the resolution test reads the LOWEST part. `isUnpitched` in `score.ts` is
   the one predicate the renderer and the analysis share, so a part sounded as noise is the same one
   left out of harmony.
+- **Read the SPACE, not the log, to find out what happened.** A log says what one process printed;
+  the space says what every agent did, and the two disagree exactly where the bug is. Three defects
+  in `song-creator` were invisible in the log and plain in the records: two songs running at once
+  (`queryEnvelopes({state})`), a dead service still listed as a listener (`dryRun(kind)`), and a
+  handler settling on a superseded round (`runtimeMeta.createdAt`). `query` cannot answer any of
+  them: it returns records whatever their claim state.
+- **Provoke it in a space of its own before fixing it.** A port stolen mid-boot, a service that
+  traps SIGTERM, a round limit reached with an unreadable draft: each was reproduced on a throwaway
+  `radia dev` first, and each reproduction became the guard. Diagnosing against the space you are
+  also using confuses your own writes with the fault.
+- **A flake is a finding, not noise.** The one intermittent `test:song-team` failure was a real
+  ordering bug: both verdicts of a round can be claimed after the next round exists, and that
+  handler was deciding on stale evidence. Chasing it cost an hour; re-running would have shipped it.
+- **Put the expensive loop behind a model-free one.** Five paid model turns per round makes the
+  edit-to-evidence loop minutes long and dollars wide, so every model turn in `song-creator` has a
+  scripted stand-in and the smokes run the whole pipeline for free. Spend the paid path only on
+  evidence the cheap one cannot produce, which is what models actually write.
 - **A test whose fixture is "good enough" stops being a test when the bar rises.** Every guard here
   ran against a fixture of unbroken quarter notes; once dullness counted, it scored 8 rather than 0
   and the fix was a better fixture, not a looser rule. A guard that only ever passed is one nobody
