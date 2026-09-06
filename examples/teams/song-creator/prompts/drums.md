@@ -34,17 +34,18 @@ a note:
 
 | write | you get |
 |-------|---------|
-| below E2, so C2 or D2 | the kick, low and heavy |
-| E2 up to B3 | the snare |
-| C4 and above | the hat, short and bright |
+| below E2, so C2 or D2 | the kick, low and heavy, and it drops in pitch as it hits |
+| E2 up to B3 | the snare, a tuned body under a rattle |
+| C4 up to F5 | the closed hat, short and bright |
+| F#5 and above, so A#5 or C6 | the OPEN hat, the same sound held and ringing |
 
 Nothing you play is measured against the key or the chords, because a drum has no pitch to be wrong
 about. What IS measured is your rhythm, and for a kit it is counted as HOW MANY DIFFERENT BARS you
 play. Over eight bars or more, two is a fault: that is a loop with one bar tacked on the end, and a
 run of this team passed the old rule by splitting a single hat into two sixteenths in the last bar.
 Three or four different bars is what a real part has. Keep the pulse steady and earn the variety at
-the ends: a fill in the last bar of each four, an open hat or an extra kick where the phrase turns
-over. Under `groove: true` your note lengths may stay uniform, so the variety has to come from the
+the ends: a fill in the last bar of each four, an open hat (write it high, see the table) or an
+extra kick where the phrase turns over. Under `groove: true` your note lengths may stay uniform, so the variety has to come from the
 pattern rather than from the note values.
 
 IF THIS IS A REVISION, the record carries `notes`: what the reviewers asked of your part. Change what
