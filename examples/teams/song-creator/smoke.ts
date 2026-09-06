@@ -417,6 +417,16 @@ try {
   check("a song with drums renders to audio", kitAudio.wav.length > 44 && kloud / kpcm.length > 0.3, `${(kloud / kpcm.length * 100).toFixed(0)}% audible`);
   const kick = voiceFor("drums") && drumVoiceFor(36), hat = drumVoiceFor(72);
   check("and the kit is three sounds, not one repeated", kick.wave !== hat.wave || kick.tone !== hat.tone, `${kick.wave}/${kick.tone} vs ${hat.wave}/${hat.tone}`);
+  // A kick FALLS. Without the drop it is a hum with a click on the front, which is what the kit
+  // sounded like when every drum was one noise burst through one envelope.
+  check("a kick is a pitch drop with a body, not a click", (kick.pitchEnv?.from ?? 1) > 2 && kick.fixedHz !== undefined, `${kick.pitchEnv?.from}x over ${kick.pitchEnv?.time}s at ${kick.fixedHz}Hz`);
+  // A snare is two things at once, and one waveform cannot be both.
+  const snare = drumVoiceFor(50);
+  check("a snare is a tuned body under a rattle", (snare.noiseMix ?? 0) > 0.5 && snare.fixedHz !== undefined && (snare.hpTone ?? 0) > 0, `${snare.fixedHz}Hz + ${snare.noiseMix} noise`);
+  // The drummer's prompt asks for an open hat where a phrase turns, so the top of the hat range is
+  // one. Before this the kit had no way to sound the thing its own prompt asked for.
+  const open = drumVoiceFor(84);
+  check("and the top of the hat range is an OPEN hat, which the drummer is told to reach for", open.decay > hat.decay * 4, `${hat.decay}s closed, ${open.decay}s open`);
 
   // ---- the instruments are more than one oscillator each ----
   const leadV = voiceFor("lead"), bassV = voiceFor("bass");
@@ -439,6 +449,57 @@ try {
   const avg = peaks.reduce((a, b) => a + b, 0) / peaks.length;
   const waver = Math.sqrt(peaks.reduce((a, b) => a + (b - avg) ** 2, 0) / peaks.length) / avg;
   check("so a held note breathes instead of sitting still", waver > 0.1, `${(waver * 100).toFixed(0)}% amplitude movement`);
+
+  // ---- nothing here is a drawbar ----
+  // AN ORGAN IS A FLAT SUSTAIN UNDER A STATIC FILTER, and these voices drifted into being one: they
+  // held half their level or more for the whole note, the filter settled by the end of the decay,
+  // the pad doubled itself at an exact octave, and every note was identical to the last. It was
+  // heard as an organ before anything else about it. A long note now either falls away or keeps
+  // moving, and no two notes are the same.
+  for (const name of ["bass", "lead", "harmony", "pad"]) {
+    const v = voiceFor(name);
+    const moves = v.sustain <= 0.6 || v.filterLfo !== undefined;
+    check(
+      `${name} is not a drawbar: a long note falls away or keeps moving, and its notes differ`,
+      moves && (v.humanize ?? 0) > 0,
+      `sustain ${v.sustain}${v.filterLfo ? `, filter drifts ${v.filterLfo.depth} octaves` : ""}, humanize ${v.humanize}`,
+    );
+  }
+
+  // ---- the mix is a mix: two sides and a room ----
+  // A stack that is detuned but not SPREAD is a thicker middle, not a wider record. Correlation of
+  // 1.0 is two copies of one signal; the four-part reference score measures 0.83, and the version
+  // before the parts were spread across the field measured 0.97.
+  const mixPcm = new Int16Array(kitAudio.wav.buffer, kitAudio.wav.byteOffset + 44, (kitAudio.wav.length - 44) / 2);
+  let sl = 0, sr2 = 0, slr = 0, top = 0;
+  for (let i = 0; i < mixPcm.length; i += 2) {
+    const l = mixPcm[i] / 32768, r = mixPcm[i + 1] / 32768;
+    sl += l * l;
+    sr2 += r * r;
+    slr += l * r;
+    top = Math.max(top, Math.abs(mixPcm[i]), Math.abs(mixPcm[i + 1]));
+  }
+  const corr = slr / Math.sqrt(sl * sr2);
+  check("the mix is stereo, not two copies of one signal", corr < 0.95, `${corr.toFixed(2)} channel correlation`);
+  // The master has to arrive loud and unclipped: a saturator whose scaling is wrong is silent about
+  // it, and the first version of this one cost 7dB while looking correct.
+  check("and it lands loud without clipping", top > 25000 && top < 32700, `peak ${top}`);
+  // THE ROOM OUTLASTS THE NOTE. A send nothing comes back from is a send that is not wired: this
+  // listens after the last release, where only the reverb can still be sounding.
+  const hit = { bpm: 120, meter: { beats: 4, unit: 4 }, parts: [{ instrument: "drums", phrase: "D3/4 r/4 r/2" }] } as unknown as Score;
+  const hitOut = render(parseScore(hit).parts, hit);
+  const hitPcm = new Int16Array(hitOut.wav.buffer, hitOut.wav.byteOffset + 44, (hitOut.wav.length - 44) / 2);
+  const drySnare = drumVoiceFor(50);
+  const silentFrom = Math.ceil((drySnare.decay + drySnare.release + 0.25) * 44100) * 2;
+  let tailEnergy = 0, tailN = 0;
+  for (let i = silentFrom; i < hitPcm.length; i += 2) {
+    tailEnergy += (hitPcm[i] / 32768) ** 2;
+    tailN++;
+  }
+  const tailRms = Math.sqrt(tailEnergy / Math.max(1, tailN));
+  // The bar is "anything at all", not "loud": with no room a mix is EXACTLY zero here, because the
+  // envelope that was the only thing sounding has run out.
+  check("a hit rings on into the room after its own envelope is spent", tailRms > 0.001, `${tailRms.toFixed(4)} RMS after the release`);
 
   // ---- the brief says what the piece is PLAYED ON ----
   // The renderer picks a voice per ROLE, so before `timbre` a brief asking for a harp got the same

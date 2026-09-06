@@ -174,9 +174,22 @@ deno run -A examples/teams/song-creator/share.ts                    # a fresh li
 radia workspace-git song-XXXXXXXX --dir /tmp/song && git clone /tmp/song ~/song   # a copy on disk
 ```
 
-It sounds like a chiptune with a beat. The renderer is a tracker: detuned oscillator stacks, one
-filter that closes as a note sounds, a sub under the bass, and a kit whose pitch picks the drum.
-Nothing in the pipeline can hear it; the `ear` critic reads the score.
+It sounds like a synth record, not an orchestra. The renderer is a tracker with a mixer:
+band-limited oscillators (a naive saw folds everything above Nyquist back down as grit, worst on the
+highest notes, and a C7 measured 9.3% of its energy inharmonic before this and 3.8% after), a
+resonant two-pole filter per note that moves as the note sounds, unison stacks spread across the
+stereo field, a sub under the bass, a kit synthesised per hit (a kick that drops in pitch, a snare
+that is a tuned body under a rattle, a closed and an open hat), and one room every part sends its
+own share to. **The first version of all that sounded like an organ**, and the reasons are worth
+keeping: sustains near or above half, a filter that had stopped moving by the end of the decay, a
+pad doubling itself at an exact octave (which is what a drawbar is), a square held at a fixed width,
+and every note identical to the last. Now a long note either falls away or keeps drifting, the
+harmony's pulse width sweeps, the octave copy is nine cents sharp so it beats, and each note is a
+few cents and a few percent of level and cutoff away from its neighbours, drawn from a seeded
+generator so the render stays repeatable. Measured against the single-oscillator version it replaced, on the same score: channel
+correlation 0.97 to 0.83 (a wider record rather than a thicker middle), 6dB more level at the same
+peak, and 35ms of CPU per second of audio against 15ms. Nothing in the pipeline can hear it; the
+`ear` critic reads the score.
 
 The brief's `timbre` picks which family the pitched parts are played on: `synth`, `plucked` (struck
 and left to ring) or `soft` (slow to arrive and held). Voices are chosen by ROLE, so before this
