@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>How a team writes a song</title>
+  <meta name="description" content="Five model turns and two programs turn one request into independently written parts, blind reviews, measured revisions, and a playable history. The records route the work; deterministic code enforces the loop.">
+  <link rel="stylesheet" href="shared.css">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://radia.sh/song-creator.html">
+  <meta property="og:title" content="How a team writes a song">
+  <meta property="og:description" content="A worked Radia application: models compose and judge while programs synchronize, validate, measure, render and settle.">
+  <meta property="og:image" content="https://radia.sh/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a href="index.html" class="brand"><svg viewBox="0 0 64 64" width="20" height="20" aria-hidden="true"><g fill="none" stroke="#60a5fa" stroke-width="5"><rect x="6" y="6" width="20" height="20" rx="6"/><rect x="34" y="6" width="20" height="20" rx="6"/><rect x="6" y="34" width="20" height="20" rx="6"/></g><g fill="none" stroke="#a5b4fc" stroke-width="4.5"><rect x="33" y="33" width="23" height="23" rx="6"/><rect x="38.5" y="38.5" width="12" height="12" rx="3"/></g></svg>radia</a>
+    <div class="links">
+      <a href="how-it-works.html">How it works</a>
+      <a href="authorization.html">Authorization</a>
+      <div class="dropdown">
+        <a class="dropdown-toggle">More &#9662;</a>
+        <div class="dropdown-menu"><div class="dropdown-menu-inner">
+          <a href="playground/">Playground</a>
+          <a href="adoption.html">Adoption guide</a>
+          <a href="workspaces.html">Workspaces</a>
+          <a href="inspection.html">Inspection</a>
+          <a href="debugging.html">Debugging a run</a>
+          <a href="song-creator.html">Song Creator</a>
+          <a href="agent-findings.html">Agent findings</a>
+          <a href="why.html">Why not X</a>
+          <a href="faq.html">FAQ</a>
+          <a href="examples.html">Examples</a>
+          <a href="llms.txt">llms.txt</a>
+          <a href="https://github.com/wistrand/radia">GitHub</a>
+        </div></div>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<aside class="sidebar" id="sidebar">
+  <a href="#record-flow">The record flow</a>
+  <a href="#routing">The records route the work</a>
+  <a href="#constraints">Parallel work needs shared constraints</a>
+  <a href="#spine">Creative models, deterministic spine</a>
+  <a href="#review">Two blind reviews</a>
+  <a href="#feedback">Measure mistakes and dullness</a>
+  <a href="#settle">Revise, settle and render</a>
+  <a href="#lessons">What the example established</a>
+</aside>
+
+<div class="hero">
+  <div class="container">
+    <h1>How a team writes a song</h1>
+    <p class="subtitle">
+      An arranger plans the piece, several players write apart, two reviewers judge the assembled
+      score, and a producer either asks for another round or renders a playable history. Models
+      make the musical decisions. Records carry the state and route the work. Programs enforce the
+      parts that must be repeatable.
+    </p>
+  </div>
+</div>
+
+<section id="record-flow">
+  <div class="container">
+    <h2>The record flow</h2>
+    <p>
+      One <code>song_request</code> becomes a brief and one <code>part</code> record per instrument.
+      The requested players work in parallel. Their phrases meet for the first time in a draft,
+      which is reviewed once by code and once by a model. Rejected work becomes another round;
+      settled work becomes audio and an HTML history in a workspace.
+    </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 900 390" role="img" aria-labelledby="song-flow-title song-flow-desc">
+        <title id="song-flow-title">The Song Creator record flow</title>
+        <desc id="song-flow-desc">A song request becomes a brief, parallel part jobs, phrases, a draft, two blind reviews and either revised part jobs or a rendered workspace.</desc>
+        <defs>
+          <marker id="song-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+
+        <rect x="18" y="154" width="116" height="48" rx="6" class="box" stroke="#60a5fa"/>
+        <text x="76" y="183" text-anchor="middle" class="label">song_request</text>
+        <path d="M 140 178 L 184 178" class="flow" marker-end="url(#song-arrow)"/>
+
+        <rect x="190" y="137" width="112" height="82" rx="6" class="box" stroke="#818cf8"/>
+        <text x="246" y="167" text-anchor="middle" class="label">arranger</text>
+        <text x="246" y="187" text-anchor="middle" class="muted">model</text>
+        <text x="246" y="203" text-anchor="middle" class="muted">writes brief + parts</text>
+
+        <path d="M 308 158 C 342 128, 350 78, 382 66" class="flow" marker-end="url(#song-arrow)"/>
+        <path d="M 308 178 L 382 178" class="flow" marker-end="url(#song-arrow)"/>
+        <path d="M 308 198 C 342 228, 350 278, 382 290" class="flow" marker-end="url(#song-arrow)"/>
+
+        <rect x="388" y="38" width="116" height="56" rx="6" class="box"/>
+        <text x="446" y="62" text-anchor="middle" class="label">lead part</text>
+        <text x="446" y="81" text-anchor="middle" class="muted">model</text>
+        <rect x="388" y="150" width="116" height="56" rx="6" class="box"/>
+        <text x="446" y="174" text-anchor="middle" class="label">harmony part</text>
+        <text x="446" y="193" text-anchor="middle" class="muted">model</text>
+        <rect x="388" y="262" width="116" height="56" rx="6" class="box"/>
+        <text x="446" y="286" text-anchor="middle" class="label">bass part</text>
+        <text x="446" y="305" text-anchor="middle" class="muted">model</text>
+
+        <path d="M 510 66 C 548 78, 552 132, 584 154" class="flow" marker-end="url(#song-arrow)"/>
+        <path d="M 510 178 L 584 178" class="flow" marker-end="url(#song-arrow)"/>
+        <path d="M 510 290 C 548 278, 552 224, 584 202" class="flow" marker-end="url(#song-arrow)"/>
+
+        <rect x="590" y="137" width="116" height="82" rx="6" class="box" stroke="#4ade80"/>
+        <text x="648" y="167" text-anchor="middle" class="label">producer</text>
+        <text x="648" y="187" text-anchor="middle" class="muted">program</text>
+        <text x="648" y="203" text-anchor="middle" class="muted">assembles draft</text>
+
+        <path d="M 712 160 C 742 136, 754 102, 782 88" class="flow" marker-end="url(#song-arrow)"/>
+        <path d="M 712 196 C 742 220, 754 254, 782 268" class="flow" marker-end="url(#song-arrow)"/>
+        <rect x="788" y="52" width="94" height="70" rx="6" class="box" stroke="#fbbf24"/>
+        <text x="835" y="78" text-anchor="middle" class="label">rules</text>
+        <text x="835" y="98" text-anchor="middle" class="muted">program</text>
+        <rect x="788" y="232" width="94" height="70" rx="6" class="box" stroke="#fbbf24"/>
+        <text x="835" y="258" text-anchor="middle" class="label">ear</text>
+        <text x="835" y="278" text-anchor="middle" class="muted">model</text>
+
+        <path d="M 835 128 L 835 216" class="flow"/>
+        <path d="M 788 286 C 742 326, 666 350, 552 350 C 438 350, 330 326, 276 224" class="flow" stroke="#818cf8" marker-end="url(#song-arrow)"/>
+        <text x="568" y="374" text-anchor="middle" class="muted">revise: emit the next round of part records</text>
+        <path d="M 882 178 L 894 178" class="flow" marker-end="url(#song-arrow)"/>
+        <text x="842" y="334" text-anchor="middle" class="muted">settle: WAV + HTML workspace</text>
+      </svg>
+      <figcaption>
+        The arrows are records, not calls between participants. Drums add a fourth parallel part
+        only when the brief asks for them.
+      </figcaption>
+    </figure>
+
+    <div class="code-block">
+      <div class="code-title">run the live team, or both model-free guards</div>
+      <pre class="terminal"><code>$ radia dev --db &amp;
+$ radia team up examples/teams/song-creator --init --seed
+
+$ deno task test:song
+$ deno task test:song-team</code></pre>
+    </div>
+  </div>
+</section>
+
+<section id="routing">
+  <div class="container">
+    <h2>The records route the work</h2>
+    <p>
+      Song Creator owns eight kinds: <code>song_request</code>, <code>brief</code>,
+      <code>part</code>, <code>phrase</code>, <code>draft</code>, <code>review</code>,
+      <code>verdict</code> and <code>note</code>. Radia does not assign meanings to them. Their kind
+      declarations state the indexed routing fields and teach participants how each record is used.
+    </p>
+    <p>
+      A part record states the required instrument. A member's standing pattern states the
+      instrument it accepts. Their match routes the work without putting a member name on the
+      record.
+    </p>
+    <div class="code-block">
+      <div class="code-title">work requirement meets worker interest</div>
+      <pre><code>part { instrument: "harmony", song, round }
+                  +
+agent:ben listens for { kind: "part", match: { instrument: "harmony" } }
+                  =
+Ben may claim the part under a fenced lease</code></pre>
+    </div>
+    <p>
+      The arranger controls participation by deciding which part records exist. If a piece needs no
+      drums, it emits no drum part. Pip remains a member, but no harness is launched and no model
+      call is paid for.
+    </p>
+    <p>
+      <code>team.json</code> is the coordination manifest: kinds, member patterns, grants, services,
+      seed and completion condition. It is not the whole application. The prompts and programs
+      implement the transitions that produce the next records.
+    </p>
+  </div>
+</section>
+
+<section id="constraints">
+  <div class="container">
+    <h2>Parallel work needs shared constraints</h2>
+    <p>
+      The lead, harmony and bass players compose simultaneously and cannot read one another's
+      phrases. A description such as “bright and in D” did not keep independently written lines in
+      the same harmonic plan. The brief now carries one chord per bar, along with key, tempo, meter
+      and length. Every player reads the same structure before writing.
+    </p>
+    <div class="code-block">
+      <div class="code-title">the common plan</div>
+      <pre><code>{
+  "key": "D major",
+  "bpm": 104,
+  "meter": { "beats": 3, "unit": 4 },
+  "bars": 8,
+  "chords": ["D", "G", "D", "A7", "Bm", "G", "A7", "D"],
+  "parts": ["lead", "harmony", "bass"]
+}</code></pre>
+    </div>
+    <p>
+      This is the application-level coordination lesson: agents working apart need shared,
+      checkable constraints for the facts on which their outputs must agree. Prose still carries
+      disposition and musical intent; fields carry meter and harmony.
+    </p>
+    <p>
+      Players write a compact notation such as <code>C4/4 E4/8 G4/8</code>. The parser checks every
+      bar against the meter and names the offending bar. That turns “the output sounds broken” into
+      a repair request a player can act on.
+    </p>
+  </div>
+</section>
+
+<section id="spine">
+  <div class="container">
+    <h2>Creative models, deterministic spine</h2>
+    <p>
+      Models arrange, compose and make the qualitative judgment. Plain TypeScript performs fan-in,
+      notation validation, metric calculation, round accounting, rendering, artifact storage and
+      completion.
+    </p>
+    <table>
+      <thead><tr><th>Models decide</th><th>Programs enforce</th></tr></thead>
+      <tbody>
+        <tr><td>key, tempo, chords and instrumentation</td><td>all requested phrases arrived</td></tr>
+        <tr><td>melody, harmony, bass and drums</td><td>notation and bar lengths parse</td></tr>
+        <tr><td>whether the assembled piece has shape</td><td>measured faults and revision limits</td></tr>
+        <tr><td>which qualitative changes to request</td><td>one draft, review pair and settlement per key</td></tr>
+      </tbody>
+    </table>
+    <p>
+      The producer is an application coordinator, not a model and not a Radia workflow graph. It
+      knows that phrases form a draft, verdicts cause revision or settlement, and a settled score
+      is rendered. Radia supplies the records, matching, grants and leases through which those
+      transitions happen.
+    </p>
+    <p>
+      Every phrase handler checks whether the round is complete. A content-derived idempotency key,
+      <code>draft:&lt;song&gt;:&lt;round&gt;</code>, makes competing completions one logical write. The same
+      technique protects review dispatch and final settlement against duplicate execution.
+    </p>
+  </div>
+</section>
+
+<section id="review">
+  <div class="container">
+    <h2>Two blind reviews</h2>
+    <p>
+      The producer emits two claimable review records for the same draft. The checker claims
+      <code>{by: "rules"}</code>; the critic claims <code>{by: "ear"}</code>. Their grants do not
+      let either read the other's verdict before answering.
+    </p>
+    <table>
+      <thead><tr><th>The count</th><th>The ear</th></tr></thead>
+      <tbody>
+        <tr><td>TypeScript program, no session memory</td><td>model with a warm session across rounds</td></tr>
+        <tr><td>bar arithmetic, clashes, key and chord tones</td><td>shape, coherence, interest and restraint</td></tr>
+        <tr><td>repeats the same calculation</td><td>can compare the revision with earlier requests</td></tr>
+        <tr><td>returns a numeric fault count</td><td>returns qualitative approval and specific asks</td></tr>
+      </tbody>
+    </table>
+    <p>
+      “Ear” is a role name, not an audio capability. The critic reads the assembled notation; no
+      model on the team hears the WAV. Rendering every round lets a person make that comparison
+      afterwards.
+    </p>
+    <p>
+      Blind review makes disagreement evidence. The records can show whether both reviewers found
+      the same problem, only the calculation found it, or only the qualitative reading did.
+    </p>
+  </div>
+</section>
+
+<section id="feedback">
+  <div class="container">
+    <h2>Measure mistakes and dullness</h2>
+    <p>
+      The first scoring pass counted only violations. The loop improved that number by producing
+      cautious music: repeated quarter notes, narrow ranges and lines that avoided expressive
+      movement. The analysis now counts selected forms of dullness alongside harmonic and notation
+      faults.
+    </p>
+    <div class="code-block">
+      <div class="code-title">the measured fault total</div>
+      <pre><code>faults =
+    dissonance
+  + parallels * 2
+  + outOfKey
+  + offChord
+  + bland * 2
+  + unansweredLeaps
+  + emptyBars * 3
+  + unresolvedEnding * 2</code></pre>
+    </div>
+    <p>
+      The checks also distinguish a landed chromatic note from a passing one and an unanswered leap
+      from one that returns. The loop must leave room for the gestures it is meant to improve.
+    </p>
+    <p>
+      Intent can qualify one measurement. <code>groove: true</code> exempts the rhythm section from
+      the one-note-length dullness rule because a steady pulse may be the requested style. It does
+      not disable the rest of the analysis.
+    </p>
+    <div class="callout">
+      <strong>A review loop optimizes its measurements.</strong> A score containing only prohibitions
+      rewards the least adventurous output that avoids them. Song Creator guards the metric with a
+      model-free test that requires the revised fixture's fault count to fall.
+    </div>
+  </div>
+</section>
+
+<section id="settle">
+  <div class="container">
+    <h2>Revise, settle and render</h2>
+    <p>
+      When review asks for changes, the producer emits the next round's part records. Each player
+      receives the combined requests for its own instrument. A player with no requested change is
+      told to return its previous part unchanged, keeping the complete round explicit.
+    </p>
+    <p>
+      Warm harness sessions let players revise their earlier work instead of composing a new piece
+      on every round. A fresh song clears those sessions, and resumed prompts inspect the record's
+      round before assuming they are continuing old work.
+    </p>
+    <p>
+      Settlement has three outcomes. Both reviewers can approve; the ear can approve while the
+      deterministic count remains within the measured tolerance; or the round ceiling can stop the
+      loop. The last case is termination, not approval. It renders the newest readable draft, or
+      writes an <code>ok: false</code> final note if no round produced one.
+    </p>
+    <p>
+      Parseable rounds consume the musical revision budget. A separate hard ceiling bounds repeated
+      notation failures, so malformed bars neither spend every opportunity for musical revision nor
+      run forever.
+    </p>
+    <p>
+      The synthesizer is deterministic: the same score produces the same PCM, WAV bytes and artifact
+      digest. The producer renders the rejected rounds as well as the selected one and writes
+      <code>song.wav</code>, the round audio and an HTML history into a workspace. A short-lived
+      capability URL makes that tree playable without putting the producer's credential in a
+      browser.
+    </p>
+  </div>
+</section>
+
+<section id="lessons">
+  <div class="container">
+    <h2>What the example established</h2>
+    <p>
+      The example shows a content-routed application with an implicit topology and explicit
+      behavior. Kind and body fields say what work is needed. Interests and grants determine who
+      can claim it. The participants decide which records come next, and deterministic services
+      protect concurrency and termination boundaries.
+    </p>
+    <p>
+      It also produces evidence about quality. The model-free run requires the measured fault
+      count to improve, while the rendered history lets a person hear what the number omitted. A
+      metric that stops distinguishing revisions fails a test instead of surviving as a claim in
+      documentation.
+    </p>
+    <p>
+      Running the full team exposed stale work, lazy lease expiry, dead services that still looked
+      interested, warm sessions crossing songs and a verdict arriving after its round was
+      superseded. Those failures led to a separate method for reading the space and reproducing
+      faults without paying for another model round.
+    </p>
+    <p>
+      <a href="debugging.html">How the real runs were debugged &#8594;</a>
+    </p>
+    <p>
+      <a href="https://github.com/wistrand/radia/tree/main/examples/teams/song-creator">Read and run the current source &#8594;</a>
+    </p>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <a href="index.html">Home</a> &middot;
+    <a href="examples.html">Examples</a> &middot;
+    <a href="debugging.html">Debugging a run</a> &middot;
+    <a href="https://github.com/wistrand/radia">GitHub</a>
+  </div>
+</footer>
+
+<script src="shared.js"></script>
+</body>
+</html>

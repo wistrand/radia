@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Working out what actually happened</title>
+  <meta name="description" content="Agent coordination can fail without a stack trace. The log says what one process printed; the space preserves committed coordination across the run. Four reads separate content, claim state, routing intent and time.">
+  <link rel="stylesheet" href="shared.css">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://radia.sh/debugging.html">
+  <meta property="og:title" content="Working out what actually happened">
+  <meta property="og:description" content="The log says what one process printed. The space preserves committed coordination across the run and supplies the evidence needed to reconstruct it.">
+  <meta property="og:image" content="https://radia.sh/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a href="index.html" class="brand"><svg viewBox="0 0 64 64" width="20" height="20" aria-hidden="true"><g fill="none" stroke="#60a5fa" stroke-width="5"><rect x="6" y="6" width="20" height="20" rx="6"/><rect x="34" y="6" width="20" height="20" rx="6"/><rect x="6" y="34" width="20" height="20" rx="6"/></g><g fill="none" stroke="#a5b4fc" stroke-width="4.5"><rect x="33" y="33" width="23" height="23" rx="6"/><rect x="38.5" y="38.5" width="12" height="12" rx="3"/></g></svg>radia</a>
+    <div class="links">
+      <a href="how-it-works.html">How it works</a>
+      <a href="authorization.html">Authorization</a>
+      <div class="dropdown">
+        <a class="dropdown-toggle">More &#9662;</a>
+        <div class="dropdown-menu"><div class="dropdown-menu-inner">
+          <a href="playground/">Playground</a>
+          <a href="adoption.html">Adoption guide</a>
+          <a href="workspaces.html">Workspaces</a>
+          <a href="inspection.html">Inspection</a>
+          <a href="debugging.html">Debugging a run</a>
+          <a href="song-creator.html">Song Creator</a>
+          <a href="agent-findings.html">Agent findings</a>
+          <a href="why.html">Why not X</a>
+          <a href="faq.html">FAQ</a>
+          <a href="examples.html">Examples</a>
+          <a href="llms.txt">llms.txt</a>
+          <a href="https://github.com/wistrand/radia">GitHub</a>
+        </div></div>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<aside class="sidebar" id="sidebar">
+  <a href="#quiet">Agents fail quietly</a>
+  <a href="#reads">Four reads, one question each</a>
+  <a href="#worked">A worked example</a>
+  <a href="#loop">Turning an answer into a fix</a>
+  <a href="#cheap">Keep the paid loop small</a>
+</aside>
+
+<div class="hero">
+  <div class="container">
+    <h1>Working out what actually happened</h1>
+    <p class="subtitle">
+      A run that goes wrong on a shared space often does not throw. Nothing crashes, no stack trace
+      appears, and the work simply does not finish. This page is how to find out why, taken from
+      building a team of five models and two programs that writes music.
+    </p>
+  </div>
+</div>
+
+<section id="quiet">
+  <div class="container">
+    <h2>Agents fail quietly</h2>
+    <p>
+      A claim is by content, not by address. Any worker holding the right grant can take any
+      matching record, so the failures are ones a single process cannot see: a leftover from an
+      earlier run claimed beside the new one, two copies of a worker racing, a handler deciding on
+      evidence the run has already moved past.
+    </p>
+    <p>
+      Every one of those looks identical from inside a process. It claimed a record, it did the
+      work, it wrote a result. The mistake is only visible from outside.
+    </p>
+    <p>
+      So the first rule is: <strong>read the space as well as the log</strong>. The log says what
+      one process printed. The space preserves the records, claim transitions and relationships
+      committed across the run, which is the evidence no one process holds.
+    </p>
+    <p>
+      That evidence has a boundary. A read leaves no event, a take that found nothing committed
+      nothing, and an external side effect may live outside Radia. Absence from the space does not
+      prove that an agent never looked, tried or acted elsewhere.
+    </p>
+  </div>
+</section>
+
+<section id="reads">
+  <div class="container">
+    <h2>Four reads, one question each</h2>
+    <p>
+      Which read to use is decided by the question, not by habit. Reaching for the wrong one is the
+      most common way to conclude that nothing is wrong.
+    </p>
+    <table>
+      <thead><tr><th>The question</th><th>The read</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>What does this record say?</td>
+          <td><code>radia query &lt;kind&gt; --match '{…}'</code>, <code>radia get &lt;id&gt;</code></td>
+        </tr>
+        <tr>
+          <td>Is anything still claimable, leased, or given up on?</td>
+          <td><code>radia doctor</code> for the summary, <code>GET /v0/ops/records?state=</code> for the records</td>
+        </tr>
+        <tr>
+          <td>Which live runs advertise an authorized interest?</td>
+          <td><code>client.dryRun(kind)</code>, or <code>POST /v0/ops/dry-run</code></td>
+        </tr>
+        <tr>
+          <td>When did it happen, and in what order?</td>
+          <td>Each record's server-assigned creation time, <code>radia activity</code>, <code>radia events</code></td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      The second row is the one people miss. A record query returns a record whatever its claim
+      state, so it cannot tell you that an old task is still sitting there waiting to be claimed.
+      Only the envelope knows that.
+    </p>
+    <p>
+      The third row matters because a grant says who <em>may</em> claim a kind, while an interest
+      says what a run intends to claim. Interest publication is best-effort, and a live run does
+      not prove its process is still running.
+    </p>
+    <p>
+      The fourth carries a trap: the database clock is the only clock every agent shares.
+      Three harnesses on three machines each report their own, so a timeline built from anything
+      else is a picture of the clocks rather than of the run.
+    </p>
+  </div>
+</section>
+
+<section id="worked">
+  <div class="container">
+    <h2>A worked example</h2>
+    <p>
+      A team of five models and two programs kept producing two songs at once. The log showed a
+      clean start every time: the members came up, the work was seeded, nothing errored.
+    </p>
+    <p>
+      The envelope query showed four records from a previous run still available to claim. The team
+      routes its own record kinds rather than generic tasks, and the sweep that clears leftovers
+      only knew about tasks, so it had swept nothing and reported success.
+    </p>
+    <p>
+      Fixing that surfaced the next layer. A run stopped part way leaves its records
+      <em>leased</em>, not available, and a lease lapses only when someone next tries to claim. So a
+      sweep of available records still reported a clean space and handed the old song out seconds
+      later.
+    </p>
+    <p>
+      Then a warning fired saying another copy of the team might be running. It was wrong, and the
+      reason was informative: a worker mints a short-lived run, exiting does not stop that run, and
+      an interest is live for as long as its run is. Two dead processes still looked like listeners.
+    </p>
+    <p>
+      Three defects, each invisible in the process logs and each exposed by a different read. The
+      space supplied the record ids and state needed to locate the corresponding lifecycle and
+      ordering mistakes in the code.
+    </p>
+  </div>
+</section>
+
+<section id="loop">
+  <div class="container">
+    <h2>Turning an answer into a fix</h2>
+    <p>
+      <strong>Provoke it in a space of its own first.</strong> A port stolen while a server boots, a
+      service that ignores a polite shutdown, a deadline reached with nothing usable to hand back:
+      each was reproduced against a throwaway space before anything was changed. Diagnosing against
+      the space you are also using confuses your own writes with the fault.
+    </p>
+    <p>
+      <strong>Make the guard fail first.</strong> Write the test, revert the fix, and watch it go
+      red. Twice in one day that step showed the test was wrong rather than the code, which is a
+      cheap thing to learn then and an expensive one to learn later.
+    </p>
+    <p>
+      <strong>A flake is a finding.</strong> One intermittent failure turned out to be a real
+      ordering bug: two reviews of the same round could be claimed after the next round already
+      existed, and the handler was deciding on evidence that had been superseded. Re-running until
+      it passed would have shipped it.
+    </p>
+  </div>
+</section>
+
+<section id="cheap">
+  <div class="container">
+    <h2>Keep the paid loop small</h2>
+    <p>
+      Five model turns per round makes the distance between a change and evidence about it minutes
+      long and dollars wide. That is slow enough to change how you work, and not in a good
+      direction: you start guessing instead of checking.
+    </p>
+    <p>
+      The answer is a second version of the same pipeline with a scripted stand-in for every model
+      turn, running the real workers, the real records and the real grants against a real space.
+      It runs in seconds, costs nothing, and asserts the properties that must hold.
+    </p>
+    <p>
+      Then the paid path is spent only on the thing the cheap one cannot produce, which is what
+      models actually write. Every defect above was found by running, not by reading, and most were
+      then reproduced for free.
+    </p>
+    <p>
+      <a href="song-creator.html">See how the Song Creator team works &#8594;</a>
+    </p>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <a href="index.html">Home</a> &middot;
+    <a href="how-it-works.html">How it works</a> &middot;
+    <a href="inspection.html">Inspection</a> &middot;
+    <a href="https://github.com/wistrand/radia">GitHub</a>
+  </div>
+</footer>
+
+<script src="shared.js"></script>
+</body>
+</html>

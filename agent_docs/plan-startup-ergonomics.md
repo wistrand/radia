@@ -175,6 +175,32 @@ Still open: nothing REPORTS the count, and `radia permissions <agent>` shows gra
 many definitions hold them. A second `--serve` against one space now rotates the first fleet's
 tokens out, so it fails loudly with `invalid_credential` rather than quietly double-claiming.
 
+## Reading a space to find out what happened
+
+Added 2026-09-06 after building `examples/teams/song-creator`, where every defect was found this way
+and none was visible in the logs. THE LOG SAYS WHAT ONE PROCESS PRINTED; THE SPACE SAYS WHAT EVERY
+AGENT DID, and where the two disagree is where the bug is.
+
+Four reads answer nearly everything. Which one to use is decided by the question, not by habit:
+
+| the question | the read | why not `query` |
+|--------------|----------|-----------------|
+| what does this record say | `radia query <kind> --match`, `radia get <id>` | this IS the one |
+| is anything still claimable, leased or dead | `queryEnvelopes({state, kind, expired})`, `GET /v0/ops/records?state=`; `radia doctor` for the summary | `query` returns a record whatever its claim state, so it cannot see a leftover |
+| who is listening RIGHT NOW | `client.dryRun(kind)`, live interests | a grant says who MAY claim, not who is running |
+| when did it happen, and in what order | `record.runtimeMeta.createdAt`, `radia activity`, `radia events` | a body carries no time unless its writer put one there |
+
+What that bought, each a defect the log did not show: two songs written at once, because a previous
+run's `part` records were still `available` (and later, still `leased` by a killed worker, since a
+lease lapses lazily); a service that had exited minutes ago still listed as a listener, because an
+interest is live as long as its RUN and exiting does not stop one; and a handler settling a piece on
+a superseded round, found by reading the drafts' `createdAt` rather than their round numbers.
+
+Two rules that follow. `radia doctor` answers "is anything wrong" and the envelope query answers
+"which records", so a doctor line is where to start and never where to stop. And the DATABASE clock
+is the only clock every agent shares: three harnesses on three machines each report their own, so a
+timeline built from anything but `runtimeMeta.createdAt` is a picture of the clocks.
+
 ## 9. Smaller papercuts, each a contained fix (BUILT)
 
 Guards: `test/defaults.test.ts` ("what a table prints can be fed back in", "a version skew … is

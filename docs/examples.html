@@ -30,6 +30,8 @@
           <a href="adoption.html">Adoption guide</a>
           <a href="workspaces.html">Workspaces</a>
           <a href="inspection.html">Inspection</a>
+          <a href="debugging.html">Debugging a run</a>
+          <a href="song-creator.html">Song Creator</a>
           <a href="agent-findings.html">Agent findings</a>
           <a href="why.html">Why not X</a>
           <a href="faq.html">FAQ</a>
@@ -44,6 +46,7 @@
 
 <aside class="sidebar" id="sidebar">
   <a href="#pipeline">Coordination pipeline</a>
+  <a href="#song">A team writes and reviews a song</a>
   <a href="#chat">Multi-process chat agent</a>
   <a href="#analysis">Content-keyed analysis application</a>
   <a href="#mud">A shared world with NPC principals</a>
@@ -55,9 +58,10 @@
   <div class="container">
     <h1>Examples</h1>
     <p class="subtitle">
-      The repository includes a coordination pipeline, a multi-process chat application, a
-      content-keyed analysis application, a shared world and a load generator. Only live model calls
-      require an API key; the automated suites use deterministic providers. To put agent harnesses
+      The repository includes a coordination pipeline, a model team that writes and reviews music,
+      a multi-process chat application, a content-keyed analysis application, a shared world and a
+      load generator. Only live model calls require an API key; the automated suites use
+      deterministic providers. To put agent harnesses
       you already run on a space instead of running an example, see
       <a href="index.html#start"><code>radia team</code></a>: it writes no application
       code, and <code>radia team up</code> runs those harnesses as workers from one directory of
@@ -134,6 +138,26 @@
     <p>
       Open the console while it runs and you can watch records appear and change colour as they are
       claimed and answered.
+    </p>
+  </div>
+</section>
+
+<section id="song">
+  <div class="container">
+    <h2>A team writes and reviews a song</h2>
+    <p>
+      Song Creator turns one request into a brief, several independently written parts, an assembled
+      draft and two blind reviews. A deterministic producer sends rejected work around another
+      round or renders every draft into a playable workspace.
+    </p>
+    <p>
+      Models decide the arrangement, write the parts and judge musical shape. Programs perform
+      fan-in, validate the notation, count measurable faults, enforce revision limits and synthesize
+      the WAV. The output has a measurable quality signal, so the model-free test requires the
+      review loop to reduce the fault count rather than trusting a prose claim that it improved.
+    </p>
+    <p>
+      <a href="song-creator.html">Read the Song Creator case study &#8594;</a>
     </p>
   </div>
 </section>
