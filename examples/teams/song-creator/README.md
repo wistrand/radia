@@ -205,12 +205,20 @@ peak, and 35ms of CPU per second of audio against 15ms. Nothing in the pipeline 
 `ear` critic reads the score.
 
 The brief's `timbre` picks which family the pitched parts are played on: `synth`, `plucked` (struck
-and left to ring) or `soft` (slow to arrive and held). Voices are chosen by ROLE, so before this
-field a brief asking for a harp rendered on the same three-saw lead stack as a dance track and
-nothing could say otherwise. It names a FAMILY rather than an instrument, because a tracker with
-four waveforms can be a plucked string and cannot be a harp, and a timbre may change the oscillator
-and the envelope but never the pan or the gain: those are the arrangement and must survive a change
-of sound.
+and left to ring), `soft` (slow to arrive and held) or `heavy` (driven into a clipper and rolled off
+after it, the way an amp feeds a speaker). Voices are chosen by ROLE, so before this field a brief
+asking for a harp rendered on the same three-saw lead stack as a dance track and nothing could say
+otherwise; `heavy` exists because a death metal request did the same thing one run later. It names a
+FAMILY rather than an instrument, because a tracker with four waveforms can be a plucked string and
+cannot be a harp, and a timbre may change the oscillator and the envelope but never the pan, the
+gain or the WIDTH: those are the arrangement and must survive a change of sound.
+
+**Distortion is not saturation, and the measurement said so before the ear did.** The first `heavy`
+turned up the soft saturator every other voice uses, and a held note came out with a thousandth of
+the upper-harmonic energy of the plain synth lead: a soft curve applied to a saw rounds its ramp,
+and a saw is already full of harmonics, so rounding REMOVES them. What a driven amplifier is heard
+by is the waveform going flat at the rails, which is a `crunch` into a hard clipper before the
+filter rather than a `drive` after it. Held note, crest factor: 7.3dB clean, 1.3dB heavy.
 
 ## What each file is
 

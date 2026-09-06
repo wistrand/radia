@@ -195,12 +195,13 @@ export interface Score {
    *  chord-dependent measure is skipped when it is absent. Read it through `chordAt`, never by
    *  indexing: the index is the BAR, and a bar is no longer one chord. */
   chords?: string[];
-  /** Which family of sounds the piece is played on: `synth` (the default), `plucked` or `soft`. The
-   *  renderer picks a voice per ROLE, so before this field a brief could ask for a harp and get the
-   *  three-saw lead stack, and neither the arranger nor a player had any way to say otherwise. It
-   *  names a family rather than an instrument because the engine is a tracker: it can be a plucked
-   *  string or a soft sustained tone, and it cannot be a harp. An unknown name renders as `synth`,
-   *  since a piece should not fail to sound over a word. */
+  /** Which family of sounds the piece is played on: `synth` (the default), `plucked`, `soft` or
+   *  `heavy`. The renderer picks a voice per ROLE, so before this field a brief could ask for a harp
+   *  and get the three-saw lead stack, and neither the arranger nor a player had any way to say
+   *  otherwise; `heavy` was added for the same reason one run later, when a death metal request
+   *  rendered on the dance-track stack. It names a family rather than an instrument because the
+   *  engine is a tracker: it can be a plucked string or a driven one, and it cannot be a harp. An
+   *  unknown name renders as `synth`, since a piece should not fail to sound over a word. */
   timbre?: string;
   /**
    * This piece is built on a repeating pulse, so a steady rhythm section is the INTENT.
