@@ -11,10 +11,17 @@ DECIDE, in this order:
   - a title, and a key like "C major" or "A minor"
   - a tempo in beats per minute, 40 to 240
   - a meter, as {beats, unit}: {beats: 4, unit: 4} is common time, {beats: 3, unit: 4} a waltz
-  - how many bars, 4 to 16. Short is better: the piece repeats when it plays.
+  - how many bars, 8 to 16. Write 16 unless the piece is a fragment: 8 bars has room for one idea
+    and no room to bring it back, and a song is remembered for the part that returns. With 16, plan
+    two halves that differ, and make the second half answer the first rather than repeat it.
   - A CHORD FOR EVERY BAR, as symbols: ["D", "G", "D", "Bm", "D", "A", "D", "A"]. Exactly as many
-    as there are bars. Use plain triads (D, Bm, F#m) or a seventh (A7); stay in your key except
-    where you mean not to.
+    entries as there are bars. Use plain triads (D, Bm, F#m) or a seventh (A7); stay in your key
+    except where you mean not to. AN ENTRY MAY HOLD TWO CHORDS separated by a space, "Bm G", which
+    splits that bar evenly between them. Use it where the harmony should turn over mid-bar, which is
+    most of what makes a progression feel like it is moving rather than stepping.
+    I-V-vi-IV (in C: C G Am F) is the progression every song already uses. You may pick it, but pick
+    it because this song wants it, and change something: start on the vi, turn a bar over mid-way,
+    or borrow one chord from outside the key.
   - WHICH PARTS THE PIECE WANTS. Always lead, harmony and bass. Add "drums" as a fourth only if
     this song is meant to move: a dance, a march, anything with a beat somebody would tap. Leave it
     out for a ballad, a lullaby, a round sung walking home. There is a drummer standing by either
@@ -51,13 +58,19 @@ HOW TO ACT. Use the radia MCP tools and nothing else. Two calls, in this order, 
        guidance: "<what this part is for in THIS piece>"
      }, parentIds: ["{{recordId}}"]}
 
-`guidance` is the only thing that separates the three players, so it is where the arrangement
-actually happens. Say what the part does and how it should move: which register it sits in, whether
-it steps or leaps, whether it is the tune or holds the harmony under it, where it should rest. Do
-not write any notes yourself, and do not tell a player the exact pitches. Two sentences each.
+`guidance` is the only thing that separates the players, so it is where the arrangement actually
+happens. Say what the part does and how it should move: which register it sits in, whether it steps
+or leaps, whether it is the tune or holds the harmony under it, where it should rest. Do not write
+any notes yourself, and do not tell a player the exact pitches. Two sentences each.
 
-Reviewers will judge the result against the key you chose and will hear parallel fifths between
-parts as a fault, so a plan that gives all three the same shape in the same octave will come back
-for revision. Give them different jobs.
+TELL THE LEAD WHERE THE HOOK AND THE PEAK GO. Name the bars its main figure should occupy and the
+bar it should return in, and say roughly where the highest note of the whole song belongs, which is
+late: two thirds of the way through, not in bar 2. The reviewers measure both, and a tune that
+spends its top note early has nowhere left to rise.
+
+Reviewers judge the result against the key you chose and hear parallel fifths between the upper
+parts as a fault, so a plan that gives them all the same shape in the same octave will come back for
+revision. Give them different jobs. Under `groove: true` the bass is exempt from that rule, because
+a bass locked to the harmony is what a rhythm section does.
 
 Stop once all four calls are done, with one line saying the key, tempo and meter you chose.

@@ -75,6 +75,11 @@ export function parsePhrase(text: string, meter: Meter): { notes: Note[]; errors
   const errors: ParseError[] = [];
   const perBar = meter.beats / meter.unit;
   let at = 0;
+  // The note a pending `~` must continue. A tie is the ONE thing that lets a note cross a barline,
+  // which is what an anticipation is: the note arrives before the downbeat and holds through it.
+  // Without it every note in every part landed on or after a beat, and eight bars of that is why a
+  // run the brief called pop came back sounding like an exercise.
+  let tieFrom: Note | null = null;
   const bars = text.split("|").map((b) => b.trim()).filter((b) => b.length > 0);
   if (bars.length === 0) errors.push({ bar: 0, detail: "the phrase is empty: write at least one bar" });
 
@@ -82,9 +87,13 @@ export function parsePhrase(text: string, meter: Meter): { notes: Note[]; errors
     const barNo = i + 1;
     let sum = 0;
     for (const token of bar.split(/\s+/).filter(Boolean)) {
-      const m = /^([A-Ga-g][#b]?-?\d|r)\/(\d+)(\.?)$/.exec(token);
+      const m = /^([A-Ga-g][#b]?-?\d|r)\/(\d+)(\.?)(~?)$/.exec(token);
       if (!m) {
-        errors.push({ bar: barNo, token, detail: "expected PITCH/DENOM like C4/4, a rest r/8, or a dotted C4/4." });
+        errors.push({
+          bar: barNo,
+          token,
+          detail: "expected PITCH/DENOM like C4/4, a rest r/8, a dotted C4/4. or a tied C4/8~",
+        });
         continue;
       }
       const denom = Number(m[2]);
@@ -92,10 +101,16 @@ export function parsePhrase(text: string, meter: Meter): { notes: Note[]; errors
         errors.push({ bar: barNo, token, detail: `denominator ${denom} is not a power of two between 1 and 64` });
         continue;
       }
-      // A dot adds half again, which is the one rhythmic nicety worth having: without it a dotted
-      // quarter has to be written as two tied notes and ties are a whole syntax of their own.
+      // A dot adds half again. It stays even though ties now exist, because a dotted quarter inside
+      // one bar reads better as `C4/4.` than as two tokens a reader has to add up.
       const dur = (1 / denom) * (m[3] === "." ? 1.5 : 1);
+      const ties = m[4] === "~";
       if (m[1] === "r") {
+        if (tieFrom) {
+          errors.push({ bar: barNo, token, detail: "a tie has to continue into the same pitch, and this is a rest" });
+          tieFrom = null;
+        }
+        if (ties) errors.push({ bar: barNo, token, detail: "a rest cannot be tied: silence is already continuous" });
         notes.push({ midi: null, at, dur, bar: barNo });
       } else {
         const midi = toMidi(m[1]);
@@ -107,7 +122,24 @@ export function parsePhrase(text: string, meter: Meter): { notes: Note[]; errors
           errors.push({ bar: barNo, token, detail: `${m[1]} is outside the playable range C1..C7` });
           continue;
         }
-        notes.push({ midi, at, dur, bar: barNo });
+        // A TIE LENGTHENS THE HELD NOTE RATHER THAN ADDING ONE. Everything downstream then works
+        // unchanged: the synth sounds one note, the analysis sees one onset, and the bar sum still
+        // counts each token where it was written, so a tied bar is still checked against the meter.
+        if (tieFrom && tieFrom.midi === midi) {
+          tieFrom.dur += dur;
+        } else {
+          if (tieFrom) {
+            errors.push({
+              bar: barNo,
+              token,
+              detail: `a tie has to continue into the same pitch, and this is not the one it left`,
+            });
+          }
+          const note: Note = { midi, at, dur, bar: barNo };
+          notes.push(note);
+          tieFrom = note;
+        }
+        if (!ties) tieFrom = null;
       }
       at += dur;
       sum += dur;
@@ -122,6 +154,12 @@ export function parsePhrase(text: string, meter: Meter): { notes: Note[]; errors
       });
     }
   });
+  if (tieFrom) {
+    errors.push({
+      bar: bars.length,
+      detail: "the last note is tied but nothing follows it: drop the ~ or write the note it holds into",
+    });
+  }
   return { notes, errors };
 }
 
@@ -148,10 +186,14 @@ export interface Score {
   bpm: number;
   meter: Meter;
   parts: Part[];
-  /** One chord symbol per bar (`D`, `Bm`, `A7`), from the brief. What three players written apart
-   *  need in order to agree about the harmony: prose guidance cannot carry a progression, and
-   *  without one a run put the bass in D major under a tune in D minor. Optional, and every
-   *  chord-dependent measure is skipped when it is absent. */
+  /** One entry per bar, naming that bar's harmony (`D`, `Bm`, `A7`). What players written apart need
+   *  in order to agree about the harmony: prose guidance cannot carry a progression, and without one
+   *  a run put the bass in D major under a tune in D minor. An entry may name SEVERAL chords
+   *  separated by spaces (`"C G"`), which splits the bar evenly between them; a progression that can
+   *  only turn over on a downbeat cannot write a pre-chorus, and every run before this one came back
+   *  with one chord per bar because that was all the field could hold. Optional, and every
+   *  chord-dependent measure is skipped when it is absent. Read it through `chordAt`, never by
+   *  indexing: the index is the BAR, and a bar is no longer one chord. */
   chords?: string[];
   /**
    * This piece is built on a repeating pulse, so a steady rhythm section is the INTENT.
@@ -191,6 +233,19 @@ export function parseScore(score: Score): { parts: ParsedPart[]; errors: string[
   // so is worth more than refusing, since a model asked to "fix" it would pad with rests it did not
   // mean and the result is the same silence.
   return { parts, errors };
+}
+
+/** The chord governing time `t`, in whole notes, or null when the brief named no progression. Bars
+ *  past the end of the array hold the last one, so a phrase longer than the progression still has a
+ *  harmony to be judged against rather than silently escaping the check. */
+export function chordAt(score: Score, t: number): string | null {
+  if (!Array.isArray(score.chords) || score.chords.length === 0) return null;
+  const barLen = score.meter.beats / score.meter.unit;
+  const bar = Math.min(Math.floor(t / barLen + 1e-9), score.chords.length - 1);
+  const symbols = String(score.chords[bar] ?? "").trim().split(/\s+/).filter(Boolean);
+  if (symbols.length === 0) return null;
+  const into = Math.max(0, Math.min(barLen - 1e-9, t - bar * barLen));
+  return symbols[Math.min(symbols.length - 1, Math.floor((into / barLen) * symbols.length + 1e-9))];
 }
 
 /** Seconds per whole note at this tempo, the one conversion the renderer needs from here. */

@@ -30,14 +30,26 @@ HOW TO ACT. Use the radia MCP tools and nothing else. Three calls, in one turn.
        phrase: "<your bars>"
      }}
 
-FOLLOW THE CHORDS. The brief carries one chord per bar. Land its root on beat one, which is how
-everyone else knows where they are, and use the fifth or the third to get to the next one.
+FOLLOW THE CHORDS. The brief carries one entry per bar. Land its root on beat one, which is how
+everyone else knows where they are, and use the fifth or the third to get to the next one. An entry
+with two chords in it, "Bm G", means that bar changes harmony halfway through: take the second root
+on the halfway beat.
 
 DO NOT WRITE A PUMP. Dullness is measured here, not just mistakes. A part that is all one note
 length is counted as a fault, and so is one that plays the same bar over and over: root, fifth,
 root, fifth in even quarters for eight bars is the exact failure this counts, and a run of this team
 produced it. Vary the length of your notes, walk into the next chord sometimes, and leave a bar
 where you hold one note or rest.
+
+WHEN THE BRIEF SAYS `groove: true`, HOLD THE PULSE. A driving eighth-note line under a steady kit is
+then the point, and the two rules that would otherwise fight it are turned off for you: your note
+lengths may stay uniform, and moving in parallel fifths or octaves with the harmony is not counted
+against you. A run of this team lost its drive when a bass answered a parallel-motion complaint by
+replacing its eighths with half notes; do not do that. Keep the engine and change the notes.
+
+ANTICIPATE THE CHANGE. A tie is `~` on a note, which holds it into the next note of the same pitch
+and may cross a barline: `F2/8~ | F2/4 ...` puts the new root an eighth ahead of the downbeat. That
+push is most of what makes a bass line feel like it is driving rather than marking time.
 
 Stay in the key. Write the number of bars the brief asks for, no more. The `guidance` on your record
 says what the arranger wants the bass to do in THIS piece; it is about this song, while everything

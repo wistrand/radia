@@ -15,7 +15,7 @@
 // none of them sees the others' parts, so nothing they do individually can catch a clash between
 // them: that is a coordination gap, and closing it is the review stage's whole job.
 
-import { isUnpitched, type ParsedPart, type Score } from "./score.ts";
+import { chordAt, isUnpitched, type ParsedPart, type Score } from "./score.ts";
 
 /** Semitone classes of the major scale and the natural minor, from the tonic. */
 const MAJOR = [0, 2, 4, 5, 7, 9, 11];
@@ -171,9 +171,19 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
   }
 
   // PARALLELS between each pair of parts, across consecutive onsets.
+  //
+  // A GROOVE EXEMPTS THE BASS. Parallel fifths and octaves are a species-counterpoint prohibition,
+  // and a bass locked to the harmony in fifths or octaves is how a rhythm section is SUPPOSED to
+  // move. Measured on a real run: the count flagged four parallels between bass and harmony, and
+  // the fix the players chose was to replace the driving eighths in three bars with half notes,
+  // which is the rule destroying the exact thing the brief asked for. The inner voices are still
+  // held to it, because that is where independently written parts really do collide.
+  const bassPart = pitched.slice().sort((x, y) => lowOf(x) - lowOf(y))[0]?.instrument;
+  const parallelExempt = (x: string, y: string) => score.groove === true && (x === bassPart || y === bassPart);
   let parallels = 0;
   for (let a = 0; a < pitched.length; a++) {
     for (let b = a + 1; b < pitched.length; b++) {
+      if (parallelExempt(pitched[a].instrument, pitched[b].instrument)) continue;
       let prev: { x: number; y: number; interval: number } | null = null;
       for (const t of grid) {
         const s = soundingAt([pitched[a], pitched[b]], t);
@@ -242,7 +252,7 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
       }
 
       if (chordsGiven && strong(n.at) && n.dur >= beat - 1e-9) {
-        const symbol = score.chords![Math.min(Math.floor(n.at / barLen + 1e-9), score.chords!.length - 1)];
+        const symbol = chordAt(score, n.at) ?? "";
         const tones = chordTones(symbol);
         if (tones && !tones.includes(((n.midi! % 12) + 12) % 12)) {
           offChord = (offChord ?? 0) + 1;
@@ -292,8 +302,11 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
   let bland = 0;
   // THE RHYTHM SECTION: every unpitched part, plus the lowest pitched one, which is the bass by the
   // same reading `endsOnTonic` uses. These are the parts a groove asks to hold a steady pulse.
-  const bassLine = pitched.slice().sort((x, y) => lowOf(x) - lowOf(y))[0]?.instrument;
-  const rhythmSection = new Set(parts.filter((p) => isUnpitched(p.instrument) || p.instrument === bassLine).map((p) => p.instrument));
+  const rhythmSection = new Set(parts.filter((p) => isUnpitched(p.instrument) || p.instrument === bassPart).map((p) => p.instrument));
+  // THE MELODY is the highest pitched part, which is the one an ear follows and the only one the
+  // hook rules below apply to. An inner voice holding one register is doing its job; a tune doing it
+  // is the complaint that started this.
+  const melody = pitched.slice().sort((x, y) => highOf(y) - highOf(x))[0]?.instrument;
   const shape = new Map<string, { durations: number; uniformity: number; stepRatio: number }>();
   for (const p of parts) {
     const sounded = p.notes.filter((n) => n.midi !== null);
@@ -336,23 +349,45 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
       if (seen.has(sig)) repeats++;
       seen.add(sig);
     }
-    // A BEAT REPEATS BY DEFINITION, so a kit is held to a far looser bound than a melody: it is
-    // flagged only when it never varies AT ALL. Measured on a real run, a four-on-the-floor pattern
-    // repeating six bars in eight was reported as a pump, which is the genre being told off for
-    // being itself. A drummer should still put a fill somewhere, and 0.85 leaves room for exactly
-    // that and nothing less.
-    // For a kit the test is EXACT rather than a ratio: every bar identical. A ratio cannot express
-    // "never varies" at short lengths, since six identical bars out of six is only 0.83.
-    const pumping = rhythmOnly ? repeats === cells.size - 1 : repeats / cells.size > 0.3;
-    if (cells.size >= 4 && pumping) {
+    // A BEAT REPEATS BY DEFINITION, so a kit is held to a far looser bound than a melody. A ratio is
+    // the wrong shape for it: four-on-the-floor for six bars of eight is 0.75 and is the genre, not
+    // a fault. What a kit owes is VARIETY IN THE SET of bars it plays, so it is counted instead. Two
+    // distinct bars over eight is a loop with one fill on the end, which is what a run produced when
+    // the test was "every bar identical": seven copies plus a bar that split one hat into two
+    // sixteenths passed a rule meant to require a fill.
+    const distinct = seen.size;
+    const pumping = rhythmOnly
+      ? (cells.size >= 4 && distinct === 1) || (cells.size >= 8 && distinct <= 2)
+      : repeats / cells.size > 0.3;
+    if ((rhythmOnly || cells.size >= 4) && pumping) {
       bland++;
       findings.push({
         kind: "monotony",
         parts: [p.instrument],
         bar: 1,
         detail: rhythmOnly
-          ? `${p.instrument} plays the same bar ${repeats + 1} times over and never varies: put a fill somewhere`
+          ? `${p.instrument} plays only ${distinct} different bar${distinct === 1 ? "" : "s"} in ${cells.size}: ` +
+            `keep the pulse, but put a real fill at the end of each four`
           : `${p.instrument} plays the same bar ${repeats + 1} times over: vary it, or it is a pump rather than a part`,
+      });
+    }
+
+    // NO CELL COMES BACK. The counterpart to the rule above, and the one the loop most needed: a
+    // hook is a rhythm that RECURS, usually under different pitches. Every rule here before this one
+    // pushed the other way, and a lead answered with eight bars in eight different rhythms, which is
+    // as hard to remember as eight identical ones. Measured on RHYTHM alone so that a cell repeated
+    // a third higher counts as the same cell, which is what a sequence is.
+    const rhythms = [...cells.entries()].sort((a, b) => a[0] - b[0])
+      .map(([, cell]) => cell.map((s) => s.split("/")[1]).join(" "));
+    const distinctRhythms = new Set(rhythms).size;
+    if (!rhythmOnly && cells.size >= 4 && distinctRhythms / cells.size > 0.75) {
+      bland++;
+      findings.push({
+        kind: "monotony",
+        parts: [p.instrument],
+        bar: 1,
+        detail: `${p.instrument} uses ${distinctRhythms} different rhythms in ${cells.size} bars and repeats none of them: ` +
+          `write one or two bars as a cell and bring it back, moved to fit the chord`,
       });
     }
     if (!rhythmOnly && sounded.length >= 6 && stepRatio > 0.95) {
@@ -372,6 +407,39 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
         bar: 1,
         detail: `${p.instrument} covers under a fourth end to end: it has nowhere to rise to`,
       });
+    }
+
+    // THE LAST TWO APPLY TO THE TUNE ONLY. An inner voice is allowed to sit still and play through;
+    // a melody that does either is the difference between a part and a song.
+    if (p.instrument === melody && cells.size >= 8 && sounded.length >= 6) {
+      // WHERE THE HIGHEST NOTE FALLS. A tune has one peak and it arrives late; spending it in bar 2
+      // and never returning leaves the remaining six bars with nowhere to go. A real run did exactly
+      // that, and nothing measured it.
+      const peak = sounded.find((n) => n.midi === high)!;
+      if (peak.bar <= Math.ceil(cells.size / 4)) {
+        bland++;
+        findings.push({
+          kind: "monotony",
+          parts: [p.instrument],
+          bar: peak.bar,
+          detail: `${p.instrument} hits its highest note in bar ${peak.bar} of ${cells.size} and never goes higher: ` +
+            `save the top note for the last third and rise into it`,
+        });
+      }
+      // AIR. Not one rest in eight bars is a melody with no phrasing, and the notation has had `r/8`
+      // all along: what was missing was anything asking for it. A held note counts, since a tie now
+      // lets a phrase breathe by sustaining rather than only by stopping.
+      const rests = p.notes.filter((n) => n.midi === null).length;
+      const held = sounded.filter((n) => n.dur >= 2 * beat - 1e-9).length;
+      if (rests === 0 && held === 0) {
+        bland++;
+        findings.push({
+          kind: "monotony",
+          parts: [p.instrument],
+          bar: 1,
+          detail: `${p.instrument} never rests and never holds a note for two beats: give the tune somewhere to breathe`,
+        });
+      }
     }
   }
 
@@ -413,6 +481,11 @@ export function analyse(parts: ParsedPart[], score: Score, key: string): Metrics
 function lowOf(p: ParsedPart): number {
   const pitches = p.notes.filter((n) => n.midi !== null).map((n) => n.midi as number);
   return pitches.length ? Math.min(...pitches) : 999;
+}
+
+function highOf(p: ParsedPart): number {
+  const pitches = p.notes.filter((n) => n.midi !== null).map((n) => n.midi as number);
+  return pitches.length ? Math.max(...pitches) : -1;
 }
 
 /**

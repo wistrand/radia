@@ -16,7 +16,7 @@ import { RadiaClient } from "../../../sdk/ts/client.ts";
 import { resolveToken } from "../../../src/credentials.ts";
 import { readWorkspace, WORKSPACE_KIND } from "../../../extensions/ts/workspace.ts";
 import { analyse, faults } from "./analysis.ts";
-import { parseScore, type Score } from "./score.ts";
+import { chordAt, parsePhrase, parseScore, type Score } from "./score.ts";
 import { drumVoiceFor, render, voiceFor } from "./synth.ts";
 import { judge } from "./checker.ts";
 import { type Brief, runProducer } from "./producer.ts";
@@ -433,6 +433,66 @@ try {
   const waver = Math.sqrt(peaks.reduce((a, b) => a + (b - avg) ** 2, 0) / peaks.length) / avg;
   check("so a held note breathes instead of sitting still", waver > 0.1, `${(waver * 100).toFixed(0)}% amplitude movement`);
 
+  // ---- a note may arrive before the beat ----
+  // The notation had no way to write an anticipation, so every note in every run landed on or after
+  // a beat, and eight bars of that is why a piece the brief called pop came back sounding typed.
+  const M44 = { beats: 4, unit: 4 };
+  const tied = parsePhrase("C4/4 C4/4 C4/4 r/8 G4/8~ | G4/4. C4/4 C4/4 C4/8", M44);
+  check("a tie crosses the barline, and the bars still add up", tied.errors.length === 0, tied.errors.map((e) => e.detail));
+  const anticipated = tied.notes.find((n) => n.midi === 67)!;
+  check("the held note is ONE note, as long as both halves", Math.abs(anticipated.dur - 0.5) < 1e-9, `${anticipated.dur} of a whole`);
+  check("and it starts in the bar it was written in, before the downbeat", anticipated.bar === 1 && Math.abs(anticipated.at - 0.875) < 1e-9, `bar ${anticipated.bar} at ${anticipated.at}`);
+  const chain = parsePhrase("C4/2~ C4/2~ | C4/1", M44).notes;
+  check("ties chain, so a note can hold for as long as it likes", chain.length === 1 && Math.abs(chain[0].dur - 2) < 1e-9, `${chain.length} note(s), ${chain[0]?.dur}`);
+  check("a tie into a different pitch is refused, by bar", parsePhrase("C4/2 C4/4 C4/8 C4/8~ | D4/8 C4/4 C4/4 C4/4 C4/8", M44).errors.some((e) => /same pitch/.test(e.detail)));
+  check("a tied rest is refused, since silence is already continuous", parsePhrase("C4/2 C4/4 r/4~ | C4/1", M44).errors.some((e) => /cannot be tied/.test(e.detail)));
+  check("and a tie with nothing after it is refused rather than dropped", parsePhrase("C4/2 C4/4 C4/4~", M44).errors.some((e) => /nothing follows/.test(e.detail)));
+
+  // ---- a bar may turn its harmony over ----
+  const half = { bpm: 120, meter: M44, chords: ["C", "Am F", "G"], parts: [] as Score["parts"] } as unknown as Score;
+  check("one chord governs a whole bar", chordAt(half, 0) === "C" && chordAt(half, 0.75) === "C");
+  check("two split it evenly, so a progression can move mid-bar", chordAt(half, 1) === "Am" && chordAt(half, 1.5) === "F", `${chordAt(half, 1)} then ${chordAt(half, 1.5)}`);
+  check("and a bar past the end holds the last one rather than escaping the check", chordAt(half, 9) === "G");
+
+  // ---- a hook is a rhythm that comes back ----
+  // The counterpart to the repetition rule, and the one the loop was missing: every dullness measure
+  // before this pushed AWAY from repeating anything, and a lead answered with eight bars in eight
+  // different rhythms. That is exactly as hard to remember as eight identical ones.
+  const bars8 = (phrases: string[]) => ({
+    bpm: 120,
+    meter: M44,
+    chords: ["C", "F", "G", "C", "Am", "F", "G", "C"],
+    parts: [{ instrument: "lead", phrase: phrases.join(" | ") }, { instrument: "bass", phrase: Array(8).fill("C3/2 G3/4 E3/4").join(" | ") }],
+  }) as unknown as Score;
+  const hookLess = bars8([
+    "C5/4 E5/8 G5/8 E5/4 C5/4", "D5/8 E5/8 F5/4 G5/4 A5/4", "E5/4 D5/8 C5/8 A4/2", "A4/4. D5/8 C5/4 A4/4",
+    "C5/2 E5/4 G5/4", "G5/1", "A4/8 C5/8 D5/4 C5/4 A4/4", "C5/2. E5/8 C5/8",
+  ]);
+  const hooked = bars8([
+    "C5/4 E5/8 G5/8 E5/4 C5/4", "D5/4 F5/8 A5/8 F5/4 D5/4", "E5/2 D5/4 C5/4", "C5/4 E5/8 G5/8 E5/4 C5/4",
+    "A4/4 C5/8 E5/8 C5/4 A4/4", "F5/2 E5/4 D5/4", "G5/4 B5/8 D5/8 B5/4 G5/4", "C5/2. r/8 C5/8",
+  ]);
+  const noHook = analyse(parseScore(hookLess).parts, hookLess, "C major");
+  const withHook = analyse(parseScore(hooked).parts, hooked, "C major");
+  check("a tune that repeats no rhythm at all is called out", noHook.findings.some((f) => /repeats none of them/.test(f.detail)), `bland=${noHook.bland}`);
+  check("and one built on a cell that returns is not", !withHook.findings.some((f) => /repeats none of them/.test(f.detail)), `bland=${withHook.bland}`);
+  // The two rules leave a window rather than fighting: a cell may come back, but not verbatim every
+  // bar. Rhythm is what is matched, so the same figure moved to fit the next chord still counts.
+  const oneBarOver = bars8(Array(8).fill("C5/4 E5/8 G5/8 E5/4 C5/4"));
+  check("while the same bar over and over is still a pump", analyse(parseScore(oneBarOver).parts, oneBarOver, "C major").findings.some((f) => /same bar/.test(f.detail)));
+
+  // ---- a tune has one peak, and it comes late ----
+  const peakEarly = bars8([
+    "C5/4 E5/8 B5/8 E5/4 C5/4", "D5/4 F5/8 A5/8 F5/4 D5/4", "E5/2 D5/4 C5/4", "C5/4 E5/8 G5/8 E5/4 C5/4",
+    "A4/4 C5/8 E5/8 C5/4 A4/4", "F5/2 E5/4 D5/4", "G5/4 A5/8 D5/8 B4/4 G4/4", "C5/2. r/8 C5/8",
+  ]);
+  check("spending the highest note in bar 1 leaves nowhere to rise", analyse(parseScore(peakEarly).parts, peakEarly, "C major").findings.some((f) => /highest note in bar 1/.test(f.detail)));
+  check("and saving it for the last third does not", !withHook.findings.some((f) => /highest note/.test(f.detail)));
+  // AIR. Rests were legal all along; nothing asked for them, so a run produced eight bars with not
+  // one. A held note counts too, since a tie now lets a phrase breathe by sustaining.
+  const breathless = bars8(Array(8).fill("C5/8 D5/8 E5/8 F5/8 G5/8 F5/8 E5/8 D5/8"));
+  check("a tune that never rests and never holds is told to breathe", analyse(parseScore(breathless).parts, breathless, "C major").findings.some((f) => /breathe/.test(f.detail)));
+
   // ---- a groove is steady on purpose ----
   // The one place the brief overrules a measurement, added because the two were caught fighting: an
   // arranger asked a bass for "steady eighth notes throughout" and a kit for four-on-the-floor, and
@@ -458,9 +518,21 @@ try {
   // The exemption is narrow in both directions: one rule, and only for the rhythm section.
   const dullLead = { ...pulse, groove: true, parts: [{ ...pulse.parts[0], phrase: "A4/4 A4/4 A4/4 A4/4 | A4/4 A4/4 A4/4 A4/4" }, ...pulse.parts.slice(1)] };
   check("a groove never excuses the LEAD from having a rhythm", analyse(parseScore(dullLead).parts, dullLead, "A minor").bland > 0);
-  const noFill = { ...pulse, groove: true, parts: [...pulse.parts.slice(0, 3), { instrument: "drums", phrase: Array(6).fill("C2/4 C4/4 D3/4 C4/4").join(" | ") }] };
-  const never = analyse(parseScore(noFill).parts, noFill, "A minor");
-  check("nor a kit that never varies at all, which still wants a fill", never.findings.some((f) => /never varies/.test(f.detail)), `bland=${never.bland}`);
+  const kitOf = (phrase: string) => {
+    const s = { ...pulse, groove: true, parts: [...pulse.parts.slice(0, 3), { instrument: "drums", phrase }] };
+    return analyse(parseScore(s).parts, s, "A minor");
+  };
+  const BEAT = "C2/4 C4/4 D3/4 C4/4", FILL = "C2/4 C4/4 D3/8 D3/8 C4/4";
+  const never = kitOf(Array(6).fill(BEAT).join(" | "));
+  check("nor a kit that never varies at all, which still wants a fill", never.findings.some((f) => /different bar/.test(f.detail)), `bland=${never.bland}`);
+  // THE LOOPHOLE A REAL RUN WALKED THROUGH. The rule was once "every bar identical", and a kit
+  // answered it with seven copies and a last bar that split one hat into two sixteenths: a fill by
+  // the letter, a metronome by ear. Two distinct bars in eight is now the bound, and a part with a
+  // real fill on each four clears it.
+  const oneTweak = kitOf([...Array(7).fill(BEAT), "C2/4 C4/4 D3/4 C4/8 C4/8"].join(" | "));
+  check("nor eight bars that are really two, however the last one is dressed up", oneTweak.findings.some((f) => /different bar/.test(f.detail)), `bland=${oneTweak.bland}`);
+  const realFills = kitOf([BEAT, BEAT, BEAT, FILL, BEAT, BEAT, BEAT, "C2/4 D3/8 D3/8 D3/8 D3/8 C4/4"].join(" | "));
+  check("but a steady beat with a fill on each four is a part, not a pump", !realFills.findings.some((f) => /different bar/.test(f.detail)), `bland=${realFills.bland}`);
 
   console.log(failures === 0 ? "\nall checks passed" : `\n${failures} FAILED`);
 } finally {
