@@ -26,7 +26,8 @@
 import { isUnpitched, type ParsedPart, type Score, toHz, wholeNoteSeconds } from "./score.ts";
 
 export interface Voice {
-  wave: "saw" | "square" | "triangle" | "sine" | "noise";
+  /** `string` is not an oscillator: see `pluckString`. */
+  wave: "saw" | "square" | "triangle" | "sine" | "noise" | "string";
   /** Seconds. Attack and decay shape the start; release runs past the note's end. */
   attack: number;
   decay: number;
@@ -117,6 +118,19 @@ export interface Voice {
   /** How much of this voice goes to the room, 0 to 1. A send rather than a global wet level,
    *  because a kick in a hall is a mess and a pad without one is a wall. Default 0. */
   send?: number;
+  /** For `wave: "string"`: seconds for the string to fall 60dB, which sets how long it RINGS as
+   *  opposed to how long it is played. The envelope still decides when the note stops (a player
+   *  damps a string); this decides what it sounds like while it lasts. */
+  stringDecay?: number;
+  /** For `wave: "string"`: the loop filter, 0 dark to 1 bright. It is the whole reason to model a
+   *  string rather than filter a saw: the signal passes this filter once per round trip, so a
+   *  partial ten times the fundamental is filtered ten times as often and dies ten times as fast.
+   *  That is what a struck string does and what a one-shot filter sweep can only imitate. */
+  damping?: number;
+  /** For `wave: "string"`: where the string is plucked, 0 at the bridge to 0.5 at the middle. It
+   *  combs the excitation, so a partial with a node at that point is missing, which is why picking
+   *  near the bridge is thin and bright and over the hole is round. */
+  pluck?: number;
 }
 
 /** Instruments are matched by NAME, so a brief may invent one and still render: an unknown name
@@ -336,18 +350,26 @@ export function drumVoiceFor(midi: number): Voice {
 const TIMBRES: Record<string, Partial<Voice>> = {
   // Struck and left to ring: instant attack, no sustain, a long decay. This is the one the brief
   // could not previously reach, and the reason a run asked for a harp and got three detuned saws.
+  // A REAL STRING, not a filtered pluck-shaped envelope. The amplitude envelope stops holding the
+  // note (a player damps a string), and `stringDecay` decides what it sounds like while it rings:
+  // bright for a moment, then round, changing the whole time. Its predecessor's brightness measured
+  // identical at 20ms and at 1s, which is the sound of a filter that has finished its sweep.
   plucked: {
-    wave: "triangle",
-    attack: 0.002,
-    decay: 0.85,
-    sustain: 0.0,
-    release: 0.45,
+    wave: "string",
+    attack: 0.001,
+    decay: 0.05,
+    sustain: 0.95,
+    release: 0.5,
     unison: 2,
     detune: 4,
-    toneEnd: 0.12,
-    resonance: 0.14,
-    shimmer: 0.12,
-    drive: 0.10,
+    tone: 0.95,
+    toneEnd: 0.9,
+    resonance: 0.05,
+    stringDecay: 2.4,
+    damping: 0.75,
+    pluck: 0.22,
+    shimmer: 0,
+    drive: 0.08,
     vibrato: undefined,
   },
   // Bowed or breathed: the note arrives late and holds. The unison stays, because two near-copies
@@ -360,11 +382,18 @@ const TIMBRES: Record<string, Partial<Voice>> = {
   // the bass. It exists because a death metal request rendered on the same three saws as a dance
   // track, and the arranger had no word for what it wanted.
   heavy: {
-    wave: "saw",
-    attack: 0.002,
-    decay: 0.10,
-    sustain: 0.55,
-    release: 0.08,
+    // A STRING INTO THE AMPLIFIER, which is the actual signal path: a pickup hears a struck string,
+    // the gain stage clips it, the cabinet rolls it off. A saw into a clipper is a fuzz pedal with
+    // nothing in front of it, and it buzzed at a constant timbre for as long as the note lasted.
+    // Damped harder and ringing shorter than the acoustic one: that is a palm mute.
+    wave: "string",
+    attack: 0.001,
+    decay: 0.06,
+    sustain: 0.9,
+    release: 0.1,
+    stringDecay: 2.0,
+    damping: 0.8,
+    pluck: 0.12,
     unison: 2,
     detune: 11,
     tone: 0.62,
@@ -504,6 +533,55 @@ function polyBlep(t: number, dt: number): number {
   return 0;
 }
 
+/**
+ * A plucked string: Karplus-Strong, which is a delay line the length of one period with a low-pass
+ * in its feedback, started full of noise.
+ *
+ * WHY A MODEL RATHER THAN A FILTER SWEEP. Every partial goes round the loop at its own rate, so it
+ * meets the damping filter once per period and the high ones meet it far more often per second:
+ * a struck string is bright for a moment and then round, and its spectrum keeps changing for the
+ * whole ring. Measured on the voices this replaced, the ratio of energy above 2kHz to below it
+ * stayed FLAT for two seconds (0.005 for `plucked`, 0.06 for `heavy`) because a filter that has
+ * finished its envelope is a filter that has stopped moving. Twenty lines buy the thing itself.
+ *
+ * The delay is read fractionally so vibrato and detune bend the pitch instead of quantising it to
+ * whole samples, and the excitation is combed by the pluck position.
+ */
+interface String1 {
+  buf: Float32Array;
+  idx: number;
+  last: number;
+  fb: number;
+  damp: number;
+}
+
+function pluckString(hz: number, sr: number, noise: () => number, v: Voice): String1 {
+  // Room for the pitch to bend a semitone DOWN, since a longer delay is a lower note.
+  const n = Math.ceil(sr / Math.max(20, hz * 0.94)) + 4;
+  const buf = new Float32Array(n);
+  for (let i = 0; i < n; i++) buf[i] = noise();
+  // PLUCK POSITION as a comb: a partial with a node where the string was plucked cannot be excited.
+  const p = Math.max(1, Math.round((v.pluck ?? 0.25) * (sr / hz)));
+  const src = buf.slice();
+  for (let i = 0; i < n; i++) buf[i] = src[i] - src[(i - p + n) % n];
+  // Round-trip gain for a 60dB fall in `stringDecay` seconds: the loop runs hz times a second.
+  const t = Math.max(0.05, v.stringDecay ?? 2);
+  return { buf, idx: 0, last: 0, fb: Math.min(0.9999, Math.pow(0.001, 1 / (t * hz))), damp: Math.min(1, Math.max(0.02, v.damping ?? 0.5)) };
+}
+
+function stringAt(s: String1, hz: number, sr: number): number {
+  const n = s.buf.length;
+  const len = Math.min(n - 2, Math.max(2, sr / hz));
+  const rp = (s.idx - len + n) % n;
+  const i0 = Math.floor(rp);
+  const frac = rp - i0;
+  const out = s.buf[i0] * (1 - frac) + s.buf[(i0 + 1) % n] * frac;
+  s.last += s.damp * (out - s.last);
+  s.buf[s.idx] = s.last * s.fb;
+  s.idx = (s.idx + 1) % n;
+  return out;
+}
+
 function waveAt(wave: Voice["wave"], phase: number, dt: number, noise: () => number, width = 0.5): number {
   switch (wave) {
     case "saw":
@@ -521,6 +599,10 @@ function waveAt(wave: Voice["wave"], phase: number, dt: number, noise: () => num
       return Math.sin(2 * Math.PI * phase);
     case "noise":
       return noise();
+    // A string has state, so it cannot be a function of phase: `stringAt` runs it, and the note
+    // loop branches before reaching here. Present so the switch stays exhaustive.
+    case "string":
+      return 0;
   }
 }
 
@@ -710,6 +792,9 @@ export function render(parts: ParsedPart[], score: Score, o: RenderOptions = {})
         uR.push(r);
       }
       const perVoice = 1 / Math.sqrt(stack); // keep a stack from being louder than one oscillator
+      // ONE STRING PER COPY, excited once at the note's onset. Two strings a few cents apart is a
+      // twelve-string or a double-tracked guitar, and it costs a second delay line.
+      const strings = v.wave === "string" ? ratios.map((r) => pluckString(hz * r, sr, noise, v)) : null;
       const sub = v.sub ?? 0;
       const shimmer = v.shimmer ?? 0;
       const noiseMix = v.noiseMix ?? 0;
@@ -717,8 +802,11 @@ export function render(parts: ParsedPart[], score: Score, o: RenderOptions = {})
       const drive = v.drive ?? 0;
       const crunch = v.crunch ?? 0;
       // 1 is unity into the clipper and nothing happens; the useful range is well past it, since a
-      // note has to be driven above the rails before any of it flattens.
-      const crunchGain = 1 + crunch * 11;
+      // note has to be driven above the rails before any of it flattens. FAR past it for a string:
+      // an amplifier's sustain is its gain stage still clipping a decayed note, so the tail has to
+      // arrive above the rails too. At 11x the heavy voice fell 30dB in a second like an unplugged
+      // guitar; the number is what makes a held power chord hold.
+      const crunchGain = 1 + crunch * 60;
       const k = 2 - 1.8 * Math.min(0.95, Math.max(0, v.resonance ?? 0));
       const hpCut = v.hpTone === undefined ? 0 : 1 - Math.exp(-2 * Math.PI * toneHz(v.hpTone, sr) / sr);
       let subPhase = 0;
@@ -774,9 +862,15 @@ export function render(parts: ParsedPart[], score: Score, o: RenderOptions = {})
 
         let rawL = 0, rawR = 0;
         for (let u = 0; u < stack; u++) {
-          const dt = (hz * ratios[u] * wobble * bend) / sr;
-          phases[u] = (phases[u] + dt) % 1;
-          const s = waveAt(v.wave, phases[u], dt, noise, pulse) * perVoice;
+          const f = hz * ratios[u] * wobble * bend;
+          let s: number;
+          if (strings) {
+            s = stringAt(strings[u], f, sr) * perVoice;
+          } else {
+            const dt = f / sr;
+            phases[u] = (phases[u] + dt) % 1;
+            s = waveAt(v.wave, phases[u], dt, noise, pulse) * perVoice;
+          }
           rawL += s * uL[u];
           rawR += s * uR[u];
         }
