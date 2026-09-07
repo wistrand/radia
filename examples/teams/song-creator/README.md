@@ -204,14 +204,26 @@ correlation 0.97 to 0.83 (a wider record rather than a thicker middle), 6dB more
 peak, and 35ms of CPU per second of audio against 15ms. Nothing in the pipeline can hear it; the
 `ear` critic reads the score.
 
-The brief's `timbre` picks which family the pitched parts are played on: `synth`, `plucked` (struck
-and left to ring), `soft` (slow to arrive and held) or `heavy` (driven into a clipper and rolled off
-after it, the way an amp feeds a speaker). Voices are chosen by ROLE, so before this field a brief
+The brief's `timbre` picks which family the pitched parts are played on: `synth`, `plucked` (a
+modelled string, struck and left to ring), `soft` (slow to arrive and held) or `heavy` (that same
+string through an amplifier, clipped hard and then rolled off the way a speaker does). Voices are chosen by ROLE, so before this field a brief
 asking for a harp rendered on the same three-saw lead stack as a dance track and nothing could say
 otherwise; `heavy` exists because a death metal request did the same thing one run later. It names a
 FAMILY rather than an instrument, because a tracker with four waveforms can be a plucked string and
 cannot be a harp, and a timbre may change the oscillator and the envelope but never the pan, the
 gain or the WIDTH: those are the arrangement and must survive a change of sound.
+
+**The guitars are a modelled string, not a filtered oscillator.** `plucked` and `heavy` run
+Karplus-Strong: a delay line one period long with a low-pass in its feedback, started full of noise.
+Every partial meets that filter once per round trip, so the high ones die far faster and the note is
+bright at the pick and round a moment later, changing for its whole ring. That is what a struck
+string does and what an envelope on a filter can only imitate. Measured on the voices it replaced,
+the ratio of energy above 2kHz to below it was FLAT for two seconds (0.005 for `plucked`, 0.06 for
+`heavy`) because a filter that has finished its envelope has stopped moving; it now falls from 1.02
+at the pick to 0.05 three hundred milliseconds later. `stringDecay` sets how long the string rings,
+`damping` how bright it stays, `pluck` where it was struck (a partial with a node there is missing,
+which is why picking at the bridge is thin). The amplitude envelope no longer shapes the note, it
+only ends it, which is what a player's hand does.
 
 **Distortion is not saturation, and the measurement said so before the ear did.** The first `heavy`
 turned up the soft saturator every other voice uses, and a held note came out with a thousandth of

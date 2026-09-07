@@ -504,9 +504,17 @@ try {
   // ---- the brief says what the piece is PLAYED ON ----
   // The renderer picks a voice per ROLE, so before `timbre` a brief asking for a harp got the same
   // three-saw lead stack as a dance track, and neither the arranger nor a player could say otherwise.
-  const plucked = voiceFor("lead", "plucked"), soft = voiceFor("lead", "soft");
+  const plucked = voiceFor("lead", "plucked"), soft = voiceFor("lead", "soft"), heavy0 = voiceFor("lead", "heavy");
   check("a timbre reshapes the voice a role is played on", plucked.wave !== leadV.wave && soft.wave !== leadV.wave, `${leadV.wave} -> ${plucked.wave} / ${soft.wave}`);
-  check("plucked is struck and left to ring: no sustain, a long decay", plucked.sustain === 0 && plucked.decay > leadV.decay, `sustain ${plucked.sustain}, decay ${plucked.decay}`);
+  // STRUCK AND LEFT TO RING, and it is now a string that rings rather than an envelope that fades:
+  // the amplitude envelope holds the note open and `stringDecay` is what runs out. Asserted as the
+  // mechanism because the old assertion (no sustain, a long decay) described the imitation.
+  check(
+    "plucked is struck and left to ring: the string decides how long, not an envelope",
+    plucked.wave === "string" && (plucked.stringDecay ?? 0) > 1 && plucked.sustain > 0.9,
+    `${plucked.wave}, rings ${plucked.stringDecay}s, sustain ${plucked.sustain}`,
+  );
+  check("and heavy is that same string through the amplifier", heavy0.wave === "string" && (heavy0.crunch ?? 0) > 0, `${heavy0.wave}, crunch ${heavy0.crunch}`);
   check("soft arrives late and holds", soft.attack > leadV.attack * 5 && soft.sustain > leadV.sustain, `attack ${soft.attack}, sustain ${soft.sustain}`);
   // A TIMBRE MAY NOT REARRANGE THE PIECE. Pan, gain and the parts' relative placement are the
   // arrangement and have to survive a change of sound, or picking `plucked` would silently remix it.
@@ -540,6 +548,38 @@ try {
   };
   const plainCrest = crestOf(), heavyCrest = crestOf("heavy");
   check("and it reaches the audio flat-topped, which is what a driven amp sounds like", heavyCrest < plainCrest - 3, `${plainCrest.toFixed(1)}dB clean, ${heavyCrest.toFixed(1)}dB heavy`);
+
+  // A STRUCK STRING GETS DARKER AS IT RINGS, and that is the whole reason to model one: every
+  // partial meets the damping filter once per period, so the high ones die far faster. A filtered
+  // oscillator cannot do it, and the voices this replaced measured FLAT: the ratio of energy above
+  // 2kHz to below it was identical at 20ms and at a second, because a filter that has finished its
+  // envelope has stopped moving. Measured here rather than configured, since `damping` could be set
+  // to anything and the audio is what the claim is about.
+  const brightnessAt = (timbre: string | undefined, at: number) => {
+    const s = { bpm: 40, meter: { beats: 4, unit: 4 }, ...(timbre ? { timbre } : {}), parts: [{ instrument: "lead", phrase: "E3/1" }] } as unknown as Score;
+    const w = render(parseScore(s).parts, s).wav;
+    const pcm = new Int16Array(w.buffer, w.byteOffset + 44, (w.length - 44) / 2);
+    const seg = new Float32Array(4096);
+    for (let i = 0; i < 4096; i++) seg[i] = (pcm[(Math.floor(at * 44100) + i) * 2] ?? 0) / 32768;
+    // Goertzel on a coarse grid: a detuned stack puts nothing on exact harmonics, so probe a band.
+    const at1 = (f: number) => {
+      const k = (2 * Math.PI * f) / 44100, c = 2 * Math.cos(k);
+      let s1 = 0, s2 = 0;
+      for (let i = 0; i < seg.length; i++) {
+        const x = seg[i] + c * s1 - s2;
+        s2 = s1;
+        s1 = x;
+      }
+      return Math.max(0, s1 * s1 + s2 * s2 - c * s1 * s2) / (seg.length * seg.length);
+    };
+    let lo = 0, hi = 0;
+    for (let f = 80; f < 16000; f += 60) (f < 2000 ? (lo += at1(f)) : (hi += at1(f)));
+    return hi / (lo || 1e-12);
+  };
+  const pick = brightnessAt("plucked", 0.02), rung = brightnessAt("plucked", 0.3);
+  check("a plucked note is bright at the pick and round a moment later", pick > rung * 8, `hi/lo ${pick.toFixed(3)} at 20ms, ${rung.toFixed(3)} at 300ms`);
+  const sawEarly = brightnessAt(undefined, 0.02), sawLate = brightnessAt(undefined, 0.3);
+  check("where an oscillator through a settled filter holds its timbre", sawEarly < sawLate * 3, `hi/lo ${sawEarly.toFixed(3)} then ${sawLate.toFixed(3)}`);
   check("an unknown timbre renders as synth rather than failing", JSON.stringify(voiceFor("lead", "harpsichord")) === JSON.stringify(leadV));
   check("and a kit is a kit whatever the piece is played on", JSON.stringify(voiceFor("drums", "plucked")) === JSON.stringify(voiceFor("drums")));
   // It has to reach the AUDIO, not just the voice table: the score carries it and `render` reads it.
