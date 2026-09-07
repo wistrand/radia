@@ -559,7 +559,17 @@ function pluckString(hz: number, sr: number, noise: () => number, v: Voice): Str
   // Room for the pitch to bend a semitone DOWN, since a longer delay is a lower note.
   const n = Math.ceil(sr / Math.max(20, hz * 0.94)) + 4;
   const buf = new Float32Array(n);
-  for (let i = 0; i < n; i++) buf[i] = noise();
+  // LEVEL COMPENSATION, so a change of timbre is not a change of mix. `stringDecay` is a number of
+  // ROUND TRIPS, and a high note makes more of them per second, so it dies sooner in wall-clock
+  // time and carries less energy. Physically true, and left alone it remixed the piece: measured,
+  // the bass-to-harmony ratio went from 1.6 under `synth` to 3.0 under `plucked`, which is a
+  // rebalance no timbre is allowed to make (`TIMBRES`, on pan, gain and width).
+  // The constant is the other half: a plucked note spends most of its length decaying, so it
+  // carries about a third of the energy an oscillator holding a steady level does, and the parts
+  // that kept an oscillator (the bass keeps its sine sub) drowned the ones that did not. Measured
+  // against `synth` on the same phrase, then checked for FLATNESS across four octaves.
+  const level = 2.6 * Math.sqrt(hz / 220);
+  for (let i = 0; i < n; i++) buf[i] = noise() * level;
   // PLUCK POSITION as a comb: a partial with a node where the string was plucked cannot be excited.
   const p = Math.max(1, Math.round((v.pluck ?? 0.25) * (sr / hz)));
   const src = buf.slice();
@@ -874,24 +884,31 @@ export function render(parts: ParsedPart[], score: Score, o: RenderOptions = {})
           rawL += s * uL[u];
           rawR += s * uR[u];
         }
+        // THE WHOLE NOTE DECAYS, not only the string. A string voice holds its amplitude envelope
+        // open (the string is what runs out), which left the layers that are still oscillators —
+        // the bass's sine sub above all — ringing at full level under a pluck that had died. The
+        // bass then drowned every other part: measured against the arrangement's 2:1, the
+        // bass-to-harmony ratio reached 7:1 under `plucked`, and the two plucked songs in the space
+        // rendered nearly mono because the centred bass was all that was left.
+        const layer = strings ? Math.exp((-6.908 * t) / Math.max(0.05, v.stringDecay ?? 2)) : 1;
         if (sub > 0) {
           subPhase = (subPhase + (hz * bend) / 2 / sr) % 1;
-          const s = Math.sin(2 * Math.PI * subPhase) * sub;
+          const s = Math.sin(2 * Math.PI * subPhase) * sub * layer;
           rawL += s * panL;
           rawR += s * panR;
         }
         if (shimmer > 0) {
           const dt = (hz * wobble * bend * 2 * SHIMMER_RATIO) / sr;
           shimmerPhase = (shimmerPhase + dt) % 1;
-          const s = waveAt(v.wave, shimmerPhase, dt, noise, pulse) * shimmer;
+          const s = waveAt(v.wave, shimmerPhase, dt, noise, pulse) * shimmer * layer;
           rawL += s * panL;
           rawR += s * panR;
         }
         if (noiseMix > 0) {
           // Two draws, so the rattle is not the same signal on both sides: a mono noise layer
           // collapses a snare into the middle however wide the body is panned.
-          rawL += noise() * noiseMix * panL;
-          rawR += noise() * noiseMix * panR;
+          rawL += noise() * noiseMix * panL * layer;
+          rawR += noise() * noiseMix * panR * layer;
         }
         rawL *= env;
         rawR *= env;
