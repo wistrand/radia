@@ -65,40 +65,61 @@ export function toHz(midi: number): number {
 }
 
 /**
- * Parse one part's phrase.
- *
- * Every error is collected rather than thrown on the first, because a model fixing one mistake at a
- * time costs a turn per mistake; the whole list in one refusal costs one turn for all of them.
- */
-/**
  * What to write instead of this token.
  *
- * Measured over the drafts of real runs: a third of them are refused on notation, and two shapes
- * account for most of it. `A16` is a sixteenth whose octave and slash were dropped, and it turns up
- * where a part writes the dotted-eighth pair a gallop or a habanera is made of; `q`, `q,` and
- * `E4(q)` are a different notation the model arrived with. Both used to get the same sentence
- * restating the grammar, which is the sentence `space_kinds` had already given it.
+ * Measured over the drafts of real runs: a third of them are refused on notation, and four shapes
+ * account for most of it. `A16` is a sixteenth whose octave and slash were dropped, `q` and `E4(q)`
+ * are a different notation the model arrived with, `B01` labels a bar, and `-` holds a grid cell.
+ * A hint must NAME THE MISTAKE: the label and the grid were both answered with "add a length",
+ * which is a repair that produces another refused token, so the run never converged.
  */
 function hintFor(token: string): string {
   const grammar = "expected PITCH/DENOM like C4/4, a rest r/8, a dotted C4/4. or a tied C4/8~";
+  if (/^bars?$/i.test(token) || /^bar\d{1,3}$/i.test(token)) {
+    return `is a bar label, and this notation has none: bars are separated by '|' and are ` +
+      `numbered by position. Delete it and write the bar's notes alone`;
+  }
   const noSlash = /^([A-Ga-g][#b]?)(\d+)$/.exec(token);
-  if (noSlash && Number(noSlash[2]) > 8) {
-    return `'${token}' is missing its octave and its slash: a ${noSlash[2]}th of ${noSlash[1]} in octave 2 is '${noSlash[1]}2/${noSlash[2]}'. ` +
-      `The octave is repeated on every note, so a dotted-eighth pair is 'A2/8. A2/16', never 'A2/8. A16'`;
+  // ONLY A DENOMINATOR CAN BE A DROPPED OCTAVE, so the number has to be a power of two and carry no
+  // leading zero: `A16` is a sixteenth, `B09` and `B10` are bar labels. Without the test one part's
+  // sixteen labels split across two sentences and spent both of its asks saying the same thing.
+  if (noSlash && Number(noSlash[2]) > 8 && !noSlash[2].startsWith("0") && Number.isInteger(Math.log2(Number(noSlash[2])))) {
+    return `is missing its octave and its slash: the octave is repeated on every note, so a ` +
+      `dotted-eighth pair is 'A2/8. A2/16', never 'A2/8. A16'`;
+  }
+  // AN OCTAVE IS ONE DIGIT, so `B01` is not a pitch and cannot be answered with `B01/4`. It is a bar
+  // label, the shape a model writes when it puts one bar on a line, and the "no length" branch below
+  // matched it because `Number("01")` is 1: a live run kept the labels for six rounds and rendered
+  // nothing, its last draft carrying 774 errors across all four parts.
+  if (noSlash && toMidi(token) === null) {
+    return `is not a note: an octave is a single digit. If it labels a bar, delete it, since ` +
+      `bars are separated by '|' and numbered by position; if it is a pitch, write one digit and a length, as 'B1/4'`;
+  }
+  // A GRID CELL. A part written as a tracker holds a note by repeating a cell rather than by giving
+  // it a length, so nothing in it parses and the count is one error per cell.
+  if (/^[-._]+(?:\/\d+\.?~?)?$/.test(token)) {
+    return `is a grid cell, and this notation has no grid: every event carries its own length, ` +
+      `a note held on is a tie ('C4/8~ C4/8'), and a silence is a rest ('r/8')`;
   }
   // A pitch with no length. The commonest single shape after the two above, and the fix is the same
   // sentence every time: nothing here is a bare pitch, because a note is a pitch AND a duration.
   if (noSlash) {
-    return `'${token}' has no length. Every note carries one after a slash: '${token}/4' is a quarter, ` +
-      `'${token}/8' an eighth. A pitch on its own is not a note here`;
+    return `has no length. Every note carries one after a slash: C4/4 is a quarter, C4/8 an eighth. ` +
+      `A pitch on its own is not a note here`;
   }
   if (/^[a-z][.,)]?$/i.test(token) || /\((?:q|e|h|w|s)\)/i.test(token)) {
-    return `'${token}' is a note length written the way another notation writes it. Here the length is a slash and a number after the pitch: ` +
+    return `is a note length written the way another notation writes it. Here the length is a slash and a number after the pitch: ` +
       `a quarter is C4/4, an eighth C4/8, a sixteenth C4/16. There are no letter durations and no commas between notes`;
   }
   return grammar;
 }
 
+/**
+ * Parse one part's phrase.
+ *
+ * Every error is collected rather than thrown on the first, because a model fixing one mistake at a
+ * time costs a turn per mistake; the whole list in one refusal costs one turn for all of them.
+ */
 export function parsePhrase(text: string, meter: Meter): { notes: Note[]; errors: ParseError[] } {
   const notes: Note[] = [];
   const errors: ParseError[] = [];
@@ -115,6 +136,7 @@ export function parsePhrase(text: string, meter: Meter): { notes: Note[]; errors
   bars.forEach((bar, i) => {
     const barNo = i + 1;
     let sum = 0;
+    const errorsBefore = errors.length;
     for (const token of bar.split(/\s+/).filter(Boolean)) {
       const m = /^([A-Ga-g][#b]?-?\d|r)\/(\d+)(\.?)(~?)$/.exec(token);
       if (!m) {
@@ -181,7 +203,12 @@ export function parsePhrase(text: string, meter: Meter): { notes: Note[]; errors
     }
     // THE CHECK THIS NOTATION EXISTS FOR. Floating point on halvings is exact, so this compares
     // cleanly, but the epsilon costs nothing and a dotted-note chain is where it would matter.
-    if (Math.abs(sum - perBar) > 1e-9) {
+    //
+    // ONLY WHERE EVERY TOKEN PARSED. A bar holding a refused token cannot sum to the meter, so the
+    // arithmetic reports the same mistake a second time under a different sentence. The reviewer
+    // hands a player at most two asks per part, and a bar label spent both of them: one naming the
+    // label, one saying bar 1 lasts 0.0000. The second slot is worth a real fault.
+    if (errors.length === errorsBefore && Math.abs(sum - perBar) > 1e-9) {
       errors.push({
         bar: barNo,
         detail: `bar ${barNo} lasts ${sum.toFixed(4)} of a whole note; ${meter.beats}/${meter.unit} needs ` +
