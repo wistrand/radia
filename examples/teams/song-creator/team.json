@@ -75,7 +75,7 @@
         }
       ],
       "claimable": true,
-      "usage": "One player's music. body: {song, instrument, round, phrase}. Bars separated by |, each a run of PITCH/DENOM: `C4/4 E4/8 r/8 | G3/2 r/2`. PITCH is A-G, an optional # or b, and an octave (C4 is middle C); `r` is a rest. DENOM is a power of two, 1 to 64: /4 a quarter, /8 an eighth. A dot adds half again (`C4/4.`). A trailing ~ ties a note into the NEXT one of the same pitch and may cross a barline: `G4/8~ | G4/4` is one note starting before the beat. Only the first carries the ~. EVERY BAR MUST SUM TO THE METER; one that does not is refused by number. Pitches outside C1..C7 are refused."
+      "usage": "One player's music. body: {song, instrument, round, phrase}. Bars separated by |, each a run of PITCH/DENOM: `C4/4 E4/8 r/8 | G3/2 r/2`. PITCH is A-G, optional #/b, one-digit octave (C4 is middle C); `r` is a rest. DENOM is a power of two 1..64: /4 quarter, /8 eighth. A dot adds half (`C4/4.`). ~ ties into the NEXT note of the same pitch, across barlines (`G4/8~ | G4/4` is one note); only the first carries it. EVERY BAR MUST SUM TO THE METER, or it is refused by number. No bar labels (`B01`) and no grid (`-`, `.`): every token carries a length. Pitches outside C1..C7 refused."
     },
     {
       "kind": "draft",

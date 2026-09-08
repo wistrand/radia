@@ -685,6 +685,29 @@ try {
   check("a letter duration is named as one", /letter durations/.test(hint("C5 q, D5 q")), hint("q,").slice(0, 90));
   // A pitch with no duration at all.
   check("and a bare pitch is told it needs a length", /has no length/.test(hint("A2 A2/16")), hint("A2").slice(0, 90));
+  // A BAR LABEL, which is what a model writes when it puts one bar on a line. `Number("01")` is 1,
+  // so this used to be answered with "write B01/4": not a note either, and a live run kept the
+  // labels for six rounds and rendered nothing.
+  check("a bar label is told to go, not given a length", /labels a bar, delete it/.test(hint("B01 C4/4 C4/4 C4/4 C4/4")), hint("B01").slice(0, 110));
+  check("and so is a spelled-out one", /is a bar label/.test(hint("bar1 C4/1")), hint("bar1").slice(0, 110));
+  // A tracker grid, the shape bass and drums arrive in: a hit and then cells holding it.
+  check("a grid cell is named as one", /no grid/.test(hint("A2/4 - - -")), hint("-").slice(0, 110));
+  check("and so is the sustain cell a sixteenth grid writes", /no grid/.test(hint("C4/16 ./16")), hint("./16").slice(0, 110));
+  // ONE SENTENCE PER MISTAKE, whatever token it is on. The reviewer dedupes on the message with the
+  // quoted token removed, so a message that named the token made 16 bar labels 16 distinct asks and
+  // spent both of a part's slots on bars 1 and 2.
+  const detailOf = (t: string) => parsePhrase(`${t} C4/1`, M44).errors[0]?.detail;
+  check(
+    "one mistake is one sentence, whatever token it is on",
+    detailOf("B01") === detailOf("B09") && detailOf("B01") === detailOf("B10") && detailOf("A2") === detailOf("F#3"),
+    detailOf("B10")?.slice(0, 60),
+  );
+  check("while a dropped octave stays its own mistake", detailOf("A16") !== detailOf("B09") && /never 'A2\/8\. A16'/.test(detailOf("A16") ?? ""), detailOf("A16")?.slice(0, 60));
+  // ONE MISTAKE, ONE ASK. A bar holding a refused token cannot sum to the meter, and the reviewer
+  // hands a player two asks per part: reporting both spent the pair on one mistake.
+  const oneAsk = parsePhrase("B01 C4/4 C4/4 C4/4", M44).errors;
+  check("a bar with a refused token is not also charged with the sum it cannot make", oneAsk.length === 1, oneAsk.map((e) => e.detail.slice(0, 40)));
+  check("while a bar that parses and is short still is", parsePhrase("C4/4 C4/4", M44).errors.some((e) => /lasts/.test(e.detail)));
 
   // ---- a bar may turn its harmony over ----
   const half = { bpm: 120, meter: M44, chords: ["C", "Am F", "G"], parts: [] as Score["parts"] } as unknown as Score;
