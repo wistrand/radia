@@ -14,9 +14,10 @@ update when the competitive landscape or evidence base changes.
 ## Contents
 - Thesis
 - Evidence (stated carefully)
-  - Field evidence: two 2026 incidents
+  - Field evidence: two 2026 incidents and a field report
 - Prior art and the gap
   - The lineage, and what killed each generation
+  - The agent-native work ledgers (Beads, Gastown, Striatum, Network-AI)
   - The routing incumbents that won (NATS, RabbitMQ, Kafka, JMS)
   - The Postgres-native contemporaries (DBOS, Marten/Wolverine)
   - The durable-execution incumbent (Temporal)
@@ -48,12 +49,17 @@ two cells and offer composition: their activities can be Radia participants. Sec
 different question, and the answer is that when the model writes the plan the routing decision
 moves inside the model where nobody can inspect or deny it; grants and labels move it back out.
 An agent developer wants to know what they write: a handler and the pattern it claims, with the
-lease, heartbeat and idempotency supplied.
+lease, heartbeat and idempotency supplied. Someone who already tried plan documents in a git repo
+asks whether coordination has to live in the build tree: it does not, and the event chain keeps the
+history that leaving the repo would otherwise cost.
 
 What not to say: anything durability-first, which invites the Temporal comparison and loses it;
 "blackboard architecture", which is correct and costs the room; "like Linda or JavaSpaces", true
 lineage and the wrong signal, since those are remembered for not catching on; cost-aware
 scheduling, which is unbuilt.
+
+The blackboard rule has one exception: in a room that knows the term, the three components below
+are the fastest way to say what a shared file is missing.
 
 Cost-aware admission control used to appear in this sentence and has been removed from every
 differentiator in this file. It is unbuilt (`effective_priority` is hardcoded `0` until the M3
@@ -84,7 +90,7 @@ before someone else does: **two papers, neither run on Radia.**
 internal evidence; until one of them runs, the differentiator rests on other people's experiments on
 other people's systems.
 
-### Field evidence: two 2026 incidents
+### Field evidence: two 2026 incidents and a field report
 
 **Status: VERIFIED (2026-08-30).** The Hugging Face rows come from OpenAI's own 38-page technical
 report (dated 2026-08-26, read locally), cross-read against Hugging Face's technical timeline and
@@ -187,6 +193,14 @@ mechanism, and these rows break under pressure:
   the two compose: a reviewer decides whether an action is sane, a grant decides whether the
   principal may take it at all, and only the second survives the reviewer being wrong.
 
+A field report, not an incident (2026-09-09). Thoughtworks put 10 engineers in a room for four days
+on an airline IROps system, and their agents coordinated through the repository unasked: progress
+marked in plan documents, a dependency picked up when another agent's work appeared
+([An Accidental Blackboard](https://martinfowler.com/articles/exploring-gen-ai/an-accidental-blackboard.html),
+2026-09). It is H6 with no security dimension, so it can be cited where an intrusion is the wrong
+register. It is not measured or repeatable, the author says as much, and the commit rate that made
+the coordination visible broke the build. Cite it for the disposition, never for a rate.
+
 **The sibling incident is where the concrete asks are.** A second swarm of the same fleet used a
 dormant German wiki as a message board, about 18,000 posts from 3,700 self-chosen names over six
 weeks ([collusion.wiki](https://collusion.wiki/)). The coordination shape is this project's thesis
@@ -229,10 +243,27 @@ false the moment somebody fills them.
 
 ### The lineage, and what killed each generation
 
-Two ancestries meet here, and neither is cited casually: the coordination verbs come from the
-tuple-space line, the capability half from OSGi's service registry. Both are thirty-year-old ideas
-with long production records and well-documented failure modes, and the failure modes are the
-argument.
+Three ancestries meet here, and none is cited casually: the SHAPE comes from the blackboard line,
+the coordination verbs from the tuple-space line, the capability half from OSGi's service registry.
+All are thirty-year-old ideas with long production records and well-documented failure modes, and
+the failure modes are the argument.
+
+**The blackboard line (Hearsay-II, 1971 to 1976 → BB1, GBB).** The architecture this design keeps
+being called, and the one ancestor whose autopsy its own architects wrote. Corkill's definition is
+three components with no substitutes: knowledge sources that are independent black boxes, the
+blackboard, and a control component separate from them that ranks what runs next. His exclusion is
+the line to quote at anything calling a shared file a blackboard, since it was already happening in
+1991: "subsystems that communicate using a global database" are not one. Two of his characteristics
+are built here under other names. Event-based activation is the `interest` registry ("each KS
+informs the blackboard system about the kind of events in which it is interested"), and positioning
+metrics ("a specialist should not have to scan the entire blackboard") is the per-kind indexing
+contract, which is the tuple-space survey's finding below, reached thirty years earlier. The third
+component is empty until M3 ([design-scheduler.md](design-scheduler.md)). What killed the line:
+Erman's conjecture that once an application is understood it can be rebuilt without the blackboard
+machinery, which is how Spring beat OSGi, and Corkill's own root cause, that every application had
+to be built from scratch INCLUDING the machinery. The second is this project's adoption thesis with
+a citation attached. Source:
+[Corkill, AI Expert 6(9), 1991](https://mas.cs.umass.edu/Documents/Corkill/ai-expert.pdf).
 
 **The tuple-space line (Linda, 1985 → JavaSpaces → TSpaces, GigaSpaces, Klaim, Tupleware).**
 Buravlev, De Nicola and Mezzina's survey (*Tuple Spaces Implementations and Their Efficiency*,
@@ -362,6 +393,14 @@ are in the same medium and joinable along lineage, or they are not"; a wager sta
 deserves a falsifier of the same kind. Two observations would do it: **a second implementer who
 builds a routing table anyway**, and **an application that needs a fifth entry on the list below.**
 
+**The first one fired in 2026, on a workload this design does not target.** Striatum declares lanes
+in a workflow file and freezes them per run, Gastown puts a model in the coordinator seat, Beads
+routes by dependency graph plus assignee (the section below). Three implementers, three routing
+tables, and two of them have adoption this project does not. The scope limit: all three coordinate
+homogeneous coding agents in ONE repository, where the decomposition is known at plan time, which is
+the case content routing is worst placed to win. Recorded as fired-with-scope rather than held for a
+cleaner instance.
+
 That list is the closest thing to relevant evidence this project has, and it points the wrong way.
 [CLAUDE.md](../CLAUDE.md)'s "discover, don't hardcode" corollary records four hardcoding failures
 that "all bit the chat example": a client branch encoding a decision that should have been delegated
@@ -374,6 +413,37 @@ to carry its own.
 And nothing forbids orchestration ON the space. The pipeline example's planner already is one.
 OSGi's own history suggests that is not a betrayal of the model but the thing that makes it
 survivable for people who cannot love it raw.
+
+### The agent-native work ledgers (Beads, Gastown, Striatum, Network-AI)
+
+Added 2026-09-09. The family with the ADOPTION, and the one the convergent contemporaries above do
+not represent: tools shipped in 2026 to coordinate coding agents in a repository, installable in one
+command. Figures are each project's own, read once on 2026-09-09 and not independently verified.
+
+| System     | Shared state                     | Claim                              | Authorization                                 | Routing                        | Reach                     |
+|------------|----------------------------------|------------------------------------|-----------------------------------------------|--------------------------------|---------------------------|
+| Beads      | Dolt, JSONL export               | `--claim`, no lease or expiry      | contributor vs. maintainer, from git identity | dependency graph plus assignee | Go, MIT, ~27k stars       |
+| Gastown    | git worktrees plus Beads ledgers | on your hook you run it; watchdogs | worktree isolation, not grants                | a model (the Mayor) decides    | Go, MIT, ~18k stars       |
+| Striatum   | Postgres daemon, append-only     | leases, claims, verdicts           | two roles: AI operator, human                 | lanes frozen per run           | Go, Apache-2.0, ~5 stars  |
+| Network-AI | in-process state store           | propose, validate, commit          | signed tokens with scopes                     | not content matching           | TS, 12 framework adapters |
+
+Sources: [Beads](https://github.com/gastownhall/beads),
+[Gastown](https://github.com/gastownhall/gastown),
+[Striatum](https://github.com/halbritt/striatum) and its
+[Gastown comparison](https://github.com/halbritt/striatum/blob/main/docs/records/_frozen/research/GASTOWN_COMPARISON.md),
+[Network-AI](https://github.com/2FastLabs/agent-squad/discussions/436). Beads documents no lease,
+timeout or fence anywhere; what it has instead is `bd stale`, a report of issues nobody has touched
+lately, which is a human noticing rather than a claim that expires.
+
+**Both cells stand, and Striatum narrowed the machinery around them.** It arrived independently at a
+Postgres daemon owning authoritative state, an append-only event log chained by SHA-256, leases, and
+the rule that the coordinator is deterministic and never a model, which its own Gastown comparison
+calls its central divergence. Those are convergent, not distinguishing, so drop them from any
+differentiator list. What it does not have is routing a policy can refuse (a lane is frozen at plan
+time) or authorization per record (two roles). Gastown's Mayor is this file's security argument
+built at scale: the model writes the plan, so the routing decision sits where nobody can deny it.
+One gap runs the other way, since Network-AI ships the per-agent budgets deferred in
+[design-auth.md](design-auth.md).
 
 ### The routing incumbents that won (NATS, RabbitMQ, Kafka, JMS)
 

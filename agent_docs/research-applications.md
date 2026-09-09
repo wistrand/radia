@@ -308,7 +308,13 @@ Note that the first item outranks the tamper-evident log, which is the intuitive
    precedent here is the chat's `check` kind, a verdict written by a runner the session cannot
    impersonate, but that is one designated checker on one attempt rather than N independent
    reproductions. A `confirms` edge plus a projection counting DISTINCT confirming principals is an
-   extension-tier convention and needs no runtime change.
+   extension-tier convention and needs no runtime change. A second, unrelated setting reports the
+   failure this prevents (2026-09-09): a team running long-horizon analysis through a shared document
+   found that one wrong result "continues to be treated as a correct fact until it has been
+   decisively eradicated", pollutes every later analysis, reaches the agents' own memory files, and
+   that "the initial error is weighted heavier than the correction"
+   ([HN 49579482](https://news.ycombinator.com/item?id=49579482)). Successors make the correction
+   available without making a model prefer it, so the fix is corroboration, not versioning.
 
 Items 1–3 and 7–8 are ordinary work against built machinery. Only 4 is milestone-gated; 5 is now
 built for the threat that matters here and milestone-gated only for the stronger one.
