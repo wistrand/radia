@@ -310,6 +310,13 @@
       approach. It does not establish that Radia outperforms the alternatives above.
     </p>
     <p>
+      Blackboard is an old term with a narrow meaning: independent workers, the shared store they
+      read and write, and something separate from the workers deciding which one runs next
+      (<a href="https://mas.cs.umass.edu/Documents/Corkill/ai-expert.pdf">Corkill, 1991</a>). A
+      markdown file that several agents edit has the first two parts. So does Radia. The third part
+      here is the scheduler, which is designed and not built.
+    </p>
+    <p>
       Salemi and colleagues
       (<a href="https://arxiv.org/abs/2510.01285">arXiv:2510.01285</a>, 2025) built a system where a
       coordinating agent posts requests to a shared board and other agents volunteer for the ones
@@ -321,6 +328,14 @@
     <p>
       Han and Zhang the same year (bMAS) report competitive results at lower token cost, beating both
       single-agent prompting and fixed multi-agent setups.
+    </p>
+    <p>
+      A field report, not a study.
+      <a href="https://martinfowler.com/articles/exploring-gen-ai/an-accidental-blackboard.html">Thoughtworks
+      put ten engineers in a room for four days</a>, and their agents started coordinating through
+      the git repository without being asked, marking progress in plan documents and picking up work
+      when another agent's changes appeared. It broke their build: the agents could see each other
+      only while everyone committed constantly. The team says it may not reproduce.
     </p>
     <p>
       Both studies use their own systems and workloads. Radia's benchmark suite measures storage

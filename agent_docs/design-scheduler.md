@@ -4,11 +4,25 @@ Spec and rationale for the optional cost-aware admission scheduler. Origin: outl
 Not yet implemented (M3; see [plan-milestones.md](plan-milestones.md)).
 
 ## Contents
+- Prior art: the third component of a blackboard system
 - Invariants
 - Enforcement model
 - Atomic admission-to-claim
 - Server-computed priority
 - Candidate generation
+
+## Prior art: the third component of a blackboard system
+
+A blackboard system is knowledge sources, the blackboard, and a control component SEPARATE from the
+knowledge sources. That third one ranks pending activations without holding a knowledge source's
+expertise, since holding it would destroy their independence, so it asks each triggered one for an
+estimate instead: "If I am executed, I'll generate contributions of this type, with these qualities,
+while expending these resources"
+([Corkill 1991](https://mas.cs.umass.edu/Documents/Corkill/ai-expert.pdf)). Same shape here,
+different trust model: his knowledge sources are cooperative, so estimates are scheduler inputs,
+where principals here are mutually untrusting, which is why the same numbers are claims and
+`effective_priority` is server-computed. Until this is built the space has two of the three
+components ([research-positioning.md](research-positioning.md) lineage).
 
 ## Invariants
 

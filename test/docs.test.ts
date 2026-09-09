@@ -168,7 +168,9 @@ Deno.test("docs: the site reaches no external host it has not declared", () => {
   // third-party dependency should be a decision somebody makes rather than one that arrives in a
   // paste. Google Fonts was dropped 2026-09-03 (every visitor's IP reached Google for a face the
   // system stack already covers); adding a host means adding it here.
-  const allowed = ["github.com", "arxiv.org", "radia.sh"];
+  // The two added 2026-09-09 are citations on why.html, both plain links a reader follows rather
+  // than assets the page loads: the Corkill paper and the Thoughtworks field report.
+  const allowed = ["github.com", "arxiv.org", "radia.sh", "mas.cs.umass.edu", "martinfowler.com"];
   for (const p of pages) {
     // ATTRIBUTES only. A URL inside a code sample is illustrative (`https://example.com/filing.pdf`)
     // and fetches nothing; what matters is what the browser is told to load or link to.
