@@ -314,6 +314,13 @@ that something was missing. A rule a caller can get wrong is one that will be go
   operator's narrowing and also means a power added on a later run reaches nobody already admitted:
   `--observe` added to a running app granted it to new sign-ins only. Anything meant for EVERYONE
   enumerates `enrolledPrincipals` instead; the sweep answers a different question.
+- **A PORT may not declare an option its implementation drops: `InspectionHost.queryEnvelopes`
+  named `kind?: string` where `Space.queryEnvelopes` takes `kinds?: string[]`.** The key was
+  silently ignored, and since it NARROWS, dropping it WIDENS: measured at 3 envelopes returned for
+  `{kind: "alpha"}` in a two-kind space where `{kinds: ["alpha"]}` returned 1. Nobody had passed it
+  yet, which is why nothing caught it. The type now matches the implementation, so a `kind` key is a
+  compile error rather than a wider read (plan-bounded-reads.md, "the sibling disease").
+
 - **`parentIds` is part of the request an idempotency key dedupes, so lineage decides whether a
   racer REPLAYS or CONFLICTS.** Same key, same body, a different parent list is
   `idempotency_conflict`, not a replay. The song producer's `draft:<song>:<round>` exists so two

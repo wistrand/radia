@@ -31,6 +31,16 @@ That is not a defect to fix. An event log of attempts would be unbounded, caller
 mostly noise. It is a statement about where the evidence has to come from, and the four sessions
 sort cleanly by it:
 
+AMENDED 2026-09-11: the finding stands, and one of its consequences did not have to. A claim cannot
+leave a RECORD, but it can answer for itself in the response, which costs no storage and reaches the
+agent while it can still act. `explain: true` on a take (`explainTake`, `src/core/inspection.ts`)
+gives an empty claim the notes `query` already had, plus what only a claim can say: a
+`claimable:false` kind no take will ever win, what the caller's grant narrowed, and whether records
+of that kind are available at all. The `$in` row below is the finding it closes, and closes at the
+source: the model is told, not the reviewer. The other two request-stream rows are unaffected,
+because they are about a call that was refused and a call that was never made, which is why
+`--trace` is not replaced by this.
+
 | Finding | In the space | In the request stream | In the model's prose |
 |-----------------------------------------------|---|---|---|
 | answer written as a put, then a bare ack       | yes | | |

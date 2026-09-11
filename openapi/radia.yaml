@@ -345,14 +345,16 @@ paths:
                 leaseSeconds: { type: number }
                 allowTaint: { type: array, items: { type: string }, description: "the classification labels a candidate may carry and still be claimed (file, net, foreign). An ALLOWLIST, so a label added later bars the claim rather than being silently admitted. [] accepts only unclassified records and is the strictest barrier, NOT the absence of one; omit the field for no barrier. Intersected with whatever the caller's grants impose." }
                 requireUntainted: { type: boolean, description: "deprecated spelling of allowTaint: []" }
+                explain: { type: boolean, description: "ask why this claim answered what it did. OPT-IN, because a diagnosis costs a read on a miss and a worker loop issues an empty claim per pattern per second. It CHANGES THE SHAPE of an empty answer from null to {record: null, explain}, since null has nowhere to carry a note; a caller that does not ask is byte-identical to before. Notes cover the kind (undeclared, or claimable:false so a take can never win), the match (undeclared paths, a scalar predicate on an array path), what the caller's GRANT narrowed, and on a miss whether records of that kind are available at all." }
       responses:
         "200":
-          description: "{record, lease} or null"
+          description: "{record, lease}, or null; with explain:true, {record, lease, explain?} or {record: null, explain?}"
           content:
             application/json:
               schema:
                 oneOf:
                   - { $ref: "#/components/schemas/TakeResult" }
+                  - { $ref: "#/components/schemas/TakeMiss" }
                   - { type: "null" }
         "400": { $ref: "#/components/responses/Problem" }
 
@@ -2140,6 +2142,26 @@ components:
       properties:
         record: { $ref: "#/components/schemas/Record" }
         lease: { $ref: "#/components/schemas/Lease" }
+        explain:
+          type: array
+          items: { type: string }
+          description: >
+            One note per trap this claim walked into. Present only when `explain: true` was asked for
+            AND there was something to say. On a HIT the notes are about the pattern and cost no
+            read: the claim that succeeds with `{tags: ["image"]}` found a one-element list and would
+            have missed the same work tagged `["image","urgent"]`.
+
+    TakeMiss:
+      description: >
+        An empty claim that was asked to explain itself. Returned INSTEAD of `null`, and only for a
+        caller that sent `explain: true`.
+      x-stability: stable
+      type: object
+      properties:
+        record: { type: "null" }
+        explain:
+          type: array
+          items: { type: string }
 
     SettleResult:
       description: nack/release outcome. lease_lost is a non-error status.

@@ -30,6 +30,11 @@ export interface LiveInterest {
   match?: Record<string, unknown>;
 }
 
+/** How many `available` envelopes the deferred check samples. A PAGE, and the note says "at least"
+ *  when it fills: the question is "is any of this waiting on a clock", which a sample answers, and
+ *  a scan of every available record on a busy space is not a price a diagnostic may charge. */
+const DEFERRED_SAMPLE = 200;
+
 /** Does this condition address the ELEMENTS of an array path? `$exists` counts: it asks about the
  *  field, not its contents. A bare array value does not: `{tags: ["a"]}` is whole-list equality,
  *  which is legal and almost never what the caller meant. */
@@ -70,7 +75,11 @@ export interface InspectionHost {
   staleSeconds: number;
   queryEnvelopes(opts: {
     state?: string;
-    kind?: string;
+    /** Kinds to keep. PLURAL, because that is what `Space.queryEnvelopes` accepts: this port
+     *  declared `kind?: string` for months and the implementation dropped it silently, which is the
+     *  widening direction (a filter that narrows, gone). Measured: `{kind: "alpha"}` returned all
+     *  three envelopes of a two-kind space where `{kinds: ["alpha"]}` returned one. */
+    kinds?: string[];
     expired?: boolean;
     staleSeconds?: number;
     excludeKinds?: string[];
@@ -153,28 +162,167 @@ export function explainQuery(
         "forever is normal rather than stuck work.",
     );
   }
-  if (def && pattern.match) {
-    const declared = new Set(def.indexedPaths.map((p) => p.path));
-    const unindexed = Object.keys(pattern.match).filter((k) => !k.startsWith("$") && !declared.has(k));
-    if (unindexed.length > 0) {
-      notes.push(
-        `match names ${unindexed.join(", ")}, which ${unindexed.length === 1 ? "is" : "are"} not a ` +
-          `declared indexed path of '${pattern.kind}' (declared: ${[...declared].sort().join(", ") || "(none)"}).`,
-      );
-    }
-    // A scalar predicate on an ARRAY path answers empty, and the near miss that DOES answer is
-    // worse: `{tags: ["image"]}` is whole-list equality, so it found a one-tag record and would
-    // have missed the same work tagged ["image","urgent"]. Both were observed in one session, on
-    // the first tag-routed claim between two harnesses.
-    const arrays = new Set(def.indexedPaths.filter((p) => p.type === "array").map((p) => p.path));
-    const flat = Object.keys(pattern.match).filter((k) => arrays.has(k) && !arrayPredicate((pattern.match as Record<string, unknown>)[k]));
-    if (flat.length > 0) {
-      notes.push(
-        `${flat.join(", ")} ${flat.length === 1 ? "is" : "are"} declared type array and matched with a ` +
-          `scalar predicate: a scalar never distributes over elements, and $in compares the WHOLE ` +
-          `array rather than testing membership. Use {$any: …} for "contains", {$each: …} for "all of".`,
-      );
-    }
+  if (def && pattern.match) notes.push(...matchNotes(def, pattern.kind, pattern.match));
+  return notes;
+}
+
+/**
+ * What a MATCH says about a kind, independent of what the read returned.
+ *
+ * Shared by `explainQuery` and `explainTake` rather than written twice: the array note below is the
+ * one that fixed a real session (agent_docs/research-agent-sessions.md, "a claim that matched
+ * nothing looks exactly like an empty queue"), and it was reachable only from `query` for two
+ * weeks while the bug it describes happened on a CLAIM.
+ */
+function matchNotes(def: KindDef, kind: string, match: Record<string, unknown>): string[] {
+  const notes: string[] = [];
+  const declared = new Set(def.indexedPaths.map((p) => p.path));
+  const unindexed = Object.keys(match).filter((k) => !k.startsWith("$") && !declared.has(k));
+  if (unindexed.length > 0) {
+    notes.push(
+      `match names ${unindexed.join(", ")}, which ${unindexed.length === 1 ? "is" : "are"} not a ` +
+        `declared indexed path of '${kind}' (declared: ${[...declared].sort().join(", ") || "(none)"}).`,
+    );
+  }
+  // A scalar predicate on an ARRAY path answers empty, and the near miss that DOES answer is
+  // worse: `{tags: ["image"]}` is whole-list equality, so it found a one-tag record and would
+  // have missed the same work tagged ["image","urgent"]. Both were observed in one session, on
+  // the first tag-routed claim between two harnesses.
+  const arrays = new Set(def.indexedPaths.filter((p) => p.type === "array").map((p) => p.path));
+  const flat = Object.keys(match).filter((k) => arrays.has(k) && !arrayPredicate(match[k]));
+  if (flat.length > 0) {
+    notes.push(
+      `${flat.join(", ")} ${flat.length === 1 ? "is" : "are"} declared type array and matched with a ` +
+        `scalar predicate: a scalar never distributes over elements, and $in compares the WHOLE ` +
+        `array rather than testing membership. Use {$any: …} for "contains", {$each: …} for "all of".`,
+    );
+  }
+  return notes;
+}
+
+/** What the space narrowed a claim to, beyond what the caller asked for. Server-derived, so a
+ *  caller cannot tell from its own request that its grant is what emptied the answer. */
+export interface TakeNarrowing {
+  /** The grant pattern ANDed into the request, when one applied. */
+  constraint?: Record<string, unknown>;
+  /** The principals a self-scoped grant restricted the claim to (the caller and its runs), or
+   *  undefined for no author restriction. Carried as the SET rather than as a boolean so the count
+   *  below aggregates over the same records the claim could have had. */
+  createdBy?: string[];
+  /** The effective taint allowlist, when a barrier applied (the caller's, intersected with the
+   *  grant's). */
+  allowTaint?: string[];
+}
+
+/**
+ * Why a claim answered what it did.
+ *
+ * THE ASYMMETRY THIS EXISTS TO END: every note below except the counts was already written, for
+ * `query` alone, while the failure it describes happens on a CLAIM and reads as an empty queue
+ * (agent_docs/plan-agent-lab.md, "a claim that matched nothing looks exactly like an empty queue").
+ * A model asking `space_query` was told its `$in` compares the whole array; the same model asking
+ * `space_take` was told "nothing available for that pattern".
+ *
+ * COSTS A READ ONLY ON A MISS, and only for the counts: everything else is the kind registry and
+ * the pattern. So this is opt-in per call, never per poll, and a hit pays nothing.
+ */
+export async function explainTake(
+  h: InspectionHost,
+  pattern: Pattern | undefined,
+  claimed: boolean,
+  narrowed: TakeNarrowing = {},
+): Promise<string[]> {
+  const notes: string[] = [];
+  if (narrowed.constraint) {
+    notes.push(
+      `your grant ANDed ${JSON.stringify(narrowed.constraint)} into this claim, so records outside ` +
+        `it are not candidates however this pattern is written.`,
+    );
+  }
+  if (narrowed.createdBy) {
+    notes.push("a self-scoped grant restricts this claim to records you wrote; anyone else's are not candidates.");
+  }
+  if (narrowed.allowTaint) {
+    notes.push(
+      `a taint barrier of [${narrowed.allowTaint.join(", ") || "none"}] applies, so a candidate carrying ` +
+        `any other label is skipped. An allowlist NARROWS: it can only remove candidates.`,
+    );
+  }
+  if (!pattern) return notes; // a record-id take: the id is the whole selector, nothing to explain
+  const def = h.kindDef(pattern.kind);
+  if (!def) {
+    notes.push(
+      `no kind '${pattern.kind}' is declared, so this can never claim anything. Declared: ` +
+        `${h.listKinds().map((k) => k.kind).sort().join(", ") || "(none)"}.`,
+    );
+    return notes;
+  }
+  // The strongest note here, and it has no `query` equivalent: a reference kind is not slow work,
+  // it is work that will never arrive. `query` says records sitting available forever are normal;
+  // for a claim the consequence is that this call can only ever answer nothing.
+  if (!isClaimable(def)) {
+    notes.push(
+      `kind '${pattern.kind}' is declared claimable:false (reference data), so a take can NEVER ` +
+        `return one however long you poll. Read it with query or read_one instead.`,
+    );
+    return notes;
+  }
+  if (pattern.match) notes.push(...matchNotes(def, pattern.kind, pattern.match));
+  if (claimed) return notes; // a hit pays for no reads: the notes above are about the pattern
+
+  // IS THERE WORK HERE AT ALL? This is the note that separates "my pattern is wrong" from "the
+  // queue is empty", which is the whole reason an empty claim is hard to debug. One aggregate,
+  // never a scan.
+  //
+  // WITHHELD UNDER A PATTERN-SCOPED GRANT, deliberately: `stats` aggregates over the SQL
+  // pre-filter, so counting a kind this caller reaches only by grant pattern would report records
+  // it may not have (`StatsScope.patternScoped` says the same thing for the ops plane). The
+  // narrowing note above already told it what happened.
+  if (narrowed.constraint) return notes;
+  const scope: StatsScope = { kinds: [pattern.kind], ...(narrowed.createdBy ? { createdBy: narrowed.createdBy } : {}) };
+  const counts = (await h.stats(scope)).filter((c) => c.kind === pattern.kind && c.count > 0);
+  if (counts.length === 0) {
+    notes.push(`kind '${pattern.kind}' holds no records at all, so nothing was missed by this pattern.`);
+    return notes;
+  }
+  const held = `kind '${pattern.kind}' holds ${counts.map((c) => `${c.count} ${c.state}`).join(", ")}.`;
+  const available = counts.find((c) => c.state === "available")?.count ?? 0;
+  if (available === 0) {
+    notes.push(`${held} Nothing is available to claim, so this is an empty queue rather than a pattern problem.`);
+    return notes;
+  }
+
+  // `available` IS A STATE, NOT A PROMISE OF CLAIMABILITY: a record deferred by `available_at` sits
+  // in it until the space's clock passes (a bidding window is exactly this, design-marketplace.md,
+  // "available, and not yet claimable: not the same thing"). So the split is measured BEFORE the
+  // sentence is written. Reporting the state count alone called a closed auction a pattern bug.
+  //
+  // SAMPLED, and the wording says so past the cap. The rows come back ordered by `available_at`
+  // (the port states it), so a full sample is the EARLIEST windows and a deferred record can sit
+  // behind it; that case is the one where the note matters least, since the records in front of it
+  // are claimable work this pattern missed.
+  const now = await h.now();
+  const rows = await h.queryEnvelopes({ state: "available", kinds: [pattern.kind], limit: DEFERRED_SAMPLE, scope });
+  const deferred = rows.filter((r) => r.envelope.availableAt > now);
+  const soonest = deferred.map((d) => d.envelope.availableAt).sort()[0];
+  const sampled = rows.length < available ? ` (of ${rows.length} sampled)` : "";
+  if (deferred.length === rows.length && rows.length >= available) {
+    notes.push(
+      `${held} ALL ${available} are DEFERRED by available_at and none is a candidate yet; the ` +
+        `soonest becomes claimable at ${soonest}. This is a window that has not opened, not a ` +
+        `pattern problem.`,
+    );
+    return notes;
+  }
+  notes.push(
+    `${held} Records ARE available and this pattern claimed none of them, so read the notes above ` +
+      `as a pattern problem rather than an empty queue.`,
+  );
+  if (deferred.length > 0) {
+    notes.push(
+      `${deferred.length} of them${sampled} are DEFERRED by available_at and are not candidates ` +
+        `yet; the soonest becomes claimable at ${soonest}. The rest are claimable now.`,
+    );
   }
   return notes;
 }

@@ -143,7 +143,7 @@ Coordinate
   query <kind> [--match <json>] [--order <json>] [--limit <n>] [--oldest] [--after <id>]
                                       newest first; a full page says so and prints the next cursor
   read-one <kind> [--match <json>] [--order <json>]
-  take <kind> [--match <json>] [--lease <seconds>] [--untainted | --allow-taint <l,l>]
+  take <kind> [--match <json>] [--lease <seconds>] [--untainted | --allow-taint <l,l>] [--explain]
   ack <lease-json> [--result-kind <k> --result <json>] [--idempotency-key <k>]
   nack <lease-json> [--backoff <seconds>]
   release <lease-json>
@@ -1935,22 +1935,33 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
 
     case "take": {
       const [kind] = positional(argv, 1);
-      if (!kind) return usage("take <kind> [--lease <seconds>]");
-      const claimed = await client.take({ pattern: pattern(kind, argv) }, {
+      if (!kind) return usage("take <kind> [--lease <seconds>] [--explain]");
+      // `--explain` asks the space WHY, which is the question "(nothing available)" invites and
+      // cannot answer. Off by default: a diagnosis costs a read on a miss, and this verb is what
+      // shell loops poll with.
+      const explain = has(argv, "--explain");
+      const opts = {
         leaseSeconds: flag(argv, "--lease") ? Number(flag(argv, "--lease")) : undefined,
         // `--untainted` is the empty allowlist; `--allow-taint file,net` states one.
         allowTaint: has(argv, "--untainted") ? [] : (flag(argv, "--allow-taint")?.split(",").map((t) => t.trim()).filter(Boolean)),
-      });
+      };
+      const sel = { pattern: pattern(kind, argv) };
+      const report = explain ? await client.takeReport(sel, opts) : { result: await client.take(sel, opts), explain: undefined };
+      const claimed = report.result;
       if (!claimed) {
         // Nothing claimable is a normal outcome, not a failure, so exit 0 and let scripts loop.
-        if (ctx.json) console.log("null");
-        else console.log("(nothing available)");
+        if (ctx.json) console.log(JSON.stringify(report.explain ? { record: null, explain: report.explain } : null));
+        else {
+          console.log("(nothing available)");
+          for (const n of report.explain ?? []) console.log(`note: ${n}`);
+        }
         return 0;
       }
-      return out(ctx, claimed, () =>
+      return out(ctx, report.explain ? { ...claimed, explain: report.explain } : claimed, () =>
         `claimed ${claimed.record.id} (${claimed.record.kind}) until ${claimed.lease.expiresAt}\n` +
         `body:  ${JSON.stringify(claimed.record.body)}\n` +
-        `lease: ${JSON.stringify(claimed.lease)}`);
+        `lease: ${JSON.stringify(claimed.lease)}` +
+        (report.explain ?? []).map((n) => `\nnote: ${n}`).join(""));
     }
 
     case "ack": {

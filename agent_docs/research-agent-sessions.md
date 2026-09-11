@@ -118,7 +118,9 @@ reading the rate above should know before treating it as homogeneous.
 which matched only because the list had exactly one element, since that is whole-list equality.
 `$in` compares the WHOLE array. Fixed in the `MATCH` description and as an `explain` note
 (`src/core/inspection.ts`); the empty answer itself stays the contract
-(`test/conformance/suites/matching.ts`).
+(`test/conformance/suites/matching.ts`). The note was reachable from `query` alone until
+2026-09-11, on a finding whose whole point is that it happened on a CLAIM: `take` now carries the
+same `explain`, so the model that wrote this pattern is the one told about it.
 
 **Settled work is reported as available.** "Radia has 3 available tasks" twice, on a space where two
 of the three had been acked. `space_query` cannot see envelope state and the body carries no status
