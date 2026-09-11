@@ -1,8 +1,14 @@
 # market
 
-Five scripted bidders compete for jobs none of them was assigned. There is no orchestrator, no
-routing table and no model: a buyer puts work out to bid, whoever wants it bids, and the buyer
-picks by a policy the space knows nothing about.
+Five scripted bidders compete for jobs none of them was assigned. There is no auctioneer role, no
+routing table and no model: a buyer puts work out to bid, whoever wants it bids, the buyer picks by
+a policy the space knows nothing about, and the winner claims its own prize.
+
+`market.ts` is one process, and that is a harness rather than a topology. Each bidder holds its own
+credential and its own grants, `requesterGrants` self-scopes `request` so no principal can award
+another's auction, and nothing this process keeps in memory decides anything: the buyer's tie-break
+reads its awards back with `winCounts`, and a bidder's own count is the tasks it claimed itself.
+Five bidder processes on five machines would write the same records.
 
 ```bash
 radia dev --db &

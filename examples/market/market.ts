@@ -1,4 +1,4 @@
-// A market of scripted bidders: no models, no orchestrator, a different winner most runs.
+// A market of scripted bidders: no models, no auctioneer, a different winner most runs.
 //
 //   deno task test:market            # a whole market against a space this spawns
 //   deno run -A examples/market/market.ts --url … --rounds 8
@@ -8,6 +8,14 @@
 // without an arbiter: five bidders with different pricing strategies compete for jobs they can all
 // do, the requester picks by its own private policy, and who wins is not knowable in advance
 // because each strategy reacts to what it has already won.
+//
+// WHAT THIS FILE IS, AND IS NOT. There is no auctioneer IN THE SPACE: `requesterGrants` self-scopes
+// `request`, so no principal can award another's auction, and every bidder holds its own credential
+// and its own grants. This file is still ONE PROCESS sequencing the rounds and calling each bidder
+// in turn, which is a harness rather than a topology. So nothing kept in this process is allowed to
+// DECIDE anything: the requester's tie-break reads the awards back (`winCounts`), and a bidder's
+// own count comes from the tasks it claimed with its own credential. A shared mutable map fed both
+// sides here once, which is the one thing five separate bidder processes could not have reproduced.
 //
 // Nothing here needs a model. The strategies are three lines each, and that is the point: the
 // interesting behaviour is the market, not the bidder.
@@ -61,6 +69,24 @@ export const STRATEGIES: Strategy[] = [
   { name: "burst", price: (job, won) => (won < 2 ? job.size * 3 : null) },
 ];
 
+/**
+ * How many auctions each bidder has already won, read from this requester's own awarded tasks.
+ *
+ * `assignee` is indexed and the `task` grant is scoped `createdBy: self`, so this is one buyer's
+ * award history and nobody else's. Exhaustive on purpose and bounded by the run: the principal is
+ * minted per market, so the set is this run's awards. A second awarder on the same space reads its
+ * own the same way, which is what a number kept in one process could never offer.
+ */
+export async function winCounts(requester: RadiaClient): Promise<Map<string, number>> {
+  const tasks = await requester.queryAll<{ assignee?: string }>({ kind: TASK });
+  const out = new Map<string, number>();
+  for (const t of tasks) {
+    const a = t.body.assignee;
+    if (a) out.set(a, (out.get(a) ?? 0) + 1);
+  }
+  return out;
+}
+
 /** The requester's policy, which the runtime knows nothing about: cheapest eligible bid wins,
  *  ties broken by who has won least, so a market that would otherwise lock up keeps moving. */
 export function cheapestFairest(won: Map<string, number>): Select {
@@ -99,14 +125,15 @@ export async function runMarket(
   const rdef = await operator.createAgentDefinition(rq, requesterGrants(rq) as { principal: string; kind: string; operations: string[] }[]);
   const requester = new RadiaClient(operator.base, { definitionToken: rdef.definitionToken });
 
-  const bidders: { strategy: Strategy; agent: string; client: RadiaClient }[] = [];
+  // `won` is each bidder's OWN tally of the prizes it claimed, not a scoreboard the requester also
+  // writes. A bidder cannot read `task` at all (`bidderGrants` issues `take` and nothing else), so
+  // claiming is the only way it learns it won, which is exactly how an independent one would.
+  const bidders: { strategy: Strategy; agent: string; client: RadiaClient; won: number }[] = [];
   for (const strategy of STRATEGIES) {
     const agent = `agent:${strategy.name}-${stamp}`;
     const d = await operator.createAgentDefinition(agent, bidderGrants(agent) as { principal: string; kind: string; operations: string[] }[]);
-    bidders.push({ strategy, agent, client: new RadiaClient(operator.base, { definitionToken: d.definitionToken }) });
+    bidders.push({ strategy, agent, client: new RadiaClient(operator.base, { definitionToken: d.definitionToken }), won: 0 });
   }
-
-  const won = new Map<string, number>();
   const report: RunReport = { rounds: o.rounds, awarded: 0, reopened: 0, wonBy: {}, spend: 0, log: [] };
   const windowMs = o.windowMs ?? 400;
   // A tiny deterministic generator, so a seeded run repeats exactly and an unseeded one does not.
@@ -123,7 +150,7 @@ export async function runMarket(
 
     const offers: string[] = [];
     for (const b of bidders) {
-      const price = b.strategy.price(job, won.get(b.agent) ?? 0);
+      const price = b.strategy.price(job, b.won);
       if (price === null) continue;
       await placeBid(b.client, id, b.agent, { price });
       offers.push(`${b.strategy.name} ${price}`);
@@ -131,7 +158,9 @@ export async function runMarket(
     await new Promise((r) => setTimeout(r, windowMs + 120));
 
     const out = await runAuction(requester, {
-      select: cheapestFairest(won),
+      // READ BACK, not remembered: the tie-break is a policy over the awards, and an awarder that
+      // holds it in memory alone cannot be restarted, replaced or joined by a second one.
+      select: cheapestFairest(await winCounts(requester)),
       work: ((request) => ({ title: `job ${request.body.topic}`, size: job.size })) as Work,
       reopenSeconds: 1,
       topic: job.topic,
@@ -139,7 +168,19 @@ export async function runMarket(
 
     if (out.status === "awarded") {
       const name = out.winner.replace(/^agent:/, "").replace(`-${stamp}`, "");
-      won.set(out.winner, (won.get(out.winner) ?? 0) + 1);
+      // THE WINNER CLAIMS ITS OWN PRIZE, under its own credential and the `{assignee: self}` take
+      // grant `bidderGrants` issues for exactly this. Nothing did before, so the one thing the
+      // award is FOR went unexercised and an unclaimed task looked the same as the no-show
+      // design-marketplace.md question 2 is about.
+      const winner = bidders.find((b) => b.agent === out.winner);
+      const prize = await winner?.client.take(
+        { pattern: { kind: TASK, match: { assignee: out.winner } } },
+        { leaseSeconds: 30 },
+      );
+      if (winner && prize) {
+        await winner.client.ack(prize.lease); // no result: the task is done, and nothing follows it
+        winner.won++;
+      }
       report.wonBy[name] = (report.wonBy[name] ?? 0) + 1;
       const price = Number(
         (await requester.queryAll<{ bidder: string; price: number }>({ kind: BID, match: { request: id } }))

@@ -2,6 +2,12 @@
 // task per word (fan-out), each linked to the job via parent_ids. Consuming the job with
 // no result record; the emitted tasks carry the work forward.
 //
+// EVERY FAN-OUT WRITE IS KEYED, and that is the whole correctness argument here. A handler that
+// returns its answer gets a keyed, fenced, parented ack for free (`LoopOptions.handle`), but a
+// fan-out has N answers and one ack, so these are ordinary `put`s that a redelivery writes twice:
+// kill this process between the puts and the ack and the job comes back, replays the whole
+// fan-out, and the space holds two tasks per word. Content-keying makes the replay a no-op.
+//
 //   deno run --allow-net --allow-env examples/planner.ts
 
 import { agentLoop } from "../../sdk/ts/loop.ts";
@@ -24,7 +30,7 @@ export function plannerLoop(client: RadiaClient, signal?: AbortSignal, log?: (m:
           kind: "pipeline_task",
           body: { op: "upper", input: words[i], jobId: job.id, index: i, total: words.length },
           parentIds: [job.id],
-        });
+        }, `pipeline_task:${job.id}:${i}`);
         if (paceMs) await sleep(paceMs);
       }
       log?.(`[planner] job ${job.id.slice(-6)} -> ${words.length} tasks`);

@@ -125,8 +125,16 @@ export async function runProducer(
         }
         const score = assemble(brief, [...phrases]);
         // KEYED ON THE ROUND, so two players completing at once write one draft between them.
+        // PARENTED ON THE PHRASES IT IS MADE OF. `song` and `round` on the body let this code find
+        // them again, but a field two records happen to share is not a derivation: without the
+        // parents, `getLineage` on the finished song reaches the draft and stops, and nothing in
+        // the space says which player's phrase became which bar.
         const draft = await client.put(
-          { kind: DRAFT, body: stamp({ song: b.song, round: b.round, key: brief.key, title: brief.title, score }) },
+          {
+            kind: DRAFT,
+            body: stamp({ song: b.song, round: b.round, key: brief.key, title: brief.title, score }),
+            parentIds: phrases.map((p) => p.id),
+          },
           `draft:${b.song}:${b.round}`,
         );
         // A DRAFT THAT DOES NOT PARSE GETS NO EAR. Nobody can hear a score the renderer refuses, so
@@ -210,6 +218,8 @@ export async function runProducer(
 
       await client.put({
         kind: NOTE,
+        // The verdicts this note reports, for the same reason the draft names its phrases.
+        parentIds: verdicts.map((v) => v.id),
         body: stamp({
           song: b.song,
           round: b.round,
@@ -235,6 +245,10 @@ export async function runProducer(
           const notes = asks.get(instrument);
           await client.put({
             kind: PART,
+            // WHAT ASKED FOR THIS REVISION. The verdicts already name their draft, so parenting on
+            // them is what joins round n+1's request to round n's piece: a player receiving this
+            // can walk up to the score that was judged, and a reader can see why a part changed.
+            parentIds: verdicts.map((v) => v.id),
             body: stamp({
               song: b.song,
               instrument,

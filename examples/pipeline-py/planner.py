@@ -2,6 +2,12 @@
 per word (fan-out), each linked to the job via parentIds. It acks the job with no result; the
 emitted tasks carry the work forward.
 
+EVERY FAN-OUT WRITE IS KEYED, and that is the whole correctness argument here. A handler that
+returns its answer gets a keyed, fenced, parented ack for free, but a fan-out has N answers and
+one ack, so these are ordinary puts that a redelivery writes twice: kill this process between the
+puts and the ack and the job comes back, replays the whole fan-out, and the space holds two tasks
+per word. Content-keying makes the replay a no-op.
+
   python3 examples/pipeline-py/planner.py
 """
 import time
@@ -17,7 +23,7 @@ def planner_loop(client, stop=None, log=print, pace=0.0):
                 "kind": "pipeline_task",
                 "body": {"op": "upper", "input": word, "jobId": job["id"], "index": i, "total": len(words)},
                 "parentIds": [job["id"]],
-            })
+            }, f"pipeline_task:{job['id']}:{i}")
             if pace:
                 time.sleep(pace)
         log(f"[planner] job {job['id'][-6:]} -> {len(words)} tasks")

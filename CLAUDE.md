@@ -202,7 +202,7 @@ failure mode is SILENT MISAUTHORIZATION: a revocation that fell off a page kept 
 a stopped run's token kept resolving after a restart. So:
 
 - **A read answers one of THREE questions, and every instance of the most repeated bug in this
-  codebase is one question answered with another's mechanism** (20 recorded incidents, 3 of them
+  codebase is one question answered with another's mechanism** (26 recorded incidents, 3 of them
   security; [agent_docs/plan-bounded-reads.md](agent_docs/plan-bounded-reads.md)):
   - **NARROW**: one current thing. Match down to a key and take the newest 1 (`readNewest`,
     `Space.newestByHash` matching one `tokenHash`). O(1), no projection, no direction question, no

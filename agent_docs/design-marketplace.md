@@ -206,6 +206,12 @@ runtime change this design would ever ask for (question 2). And an awarder reads
 write, so several requesters in one space can read each other's, which weakens sealed bidding until
 bids are sealed to the requester's key (question 7).
 
+Amended 2026-09-09, after an outside review of the examples: `examples/market/` awarded work that
+nobody ever claimed, so `bidderGrants`'s `task: take {assignee: self}` (the grant question 2 exists
+about) was issued and never exercised, and every run ended in the state that section calls "it never
+claims at all". The winner now claims and acks its prize, which is also where its own win count
+comes from: it holds no `task: query`, so claiming is the only way a bidder learns it won.
+
 1. **SETTLED (2026-09-05): the award is not a record, it is a SHAPE.** An `ack` emits one result,
    and the protocol above wanted two. It needs one: the ack emits
    `{kind: "task", body: {…work, assignee: winner, request: R}, parentIds: [request, winning_bid]}`.
