@@ -3,13 +3,15 @@
 // arrived it emits one `summary`, linked to all of them.
 //
 // THE THREE READS ARE DELIBERATELY DIFFERENT (agent_docs/plan-bounded-reads.md). Candidates come
-// from a PAGE of the NEWEST results, which is a walk and never a completeness test: this loop
-// read the OLDEST 500 for both, so past 500 results the window pinned to the first jobs and no
-// later one ever finished. The decision is an EXHAUST scoped to one `jobId` (an indexed path,
-// `kinds.ts`), and "already summarized" is a NARROW read of one record.
+// from a forward WALK that resumes where the last pass stopped, so every result is seen once and
+// no job is stranded by the window: this loop read the oldest 500 and then the newest 200, which
+// strand opposite halves of the space. The decision is an EXHAUST scoped to one `jobId` (an
+// indexed path, `kinds.ts`), and "already summarized" is a NARROW read of one record.
 //
-// COMPLETENESS COUNTS DISTINCT INDEXES, not results. Counting read a replayed fan-out as
-// complete: indexes [0,0,1] of a three-word job summarized as "A A B", word 2 missing.
+// COMPLETENESS COUNTS DISTINCT INDEXES against an arity every part agrees on, not results against
+// whichever `total` arrived first. Counting read a replayed fan-out as complete (indexes [0,0,1] of
+// a three-word job summarized as "A A B"), and comparing against a missing `total` completed a job
+// of unknown length from one result.
 //
 // The idempotency key `summary:<jobId>` makes the emit safe when two aggregators race, PROVIDED
 // they share an identity: a key is scoped to the agent behind the caller (audit Package U), so
@@ -27,14 +29,16 @@ interface ResultBody {
   output: unknown;
 }
 
-/** How many of the newest results a pass looks at to find jobs worth checking. Bounded ON
- *  PURPOSE: a job completes while its results are still among the newest, and each candidate is
- *  then re-read exhaustively before anything is decided. */
-const CANDIDATES = 200;
+/** One page of the forward walk below. Not a ceiling on anything: the walk continues until a page
+ *  comes back short, so this is how much arrives per round trip and nothing else. */
+const PAGE = 200;
 
 export async function aggregatorLoop(client: RadiaClient, signal?: AbortSignal, log?: (m: string) => void): Promise<void> {
-  // A memo, not the correctness argument: the key above and the read below are.
+  // A memo, not the correctness argument: the key above and the read below are. Seeded from the
+  // summaries that already exist, in ONE read rather than a round trip per job, so restarting on a
+  // space full of finished jobs costs a page walk instead of a request each.
   const done = new Set<string>();
+  for (const s of await client.queryAll<{ jobId: string }>({ kind: "pipeline_summary" })) done.add(s.body.jobId);
 
   const summarize = async (jobId: string) => {
     if (done.has(jobId)) return;
@@ -46,9 +50,19 @@ export async function aggregatorLoop(client: RadiaClient, signal?: AbortSignal, 
     }
     const results = await client.queryAll<ResultBody>({ kind: "pipeline_result", match: { jobId } });
     if (results.length === 0) return;
+    // HOW MANY THERE ARE IS THE JOB'S OWN CLAIM, and every result has to make the same one. A
+    // result naming no `total` claims nothing, and `size < undefined` is false, so ONE of them
+    // completed a job of unknown length; two results disagreeing is the same defect from the other
+    // side. Refuse to decide, out loud, rather than deciding on nothing.
+    const totals = new Set(results.map((r) => r.body.total));
+    const total = results[0].body.total;
+    if (totals.size !== 1 || !Number.isInteger(total)) {
+      log?.(`[aggregator] job ${jobId.slice(-6)}: ${results.length} result(s) claim totals ${JSON.stringify([...totals])}; not deciding`);
+      return;
+    }
     const byIndex = new Map<number, RadiaRecord<ResultBody>>();
     for (const r of results) if (!byIndex.has(r.body.index)) byIndex.set(r.body.index, r);
-    if (byIndex.size < results[0].body.total) return;
+    if (byIndex.size < total) return;
     const ordered = [...byIndex.keys()].sort((a, b) => a - b).map((i) => byIndex.get(i)!);
     const text = ordered.map((r) => r.body.output).join(" ");
     await client.put(
@@ -59,6 +73,21 @@ export async function aggregatorLoop(client: RadiaClient, signal?: AbortSignal, 
     log?.(`[aggregator] job ${jobId.slice(-6)} -> summary "${text}"`);
   };
 
+  // HOW FAR THIS PROCESS HAS WALKED. Every result is seen exactly once, in order, and a job is
+  // decided when the result that completes it arrives.
+  //
+  // NEITHER DIRECTION OF A FIXED PAGE WORKS HERE, and both were shipped: reading the oldest N
+  // stranded every job after the first N, and reading the newest N stranded any job whose last
+  // result had fallen out of the window (restart after a busy period, or a burst between two
+  // passes). A page is only honest as a WALK, and `{after, dir: "asc"}` is the resume the wire
+  // type names for a watermark the caller keeps (`sdk/ts/wire.ts`, `Page`). The first pass starts
+  // at the beginning, which is the catch-up; every later pass reads only what arrived.
+  let after: string | undefined;
+  // Jobs the pass below could not finish. Carried, because the watermark has already moved past
+  // the result that named them: dropping them on a transient failure is the same stranding by a
+  // different route.
+  let pending = new Set<string>();
+
   // The fact-side harness: reconcile at boot, on every wakeup, on every tick. The watch is a
   // wakeup hint; the tick is what heals a result written while the stream was re-creating itself.
   await reactorLoop(client, {
@@ -68,10 +97,26 @@ export async function aggregatorLoop(client: RadiaClient, signal?: AbortSignal, 
     log,
     pollMs: 1000,
     reconcile: async () => {
-      const recent = await client.queryNewest<ResultBody>({ kind: "pipeline_result" }, CANDIDATES);
-      const jobs = new Set<string>();
-      for (const r of recent) if (r.body.jobId) jobs.add(r.body.jobId); // standalone results have none
-      for (const jobId of jobs) await summarize(jobId);
+      const jobs = pending;
+      pending = new Set();
+      for (;;) {
+        const { records } = await client.queryPage<ResultBody>({ kind: "pipeline_result" }, PAGE, { after, dir: "asc" });
+        for (const r of records) {
+          if (r.body.jobId) jobs.add(r.body.jobId); // standalone results have none
+          after = r.id;
+        }
+        if (records.length < PAGE) break;
+      }
+      let failure: unknown;
+      for (const jobId of jobs) {
+        try {
+          await summarize(jobId);
+        } catch (e) {
+          pending.add(jobId);
+          failure ??= e;
+        }
+      }
+      if (failure) throw failure; // reported by the harness; the next pass retries `pending`
     },
   });
 }

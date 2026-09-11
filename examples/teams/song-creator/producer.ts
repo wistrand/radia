@@ -54,10 +54,24 @@ export interface Brief {
   maxRounds?: number;
 }
 
-/** Assemble one round's phrases into a score, in the brief's part order so the render is stable. */
-export function assemble(brief: Brief, phrases: RadiaRecord<{ instrument: string; phrase: string }>[]): Score {
-  const byInstrument = new Map(phrases.map((p) => [p.body.instrument, p.body.phrase]));
-  return {
+/**
+ * Assemble one round's phrases into a score, in the brief's part order so the render is stable.
+ *
+ * Returns the CONTRIBUTING records beside the score, and the draft is parented on exactly those.
+ * Parenting on the whole query instead made the draft's parents change whenever the phrase SET did,
+ * including when the score came out identical (a phrase for an instrument this piece does not have,
+ * a redelivered claim writing a second record). `parentIds` is part of the request, and a reused
+ * idempotency key with a different request is REFUSED, so that turned the round key's whole purpose
+ * (two players finishing at once write one draft between them) into a conflict the handler throws
+ * on. Derived from the same map the score is, the parents differ exactly when the score does.
+ */
+export function assemble(
+  brief: Brief,
+  phrases: RadiaRecord<{ instrument: string; phrase: string }>[],
+): { score: Score; from: RadiaRecord<{ instrument: string; phrase: string }>[] } {
+  const byInstrument = new Map(phrases.map((p) => [p.body.instrument, p]));
+  const playing = brief.parts.filter((i) => byInstrument.has(i));
+  const score: Score = {
     bpm: brief.bpm,
     meter: brief.meter,
     // CARRIED ONTO THE SCORE, so the reviewers judge against the same harmony the players were
@@ -68,8 +82,9 @@ export function assemble(brief: Brief, phrases: RadiaRecord<{ instrument: string
     // CARRIED for the same reason as the chords, one stage further on: the renderer picks a voice
     // per role, so without this a brief asking for a harp renders on the default synth stack.
     ...(brief.timbre ? { timbre: brief.timbre } : {}),
-    parts: brief.parts.filter((i) => byInstrument.has(i)).map((i) => ({ instrument: i, phrase: byInstrument.get(i)! })),
+    parts: playing.map((i) => ({ instrument: i, phrase: byInstrument.get(i)!.body.phrase })),
   };
+  return { score, from: playing.map((i) => byInstrument.get(i)!) };
 }
 
 /** Merge two blind verdicts into the next round's instructions. A player is only asked once per
@@ -123,17 +138,17 @@ export async function runProducer(
           say(`[producer] ${b.song} r${b.round}: ${have.size}/${brief.parts.length} parts in`);
           return; // ack with no result: this phrase is recorded, the round is not ready
         }
-        const score = assemble(brief, [...phrases]);
+        const { score, from } = assemble(brief, [...phrases]);
         // KEYED ON THE ROUND, so two players completing at once write one draft between them.
-        // PARENTED ON THE PHRASES IT IS MADE OF. `song` and `round` on the body let this code find
-        // them again, but a field two records happen to share is not a derivation: without the
-        // parents, `getLineage` on the finished song reaches the draft and stops, and nothing in
-        // the space says which player's phrase became which bar.
+        // PARENTED ON THE PHRASES IT IS MADE OF, which `assemble` names rather than this reading
+        // them off the query: `song` and `round` on the body let this code find them again, but a
+        // field two records happen to share is not a derivation, and without the parents
+        // `getLineage` on the finished song reaches the draft and stops.
         const draft = await client.put(
           {
             kind: DRAFT,
             body: stamp({ song: b.song, round: b.round, key: brief.key, title: brief.title, score }),
-            parentIds: phrases.map((p) => p.id),
+            parentIds: from.map((p) => p.id),
           },
           `draft:${b.song}:${b.round}`,
         );

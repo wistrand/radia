@@ -42,7 +42,7 @@ The census names symbols AS THEY WERE. `readRegistry` became `readCompletely` an
 prose is how this section briefly claimed that `readExhaustively` callers page ascending, which
 step 5 below makes impossible by construction.
 
-**Partial read of a population (12).** Tool list read an ascending page of 500 and a live session
+**Partial read of a population (13).** Tool list read an ascending page of 500 and a live session
 reported "I don't have a request_grant tool" for a tool that was published, granted and working.
 Tool list AGAIN after the `dir: "desc"` fix: 737 records for 33 tools, within 1.5x of dropping them
 again. Credential index read the oldest 5000, so at 5202 a STOPPED run's token still resolved after
@@ -56,7 +56,10 @@ census (2026-09-09), by an outside reviewer rather than by this list: `examples/
 read the oldest 500 results as both its candidate walk and its completeness test, so past 500
 results the window pinned to the first jobs and no later one ever summarized. The census swept
 `src/`, the SDK and the extensions; it never swept the examples, which is where a reader learns
-the shape.
+the shape. (27) ITS FIX WAS THE SAME BUG FACING THE OTHER WAY, caught two days later by probing
+the fix rather than by a test: the newest 200 strands any job whose last result left the window,
+which a restart after a busy period produces. Both are now one forward walk from a watermark
+(`{after, dir: "asc"}`), the only page shape that strands nothing.
 
 **Order confusion (8).** `readOne` answers with the OLDEST match, hit TWICE: the second time a newly
 enrolled machine was told it had no key while the record granting it sat one row later. Compaction
