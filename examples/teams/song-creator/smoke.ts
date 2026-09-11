@@ -19,7 +19,7 @@ import { analyse, faults } from "./analysis.ts";
 import { chordAt, parsePhrase, parseScore, type Score } from "./score.ts";
 import { drumVoiceFor, render, TIMBRE_NAMES, voiceFor } from "./synth.ts";
 import { judge } from "./checker.ts";
-import { type Brief, runProducer } from "./producer.ts";
+import { assemble, type Brief, runProducer } from "./producer.ts";
 import { historyPage } from "./history.ts";
 import { BRIEF, DRAFT, grantsFor, NOTE, PART, PHRASE, REVIEW, SONG_KINDS, VERDICT } from "./kinds.ts";
 
@@ -238,6 +238,22 @@ try {
     phrases.filter((p) => p.body.round === d.body.round).every((p) => d.runtimeMeta.parentIds.includes(p.id))
   );
   check("every draft names the phrases it was assembled from", draftParents, drafts.map((d) => d.runtimeMeta.parentIds.length));
+  // AND NOTHING ELSE, which is what keeps the round key a replay rather than a conflict: `parentIds`
+  // is part of the request, so if the parents were the whole query, a phrase that changed the SET
+  // without changing the SCORE would make the second producer's write an `idempotency_conflict`.
+  const phraseRec = (id: string, instrument: string) =>
+    ({ id, body: { instrument, phrase: "C4/4" } }) as unknown as Parameters<typeof assemble>[1][number];
+  const lead = phraseRec("p-lead", "lead");
+  const kazoo = phraseRec("p-kazoo", "kazoo"); // an instrument this brief does not have: no bar, no parent
+  const oneBrief = { ...(await operator.readOne<Brief>({ kind: BRIEF, match: { song } }))!.body, parts: ["lead"] };
+  const without = assemble(oneBrief, [lead]);
+  const withStray = assemble(oneBrief, [lead, kazoo]);
+  check(
+    "and names only those, so a phrase that changes no bar changes no parent",
+    JSON.stringify(without.from.map((p) => p.id)) === JSON.stringify(withStray.from.map((p) => p.id)) &&
+      JSON.stringify(without.score) === JSON.stringify(withStray.score),
+    withStray.from.map((p) => p.id),
+  );
   const round2Parts = await operator.queryAll<{ round: number }>({ kind: PART, match: { song } });
   const revisions = round2Parts.filter((p) => p.body.round === 2);
   const round1Verdicts = new Set(verdicts.filter((v) => v.body.round === 1).map((v) => v.id));

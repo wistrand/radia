@@ -210,7 +210,11 @@ Amended 2026-09-09, after an outside review of the examples: `examples/market/` 
 nobody ever claimed, so `bidderGrants`'s `task: take {assignee: self}` (the grant question 2 exists
 about) was issued and never exercised, and every run ended in the state that section calls "it never
 claims at all". The winner now claims and acks its prize, which is also where its own win count
-comes from: it holds no `task: query`, so claiming is the only way a bidder learns it won.
+comes from: it holds no `task: query`, so claiming is the only way a bidder learns it won. A prize
+that is NOT collected is reported (`RunReport.uncollected`) rather than left to be inferred: the
+bidder's price is a function of what it has won, so a missed claim makes every later bid wrong and
+the run reads as a strategy behaving oddly. Planting one shows it: `burst`, written to stop after
+two jobs, wins four and says nothing.
 
 1. **SETTLED (2026-09-05): the award is not a record, it is a SHAPE.** An `ack` emits one result,
    and the protocol above wanted two. It needs one: the ack emits

@@ -122,7 +122,7 @@ paths:
           description: "`{id, treeDigest, files, changed, added, removed, preview, forked}`."
   /workspace/v1/declare:
     post:
-      summary: Declare the `workspace` kind (setup; needs `kind_def:put`).
+      summary: Declare the `workspace` kind, merged over what the space carries (setup; needs `kind_def:put` and `kind_def:query`).
       responses:
         "200":
           description: "`{declared: \"workspace\"}`."
@@ -140,7 +140,7 @@ paths:
           description: "`{treeDigest: \"t1:<hex>\"}`."
   /capability/v1/declare:
     post:
-      summary: Declare the `capability` kind with its contentKey (setup).
+      summary: Declare the `capability` kind with its contentKey, merged over what the space carries (setup; needs `kind_def:put` and `kind_def:query`).
       responses:
         "200":
           description: "`{declared: \"capability\"}`."
@@ -197,7 +197,7 @@ paths:
           description: "`{tools, conflicts, unserved, complete, scanned, presence?}`."
   /presence/v1/declare:
     post:
-      summary: Declare a presence kind (no contentKey, retention 4x the TTL; setup).
+      summary: Declare a presence kind, merged over what the space carries (no contentKey, retention 4x the TTL; setup; needs `kind_def:put` and `kind_def:query`).
       requestBody:
         required: true
         content:

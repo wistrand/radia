@@ -45,7 +45,7 @@ file's own header, never here.
 
 | Path                                    | Role                                                       |
 |-----------------------------------------|------------------------------------------------------------|
-| `deno.json`                             | tasks + import map, verb-first: `dev*` runs a space, `cli` is the CLI from a checkout, `check`/`test*` verify (`test` is the aggregate; `test:quick`, `test:runtime`, `test:conformance[:pg\|:s3]`, `test:extensions`, `test:lab`, `test:chat`, `test:analysis`, `test:mud`, `test:market`, `test:teams`, `test:song[-team]`), `bench`/`profile` measure, `bump` stamps the next version, `compile`/`release`/`bundle-*` build |
+| `deno.json`                             | tasks + import map, verb-first: `dev*` runs a space, `cli` is the CLI from a checkout, `check`/`test*` verify (`test` is the aggregate; `test:quick`, `test:runtime`, `test:conformance[:pg\|:s3]`, `test:extensions`, `test:lab`, `test:pipeline`, `test:chat`, `test:analysis`, `test:mud`, `test:market`, `test:teams`, `test:song[-team]`), `bench`/`profile` measure, `bump` stamps the next version, `compile`/`release`/`bundle-*` build |
 | `src/main.ts`                           | the `radia` entry: `dev` (laptop: embedded space + console, operator credential provisioned), `serve` (the same space in deployment posture: no credential file, nothing on stdout, persistent storage required), `mcp`, else a CLI verb. `--config` is a JSON object of the same flag names; `--ext` co-hosts the extension routes at `/ext/`. [architecture-surfaces.md](agent_docs/architecture-surfaces.md) |
 | `src/surfaces/`                         | the client layer inside the binary: every way to reach a space that is not raw HTTP. Talks `/v0` through the SDK like an external client, may import an extension, and NEVER takes a value from `src/core`/`server`/`storage` (`test/layering.test.ts`). [architecture-surfaces.md](agent_docs/architecture-surfaces.md) |
 | `src/surfaces/cli.ts`                   | the CLI verbs, public `/v0` only; `radia help` is the list. `runs --for` and `team remove` are the offboarding cascade; `git-serve` and `serve-ext` are clients that happen to listen; `git-credential` is git's helper over the stored login; `login --sso` is the RFC 8252 loopback; `activity` is the console's Activity timeline in ANSI; `team up` runs a `team.json`'s members as workers that launch their harness per claim. [architecture-surfaces.md](agent_docs/architecture-surfaces.md) |
@@ -202,7 +202,7 @@ failure mode is SILENT MISAUTHORIZATION: a revocation that fell off a page kept 
 a stopped run's token kept resolving after a restart. So:
 
 - **A read answers one of THREE questions, and every instance of the most repeated bug in this
-  codebase is one question answered with another's mechanism** (26 recorded incidents, 3 of them
+  codebase is one question answered with another's mechanism** (27 recorded incidents, 3 of them
   security; [agent_docs/plan-bounded-reads.md](agent_docs/plan-bounded-reads.md)):
   - **NARROW**: one current thing. Match down to a key and take the newest 1 (`readNewest`,
     `Space.newestByHash` matching one `tokenHash`). O(1), no projection, no direction question, no

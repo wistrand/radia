@@ -314,6 +314,14 @@ that something was missing. A rule a caller can get wrong is one that will be go
   operator's narrowing and also means a power added on a later run reaches nobody already admitted:
   `--observe` added to a running app granted it to new sign-ins only. Anything meant for EVERYONE
   enumerates `enrolledPrincipals` instead; the sweep answers a different question.
+- **`parentIds` is part of the request an idempotency key dedupes, so lineage decides whether a
+  racer REPLAYS or CONFLICTS.** Same key, same body, a different parent list is
+  `idempotency_conflict`, not a replay. The song producer's `draft:<song>:<round>` exists so two
+  players finishing at once write one draft; parenting it on the whole phrase QUERY made that a
+  conflict whenever the sets differed and the score did not. Derive the parents from the same map
+  the body is (`assemble` returns `{score, from}`). Guard: `examples/teams/song-creator/smoke.ts`,
+  "names only those".
+
 - **An idempotency key must name the CONTENT it dedupes, not just the thing it belongs to.**
   `contentKey(tag, body)` (`sdk/ts/registry.ts`, `content_key` in Python) hashes the whole body so
   no field can be forgotten; the identity keys beside it (`grantKey`, `oidcIdentityKey`) key on a

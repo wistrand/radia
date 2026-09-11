@@ -2,14 +2,16 @@
 them. When every result for a job has arrived it emits one `summary`, linked to all of them.
 
 THE THREE READS ARE DELIBERATELY DIFFERENT (agent_docs/plan-bounded-reads.md). Candidates come
-from a PAGE of the NEWEST results, which is a walk and never a completeness test: this loop read
-the OLDEST 500 for both, so past 500 results the window pinned to the first jobs and no later one
-ever finished. The decision is an EXHAUST scoped to one `jobId` (an indexed path), and "already
-summarized" is a NARROW read of one record. The TS twin runs the same three reads under
-`reactorLoop`, which the Python SDK does not have yet, so this half stays a poll.
+from a forward WALK that resumes where the last pass stopped, so every result is seen once and no
+job is stranded by the window: this loop read the oldest 500 and then the newest 200, which strand
+opposite halves of the space. The decision is an EXHAUST scoped to one `jobId` (an indexed path),
+and "already summarized" is a NARROW read of one record. The TS twin runs the same three reads
+under `reactorLoop`, which the Python SDK does not have yet, so this half stays a poll.
 
-COMPLETENESS COUNTS DISTINCT INDEXES, not results. Counting read a replayed fan-out as complete:
-indexes [0,0,1] of a three-word job summarized as "A A B", word 2 missing.
+COMPLETENESS COUNTS DISTINCT INDEXES against an arity every part agrees on, not results against
+whichever `total` arrived first. Counting read a replayed fan-out as complete (indexes [0,0,1] of a
+three-word job summarized as "A A B"), and comparing against a missing `total` completed a job of
+unknown length from one result.
 
 The idempotency key `summary:<jobId>` makes the emit safe when two aggregators race, PROVIDED
 they share an identity: a key is scoped to the agent behind the caller, so two runs of one agent
@@ -21,10 +23,9 @@ import threading
 
 from common import connect
 
-# How many of the newest results a pass looks at to find jobs worth checking. Bounded ON PURPOSE:
-# a job completes while its results are still among the newest, and each candidate is then re-read
-# exhaustively before anything is decided.
-CANDIDATES = 200
+# One page of the forward walk below. Not a ceiling on anything: the walk continues until a page
+# comes back short, so this is how much arrives per round trip and nothing else.
+PAGE = 200
 
 
 def _summarize(client, job_id, done, log):
@@ -38,10 +39,19 @@ def _summarize(client, job_id, done, log):
     results = client.query_all({"kind": "pipeline_result", "match": {"jobId": job_id}})
     if not results:
         return
+    # HOW MANY THERE ARE IS THE JOB'S OWN CLAIM, and every result has to make the same one. A result
+    # naming no `total` claims nothing, and in the TS twin `size < undefined` is false, so ONE of
+    # them completed a job of unknown length; two results disagreeing is the same defect from the
+    # other side. Refuse to decide, out loud, rather than deciding on nothing.
+    totals = {r["body"].get("total") for r in results}
+    total = next(iter(totals))
+    if len(totals) != 1 or not isinstance(total, int) or isinstance(total, bool):
+        log(f"[aggregator] job {job_id[-6:]}: {len(results)} result(s) claim totals {sorted(map(repr, totals))}; not deciding")
+        return
     by_index = {}
     for r in results:
         by_index.setdefault(r["body"]["index"], r)
-    if len(by_index) < results[0]["body"]["total"]:
+    if len(by_index) < total:
         return
     ordered = [by_index[i] for i in sorted(by_index)]
     text = " ".join(str(r["body"]["output"]) for r in ordered)
@@ -55,15 +65,36 @@ def _summarize(client, job_id, done, log):
 
 def aggregator_loop(client, stop=None, log=print):
     stop = stop or threading.Event()
-    done = set()  # a memo, not the correctness argument: the key and the read above are
+    # A memo, not the correctness argument: the key and the read above are. Seeded from the
+    # summaries that already exist, in ONE read rather than a round trip per job.
+    done = {s["body"]["jobId"] for s in client.query_all({"kind": "pipeline_summary"})}
+    # HOW FAR THIS PROCESS HAS WALKED. Every result is seen exactly once, in order, and a job is
+    # decided when the result that completes it arrives. NEITHER DIRECTION OF A FIXED PAGE WORKS
+    # HERE, and both were shipped: the oldest N strands every job after the first N, the newest N
+    # strands any job whose last result fell out of the window. `after`/`dir` is the resume
+    # `query_page` documents for a watermark the caller keeps.
+    after = None
+    # Jobs a pass could not finish, carried: the watermark has already moved past the result that
+    # named them, so dropping them on a transient failure is the same stranding by another route.
+    pending = set()
     while not stop.is_set():
-        jobs = []
-        for r in client.query_newest({"kind": "pipeline_result"}, CANDIDATES):
-            job_id = r["body"].get("jobId")  # standalone task results have none
-            if job_id and job_id not in jobs:
-                jobs.append(job_id)
+        jobs = pending
+        pending = set()
+        while True:
+            records, _cursor, _scope = client.query_page({"kind": "pipeline_result"}, PAGE, after=after, dir="asc")
+            for r in records:
+                job_id = r["body"].get("jobId")  # standalone task results have none
+                if job_id:
+                    jobs.add(job_id)
+                after = r["id"]
+            if len(records) < PAGE:
+                break
         for job_id in jobs:
-            _summarize(client, job_id, done, log)
+            try:
+                _summarize(client, job_id, done, log)
+            except Exception as e:  # noqa: BLE001. Reported, and retried on the next pass.
+                pending.add(job_id)
+                log(f"[aggregator] job {job_id[-6:]}: {e}")
         stop.wait(0.2)
 
 

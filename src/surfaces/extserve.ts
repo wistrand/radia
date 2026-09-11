@@ -48,6 +48,7 @@ import { BID, type BidBody, declareMarketKinds, eligibleBids, forgedBidRefusal, 
 // Not about TEAMS, whatever the file is called: any app declaring a kind another convention has
 // already extended needs these, which is why `declareMarketKinds` imports them too.
 import { declareKind, liveKinds } from "../../extensions/ts/team.ts";
+import type { KindDef } from "../../sdk/ts/wire.ts";
 import { UsageError } from "../platform.ts";
 
 export interface ExtServeLog {
@@ -483,6 +484,30 @@ async function dispatch(
   const get = req.method === "GET" || req.method === "HEAD";
   const post = req.method === "POST";
 
+  /**
+   * Declare a convention's kind over whatever the space already carries for that name.
+   *
+   * NEEDS `kind_def: query` AS WELL AS `put`, which is a requirement these routes did not have
+   * before 2026-09-11 and the refusal below is what says so. A merge cannot be done blind, and the
+   * blind version was worse than a refusal: on a space running the teams convention it either was
+   * rejected outright or silently narrowed somebody else's kind (see the three `declare` routes).
+   */
+  const declareOver = async (def: KindDef) => {
+    const live = await liveKinds(client).catch((e) => {
+      if (e instanceof RadiaClientError && e.status === 403) {
+        throw new RadiaClientError(
+          403,
+          "forbidden",
+          `declaring '${def.kind}' needs a 'kind_def: query' grant as well as 'kind_def: put': this ` +
+            `declaration is MERGED over what the space already carries, and a blind one narrows ` +
+            `another convention's kind instead of extending it. Original refusal: ${e.message}`,
+        );
+      }
+      throw e;
+    });
+    await declareKind(client, def, live);
+  };
+
   switch (extension) {
     case "workspace": {
       if (get && rest === "workspaces") {
@@ -564,13 +589,14 @@ async function dispatch(
         return json(200, head);
       }
       if (post && rest === "declare") {
-        // Setup, not per-turn work: declaring the convention's kind needs `kind_def: put`, which
-        // an app's setup principal holds and its sessions do not. Served because the declaration
+        // Setup, not per-turn work: declaring the convention's kind needs `kind_def: put` AND
+        // `kind_def: query` (see `declareOver`), which an app's setup principal holds and its
+        // sessions do not. Served because the declaration
         // (indexed paths, no contentKey where the design says none) is the part an app in another
         // language would mis-declare, and a redeclaration that narrows is refused by the space.
         // Over what is live, for the reason capability/declare states: teams extend this one with
         // `team` too, and dropping an indexed path stops every stored grant naming it compiling.
-        await declareKind(client, WORKSPACE_KIND, await liveKinds(client));
+        await declareOver(WORKSPACE_KIND);
         return json(200, { declared: WORKSPACE_KIND.kind });
       }
       if (post && rest === "digest") {
@@ -606,7 +632,7 @@ async function dispatch(
         // locked out of any space a team had touched: `deno task demo:py` died here. `mergeKind`
         // unions the paths and adopts a live key that REFINES this one; narrowing still needs the
         // acknowledgement the runtime demands, which is not this endpoint's to give.
-        await declareKind(client, CAPABILITY_KIND, await liveKinds(client));
+        await declareOver(CAPABILITY_KIND);
         return json(200, { declared: CAPABILITY_KIND.kind });
       }
       if (post && rest === "publish") {
@@ -695,7 +721,7 @@ async function dispatch(
         // Over what is live, for the reason capability/declare states. The kind name comes from the
         // caller here, so this is the one of the three where two apps can meet on a name neither
         // build knows about.
-        await declareKind(client, def, await liveKinds(client));
+        await declareOver(def);
         return json(200, { kind: s.kind, ttlMs: s.ttlMs, refreshMs: s.refreshMs, defaultRetentionSeconds: def.defaultRetentionSeconds });
       }
       if (post && rest === "beat") {

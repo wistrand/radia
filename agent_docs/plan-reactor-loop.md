@@ -108,6 +108,15 @@ candidate walk and the completeness test, which breaks rules four and five of th
 a space holds 500 results. Naming it canonical while it broke two of its own five rules is what
 made this worth fixing.
 
+The first fix was wrong too, and the same rule caught it (2026-09-11). Turning the read around to
+the NEWEST 200 strands the mirror-image set: a job whose last result has fallen out of the window
+is never a candidate again, so a restart after a busy period, or a burst between two passes, loses
+it silently. A fixed page cannot answer "which jobs might be ready" in either direction. What can
+is a WALK that resumes: `{after: <watermark>, dir: "asc"}` until a short page, which reads the
+whole history once at boot and only new records thereafter. Rule six, implied by rule five and now
+stated: a candidate set assembled from a page is a population read wearing a walk's clothes unless
+the page moves.
+
 ## The contract test
 
 `test/loop.test.ts` (it may import `src/`), planting BOTH failure classes, because a

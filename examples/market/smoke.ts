@@ -65,6 +65,9 @@ try {
   // granted the take.
   const claimed = await operator.queryEnvelopes({ state: "consumed", kind: TASK, limit: 200 });
   check("and the winner claimed it, under its own credential", claimed.length === run.awarded, claimed.length);
+  // A prize nobody collects makes every later bid of that strategy wrong, so the run REPORTS it
+  // rather than leaving it to be inferred from a market that behaved oddly.
+  check("no award went uncollected, and the run says so itself", run.uncollected === 0, run.uncollected);
   let parented = 0, priced = 0;
   for (const t of tasks) {
     const bids = await operator.queryAll<{ bidder: string; price: number }>({ kind: BID, match: { request: t.body.request } });

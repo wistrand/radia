@@ -41,6 +41,15 @@ deno task demo:ci
 This command starts an ephemeral space, runs the pipeline, prints the summary, events and lineage,
 then shuts the space down. CI uses it as a wire-contract integration test.
 
+```bash
+deno task test:pipeline
+```
+
+`smoke.ts` asserts the part a happy-path run cannot: on a space holding 500 unrelated results, a
+job that finished before the aggregator started and one whose last result arrived after a burst are
+both summarized, and a replayed fan-out is not mistaken for a complete one. Both of this example's
+recorded bounded-read bugs fail it.
+
 ## What it demonstrates
 
 - **Content-routed coordination, no routing table.** `worker upper` and `worker reverse`
@@ -51,8 +60,9 @@ then shuts the space down. CI uses it as a wire-contract integration test.
   `pipeline_task:<jobId>:<i>` so a redelivered job replays instead of doubling, and the
   aggregator emits under `summary:<jobId>`.
 - **Bounded reads**, the distinction `agent_docs/plan-bounded-reads.md` is about: the aggregator
-  PAGES the newest results to find candidate jobs, EXHAUSTS one job's results to decide, and reads
-  one `summary` NARROWLY to know it is done. Completeness is the distinct index set, not a count.
+  WALKS forward from a watermark to find candidate jobs, EXHAUSTS one job's results to decide, and
+  reads one `summary` NARROWLY to know it is done. Completeness is the distinct index set, not a
+  count. A fixed page strands jobs in whichever direction it faces, so the walk resumes instead.
 - The transactional **event log**, and a 4-level **lineage** tree (summary → results → tasks → job).
 - **Claim vs. read.** Workers *take* tasks (claimed once, fenced); the aggregator *reads*
   results (facts, never consumed).

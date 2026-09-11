@@ -101,6 +101,9 @@ export function cheapestFairest(won: Map<string, number>): Select {
 export interface RunReport {
   rounds: number;
   awarded: number;
+  /** Awards the winner did not claim. Always 0 in a healthy run, and reported rather than inferred:
+   *  see the branch that increments it. */
+  uncollected: number;
   reopened: number;
   wonBy: Record<string, number>;
   spend: number;
@@ -134,7 +137,7 @@ export async function runMarket(
     const d = await operator.createAgentDefinition(agent, bidderGrants(agent) as { principal: string; kind: string; operations: string[] }[]);
     bidders.push({ strategy, agent, client: new RadiaClient(operator.base, { definitionToken: d.definitionToken }), won: 0 });
   }
-  const report: RunReport = { rounds: o.rounds, awarded: 0, reopened: 0, wonBy: {}, spend: 0, log: [] };
+  const report: RunReport = { rounds: o.rounds, awarded: 0, uncollected: 0, reopened: 0, wonBy: {}, spend: 0, log: [] };
   const windowMs = o.windowMs ?? 400;
   // A tiny deterministic generator, so a seeded run repeats exactly and an unseeded one does not.
   let s = (o.seed ?? Date.now()) >>> 0;
@@ -173,13 +176,23 @@ export async function runMarket(
       // award is FOR went unexercised and an unclaimed task looked the same as the no-show
       // design-marketplace.md question 2 is about.
       const winner = bidders.find((b) => b.agent === out.winner);
-      const prize = await winner?.client.take(
-        { pattern: { kind: TASK, match: { assignee: out.winner } } },
-        { leaseSeconds: 30 },
-      );
+      const prize = winner
+        ? await winner.client.take({ pattern: { kind: TASK, match: { assignee: out.winner } } }, { leaseSeconds: 30 })
+        : null;
       if (winner && prize) {
         await winner.client.ack(prize.lease); // no result: the task is done, and nothing follows it
         winner.won++;
+      } else {
+        // SAID, NEVER SWALLOWED. The bidder's price is a function of what it has won, so a prize it
+        // failed to collect makes every later bid wrong: `burst` bids past the two jobs it was
+        // written to stop at, and the run reads as a strategy behaving oddly rather than as a claim
+        // that did not happen. A missed prize also leaves the task assigned and unclaimed, so the
+        // NEXT round's take picks up the stale one and strands the new one behind it.
+        report.uncollected++;
+        const line = `round ${round}  WARNING  ${name} was awarded ${out.task.slice(-6)} and did not collect it` +
+          `${winner ? "" : ": no such bidder in this run"}`;
+        report.log.push(line);
+        say(line);
       }
       report.wonBy[name] = (report.wonBy[name] ?? 0) + 1;
       const price = Number(
