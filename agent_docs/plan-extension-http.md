@@ -15,6 +15,18 @@ the second tier, the scope answer, and the Python wrapper.
 One stated limitation: `awaitResult`'s coordination-plane fallback (for callers without the ops
 read tier) is a newest-100 window per poll, and says so in the code.
 
+FIXED 2026-09-09, found by running `deno task demo:py` against a lived-in space: all three
+`declare` routes RESTATED this build's `KindDef` instead of declaring over what the space carries,
+so on a space running the teams convention (which extends `capability` and `workspace` with `team`,
+and `capability`'s `contentKey` with it) the route had two failure modes and no correct one. With a
+live grant patterned on `team` the space refuses the narrowing (`incompatible_redeclaration`), which
+locked every non-TS app out of any space a team had touched; with no such grant it SUCCEEDS and
+silently undoes the extension, after which the next team grant will not compile. Both now go
+through `declareKind`/`liveKinds` (`extensions/ts/team.ts`, which `declareMarketKinds` has used
+since the marketplace shipped): paths union, a live `contentKey` that refines this one is adopted,
+and narrowing still needs the acknowledgement the runtime demands. Guard:
+`test/extserve.test.ts`, "a declare extends what the space carries, and never narrows it back".
+
 HARDENED 2026-09-02 after a review pass: unknown body fields are refused BY NAME on every POST
 (`rejectUnknownFields`, the facade's own `rejectUnknown` since a surface may not import
 `src/server/problem.ts` — a misspelled `scope` would otherwise widen a workspace write across

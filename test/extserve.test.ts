@@ -19,6 +19,7 @@ import { readWorkspace, treeDigestOf, type WorkspaceFile, writeWorkspace } from 
 import { type CapabilityBody, liveCapabilities, publishCapability, type ToolDef } from "../extensions/ts/capability.ts";
 import { beatPresence, livePresence, presenceSpec } from "../extensions/ts/presence.ts";
 import { pinnedDigests } from "../extensions/ts/promotion.ts";
+import { declareTeamKinds, liveKinds } from "../extensions/ts/team.ts";
 
 async function newSpace() {
   const adapter = new SqliteAdapter(":memory:");
@@ -380,6 +381,38 @@ Deno.test("[extserve] a caller discovers its own pattern scopes, through the def
     assertEquals(task.patterns, [{ team: "alpha" }]);
     // Discovery, never a fill: the response says choosing is the caller's.
     assertStringIncludes(scopes.body.note, "caller's choice");
+  } finally {
+    await s.close();
+  }
+});
+
+Deno.test("[extserve] a declare extends what the space carries, and never narrows it back", async () => {
+  const s = await newSpace();
+  try {
+    // The teams convention's shape: `capability` and `workspace` with `team` indexed, and for
+    // `capability` `team` in the content key too (extensions/ts/team.ts).
+    await declareTeamKinds(s.direct);
+    // A grant NOBODY here writes is what makes this load-bearing: a pattern on `team` compiles only
+    // while the kind declares that path, so narrowing the kind is somebody else's authorization
+    // broken by an endpoint that never mentions them.
+    await s.direct.grant("agent:member", "capability", ["put", "query", "read_one"], { team: "alpha" });
+
+    assertEquals((await s.call("POST", "/ext/capability/v1/declare")).status, 200);
+    assertEquals((await s.call("POST", "/ext/workspace/v1/declare")).status, 200);
+
+    const live = await liveKinds(s.direct);
+    const cap = live.get("capability")!.def;
+    // Restating this build's shape here was BOTH failure modes: with a live grant the space refuses
+    // (`incompatible_redeclaration`, which locked every non-TS app out of a space a team had
+    // touched), and with none it succeeds and silently undoes the extension.
+    assertEquals(cap.contentKey, ["provider", "tool", "team"]);
+    assert(cap.indexedPaths.some((p) => p.path === "team"), "capability kept the team path");
+    assert(
+      live.get("workspace")!.def.indexedPaths.some((p) => p.path === "team"),
+      "workspace kept the team path",
+    );
+    // Still compiles, which is the property the paths exist for.
+    await s.direct.grant("agent:member2", "capability", ["query"], { team: "alpha" });
   } finally {
     await s.close();
   }

@@ -59,6 +59,12 @@ try {
   // reads back from records with nothing stored twice.
   const tasks = await operator.queryAll<{ assignee: string; request: string }>({ kind: TASK });
   check("one task per award", tasks.length === run.awarded, tasks.length);
+  // The award is only half the protocol: `bidderGrants` issues `task: take {assignee: self}` so the
+  // winner can collect, and a run where nobody claims ends in the state design-marketplace.md
+  // question 2 calls "it never claims at all", indistinguishable from a bidder that was never
+  // granted the take.
+  const claimed = await operator.queryEnvelopes({ state: "consumed", kind: TASK, limit: 200 });
+  check("and the winner claimed it, under its own credential", claimed.length === run.awarded, claimed.length);
   let parented = 0, priced = 0;
   for (const t of tasks) {
     const bids = await operator.queryAll<{ bidder: string; price: number }>({ kind: BID, match: { request: t.body.request } });

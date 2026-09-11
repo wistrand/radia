@@ -101,6 +101,13 @@ convert without a layering violation. Convert three: `examples/analysis/planner.
 `turn.ts` may convert to shed its hand-rolled copy; `waiting.ts` and `exec.ts` keep their
 documented shapes; the CLI verb stays.
 
+`examples/pipeline/aggregator.ts` converted later (2026-09-09) as a fourth. It was excluded here
+because it polled rather than watching, so it had none of the two failures above. What it did have
+was the join done wrong in the other direction: it read the OLDEST 500 results as both the
+candidate walk and the completeness test, which breaks rules four and five of the shape above once
+a space holds 500 results. Naming it canonical while it broke two of its own five rules is what
+made this worth fixing.
+
 ## The contract test
 
 `test/loop.test.ts` (it may import `src/`), planting BOTH failure classes, because a

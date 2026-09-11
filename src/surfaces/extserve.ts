@@ -45,6 +45,9 @@ import { declareExecRequest, EXEC_REQUEST, type Pin, pinnedDigests, promote, rol
 import { declareBinding, readBindings } from "../../extensions/ts/host.ts";
 import { auditCompartment } from "../../extensions/ts/compartment.ts";
 import { BID, type BidBody, declareMarketKinds, eligibleBids, forgedBidRefusal, lateBidRefusal, REQUEST, TASK } from "../../extensions/ts/marketplace.ts";
+// Not about TEAMS, whatever the file is called: any app declaring a kind another convention has
+// already extended needs these, which is why `declareMarketKinds` imports them too.
+import { declareKind, liveKinds } from "../../extensions/ts/team.ts";
 import { UsageError } from "../platform.ts";
 
 export interface ExtServeLog {
@@ -565,7 +568,9 @@ async function dispatch(
         // an app's setup principal holds and its sessions do not. Served because the declaration
         // (indexed paths, no contentKey where the design says none) is the part an app in another
         // language would mis-declare, and a redeclaration that narrows is refused by the space.
-        await client.registerKind(WORKSPACE_KIND);
+        // Over what is live, for the reason capability/declare states: teams extend this one with
+        // `team` too, and dropping an indexed path stops every stored grant naming it compiling.
+        await declareKind(client, WORKSPACE_KIND, await liveKinds(client));
         return json(200, { declared: WORKSPACE_KIND.kind });
       }
       if (post && rest === "digest") {
@@ -594,7 +599,14 @@ async function dispatch(
       if (post && rest === "declare") {
         // Same as workspace/declare: the `contentKey` is what makes the registry projectable and
         // compactable, and is the field a hand-written declaration drops first.
-        await client.registerKind(CAPABILITY_KIND);
+        //
+        // DECLARED OVER WHAT IS LIVE, never restated. The teams convention carries `capability`
+        // with `team` in the indexed paths AND in the content key, so restating this build's shape
+        // is a narrowing the space refuses (`incompatible_redeclaration`), and every non-TS app was
+        // locked out of any space a team had touched: `deno task demo:py` died here. `mergeKind`
+        // unions the paths and adopts a live key that REFINES this one; narrowing still needs the
+        // acknowledgement the runtime demands, which is not this endpoint's to give.
+        await declareKind(client, CAPABILITY_KIND, await liveKinds(client));
         return json(200, { declared: CAPABILITY_KIND.kind });
       }
       if (post && rest === "publish") {
@@ -680,7 +692,10 @@ async function dispatch(
         rejectUnknownFields(b, fieldsOf("presence/v1/declare"), "POST declare");
         const s = specFrom(b);
         const def = presenceKind(s);
-        await client.registerKind(def);
+        // Over what is live, for the reason capability/declare states. The kind name comes from the
+        // caller here, so this is the one of the three where two apps can meet on a name neither
+        // build knows about.
+        await declareKind(client, def, await liveKinds(client));
         return json(200, { kind: s.kind, ttlMs: s.ttlMs, refreshMs: s.refreshMs, defaultRetentionSeconds: def.defaultRetentionSeconds });
       }
       if (post && rest === "beat") {

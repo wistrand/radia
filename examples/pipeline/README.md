@@ -47,8 +47,13 @@ then shuts the space down. CI uses it as a wire-contract integration test.
   each claim only `{kind:pipeline_task, match:{op:...}}` that matches their tool.
 - **Fan-out / fan-in.** The planner splits a `job` into per-word `task`s (fan-out); workers
   emit `result` facts; the aggregator reads them and emits one `summary` (fan-in).
-- **Leases + at-least-once**, idempotent aggregation (`summary:<jobId>` key), the
-  transactional **event log**, and a 4-level **lineage** tree (summary → results → tasks → job).
+- **Leases + at-least-once**, made safe by a key at both ends: the planner's fan-out writes
+  `pipeline_task:<jobId>:<i>` so a redelivered job replays instead of doubling, and the
+  aggregator emits under `summary:<jobId>`.
+- **Bounded reads**, the distinction `agent_docs/plan-bounded-reads.md` is about: the aggregator
+  PAGES the newest results to find candidate jobs, EXHAUSTS one job's results to decide, and reads
+  one `summary` NARROWLY to know it is done. Completeness is the distinct index set, not a count.
+- The transactional **event log**, and a 4-level **lineage** tree (summary → results → tasks → job).
 - **Claim vs. read.** Workers *take* tasks (claimed once, fenced); the aggregator *reads*
   results (facts, never consumed).
 

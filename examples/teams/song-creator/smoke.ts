@@ -230,6 +230,23 @@ try {
   check("the rules reviewer refused round one", verdicts.some((v) => v.body.by === "rules" && v.body.round === 1 && !v.body.approve));
   check("and approved round two", verdicts.some((v) => v.body.by === "rules" && v.body.round === 2 && v.body.approve));
 
+  // THE DERIVATIONS ARE IN THE GRAPH, not only in matching `song` and `round` fields. A shared
+  // field lets this file find the records; it does not let `radia lineage` explain where a bar came
+  // from, and the drafts and revision requests carried no parents at all until 2026-09-09.
+  const phrases = await operator.queryAll<{ round: number; instrument: string }>({ kind: PHRASE, match: { song } });
+  const draftParents = drafts.every((d) =>
+    phrases.filter((p) => p.body.round === d.body.round).every((p) => d.runtimeMeta.parentIds.includes(p.id))
+  );
+  check("every draft names the phrases it was assembled from", draftParents, drafts.map((d) => d.runtimeMeta.parentIds.length));
+  const round2Parts = await operator.queryAll<{ round: number }>({ kind: PART, match: { song } });
+  const revisions = round2Parts.filter((p) => p.body.round === 2);
+  const round1Verdicts = new Set(verdicts.filter((v) => v.body.round === 1).map((v) => v.id));
+  check(
+    "and every revision request names the verdicts that asked for it",
+    revisions.length > 0 && revisions.every((p) => p.runtimeMeta.parentIds.some((id) => round1Verdicts.has(id))),
+    revisions.length,
+  );
+
   const notes = await operator.queryAll<{ agreed: boolean; round: number }>({ kind: NOTE, match: { song, topic: "review" } });
   check("what each reviewer caught is recorded per round", notes.length === 2, notes.length);
   // Both verdicts can be written before either is claimed, so both handlers see a complete round.
