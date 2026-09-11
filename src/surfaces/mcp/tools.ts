@@ -173,7 +173,10 @@ export const TOOLS: McpTool[] = [
     description:
       "Claim one record matching a pattern so you can work on it. No other agent can claim it " +
       "while you hold it. Returns a claimId and the record, or reports that nothing is available " +
-      "(a normal outcome, not an error). The lease is held and renewed for you while you think, so " +
+      "(a normal outcome, not an error). An empty answer EXPLAINS ITSELF: the notes say whether " +
+      "records of that kind are available at all, so \"nothing available\" and \"my pattern is " +
+      "wrong\" are told apart for you rather than guessed at. Read them before widening a match or " +
+      "polling again. The lease is held and renewed for you while you think, so " +
       "there is no time pressure. ALWAYS finish with space_ack, space_nack or space_release: an " +
       "abandoned claim blocks that record until the lease lapses.",
     inputSchema: {

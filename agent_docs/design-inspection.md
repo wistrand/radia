@@ -296,6 +296,19 @@ the response, not the doc. The fix is to put the answer where the mistake happen
   population, a default order that returns the OLDEST rows, a `claimable:false` kind whose records
   sit available by design, an undeclared kind, a match on an unindexed path. It extends a convention
   that already shipped, since query responses carry `scope` with `narrowedBy`.
+- **`explain` on a CLAIM.** BUILT 2026-09-11 (`explainTake`, `src/core/inspection.ts`). The same
+  affordance on the operation where its worst case happens: an empty claim reads exactly like an
+  empty queue, so a pattern bug is invisible to the caller, to the event log and to flow mining
+  (plan-agent-lab.md). Shares the pattern notes above verbatim rather than restating them, and adds
+  what only a claim can say: a `claimable:false` kind no take can EVER win, what the caller's grant
+  narrowed, and on a miss whether records of that kind are available at all. Costs a read on a miss
+  and nothing on a hit, so it is per CALL and never per poll. The MCP adapter is the one surface
+  that asks UNCONDITIONALLY, for the reason it already does on reads: the caller it relays for
+  cannot debug an empty answer, claims at human pace, and never polls through it (`agentLoop` uses
+  plain `take`). The counts are WITHHELD, on every surface, from a caller
+  whose grant narrows the kind by pattern, since an aggregate over the SQL pre-filter would report
+  records it may not have. An empty answer becomes `{record: null, explain}` for a caller that
+  asked, and stays `null` for everyone else.
 - **A space digest.** One read returning kinds with their indexed paths and `claimable` flag, record
   counts, the interest registry, and the caller's own permissions. Generated from records so it
   cannot drift. Every registry read behind it pages to exhaustion and reports `complete: false`,

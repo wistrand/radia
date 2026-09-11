@@ -21,6 +21,7 @@ export const VALUELESS = new Set([
   "--broker",
   "--require-confinement",
   "--untainted",
+  "--explain",
   "--help",
   "-h",
   "--all",

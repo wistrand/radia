@@ -890,11 +890,24 @@ async function call(
 
     case "space_take": {
       const leaseSeconds = num(a, "leaseSeconds") ?? 60;
-      const claimed = await client.take({ pattern: pat(a) }, {
+      // `takeReport`, not `take`: "nothing available for that pattern" is the answer that looks
+      // like success and is why a pattern bug goes unnoticed (`trace.ts` calls `empty` the
+      // load-bearing outcome). The same model asking `space_query` was already told that its `$in`
+      // compares the whole array; asking to CLAIM told it nothing.
+      //
+      // UNCONDITIONAL HERE AND OPT-IN EVERYWHERE ELSE, which is a decision rather than an
+      // oversight. This adapter already asks for an `explain` on every read it relays, and the
+      // caller it relays for is the one that cannot debug an empty answer; it claims at human pace,
+      // and a miss costs reads INSIDE the one request rather than another round trip. The loops
+      // that would notice do not come through here: `agentLoop` claims with plain `take`, and a
+      // `radia team up` member is an `agentLoop`. Do not "make this consistent" by turning it off.
+      const report = await client.takeReport({ pattern: pat(a) }, {
         leaseSeconds,
         allowTaint: a.requireUntainted === true ? [] : (Array.isArray(a.allowTaint) ? a.allowTaint.map(String) : undefined),
       });
-      if (!claimed) return "nothing available for that pattern";
+      const claimed = report.result;
+      const notes = report.explain?.length ? `\n${report.explain.map((n) => `note: ${n}`).join("\n")}` : "";
+      if (!claimed) return `nothing available for that pattern${notes}`;
       // The model gets a handle; the fenced lease never leaves this process.
       const claimId = `claim-${claimed.record.id}-${claimed.lease.epoch}`;
       // The heartbeat's VERDICT matters, not just that it ran: renewing a lease somebody else now
@@ -917,6 +930,10 @@ async function call(
       return pretty({
         claimId,
         record: claimed.record,
+        // A HIT gets them too. The near miss is worse than the empty one: `{tags: ["image"]}` is
+        // whole-list equality, so it claims a one-tag record and silently skips the same work
+        // tagged ["image","urgent"]. Both halves were one session.
+        ...(report.explain?.length ? { notes: report.explain } : {}),
         note: "Lease held and renewed for you. Settle with space_ack (done), space_nack (retry) " +
           "or space_release (give it back). If the space takes the record back while you work " +
           "(reclaimed or reassigned), settling says so rather than pretending it landed.",

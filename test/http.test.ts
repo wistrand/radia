@@ -13,7 +13,7 @@
 // every endpoint added since has had no such check at all. It is a table now: add a row when you
 // add a field.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { RadiaClient } from "../sdk/ts/client.ts";
 import { makeArtifactHandler, makeHandler } from "../src/server/http.ts";
 import { Space } from "../src/core/space.ts";
@@ -1393,6 +1393,106 @@ Deno.test("http: each ops power opens exactly its verbs; none confers the identi
     // A retirement closes on the NEXT request: resolution is per request, never cached.
     await space.put({ kind: "ops_grant", body: { principal: "agent:obs", operations: ["observe"], retired: true } });
     assertEquals(await status(handler(get("/v0/ops/stats", obs))), 403);
+  } finally {
+    await close();
+  }
+});
+
+Deno.test("take: an empty claim can be asked why, and a bare one is byte-identical to before", async () => {
+  // The asymmetry this closes: every note below except the counts was reachable from `query` while
+  // the failure it describes happens on a CLAIM and reads as an empty queue
+  // (agent_docs/plan-agent-lab.md). A model asking `space_query` was told its `$in` compares the
+  // whole array; the same model asking to claim was told "nothing available for that pattern".
+  const { space, handler, close } = await newHandler();
+  try {
+    space.registerKind({ kind: "job", indexedPaths: [{ path: "tags", type: "array" }] });
+    space.registerKind({ kind: "fact", indexedPaths: [{ path: "x", type: "keyword" }], claimable: false });
+    await handler(post("/v0/records", { kind: "job", body: { tags: ["image", "urgent"] } }));
+
+    // NOT ASKED FOR: still a bare null, so no existing caller can tell this exists.
+    const bare = await (await handler(post("/v0/takes", { pattern: { kind: "job", match: { tags: { $in: ["image"] } } } }))).json();
+    assertEquals(bare, null);
+
+    // ASKED FOR: the same miss, with the reason. `$in` compares the WHOLE array, which is the
+    // session this was built from, and the counts separate it from an empty queue.
+    const missed = await (await handler(post("/v0/takes", {
+      pattern: { kind: "job", match: { tags: { $in: ["image"] } } },
+      explain: true,
+    }))).json();
+    assertEquals(missed.record, null);
+    const notes = (missed.explain as string[]).join(" | ");
+    assertStringIncludes(notes, "$in compares the WHOLE");
+    assertStringIncludes(notes, "1 available");
+    assertStringIncludes(notes, "pattern problem rather than an empty queue");
+
+    // A HIT carries them too, and pays for no read: `{tags: ["image","urgent"]}` is whole-list
+    // equality, which claims this record and would miss the same work tagged one way more.
+    const hit = await (await handler(post("/v0/takes", {
+      pattern: { kind: "job", match: { tags: ["image", "urgent"] } },
+      explain: true,
+    }))).json();
+    assertEquals(hit.record.kind, "job");
+    assert(hit.lease, "a hit still carries its lease");
+    assertStringIncludes((hit.explain as string[]).join(" | "), "declared type array");
+
+    // A reference kind can never be claimed, however long a worker polls. `query` says records
+    // sitting available forever are normal; for a claim the consequence is stronger.
+    const never = await (await handler(post("/v0/takes", { pattern: { kind: "fact" }, explain: true }))).json();
+    assertStringIncludes((never.explain as string[]).join(" | "), "can NEVER return one");
+
+    // An undeclared kind, and an empty one, are different answers.
+    const unknown = await (await handler(post("/v0/takes", { pattern: { kind: "nope" }, explain: true }))).json();
+    assertStringIncludes((unknown.explain as string[]).join(" | "), "no kind 'nope' is declared");
+    const empty = await (await handler(post("/v0/takes", { pattern: { kind: "task" }, explain: true }))).json();
+    assertStringIncludes((empty.explain as string[]).join(" | "), "no records at all");
+
+    // A record DEFERRED by available_at is in state `available` and is not a candidate, which is
+    // the marketplace's bidding window. Reporting the state count alone would call that work
+    // waiting (design-marketplace.md, "available, and not yet claimable: not the same thing").
+    space.registerKind({ kind: "auction", indexedPaths: [] });
+    const later = new Date(Date.now() + 600_000).toISOString();
+    await handler(post("/v0/records", { kind: "auction", body: {}, availableAt: later }));
+    const deferred = await (await handler(post("/v0/takes", { pattern: { kind: "auction" }, explain: true }))).json();
+    assertEquals(deferred.record, null);
+    const window = (deferred.explain as string[]).join(" | ");
+    assertStringIncludes(window, "DEFERRED by available_at");
+    // AND IT MUST NOT ALSO CALL THIS A PATTERN BUG. The count note was written from the state count
+    // alone and fired first, so a closed auction was told "records ARE available and this pattern
+    // claimed none of them" and then, one note later, that none of them was a candidate. Two notes
+    // that contradict each other are worse than one that is missing.
+    assert(!window.includes("pattern problem rather than"), `a closed window is not a pattern bug: ${window}`);
+    assertStringIncludes(window, "window that has not opened");
+  } finally {
+    await close();
+  }
+});
+
+Deno.test("take: the explain names what a GRANT narrowed, and withholds counts it cannot honestly give", async () => {
+  // Two halves of one rule. A caller cannot tell from its own request that its GRANT is what
+  // emptied the answer, so the note says; and the counts that separate "pattern bug" from "empty
+  // queue" are an aggregate over the SQL pre-filter, so a kind this caller reaches only BY GRANT
+  // PATTERN must not be counted for it. `StatsScope.patternScoped` states the same rule for the
+  // ops plane: a count over the pre-filter over-reports, and an over-report here is somebody
+  // else's records.
+  const { space, handler, close } = await newHandler({ authRequired: true });
+  try {
+    space.registerKind({ kind: "job", indexedPaths: [{ path: "team", type: "keyword" }] });
+    const { definitionToken } = await space.createAgentDefinition("agent:w", [
+      { principal: "agent:w", kind: "job", operations: ["take"], pattern: { team: "alpha" } },
+    ]);
+    const { runToken } = await space.mintRun(definitionToken);
+    // One record this principal may never claim. It must not learn that it exists.
+    await space.put({ kind: "job", body: { team: "beta" } });
+
+    const res = await (await handler(post("/v0/takes", { pattern: { kind: "job" }, explain: true }, {
+      authorization: `Bearer ${runToken}`,
+    }))).json();
+    assertEquals(res.record, null);
+    const notes = (res.explain as string[]).join(" | ");
+    assertStringIncludes(notes, '"team":"alpha"');
+    assertStringIncludes(notes, "not candidates however this pattern is written");
+    assert(!/\d+ available/.test(notes), `a pattern-scoped caller must get no counts: ${notes}`);
+    assert(!notes.includes("beta"), "and no trace of the record it may not claim");
   } finally {
     await close();
   }

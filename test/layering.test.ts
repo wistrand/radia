@@ -285,7 +285,7 @@ Deno.test("[layering] every coordination call on a Space is in the ledger, with 
   const foundAs: Record<string, number> = {};
   for (const file of await tsFiles(SRC, "src/")) {
     const text = code(await Deno.readTextFile(new URL(file.replace("src/", ""), SRC)));
-    for (const [, verb] of text.matchAll(/\bspace\.(put|take|ack|nack|release|renew|query|readOne|registryOf|putArtifact|createWatch|registerKind)\(/g)) {
+    for (const [, verb] of text.matchAll(/\bspace\.(put|take|takeReport|ack|nack|release|renew|query|readOne|registryOf|putArtifact|createWatch|registerKind)\(/g)) {
       foundRaw[file] = foundRaw[file] ?? {};
       foundRaw[file][verb] = (foundRaw[file][verb] ?? 0) + 1;
     }

@@ -147,6 +147,21 @@ export interface Lease {
 export interface TakeResult<T = unknown> {
   record: RadiaRecord<T>;
   lease: Lease;
+  /** One note per trap this claim walked into, when `explain` was asked for and there was something
+   *  to say. See `TakeReport`. */
+  explain?: string[];
+}
+
+/**
+ * A claim plus WHY it answered that (`RadiaClient.takeReport`).
+ *
+ * Split from `take` for the reason `readOneReport` is split from `readOne`: the diagnosis costs the
+ * space a read on a miss, and a worker loop issues an empty claim per pattern per second. A caller
+ * that does not ask gets a bare `null` exactly as before.
+ */
+export interface TakeReport<T = unknown> {
+  result: TakeResult<T> | null;
+  explain?: string[];
 }
 
 /** `lease_lost` is a distinct non-error outcome, not an exception. */

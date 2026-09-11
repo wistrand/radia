@@ -43,6 +43,7 @@ import type {
   SpaceDigest,
   TreeEntry,
   SpaceEvent,
+  TakeReport,
   TakeResult,
 } from "./wire.ts";
 import { type GraphNode, KIND_DEF, kindDefKey, RESERVED_KINDS } from "./wire.ts";
@@ -76,7 +77,7 @@ export type {
   EffectivePermissions, Envelope, ErasureReport, ErasureStatus, EventGcResult, EventInput, FlowReport, FlowShape, FlowsResponse,
   GcReport, GrantOp, IndexedPath, IndexedType, IntegrityReport, IntegrityResponse, KindDef, Lease, MintedRun, OpsPower, OpsScope,
   OrderKey, Page, Pattern, PutRequest, RadiaRecord, RecordState, RenewResult, RunRenewal, RuntimeMeta, SettleResult, ShredResult,
-  SpaceDigest, SpaceEvent, StaleSplit, TakeResult, TreeEntry, Ulid,
+  SpaceDigest, SpaceEvent, StaleSplit, TakeReport, TakeResult, TreeEntry, Ulid,
 } from "./wire.ts";
 
 export interface KindStateCount {
@@ -707,6 +708,37 @@ export class RadiaClient {
 
   take<T = unknown>(sel: TakeSelector, opts: { leaseSeconds?: number; allowTaint?: string[] } = {}): Promise<TakeResult<T> | null> {
     return this.req("POST", "/v0/takes", { ...sel, leaseSeconds: opts.leaseSeconds, allowTaint: opts.allowTaint });
+  }
+
+  /**
+   * A claim, plus why it answered that: undeclared kinds, a `claimable:false` kind no take can ever
+   * win, a scalar predicate on an array path, what the caller's GRANT narrowed, and on a miss
+   * whether records of that kind are available at all.
+   *
+   * THIS CLAIMS. The `Report` suffix means "the same call, keeping what the plain one drops", as on
+   * `readOneReport`; it does not mean a dry run. A hit here holds a fenced lease and must be
+   * settled like any other.
+   *
+   * NOT what `take` does, deliberately. An empty claim is the normal outcome of every poll, so a
+   * loop must not pay a read per tick to be told the queue is empty; this is for the caller that
+   * has an empty answer in hand and cannot read it. Ask per call, never per poll.
+   *
+   * The wire answers `{record: null, explain}` for a miss here rather than `null`, since `null`
+   * cannot carry a note; this unwraps it, so `result` is the same `TakeResult | null` `take` gives.
+   */
+  async takeReport<T = unknown>(
+    sel: TakeSelector,
+    opts: { leaseSeconds?: number; allowTaint?: string[] } = {},
+  ): Promise<TakeReport<T>> {
+    const r = await this.req("POST", "/v0/takes", {
+      ...sel,
+      leaseSeconds: opts.leaseSeconds,
+      allowTaint: opts.allowTaint,
+      explain: true,
+    }) as (TakeResult<T> & { record: RadiaRecord<T> | null }) | null;
+    if (!r || r.record === null) return { result: null, ...(r?.explain ? { explain: r.explain } : {}) };
+    const { explain, ...result } = r;
+    return { result: result as TakeResult<T>, ...(explain ? { explain } : {}) };
   }
 
   /**

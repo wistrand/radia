@@ -15,6 +15,13 @@ Deno.test("[trace] an answer that found nothing is classified as empty, not as s
   // The exact sentence the adapter writes, and the exact shape a real session produced: this is
   // what a pattern bug looks like from outside, and it reads as "no work" to everyone.
   assertEquals(classify("nothing available for that pattern").outcome, "empty");
+  // An empty claim now EXPLAINS ITSELF, so the sentence the classifier keys on has notes after it.
+  // The whole lab depends on this outcome being `empty`: a miss read as `ok` is a finding nobody
+  // sees (agent_docs/plan-agent-lab.md).
+  assertEquals(
+    classify("nothing available for that pattern\nnote: tags is declared type array\nnote: kind 'job' holds 1 available.").outcome,
+    "empty",
+  );
   assertEquals(classify("[]").outcome, "empty");
   assertEquals(classify("[]").records, 0);
   assertEquals(classify('{"found":false}').outcome, "empty");

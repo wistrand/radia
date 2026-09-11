@@ -7,7 +7,7 @@
 // becomes claimable later, so a bidding window is claimable the instant it exists; without result
 // parents it can answer but cannot record what its answer rested on.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { RadiaClient } from "../sdk/ts/client.ts";
 import { resolveToken } from "../src/credentials.ts";
 import { declareMarketKinds, requesterGrants } from "../extensions/ts/marketplace.ts";
@@ -130,6 +130,14 @@ Deno.test("[mcp] a model can defer a record and can parent what it answers with"
     // RESULT LINEAGE. The claimed record is always a parent; these are the others the answer rests
     // on, and a model could not say them at all before.
     const evidence = await admin.put({ kind: "note", body: { topic: "evidence" } });
+    // A MISS EXPLAINS ITSELF, which is the whole reason `space_take` asks. A title nothing carries
+    // is the shape of the session this was built from: the adapter said only "nothing available for
+    // that pattern", which reads as an empty queue while the work stands there
+    // (agent_docs/plan-agent-lab.md).
+    const missed = await mcp.call("space_take", { kind: "task", match: { title: "no-such-title" } });
+    assertStringIncludes(missed, "nothing available for that pattern"); // the trace classifier keys on this
+    assertStringIncludes(missed, "Records ARE available and this pattern claimed none of them");
+
     const claim = JSON.parse(await mcp.call("space_take", { kind: "task", match: {} }));
     assert(claim.claimId, claim);
     const acked = JSON.parse(await mcp.call("space_ack", {

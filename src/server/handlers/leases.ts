@@ -59,7 +59,7 @@ export async function handleTake(space: Space, req: Request, principal: string):
   // believes it refused every labelled record and receives all of them. `clientTaint` already
   // carries the note that collapsing the strictest request into no barrier was a bug once; a
   // dropped key reopens it through a different door.
-  const badBody = rejectUnknown(j, ["pattern", "recordId", "leaseSeconds", "allowTaint", "requireUntainted"]);
+  const badBody = rejectUnknown(j, ["pattern", "recordId", "leaseSeconds", "allowTaint", "requireUntainted", "explain"]);
   if (badBody) return badBody;
 
   const recordId = typeof j.recordId === "string" ? j.recordId : undefined;
@@ -94,8 +94,17 @@ export async function handleTake(space: Space, req: Request, principal: string):
     // pattern narrows to grant ∧ request, a self scope narrows to own records, and the grant's
     // taint barrier intersects the caller's. This handler contributes only what the wire carries.
     const sel: TakeInput = recordId ? { recordId, pattern } : { pattern: pattern! };
-    const result = await space.as(principal).take(sel, { leaseSeconds, allowTaint: callerAllow });
-    return ok(result); // {record, lease} or null
+    const handle = space.as(principal);
+    if (j.explain !== true) {
+      const result = await handle.take(sel, { leaseSeconds, allowTaint: callerAllow });
+      return ok(result); // {record, lease} or null
+    }
+    // ASKED FOR, so the shape changes: an empty claim answers `{record: null, explain}` instead of
+    // a bare `null`, because `null` has nowhere to carry a note. A caller that did not ask still
+    // gets `null` and cannot tell this field exists, which is the same bargain `explain` on query
+    // struck ("an unremarkable read stays byte-identical").
+    const report = await handle.takeReport(sel, { leaseSeconds, allowTaint: callerAllow });
+    return ok(report.result === null ? { record: null, ...(report.explain ? { explain: report.explain } : {}) } : { ...report.result, ...(report.explain ? { explain: report.explain } : {}) });
   } catch (e) {
     if (e instanceof RadiaError) return problem(e.code === "forbidden" ? 403 : 400, e.code, e.message);
     throw e;

@@ -99,6 +99,8 @@ import {
   diagnostics,
   digest,
   explainQuery,
+  explainTake,
+  type TakeNarrowing,
   GRAPH_FANOUT,
   type InspectionHost,
   type LiveInterest,
@@ -324,6 +326,8 @@ export interface ActingSpace {
   readonly principal: string;
   put(req: PutRequest, idempotencyKey?: string): Promise<{ id: string }>;
   take(sel: TakeInput, opts?: TakeOptions): Promise<TakeResult | null>;
+  /** A claim plus WHY it answered that, for a caller that asked. See `Space.takeReport`. */
+  takeReport(sel: TakeInput, opts?: TakeOptions): Promise<TakeReport>;
   ack(lease: Lease, result?: PutRequest, idempotencyKey?: string): Promise<AckResult>;
   nack(lease: Lease, opts?: { backoffSeconds?: number }, idempotencyKey?: string): Promise<SettleResult>;
   release(lease: Lease, idempotencyKey?: string): Promise<SettleResult>;
@@ -348,6 +352,19 @@ export interface TakeOptions {
    *  Enforced in the claim, not by the caller. A claim returns the record BODY, so a take that
    *  ignores the scope reads everything a scoped `query` correctly refuses. */
   createdBy?: string[];
+}
+
+/**
+ * A claim, plus the notes that say why it answered that.
+ *
+ * `result` is exactly what `take` returns, so the two never diverge on the claim itself; `explain`
+ * is present only when there was something to say. Split from `take` the way `readOneReport` is
+ * split from `readOne`: the diagnosis costs a read on a miss, so a poll loop must not pay for it
+ * by default, and an existing caller's `null` must keep being `null`.
+ */
+export interface TakeReport {
+  result: TakeResult | null;
+  explain?: string[];
 }
 
 export interface Watch {
@@ -1649,6 +1666,7 @@ export class Space {
       principal,
       put: (req, idempotencyKey) => this.putEnforced(req, idempotencyKey, principal),
       take: (sel, opts = {}) => this.takeEnforced(sel, opts, principal),
+      takeReport: (sel, opts = {}) => this.takeReport(sel, opts, principal),
       ack: (lease, result, idempotencyKey) => this.ack(lease, result, idempotencyKey, principal),
       nack: (lease, opts, idempotencyKey) => this.nack(lease, opts, idempotencyKey, principal),
       release: (lease, idempotencyKey) => this.release(lease, idempotencyKey, principal),
@@ -1953,9 +1971,39 @@ export class Space {
     checkedFor: string | undefined,
     owner?: string,
   ): Promise<TakeResult | null> {
+    return (await this.takeWithNarrowing(sel, opts, checkedFor, owner)).result;
+  }
+
+  /**
+   * A claim, plus WHY it answered that: the notes `explainTake` writes from the kind registry, the
+   * pattern, and (on a miss only) one aggregate.
+   *
+   * OPT-IN, and that is the whole cost argument. `agentLoop` issues at least one claim per pattern
+   * per second per worker and nearly all of them are empty, so a diagnosis every claim pays for is
+   * a diagnosis nobody can afford to leave on. This one is paid by the caller that asked, on the
+   * answer it could not read (agent_docs/plan-agent-lab.md).
+   */
+  // THIS CLAIMS: the `Report` suffix means "the same call, keeping what the plain one drops", never
+  // a dry run. A hit holds a fenced lease and must be settled.
+  async takeReport(sel: TakeInput, opts: TakeOptions & { owner?: string } = {}, principal?: string): Promise<TakeReport> {
+    const { result, narrowed } = await this.takeWithNarrowing(sel, opts, principal, opts.owner);
+    const explain = await explainTake(this.inspectionHost, sel.pattern, result !== null, narrowed);
+    return { result, ...(explain.length > 0 ? { explain } : {}) };
+  }
+
+  /** Both take doors, with the narrowing they applied kept rather than discarded: it is
+   *  server-derived, so a caller cannot tell from its own request that its GRANT is what emptied
+   *  the answer. `takeEnforced` drops it; `takeReport` reports it. */
+  private async takeWithNarrowing(
+    sel: TakeInput,
+    opts: TakeOptions,
+    checkedFor: string | undefined,
+    owner?: string,
+  ): Promise<{ result: TakeResult | null; narrowed: TakeNarrowing }> {
     let pattern = sel.pattern;
     let createdBy = opts.createdBy;
     let allow = opts.allowTaint;
+    const narrowed: TakeNarrowing = {};
     if (checkedFor !== undefined) {
       const recordId = "recordId" in sel ? sel.recordId : undefined;
       let kind = pattern?.kind;
@@ -1964,11 +2012,14 @@ export class Space {
         const access = await this.readAccess(checkedFor, "take", kind);
         if (access.constraint) {
           pattern = { kind, match: combineMatch(pattern?.match, access.constraint), orderBy: pattern?.orderBy };
+          narrowed.constraint = combineMatch(undefined, access.constraint);
         }
         createdBy = access.createdBy ?? createdBy;
         allow = Space.intersectAllow(allow, access.allowTaint);
+        if (access.createdBy) narrowed.createdBy = access.createdBy;
       }
     }
+    if (allow) narrowed.allowTaint = allow;
     const principal = checkedFor ?? owner;
     const spec: LeaseSpec = {
       leaseId: newUlid(),
@@ -1985,10 +2036,9 @@ export class Space {
     const selector: TakeSelector = "recordId" in sel
       ? { recordId: sel.recordId, pattern: pattern ? await this.compileFresh(pattern) : undefined }
       : { pattern: await this.compileFresh(pattern!) };
-    return this.storage.take(selector, spec).then((r) => {
-      this.notifier.notify(); // a claim changes state; a nack/release elsewhere may reopen work
-      return r;
-    });
+    const result = await this.storage.take(selector, spec);
+    this.notifier.notify(); // a claim changes state; a nack/release elsewhere may reopen work
+    return { result, narrowed };
   }
 
   async renew(lease: Lease, opts: TakeOptions = {}, idempotencyKey?: string, principal?: string): Promise<RenewResult> {

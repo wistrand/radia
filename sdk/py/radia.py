@@ -972,6 +972,36 @@ class RadiaClient:
             payload["requireUntainted"] = require_untainted
         return self._req("POST", "/v0/takes", payload)
 
+    def take_report(
+        self,
+        selector: Dict[str, Any],
+        lease_seconds: Optional[int] = None,
+        allow_taint: Optional[List[str]] = None,
+    ) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+        """A claim, plus WHY it answered that: ``(result, notes)``.
+
+        ``result`` is exactly what :meth:`take` returns; ``notes`` says what the space noticed about
+        the kind, the match and the caller's grant, and on a miss whether records of that kind are
+        available at all. An empty claim that matched nothing looks exactly like an empty queue, and
+        that is the one outcome this answers.
+
+        NOT what :meth:`take` does, deliberately. The diagnosis costs the space a read on a miss and
+        a worker loop issues an empty claim per pattern per second, so it is asked for per CALL,
+        never per poll. The wire answers ``{"record": null, "explain": [...]}`` here rather than
+        ``null``, since ``null`` cannot carry a note; this unwraps it.
+        """
+        payload = dict(selector)
+        payload["explain"] = True
+        if lease_seconds is not None:
+            payload["leaseSeconds"] = lease_seconds
+        if allow_taint is not None:
+            payload["allowTaint"] = allow_taint
+        r = self._req("POST", "/v0/takes", payload)
+        if not r or r.get("record") is None:
+            return None, list((r or {}).get("explain") or [])
+        notes = list(r.get("explain") or [])
+        return {k: v for k, v in r.items() if k != "explain"}, notes
+
     def ack(
         self,
         lease: Dict[str, Any],

@@ -128,7 +128,7 @@ keys; stale `nack` retries may be terminal.
 put(record, idempotency_key) -> id
 read_one(pattern) -> record | null
 query(pattern, cursor, limit) -> page          # keyset cursor, see below
-take(pattern | record_id, lease_s, block, timeout) -> {record, lease} | null
+take(pattern | record_id, lease_s, block, timeout, explain) -> {record, lease} | null
 ack(lease, result_record?, idempotency_key) -> ok | lease_lost | idempotency_conflict
 nack(lease, reason, backoff_s) -> ok | lease_lost
 release(lease, reason) -> ok | lease_lost       # cooperative cancel, attempt +0
@@ -145,6 +145,11 @@ there is no `put_artifact` verb in the list above. An artifact is a record with 
 stored out of line, so nothing about matching, leasing or authorization is special-cased for it.
 See [design-data-model.md](design-data-model.md) §2.4.
 
+- **An empty `take` can be asked WHY (`explain: true`, built 2026-09-11).** Opt-in, because a
+  worker loop issues an empty claim per pattern per second and a diagnosis nobody can afford to
+  leave on is a diagnosis nobody has. It changes the SHAPE of an empty answer to
+  `{record: null, explain}`, since `null` cannot carry a note, and leaves every other caller
+  byte-identical. See design-inspection.md, "`explain` on a CLAIM".
 - **`take(record_id=...)` is only an efficient selector, never a bypass.** The server
   re-verifies: a registered pattern of this run matches the record; grants permit the
   take; scheduler admission exists (in scheduler mode); the record is `available` and
