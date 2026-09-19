@@ -62,7 +62,7 @@ import { isTrivial, type JsonDialect, pushdown } from "./pushdown.ts";
 import { type Candidate, type ClaimCursor, cursorOf, rankClaimable } from "../core/take.ts";
 import { addSeconds, minIso } from "../core/time.ts";
 import { newUlid } from "../core/ids.ts";
-import { RadiaError, scanBudgetExceeded } from "../core/errors.ts";
+import { cursorAhead, RadiaError, scanBudgetExceeded } from "../core/errors.ts";
 
 /** One claim examines this many candidates at a time; a selective match pages further. */
 const CANDIDATE_WINDOW = 64;
@@ -664,7 +664,22 @@ export class SqliteAdapter implements StorageAdapter {
     const rows = this.db.prepare(
       "select seq, id, ts, run_id, operation, record_id, kind, state, detail from events where seq > ? order by seq asc limit ?",
     ).all(after, limit) as RawRow[];
+    // A cursor past every seq this log ever assigned (a restore from an older copy) pages empty
+    // forever; refused as the Postgres adapter refuses one from a lost timeline. Asked only when empty.
+    if (rows.length === 0 && after > 0) {
+      const next = this.#nextSeq();
+      // Rejected, not thrown: this method is not `async`, and a synchronous throw escapes every
+      // caller that handles the refusal on the promise.
+      if (after >= next) return Promise.reject(cursorAhead(afterCursor, String(next)));
+    }
     return Promise.resolve(rows.map(rowToEvent));
+  }
+
+  /** The seq the next event will get. AUTOINCREMENT never reuses one, so `sqlite_sequence` holds the
+   *  highest ever assigned even after event-log GC deleted it. */
+  #nextSeq(): number {
+    const row = this.db.prepare("select seq from sqlite_sequence where name = 'events'").get() as { seq: number } | undefined;
+    return (row?.seq ?? 0) + 1;
   }
 
   latestCursor(): Promise<string> {
@@ -920,13 +935,16 @@ export class SqliteAdapter implements StorageAdapter {
   }
 
   eventHorizon(after: string): Promise<EventHorizonCheck> {
+    const n = Number(after) || 0;
+    const next = n > 0 ? this.#nextSeq() : 0;
+    const ahead = n > 0 && n >= next ? { ahead: String(next) } : {};
     const row = this.db.prepare(
       "select idx, event_id, cursor, seq, hash, prev_hash, sig from event_seal order by idx asc limit 1",
     ).get() as RawRow | undefined;
-    if (!row) return Promise.resolve({ expired: false, horizon: null });
+    if (!row) return Promise.resolve({ expired: false, horizon: null, ...ahead });
     const oldest = rowToSeal(row);
     const exists = this.db.prepare("select 1 from events where seq = ?").get(oldest.seq) !== undefined;
-    return Promise.resolve(resolveEventHorizon(oldest, exists, after));
+    return Promise.resolve({ ...resolveEventHorizon(oldest, exists, after), ...ahead });
   }
 
   async appendGcEvent(e: EventInput): Promise<EventPosition> {

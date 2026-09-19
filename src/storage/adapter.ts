@@ -85,6 +85,11 @@ export interface EventHorizonCheck {
    *  expired on a truncated log by design; the caller decides whether that clamps or refuses. */
   expired: boolean;
   horizon: EventHorizon | null;
+  /** Set when the cursor names a transaction this database never assigned (a failover to a standby
+   *  that had not received it): the database's next transaction id. Resuming would skip in silence,
+   *  so a caller refuses it like an expired one. On SQLite, a seq past every one ever assigned (a
+   *  restore from an older copy). */
+  ahead?: string;
 }
 
 /**

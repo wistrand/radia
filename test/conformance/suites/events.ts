@@ -17,6 +17,31 @@ function newSpace(adapter: StorageAdapter): Space {
 
 export const eventSuites: Suite[] = [
   {
+    name: "a cursor ahead of the log is refused as expired, never paged empty forever",
+    run: async (adapter) => {
+      // The position a cursor names can be one this database never reached: read before a failover
+      // to a standby that had not received it (Postgres), or before a restore from an older copy
+      // (SQLite). Every new event sorts below it, so paging from it returned nothing, forever: after
+      // an async failover every watcher missed 3,830 records that exist (plan-cluster-bench.md
+      // phase 3). Built from the adapter's own head so the test needs no knowledge of its format.
+      const space = newSpace(adapter);
+      await space.put({ kind: "task", body: { tag: "a" } });
+      const head = await adapter.latestCursor();
+      const ahead = String(BigInt(head.split(".")[0]) + 1_000_000n);
+
+      assertEquals(await space.getEvents(head), [], "the head itself pages empty, and is not refused");
+      assertEquals((await space.eventHorizon(head)).ahead, undefined, "the head is not ahead");
+      const h = await space.eventHorizon(ahead);
+      assert(h.ahead !== undefined, "eventHorizon reports the cursor ahead, which is what the watch endpoint 410s on");
+      const refused = await space.getEvents(ahead).then(() => "paged", (e) => (e as { code?: string }).code ?? String(e));
+      assertEquals(refused, "cursor_expired", "an ahead cursor must be refused, not answered with an empty page");
+
+      // And the log still moves for a caller that re-synced from the head.
+      await space.put({ kind: "task", body: { tag: "b" } });
+      assertEquals((await space.getEvents(head)).length, 1);
+    },
+  },
+  {
     name: "each mutation appends one event, in seq order, with run identity",
     run: async (adapter) => {
       const space = newSpace(adapter);

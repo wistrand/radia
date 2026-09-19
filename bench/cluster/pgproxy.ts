@@ -6,7 +6,8 @@
 // primary's sockets die with it, and whether the driver's pool notices is the question phase 3 of
 // agent_docs/plan-cluster-bench.md exists to answer.
 //
-// In-process with the harness, a plain byte pipe, no protocol awareness.
+// In-process with the harness, a plain byte pump, no protocol awareness. `partition` holds every byte
+// until `heal`, which is a network partition as the instances see it.
 
 export interface Target {
   hostname: string;
@@ -60,8 +61,24 @@ export class PgProxy {
     } catch { /* listener closed */ }
   }
 
+  /** Black-hole every byte, both ways, and every new connection, until `heal`: a PARTITION, where
+   *  packets are dropped rather than connections refused, so a query hangs instead of failing. */
+  partition(): void {
+    if (this.#gate) return;
+    this.#gate = new Promise((r) => this.#heal = r);
+  }
+
+  heal(): void {
+    this.#heal?.();
+    this.#gate = undefined;
+  }
+
+  #gate?: Promise<void>;
+  #heal?: () => void;
+
   async #pair(client: Deno.Conn): Promise<void> {
     this.#accepted++;
+    while (this.#gate) await this.#gate;
     let upstream: Deno.Conn;
     try {
       upstream = await Deno.connect(this.#target);
@@ -82,11 +99,21 @@ export class PgProxy {
       this.#open.delete(upstream);
     };
     // Either direction ending ends the pair: a half-open Postgres connection is a dead one.
-    await Promise.race([
-      client.readable.pipeTo(upstream.writable).catch(() => {}),
-      upstream.readable.pipeTo(client.writable).catch(() => {}),
-    ]);
+    await Promise.race([this.#pump(client, upstream), this.#pump(upstream, client)]);
     done();
+  }
+
+  /** Copy bytes one way, holding each chunk while the proxy is partitioned. */
+  async #pump(from: Deno.Conn, to: Deno.Conn): Promise<void> {
+    const buf = new Uint8Array(64 * 1024);
+    try {
+      for (;;) {
+        const n = await from.read(buf);
+        if (n === null) return;
+        while (this.#gate) await this.#gate;
+        for (let off = 0; off < n;) off += await to.write(buf.subarray(off, n));
+      }
+    } catch { /* either side closed */ }
   }
 
   #severAll(): void {

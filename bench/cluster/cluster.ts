@@ -17,7 +17,7 @@ import { PgProxy, type Target } from "./pgproxy.ts";
 
 // TCP_NODELAY on the harness's own Postgres connections. deno-postgres 0.19 never sets it, so each
 // parameterized query stalls ~40ms on Nagle plus delayed ACK; the runtime patches `Deno.connect` for
-// the same reason (`enableTcpNoDelay`, src/storage/postgres.ts, not exported). Without this the
+// the same reason (`patchDriverSockets`, src/storage/postgres.ts, not exported). Without this the
 // harness's reads and its proxy-latency check measure the driver's stall instead of the database.
 {
   const original = Deno.connect.bind(Deno);
@@ -79,7 +79,8 @@ export class Cluster {
     readonly project: string,
     readonly workDir: string,
     readonly sync: boolean,
-    readonly primary: Target,
+    /** Where the harness's own SQL goes: the standby's address once it has been promoted. */
+    public primary: Target,
     readonly standby: Target,
     readonly proxy: PgProxy,
     readonly blobSpec: string,
@@ -224,6 +225,28 @@ export class Cluster {
     if (!exited) child.kill("SIGKILL");
     await child.status;
     throw new Error(`instance ${index} did not start; ${logPath}:\n${await Deno.readTextFile(logPath).catch(() => "")}`);
+  }
+
+  /** SIGKILL the primary's container: no shutdown checkpoint, no goodbye to the standby. */
+  async killPrimary(): Promise<void> {
+    await run("docker", ["compose", "-p", this.project, "-f", COMPOSE, "kill", "-s", "SIGKILL", "pg-primary"]);
+  }
+
+  /** Stop the standby's WAL receiver by emptying `primary_conninfo`: the replication link is cut
+   *  while both servers stay up, as when the link between them degrades. The primary goes on
+   *  committing; with a synchronous standby every commit then waits. */
+  async cutReplication(): Promise<void> {
+    await this.sql("alter system set primary_conninfo = ''", { on: this.standby });
+    await this.sql("select pg_reload_conf()", { on: this.standby });
+  }
+
+  /** Promote the standby and make it where the harness's SQL goes. The PROXY is not moved here:
+   *  when the instances follow is a step of the fault schedule. */
+  async promoteStandby(): Promise<void> {
+    await this.sql("select pg_promote(true, 60)", { on: this.standby });
+    const [r] = await this.sql<{ rec: boolean }>("select pg_is_in_recovery() as rec", { on: this.standby });
+    if (r.rec) throw new Error("standby still in recovery after pg_promote");
+    this.primary = this.standby;
   }
 
   /** Send a signal without waiting for anything: SIGSTOP and SIGCONT for a stall. */
