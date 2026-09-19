@@ -38,11 +38,14 @@ const log = (line: string) => console.error(`  · ${line}`);
 // Ctrl-C tears down whatever is up; a leaked Postgres pair and N servers are the failure this
 // harness exists to avoid.
 let live: Cluster | undefined;
-Deno.addSignalListener("SIGINT", async () => {
-  console.error("\ninterrupted: tearing down");
-  await live?.down().catch((e) => console.error(String(e)));
-  Deno.exit(130);
-});
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  // SIGTERM too: `timeout` sends it, and one that went unhandled left a whole cluster running.
+  Deno.addSignalListener(sig, async () => {
+    console.error(`\n${sig}: tearing down`);
+    await live?.down().catch((e) => console.error(String(e)));
+    Deno.exit(130);
+  });
+}
 // The same for an error thrown in a background loop: an unhandled rejection ends the process
 // without running any `finally`, which once left a whole cluster running for an hour.
 globalThis.addEventListener("unhandledrejection", async (e) => {
@@ -162,6 +165,18 @@ if (mode === "faults") {
       during: (fleet, mark) => schedule.run(cluster, fleet, mark),
     });
     const found = await audit(cluster, r);
+    // What the instances logged, grouped: the harness sees a 500, the log says why. Read before
+    // teardown, which deletes the logs with the work directory.
+    for (const inst of cluster.instances) {
+      const lines = await Deno.readTextFile(inst.logPath).catch(() => "");
+      const by = new Map<string, number>();
+      for (const m of lines.matchAll(/ERROR (.*)$/gm)) {
+        const k = m[1].replace(/\x1b\[[0-9;]*m/g, "").replace(/\b[0-9A-Z]{26}\b/g, "<id>").slice(0, 180);
+        by.set(k, (by.get(k) ?? 0) + 1);
+      }
+      const top = [...by].sort((x, y) => y[1] - x[1]).slice(0, 4);
+      if (top.length) console.log(`instance ${inst.index} logged:\n${top.map(([k, c]) => `  ${String(c).padStart(5)}  ${k}`).join("\n")}`);
+    }
     console.log(renderTable(r.measurements.map((m) => ({ adapter: `N=${n}`, m })), "N"));
     console.log("");
     for (const v of found) console.log(`  ${v.count === 0 ? "ok  " : "FAIL"}  ${v.name.padEnd(22)} ${String(v.count).padStart(5)}  ${v.detail ?? ""}`);
@@ -169,9 +184,10 @@ if (mode === "faults") {
     console.log(`\n${recoveryReport(r)}`);
     const l = r.ledger;
     console.log(
-      `\nfailovers ${r.fleet.failovers}, watch reconnects ${r.watchStats.reconnects} (${r.watchStats.moved} to another instance), ` +
+      `\nfailovers ${r.fleet.failovers}, watch reconnects ${r.watchStats.reconnects} (${r.watchStats.moved} to another instance, ${r.watchStats.resyncs} re-synced after a 410), ` +
         `tasks executed more than once ${[...l.executions.values()].filter((x) => x > 1).length}, acks lease_lost ${l.ackLost}` +
-        (l.errors.size ? `\ngiven up after failing over for ${r.fleet.opts.deadlineMs / 1000}s: ${JSON.stringify(Object.fromEntries(l.errors))}` : ""),
+        (l.errors.size ? `\ngiven up after failing over for ${r.fleet.opts.deadlineMs / 1000}s: ${JSON.stringify(Object.fromEntries(l.errors))}` : "") +
+        [...l.firstError].map(([k, m]) => `\n  first ${k} error: ${m}`).join(""),
     );
   } finally {
     await live.down();

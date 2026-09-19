@@ -96,7 +96,9 @@ export function pool(trials: Measurement[][]): Measurement[] {
         byLabel.set(m.label, { label: m.label, samples: [...m.samples], ops, elapsedMs: m.elapsedMs, trialP50s: p50 });
         continue;
       }
-      prev.samples.push(...m.samples);
+      // A loop, not `push(...samples)`: spreading passes every sample as an argument, and past about
+      // 125k (a large `--scale` with `--trials`) that throws `Maximum call stack size exceeded`.
+      for (const x of m.samples) prev.samples.push(x);
       prev.ops = (prev.ops ?? 0) + ops;
       if (m.elapsedMs !== undefined) prev.elapsedMs = (prev.elapsedMs ?? 0) + m.elapsedMs;
       prev.trialP50s!.push(...p50);

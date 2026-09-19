@@ -1,10 +1,11 @@
 # Plan: the cluster and failover benchmark
 
-**Status: PHASES 0-2 BUILT 2026-09-19; phases 3-4 planned.** Phase 0 is `bench/cluster/`
+**Status: PHASES 0-3 BUILT 2026-09-19; phase 4 planned.** Phase 0 is `bench/cluster/`
 (`cluster.ts`, `pgproxy.ts`, `authrounds.ts`, `run.ts check`) over `docker/cluster/compose.yaml`;
 phase 1 is `load.ts` and `run.ts steady`, zero violations at N = 1, 2, 4, 8 with every audit line
 proved red; phase 2 is `fleet.ts`, `faults.ts` and `run.ts faults`, zero violations through a
-crash, a stall and a rolling restart. Claims about current behaviour were checked against source the same day.
+crash, a stall and a rolling restart; phase 3 fails the database over, fixed two driver defects that
+stopped every instance for good, and two more (a watch cursor from a lost timeline, an S3 key race). Claims about current behaviour were checked against source the same day.
 
 ## The problem
 
@@ -83,6 +84,8 @@ Computed from the generator's own ledger plus a final audit read through a survi
 | stale settlements         | an ack or renew under a superseded lease epoch returned success                |
 | stranded work             | a task neither consumed nor claimable after the lease horizon                 |
 | stale grants, credentials | `authprobe.ts`'s counts                                                        |
+| resurrected grants, runs  | at the END, a revoked identity authorizes or a stopped run authenticates (a failover can undo either long after the probe windows) |
+| stale reads               | a `read_one` through another instance misses a put already acknowledged        |
 | watch gaps                | a committed record of a watched kind never reached a watcher that stayed subscribed |
 | unreadable artifacts      | acknowledged bytes that no instance can serve                                  |
 | chain                     | `radia integrity` fails at the end                                             |
@@ -115,9 +118,8 @@ the steady-state spread (`--trials` SPREAD from a baseline run).
    [--plant name]`: all streams, no faults, a fresh cluster per N, then the audit. Record below.
 2. **Instance faults. BUILT.** `run.ts faults --fault none|crash|stall|rolling [--plant no-cursor]`.
    Answered: a watcher's `Last-Event-ID` resumes on another instance without a gap. Record below.
-3. **Database failover.** Sync and async arms. First real question: whether the deno-postgres pool
-   discards connections that died with the primary or hands them out again. The fault matrix cannot
-   answer that, because the Proxy never breaks a socket.
+3. **Database failover. BUILT.** Answered: it handed them out again, and then lost the slots on
+   reconnect; both fixed in `src/storage/postgres.ts`. Record below.
 4. **Soak.** Phase 1's mix for 6 and 24 hours with periodic instance faults, sampling memory,
    connections, event-log size and query plans. This is item 6 of the benchmark review, run on this
    stack rather than built separately.
@@ -177,7 +179,7 @@ run's output):
   kind, the ordinary workers took every lapsed lease first and the late settle was never asked.
   The chain check calls `integrity` until nothing is unsealed, since one call seals one 500-event batch.
 
-**Every audit line was proved red.** Six by `--plant` (the audit reads what it claims to), six by
+**Every audit line was proved red.** Seven by `--plant` (the audit reads what it claims to), six by
 a temporary edit to `src/`, reverted after the run (the runtime fault reaches the audit):
 
 | Audit line           | Planted by                                                              | Count |
@@ -193,6 +195,7 @@ a temporary edit to `src/`, reverted after the run (the runtime fault reaches th
 | watch gaps           | the SSE handler dropping every 50th wakeup (watches.ts)                 | 80    |
 | unreadable artifacts | `--plant artifact`: delete one blob from the bucket                     | 1     |
 | chain                | `--plant chain`: alter a SEALED event (an unsealed one is sealed as altered, correctly) | 1 |
+| resurrected grants, runs (phase 3) | `--plant resurrect`: delete the newest revocation and the newest stop | 2, 1 |
 
 The fence and the stop each have TWO layers, and removing one was not enough: `leaseValid` refuses
 before the SQL fence is reached, and a stop successor carries no `expiresAt`, so the expiry check
@@ -236,6 +239,67 @@ next instance. Watchers are `resumableWatch`: re-created on the next instance wi
   the process without its `finally`, leaving a cluster running; `run.ts` now tears down on one.
 - **Not a violation, counted apart:** authorization rounds whose writer or revoker was the dead
   instance are abandoned whole (about 20 per crash run), since their probes would measure the outage.
+
+## Phase 3 record
+
+`run.ts faults --fault failover|failover-lag|partition [--async]`: `Cluster.killPrimary`,
+`cutReplication` and `promoteStandby`, `PgProxy.partition`/`heal`, per-instance failovers on the
+timeline, instance ERROR lines grouped before teardown, and `AuthRounds.finalCheck`, which re-probes
+every identity whose last acknowledged write was a revocation and every stopped run at the END (a
+failover can undo a revocation long after the 200ms windows).
+
+| Arm (N = 3)                                   | Recovery                         | Violations |
+|-----------------------------------------------|----------------------------------|------------|
+| failover, sync                                | 90% in 1s; ~40 failed requests per instance, all failed over | 0 |
+| failover, async                               | the same                         | 0 (one host: nothing was unreplicated at the kill) |
+| failover-lag (link cut 5s before), sync       | commits wait from the cut, as they must; 90% 1s after the kill | 0 |
+| failover-lag, ASYNC (the control)             | 90% in 4s                        | 2,861 lost writes, 273 unreadable artifacts (all on lost records), 1 stale read: EXPECTED, and the demonstration design-storage.md's synchronous-replication rule rests on. Also 3,830 watch gaps on SURVIVING records, defect 3, since fixed (re-run: 0) |
+| partition (every DB byte held 20s)            | 0 ops/s for the 20s, back at once on heal | 1 unreadable artifact, defect 4, since fixed (re-run: 0) |
+
+**Four runtime defects, all fixed:**
+
+1. **A connection that died without the server's goodbye poisoned its pool slot for good.**
+   Instances logged ~2,130 `Broken pipe` each for 9 minutes against a healthy new primary; one
+   abrupt disconnect through the proxy failed 120 of the next 120 requests. (`pg_terminate_backend`
+   is NOT a trigger: it sends a FATAL message first, which the driver always handled; a first
+   version of the regression test was built on it and passed against the broken code.) The driver resets only on its own `ConnectionError`, and
+   `end()` writes before its `finally` closes. FIXED: `hardenSocket` (`src/storage/postgres.ts`)
+   makes a failed socket answer end-of-stream; the same reproduction now fails 1 of 120.
+2. **The driver's `Pool` lost a slot on every failed reconnect** (`DeferredAccessStack.pop` never
+   returns a client whose connect threw), so any outage emptied it and every request waited forever,
+   including `/v0/health`. Traced with per-call instrumentation (reverted). FIXED: `ClientPool`.
+   Guard for both: `test/pgreconnect.test.ts` (live Postgres, in `test:conformance:pg`).
+3. **After an ASYNC failover, watchers silently skip records that survived.** Of 3,837 gaps, 3,830
+   are on records present on the new primary. Inferred mechanism: the promoted standby's transaction
+   ids are behind the cursor the watchers hold (`<xid>.<seq>`, `src/storage/pgbase.ts`), so
+   `(xid, seq) > cursor` passes over new events until the counter catches up. Synchronous arms: 0
+   gaps. FIXED: a cursor at or past the database's next xid (`pg_snapshot_xmax`; SQLite's
+   `sqlite_sequence`, for a restore from an older copy) is refused as `cursor_expired`, checked only
+   on an empty page; the watch endpoint 410s, an open stream ends into that 410, the notifier's own
+   poll restarts from the head, `/v0/ops/events` answers `cursorAhead`. Re-run: 0 gaps on surviving
+   records (was 3,830), 3 watchers re-synced. Residual: a client away until the new primary's xids
+   pass its cursor is not detected. Guard: `test/conformance/suites/events.ts`.
+4. **`S3BlobStore.put` can pair one writer's ciphertext with another's key.** A deduped put `touch`es
+   the object (copy onto itself, `REPLACE`) with the key header from its earlier `HEAD`; a writer
+   that replaced the object in between leaves ciphertext B under key A, undecryptable for good
+   (`Decryption failed`, 264 attempts per instance on one artifact whose record exists). Two writers
+   of the same bytes is exactly an idempotent retry through another instance, which a partition makes
+   likely. Reproduced by forcing the interleaving (write, HEAD, replace, stale copy): the committed
+   code read back `Decryption failed`. FIXED: the copy is conditional on the HEAD's `ETag`
+   (`x-amz-copy-source-if-match`, which SeaweedFS honours: a stale one answers 412), and a refused
+   copy makes `put` write its own complete object. Re-run: the partition arm 0 violations. Guard:
+   `test/s3race.test.ts`. Unexamined: the file store's key sidecar under two concurrent puts.
+
+What is still open (a black-holed database, the unexecuted TLS path, 500 for an outage, and three
+smaller gaps) is [plan-audit-remediation.md](plan-audit-remediation.md) package AC.
+
+Also found: a database outage reaches clients as `500 internal`, not a retryable `503`; the SDK
+and any load balancer treat those differently. Harness fixes: `run.ts` tears down on SIGTERM (a
+`timeout` left a cluster running); the drain asks the DATABASE for unconsumed tasks (comparing
+ledger counts let it end with a task still leased, reported as stranded); a failed authorization
+round backs off 250ms (a one-second outage counted as ~190 abandoned rounds). A proxy half-close
+(`closeWrite`) was tried and reverted: an isolated test showed Deno delivers end-of-stream on close
+even with a read pending, so it fixed nothing.
 
 ## Known exclusions
 

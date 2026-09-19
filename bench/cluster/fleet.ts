@@ -148,6 +148,8 @@ export interface WatchStats {
   reconnects: number;
   /** Reconnects that landed on a different instance than the one that dropped. */
   moved: number;
+  /** 410s: the cursor was refused (below the retained log, or ahead of a failed-over database). */
+  resyncs: number;
 }
 
 /**
@@ -168,8 +170,12 @@ export async function resumableWatch(
   /** False reconnects WITHOUT the cursor: a planted fault, so "no gaps after a move" is shown to
    *  depend on the cursor rather than on nothing having happened during the move. */
   resume = true,
+  /** The re-sync a 410 asks for: read by query what the stream can no longer deliver. Called after
+   *  the replacement watch exists, so nothing committed in between falls between the two. */
+  resync: () => Promise<void> = () => Promise.resolve(),
 ): Promise<void> {
   let cursor: string | undefined;
+  let refused = false;
   let inst = home;
   let first = true;
   const dec = new TextDecoder();
@@ -203,6 +209,19 @@ export async function resumableWatch(
         }),
         fleet.opts.timeoutMs,
       );
+      if (res.status === 410) {
+        // The cursor is gone: the protocol's answer is a fresh watch at the head plus a query.
+        await res.body?.cancel();
+        stats.resyncs++;
+        cursor = undefined;
+        refused = true;
+        continue;
+      }
+      if (refused) {
+        // The watch just created starts at the head, so everything before it is the query's job.
+        await resync();
+        refused = false;
+      }
       if (!res.ok || !res.body) {
         await res.body?.cancel();
         throw new Error(`watch events ${res.status}`);

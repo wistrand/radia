@@ -15,9 +15,9 @@
 // What is deliberately NOT here, and why:
 //   - `Deno.test` in `test/conformance/harness.ts`: a test-runner binding, not a runtime operation.
 //     A port swaps the harness, not the suites.
-//   - `Deno.connect` in `src/storage/postgres.ts`: it patches the *driver's* socket layer to
-//     set TCP_NODELAY, which only makes sense against deno-postgres. It is adapter-local by
-//     nature and documented at the call site.
+//   - `Deno.connect` and `Deno.startTls` in `src/storage/postgres.ts`: it patches the *driver's*
+//     socket layer to set TCP_NODELAY and to end a connection whose socket died, which only makes
+//     sense against deno-postgres. It is adapter-local by nature and documented at the call site.
 //   - `examples/`: those are SDK-only by design (they import nothing from `src/`), so they
 //     model what an external agent author writes. They are Deno scripts by construction.
 //

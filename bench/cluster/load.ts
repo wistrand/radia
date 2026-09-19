@@ -94,8 +94,12 @@ export class Ledger {
   errors = new Map<string, number>();
   watchLatencies: number[] = [];
 
-  error(stream: string): void {
+  /** The first message per stream, since a count alone cannot say what kept failing. */
+  readonly firstError = new Map<string, string>();
+
+  error(stream: string, e?: unknown): void {
     this.errors.set(stream, (this.errors.get(stream) ?? 0) + 1);
+    if (e !== undefined && !this.firstError.has(stream)) this.firstError.set(stream, String(e).slice(0, 160));
   }
 }
 
@@ -152,12 +156,13 @@ export async function runLoad(cluster: Cluster, o: LoadOptions): Promise<LoadRes
   let ops = 0;
   let stopped = false; // the timed load
   let draining = false; // producers stopped, workers finishing the backlog
+  let drained = false; // the database holds no unconsumed task, or the drain gave up
   const pace = o.rate ? 1000 / o.rate : 0;
   let t0 = performance.now();
   const second = () => Math.floor((performance.now() - t0) / 1000);
   let timeline = new Timeline(fleet.n);
   fleet.onSuccess = (i) => timeline.success(second(), i);
-  fleet.onFailover = () => timeline.failover(second());
+  fleet.onFailover = (i) => timeline.failover(second(), i);
   const done = () => ops++;
 
   await declareKinds(fleet.clients[0]);
@@ -165,14 +170,18 @@ export async function runLoad(cluster: Cluster, o: LoadOptions): Promise<LoadRes
   // Watchers first, and given a moment to connect: a watch sees what commits after it exists. Each
   // starts on its own instance and resumes on another when that one fails.
   const watchAbort = new AbortController();
-  const watchStats: WatchStats = { reconnects: 0, moved: 0 };
+  const watchStats: WatchStats = { reconnects: 0, moved: 0, resyncs: 0 };
   const watchers = fleet.clients.map((_, i) => {
     ledger.seen[i] = new Set();
     return resumableWatch(fleet, i, { kind: REC }, (w) => {
       ledger.seen[i].add(w.recordId);
       const at = ledger.recAckedAt.get(w.recordId);
       if (at !== undefined) ledger.watchLatencies.push(performance.now() - at);
-    }, watchAbort.signal, watchStats, 5_000, o.watchResume !== false);
+    }, watchAbort.signal, watchStats, 5_000, o.watchResume !== false, async () => {
+      // Every record of the kind, exhaustively, through any instance: what the stream cannot deliver.
+      const all = await fleet.call((c) => c.queryAll({ kind: REC }));
+      for (const rec of all) ledger.seen[i].add(rec.id);
+    });
   });
   await sleep(1_000);
 
@@ -189,7 +198,7 @@ export async function runLoad(cluster: Cluster, o: LoadOptions): Promise<LoadRes
         try {
           await body(i);
         } catch (e) {
-          if (unavailable(e)) ledger.error(stream);
+          if (unavailable(e)) ledger.error(stream, e);
           else throw e;
         }
         if (pace) await sleep(Math.max(0, pace - (performance.now() - started)));
@@ -237,8 +246,12 @@ export async function runLoad(cluster: Cluster, o: LoadOptions): Promise<LoadRes
       if (r.resultId) ledger.results.add(r.resultId);
     } else ledger.ackLost++;
   };
+  let drainTurn = 0;
   const workers = loop("claims", async () => {
-    const claim = await s.time("take", () => call((c) => c.take({ pattern: { kind: TASK } }, { leaseSeconds: o.leaseSeconds })));
+    // During the drain, every other take is for the zombie kind: a zombie task whose put timed out
+    // but committed later is in no ledger, and only a worker can finish it.
+    const kind = draining && drainTurn++ % 2 === 1 ? ZTASK : TASK;
+    const claim = await s.time("take", () => call((c) => c.take({ pattern: { kind } }, { leaseSeconds: o.leaseSeconds })));
     done();
     if (!claim) {
       ledger.emptyTakes++;
@@ -248,7 +261,7 @@ export async function runLoad(cluster: Cluster, o: LoadOptions): Promise<LoadRes
     const id = claim.record.id;
     ledger.executions.set(id, (ledger.executions.get(id) ?? 0) + 1);
     await settle(claim.lease, id);
-  }, () => draining ? ledger.completed.size >= ledger.tasks.size : stopped);
+  }, () => draining ? drained : stopped);
 
   // The zombie: a task of its OWN kind, so no ordinary worker claims it first (with them sharing
   // one kind, every lapsed lease was taken by a worker and the late settle was never asked). Its
@@ -285,7 +298,7 @@ export async function runLoad(cluster: Cluster, o: LoadOptions): Promise<LoadRes
     } catch (e) {
       // The holder's instance went away: its late settle was never asked, which proves nothing.
       if (!unavailable(e)) throw e;
-      ledger.error("zombie holder");
+      ledger.error("zombie holder", e);
     }
     await settle(again.lease, id);
   });
@@ -307,8 +320,11 @@ export async function runLoad(cluster: Cluster, o: LoadOptions): Promise<LoadRes
       } catch (e) {
         // A round whose writer or revoker is down is abandoned whole: its probes would measure the
         // outage, not authorization.
-        if (unavailable(e)) ledger.error("authorization");
+        if (unavailable(e)) ledger.error("authorization", e);
         else throw e;
+        // A round that fails does so in milliseconds, so without a pause an outage of one second
+        // is counted as hundreds of abandoned rounds.
+        await sleep(250);
       }
     }
   })();
@@ -319,17 +335,18 @@ export async function runLoad(cluster: Cluster, o: LoadOptions): Promise<LoadRes
       if (stopped) break;
       // Two at once: plan-gc.md says concurrent sweeps are safe, and this is where that meets a live space.
       await Promise.all([0, 1].map(() =>
-        s.time("gc", () => call((c) => c.gc({ compact: true }))).then(done, (e) => unavailable(e) ? ledger.error("gc") : Promise.reject(e))
+        s.time("gc", () => call((c) => c.gc({ compact: true }))).then(done, (e) => unavailable(e) ? ledger.error("gc", e) : Promise.reject(e))
       ));
     }
   })();
 
   const connLoop = (async () => {
     while (!stopped) {
-      const [row] = await cluster.sql<{ n: number }>(
+      // A sample the database cannot answer (its primary just died) is skipped, not fatal.
+      const row = await cluster.sql<{ n: number }>(
         "select count(*)::int as n from pg_stat_activity where datname = 'radia' and backend_type = 'client backend' and pid <> pg_backend_pid()",
-      );
-      connSamples.push(row.n);
+      ).then(([r]) => r, () => undefined);
+      if (row) connSamples.push(row.n);
       await sleep(1_000);
     }
   })();
@@ -371,15 +388,24 @@ export async function runLoad(cluster: Cluster, o: LoadOptions): Promise<LoadRes
   // Read the counters before the drain and the audit add their own statements.
   const [calls] = await cluster.sql<{ calls: string }>(
     "select coalesce(sum(calls), 0)::text as calls from pg_stat_statements where query not ilike '%pg_stat%'",
-  );
+  ).catch(() => [{ calls: "0" }]);
   const opsInWindow = ops;
 
-  // Drain: producers and the record loops end with the window; workers keep claiming until every
-  // produced task is complete or the drain budget runs out, which the audit reports as stranded.
+  // Drain: producers and the record loops end with the window; workers keep claiming until the
+  // DATABASE holds no unconsumed task, or the budget runs out, which the audit reports as stranded.
+  // Asked of the database, not the ledger: a put that timed out and committed later is a task no
+  // ledger holds, and comparing counts let the drain end while a ledger task was still leased.
   const drainStart = performance.now();
   const drainWatch = (async () => {
-    while (ledger.completed.size < ledger.tasks.size && performance.now() - drainStart < o.drainMs) await sleep(200);
-    draining = false; // gives up: `stopped` is already true
+    while (performance.now() - drainStart < o.drainMs) {
+      const [row] = await cluster.sql<{ n: number }>(
+        "select count(*)::int as n from records r join record_runtime rt on rt.record_id = r.id where r.kind = any($1::text[]) and rt.state <> 'consumed'",
+        { params: [[TASK, ZTASK]] },
+      ).catch(() => [{ n: -1 }]);
+      if (row.n === 0) break;
+      await sleep(500);
+    }
+    drained = true;
   })();
   await Promise.all([...all, authLoop, gcLoop, connLoop, drainWatch]);
   await sleep(o.graceMs); // watchers catch up to the last write
@@ -407,16 +433,19 @@ export class Timeline {
   readonly ops: number[] = [];
   readonly failovers: number[] = [];
   readonly perInstance: number[][];
+  readonly failoversPerInstance: number[][];
   readonly marks: { second: number; what: string }[] = [];
   constructor(n: number) {
     this.perInstance = Array.from({ length: n }, () => []);
+    this.failoversPerInstance = Array.from({ length: n }, () => []);
   }
   success(sec: number, i: number): void {
     this.ops[sec] = (this.ops[sec] ?? 0) + 1;
     this.perInstance[i][sec] = (this.perInstance[i][sec] ?? 0) + 1;
   }
-  failover(sec: number): void {
+  failover(sec: number, i: number): void {
     this.failovers[sec] = (this.failovers[sec] ?? 0) + 1;
+    this.failoversPerInstance[i][sec] = (this.failoversPerInstance[i][sec] ?? 0) + 1;
   }
   mark(sec: number, what: string): void {
     this.marks.push({ second: sec, what });
@@ -456,6 +485,20 @@ export const PLANTS: Record<string, { breaks: string; apply: (c: Cluster, r: Loa
     apply: async (c, r) => {
       const meta = await c.admins()[0].artifactMeta(r.ledger.artifacts[0].id);
       await (await c.blobStore()).delete(meta!.digest);
+    },
+  },
+  resurrect: {
+    // What a failover to a standby that never received them does: the newest revocation and the
+    // newest stop are gone, so the grant and the run are live again. Only the END-state probe
+    // (`AuthRounds.finalCheck`) can see that; the 200ms windows closed long ago.
+    breaks: "resurrected grants",
+    apply: async (c) => {
+      for (const where of ["kind = 'grant' and body_json::jsonb->>'retired' = 'true'", "kind = 'agent_run' and body_json::jsonb->>'status' = 'stopped'"]) {
+        const [row] = await c.sql<{ id: string }>(`select id from records where ${where} order by write_order desc limit 1`);
+        await c.sql("delete from record_edges where child_id = $1 or parent_id = $1", { params: [row.id] });
+        await c.sql("delete from record_runtime where record_id = $1", { params: [row.id] });
+        await c.sql("delete from records where id = $1", { params: [row.id] });
+      }
     },
   },
   chain: {
@@ -504,15 +547,23 @@ export async function audit(cluster: Cluster, r: LoadResult): Promise<Violation[
     { params: [[TASK, ZTASK]] },
   );
 
+  // Which acknowledged records still exist: a gap or an unreadable artifact on a record the database
+  // LOST is the lost write again, while one on a record that SURVIVED is a separate defect.
+  const survivors = new Set((await cluster.sql<{ id: string }>("select id from records where id = any($1::text[])", { params: [acked] })).map((r) => r.id));
+
   // Every watcher stayed subscribed for the whole run, so each must have seen every record.
   const recIds = [...l.recByKey.values()];
-  const gaps = l.seen.map((seen) => recIds.filter((id) => !seen.has(id)).length);
+  const gaps = l.seen.map((seen) => recIds.filter((id) => !seen.has(id)));
+  const gapsOnSurvivors = gaps.reduce((a, g) => a + g.filter((id) => survivors.has(id)).length, 0);
 
   // Every artifact, read back through the LAST instance, which wrote few of them.
-  let unreadable = l.artifactMismatch;
+  let unreadable = l.artifactMismatch, unreadableSurvivors = 0;
   for (const a of l.artifacts) {
     const back = await admins[admins.length - 1].getArtifact(a.id).catch(() => new Uint8Array());
-    if (back.length !== a.bytes.length || !back.every((b, i) => b === a.bytes[i])) unreadable++;
+    if (back.length !== a.bytes.length || !back.every((b, i) => b === a.bytes[i])) {
+      unreadable++;
+      if (survivors.has(a.id)) unreadableSurvivors++;
+    }
   }
 
   // Sealing is lazy, one batch per call, so a single call verified the first 500 events of tens of
@@ -520,6 +571,7 @@ export async function audit(cluster: Cluster, r: LoadResult): Promise<Violation[
   let integrity = await admins[0].integrity();
   for (let i = 0; i < 10_000 && integrity.ok && integrity.unsealed > 0; i++) integrity = await admins[0].integrity();
   const t = r.auth.totals;
+  const end = await r.auth.finalCheck();
   return [
     { name: "lost writes", count: acked.length - present.n, detail: `${acked.length} acknowledged` },
     { name: "duplicate commits", count: dupKeys.length + l.retryNewId, detail: `${l.retryNewId} retries answered with a new id` },
@@ -529,8 +581,18 @@ export async function audit(cluster: Cluster, r: LoadResult): Promise<Violation[
     { name: "stale reads", count: l.staleReads, detail: "read_one through another instance after the put was acknowledged" },
     { name: "stale grants", count: t.staleGrant.stale, detail: `${t.staleGrant.attempts} probes` },
     { name: "stale credentials", count: t.staleCredential.stale, detail: `${t.staleCredential.attempts} probes` },
-    { name: "watch gaps", count: gaps.reduce((a, b) => a + b, 0), detail: `per watcher ${gaps.join(",")} of ${recIds.length}` },
-    { name: "unreadable artifacts", count: unreadable, detail: `${l.artifacts.length} written` },
+    { name: "resurrected grants", count: end.resurrectedGrants, detail: `${end.identities} revoked identities, probed at the end through every instance` },
+    { name: "resurrected runs", count: end.resurrectedRuns, detail: `${end.runs} stopped runs, probed at the end` },
+    {
+      name: "watch gaps",
+      count: gaps.reduce((a, g) => a + g.length, 0),
+      detail: `per watcher ${gaps.map((g) => g.length).join(",")} of ${recIds.length}; ${gapsOnSurvivors} on records that still exist`,
+    },
+    {
+      name: "unreadable artifacts",
+      count: unreadable,
+      detail: `${l.artifacts.length} written; ${unreadableSurvivors} whose record still exists`,
+    },
     { name: "chain", count: integrity.ok ? 0 : 1, detail: `${integrity.checked} checked, ${integrity.unsealed} unsealed` },
   ];
 }

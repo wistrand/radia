@@ -79,6 +79,8 @@ interface HeadResult {
   key?: SealedKey;
   /** The metadata header verbatim, so a copy can carry it forward without re-encoding. */
   keyHeader?: string;
+  /** What `touch` conditions its copy on: the header above belongs to THIS body and no other. */
+  etag?: string;
 }
 
 export class S3BlobStore implements BlobStore {
@@ -113,12 +115,10 @@ export class S3BlobStore implements BlobStore {
     // than a re-hash, exactly as the file store argues, and for a sealed object the length that
     // counts is the plaintext one its metadata records.
     const complete = found !== null && found.plaintextSize === bytes.byteLength && (!this.cipher || found.key !== undefined);
-    if (complete) {
-      // The dedupe still means "these bytes are wanted NOW": `retainOnly` reads the object's
-      // clock, and without this a re-put of an old blob races the sweep.
-      await this.touch(name, found.keyHeader);
-      return { digest, size: bytes.byteLength };
-    }
+    // The dedupe still means "these bytes are wanted NOW": `retainOnly` reads the object's clock,
+    // and without the touch a re-put of an old blob races the sweep. A touch refused because the
+    // object changed since the HEAD falls through to writing a complete object of our own.
+    if (complete && await this.touch(name, found.keyHeader, found.etag)) return { digest, size: bytes.byteLength };
     if (this.cipher) {
       const { ciphertext, key } = await this.cipher.seal(digest, bytes);
       const header = b64.encode(new TextEncoder().encode(JSON.stringify(key)));
@@ -280,7 +280,12 @@ export class S3BlobStore implements BlobStore {
     if (!res.ok) throw new Error(`s3 head ${name}: ${res.status} ${res.statusText}`);
     const keyHeader = res.headers.get(KEY_HEADER) ?? undefined;
     const key = readKey(keyHeader ?? null);
-    return { plaintextSize: key ? key.size : Number(res.headers.get("content-length") ?? "0"), key, keyHeader };
+    return {
+      plaintextSize: key ? key.size : Number(res.headers.get("content-length") ?? "0"),
+      key,
+      keyHeader,
+      etag: res.headers.get("etag") ?? undefined,
+    };
   }
 
   private async putObject(name: string, body: Uint8Array, headers: Record<string, string>): Promise<void> {
@@ -295,17 +300,28 @@ export class S3BlobStore implements BlobStore {
     if (!res.ok && res.status !== 404) throw new Error(`s3 delete ${name}: ${res.status} ${res.statusText}`);
   }
 
-  /** Refresh an object's clock, which is what a deduped put owes `retainOnly`'s grace window. An
-   *  object store has no `utimes`, so the equivalent is a server-side copy onto itself with the
-   *  metadata replaced: one request, and no bytes through this process. */
-  private async touch(name: string, keyHeader?: string): Promise<void> {
+  /**
+   * Refresh an object's clock, which is what a deduped put owes `retainOnly`'s grace window. An
+   * object store has no `utimes`, so the equivalent is a server-side copy onto itself with the
+   * metadata replaced: one request, and no bytes through this process.
+   *
+   * CONDITIONAL on the ETag the caller's HEAD saw, and false when refused. The copy takes the body
+   * that is there NOW and the key header the HEAD read, so a writer replacing the object in between
+   * (the same bytes sealed under another data key: an idempotent retry through another instance)
+   * left one writer's ciphertext under the other's key, undecryptable for good (measured under a
+   * partition, plan-cluster-bench.md phase 3). Refused, the caller writes its own complete object.
+   */
+  private async touch(name: string, keyHeader?: string, etag?: string): Promise<boolean> {
     const res = await this.send("PUT", this.objectUrl(name), {
       "x-amz-copy-source": `/${this.cfg.bucket}/${encodeKey(`${this.cfg.prefix}${name}`)}`,
       "x-amz-metadata-directive": "REPLACE",
+      ...(etag ? { "x-amz-copy-source-if-match": etag } : {}),
       ...(keyHeader ? { [KEY_HEADER]: keyHeader } : {}),
     });
     await drain(res);
+    if (res.status === 412) return false;
     if (!res.ok) throw new Error(`s3 touch ${name}: ${res.status} ${res.statusText}`);
+    return true;
   }
 
   /** Every object under the prefix, paged. The caller streams, so a bucket larger than memory is a

@@ -58,7 +58,7 @@ import { isTrivial, type JsonDialect, pushablePath, pushdown } from "./pushdown.
 import { type Candidate, type ClaimCursor, cursorOf, rankClaimable } from "../core/take.ts";
 import { addSeconds, minIso } from "../core/time.ts";
 import { newUlid } from "../core/ids.ts";
-import { RadiaError, scanBudgetExceeded } from "../core/errors.ts";
+import { cursorAhead, RadiaError, scanBudgetExceeded } from "../core/errors.ts";
 
 /** Result of a SQL statement: the rows and (for writes) the number of rows affected. */
 export interface SqlResult<T> {
@@ -979,7 +979,25 @@ export class PgSqlAdapter implements StorageAdapter {
          order by xid, seq asc limit $2`,
         [afterXid, limit],
       );
+    // An empty page is also what a cursor AHEAD of this database returns, forever: every new event
+    // sorts below it. Asked only here, so a page with events pays nothing for the check.
+    if (res.rows.length === 0 && after !== "0") {
+      const next = await this.#aheadOf(afterXid);
+      if (next !== undefined) throw cursorAhead(after, next);
+    }
     return res.rows.map(rowToEvent);
+  }
+
+  /** This database's next transaction id when `xid` is at or past it, else undefined. A cursor from
+   *  this database is always below it; one at or above it was read from a log that went further. */
+  async #aheadOf(xid: string): Promise<string | undefined> {
+    const res = await this.sql.query<{ next: string }>("select pg_snapshot_xmax(pg_current_snapshot())::text as next");
+    const next = String(res.rows[0].next);
+    try {
+      return BigInt(xid) >= BigInt(next) ? next : undefined;
+    } catch {
+      return undefined; // not a Postgres cursor; nothing to compare
+    }
   }
 
   async latestCursor(): Promise<string> {
@@ -1272,13 +1290,14 @@ export class PgSqlAdapter implements StorageAdapter {
   }
 
   async eventHorizon(after: string): Promise<EventHorizonCheck> {
+    const ahead = after.length > 0 && after !== "0" ? await this.#aheadOf(after.split(".")[0]) : undefined;
     const res = await this.sql.query<Record<string, unknown>>(
       "select idx, event_id, cursor, seq, hash, prev_hash, sig from event_seal order by idx asc limit 1",
     );
-    if (res.rows.length === 0) return { expired: false, horizon: null };
+    if (res.rows.length === 0) return { expired: false, horizon: null, ...(ahead ? { ahead } : {}) };
     const oldest = rowToSeal(res.rows[0]);
     const exists = (await this.sql.query("select 1 from events where seq = $1", [oldest.seq])).rows.length > 0;
-    return resolveEventHorizon(oldest, exists, after);
+    return { ...resolveEventHorizon(oldest, exists, after), ...(ahead ? { ahead } : {}) };
   }
 
   async appendGcEvent(e: EventInput): Promise<EventPosition> {

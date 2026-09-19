@@ -610,6 +610,14 @@ while paging drops the second of an ack's two events (one transaction) at a page
 (`latestCursor`, the horizon, an older client) still means everything after that whole transaction;
 `resolveEventHorizon` reads the xid part. Guard: `test/conformance/suites/events.ts` (package Z).
 
+**A cursor AHEAD of the database is refused as `cursor_expired`, never paged.** After a failover to a
+standby that had not received the tail, the new primary's xids sit below the cursors clients hold, so
+`(xid, seq) > cursor` skipped every new event: 3,830 surviving records missed by every watcher
+(plan-cluster-bench.md phase 3). `getEvents` checks an EMPTY page against
+`pg_snapshot_xmax` (SQLite: `sqlite_sequence`), `eventHorizon` reports `ahead`, the watch endpoint
+410s. Residual: a client away until the new primary passes its cursor is not detected. Guard:
+`test/conformance/suites/events.ts`.
+
 **Every epoch comparison in a claim is NULL-safe on both adapters** (`is not distinct from` on
 Postgres, `is` on SQLite, `?? null` bound). The expired-reclaim paths were not: Postgres bound the
 epoch raw and SQLite `?? 0`, and though a leased row always carries an epoch today, two adapters
@@ -739,6 +747,15 @@ since 2026-08-21 beside `excludeKinds` and `scope`; planted in `test/conformance
   vs 0.18ms** with NODELAY (a put+take+ack cycle went 602ms to 10ms). Simple queries do not show it,
   so microbenchmarks hide it. `src/storage/postgres.ts` wraps `Deno.connect` once, since the driver
   exposes no socket option (raw TCP only, not `fetch`/`Deno.serve`); drop it once the driver does.
+- **A connection that died without the server's goodbye poisoned a deno-postgres slot for good.** A
+  dead socket throws `BrokenPipe`, which `Connection.query` does not treat as a `ConnectionError`,
+  and `end()` writes before its `finally` closes, so `connected` stayed true: one abrupt disconnect
+  failed 120 of the next 120 requests. `pg_terminate_backend` sends FATAL first and never triggered
+  it, so a test built on it passes against the bug; sever the socket instead. `hardenSocket`
+  (`src/storage/postgres.ts`) makes a failed socket answer end-of-stream. Guard: `test/pgreconnect.test.ts`.
+- **The driver's `Pool` loses a slot on every failed reconnect.** `DeferredAccessStack.pop` never
+  returns a client whose connect threw, so an outage emptied the pool and every request waited
+  forever. `ClientPool` in `src/storage/postgres.ts` replaces it. Found by plan-cluster-bench.md phase 3.
 ### Credentials, tokens and sessions
 
 - **A credential on a command line is public: use `RADIA_DEFINITION_TOKEN_FILE`.** Codex takes its
@@ -1154,6 +1171,12 @@ pattern, and `radia team` therefore reports it as scoped. The clear case (no pat
 caught and reported as `TEAMS: ANY`. Same limit applies to reading `radia permissions`.
 
 ### Artifacts, blobs and erasure
+
+- **A deduped S3 put's copy-onto-itself is conditional on the HEAD's ETag.** It re-sends the key
+  header the HEAD read, so an object replaced in between (the same bytes sealed under another data
+  key: an idempotent retry through a second instance) got the old key on the new ciphertext and never
+  decrypted again. `touch` in `src/storage/s3.ts` sends `x-amz-copy-source-if-match`; on 412, `put`
+  writes its own object. Guard: `test/s3race.test.ts` (live S3).
 
 - **A media type the WRITER does not know defaults to `text/plain`, and `nosniff` then makes it
   unplayable.** `mediaTypeFor` (`extensions/ts/workspace.ts`) named no audio or video, so a rendered

@@ -121,7 +121,8 @@ Deno.test("[layering] nothing under src/ reaches for Deno.* outside the platform
   // enforced by nobody, which means it has held by habit.
   //
   // ONE EXCEPTION, and it is documented rather than tolerated: `src/storage/postgres.ts` wraps
-  // `Deno.connect` to set TCP_NODELAY, because the driver exposes no socket hook. Adding a second
+  // `Deno.connect` and `Deno.startTls` to set TCP_NODELAY and to end a connection whose socket
+  // died (`patchDriverSockets`), because the driver exposes no socket hook. Adding a second
   // exception is a decision to make deliberately, here, not a line to slip past review.
   const allowed = new Set(["platform.ts", "storage/postgres.ts"]);
   const violations: string[] = [];

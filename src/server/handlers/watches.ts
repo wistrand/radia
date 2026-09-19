@@ -94,6 +94,17 @@ export async function handleWatchEvents(
   // what the resetting client asked for; the 410 already told it to re-sync by query.
   if (raw != null && raw.length > 0 && raw !== "0") {
     const h = await space.eventHorizon(raw);
+    // AHEAD of the database: read from a log that went further before a failover. A stream from it
+    // would compare new events against a position they never reach. A stream already running when
+    // that happens ends (`getEvents` refuses the cursor) and its reconnect lands here.
+    if (h.ahead) {
+      return problem(
+        410,
+        "cursor_expired",
+        `cursor ${raw} is ahead of this database (next transaction ${h.ahead}): the log it was read from went further, as after a failover to a standby that had not received it; re-sync by query, then reconnect`,
+        { next: h.ahead },
+      );
+    }
     if (h.expired && h.horizon) {
       return problem(
         410,

@@ -64,18 +64,26 @@ interface Identity {
    *  round of the grant probe. */
   agents: RadiaClient[];
   rounds: number;
+  /** The last grant write the space ACKNOWLEDGED for this identity, which is what its final state
+   *  must be. A failover to a standby that never received it undoes it silently. */
+  last?: "grant" | "revoke";
 }
 
 export class AuthRounds {
   readonly totals: AuthTotals = { staleGrant: empty(), staleCredential: empty(), staleDenial: empty() };
   rounds = 0;
+  readonly #identities: Identity[] = [];
+  /** Run tokens whose stop was acknowledged. */
+  readonly #stopped: string[] = [];
 
   private constructor(
     private readonly admins: RadiaClient[],
     private readonly urls: string[],
     private id: Identity,
     private readonly windowMs: number,
-  ) {}
+  ) {
+    this.#identities.push(id);
+  }
 
   /**
    * One fresh agent per call, so a second run never inherits the first one's grant history.
@@ -123,7 +131,10 @@ export class AuthRounds {
 
   /** Round `r`. The writer and revoker rotate with `r`, so every ordered pair of instances is used. */
   async round(r: number): Promise<void> {
-    if (this.id.rounds >= ROUNDS_PER_AGENT) this.id = await AuthRounds.#identity(this.admins, this.urls);
+    if (this.id.rounds >= ROUNDS_PER_AGENT) {
+      this.id = await AuthRounds.#identity(this.admins, this.urls);
+      this.#identities.push(this.id);
+    }
     const { agent, definitionToken, agents } = this.id;
     const writer = this.admins[r % this.admins.length];
     const revoker = this.admins[(r + 1) % this.admins.length];
@@ -133,17 +144,41 @@ export class AuthRounds {
     // A fresh idempotency key per write: the grant identity is the same every round (that is the
     // race under test), and a content key would replay the round-one write instead of appending.
     await writer.put({ kind: "grant", body: grant }, `authprobe:${agent}:grant:${r}`);
+    this.id.last = "grant";
     add(this.totals.staleDenial, await this.#probe(query, "ok"));
 
     await revoker.put({ kind: "grant", body: { ...grant, retired: true } }, `authprobe:${agent}:revoke:${r}`);
+    this.id.last = "revoke";
     add(this.totals.staleGrant, await this.#probe(query, "denied"));
 
     const victim = await writer.createRun(definitionToken);
     const holders = this.urls.map((u) => new RadiaClient(u, victim.runToken));
     await revoker.stopRun(victim.run);
+    this.#stopped.push(victim.runToken);
     add(this.totals.staleCredential, await this.#probe((i) => holders[i].health(), "unauthenticated"));
     this.rounds++;
     this.id.rounds++;
+  }
+
+  /**
+   * The END state against what was acknowledged, through every instance: an identity whose last
+   * acknowledged write was a revocation must be denied, and a run whose stop was acknowledged must
+   * not authenticate. The windowed probes above only look 200ms past each write; a failover to a
+   * standby that never received a write undoes it much later, which only this sees.
+   */
+  async finalCheck(): Promise<{ resurrectedGrants: number; resurrectedRuns: number; identities: number; runs: number }> {
+    let resurrectedGrants = 0, resurrectedRuns = 0;
+    const revoked = this.#identities.filter((id) => id.last === "revoke");
+    for (const id of revoked) {
+      for (let i = 0; i < this.urls.length; i++) {
+        if (await outcome(() => id.agents[i].queryNewest({ kind: AUTHPROBE_KIND }, 1)) === "ok") resurrectedGrants++;
+      }
+    }
+    for (const [k, token] of this.#stopped.entries()) {
+      const c = new RadiaClient(this.urls[k % this.urls.length], token);
+      if (await outcome(() => c.health()) === "ok") resurrectedRuns++;
+    }
+    return { resurrectedGrants, resurrectedRuns, identities: revoked.length, runs: this.#stopped.length };
   }
 
   /** Stale grants plus stale credentials: the counts that are misauthorization. */

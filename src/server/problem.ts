@@ -62,6 +62,9 @@ export function statusFor(code: string, fallback: number): number {
   // 503: the request was fine and the space is up, but the blob store it needs is not answering.
   // The same request succeeds once the store is back, and nothing about it needs changing.
   if (code === "blob_store_unavailable") return 503;
+  // 410, the watch endpoint's answer for a cursor below the retained log, raised here too by a read
+  // whose cursor is AHEAD of the database (`cursorAhead`): either way the position is gone.
+  if (code === "cursor_expired") return 410;
   return fallback;
 }
 

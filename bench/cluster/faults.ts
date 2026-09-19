@@ -9,6 +9,16 @@
 //            the space has moved on. A late settle for a reclaimed lease must be refused.
 //   rolling  restart every instance in turn (SIGTERM, start), one every 12s from 10s.
 //   none     nothing: the control run, since a timeline can drift for reasons of its own.
+//
+// And the database under the instances (phase 3):
+//
+//   failover      SIGKILL the primary at 15s, promote the standby, move the proxy to it.
+//   failover-lag  the same, with the standby's replication link cut at 10s first, as when the link
+//                 degrades before the primary dies. Synchronous: commits wait from 10s and nothing
+//                 acknowledged is lost. ASYNCHRONOUS (--async): what was acknowledged in those 5s
+//                 never reached the standby, and the audit is EXPECTED to find it gone.
+//   partition     every byte between the instances and the database held from 15s to 35s: queries
+//                 hang rather than fail, which is the case a driver without a timeout meets.
 
 import type { Cluster } from "./cluster.ts";
 import type { Fleet } from "./fleet.ts";
@@ -35,6 +45,15 @@ async function restart(c: Cluster, f: Fleet, i: number, mark: Mark): Promise<voi
   await c.startInstance(i);
   f.refresh(i);
   mark(`instance ${i} serving`);
+}
+
+async function failover(c: Cluster, mark: Mark): Promise<void> {
+  mark("primary killed");
+  await c.killPrimary();
+  await c.promoteStandby();
+  mark("standby promoted");
+  c.proxy.retarget(c.standby);
+  mark("proxy retargeted");
 }
 
 export const FAULTS: Record<string, Schedule> = {
@@ -64,6 +83,37 @@ export const FAULTS: Record<string, Schedule> = {
       await at(30);
       mark("SIGCONT instance 1");
       c.signal(1, "SIGCONT");
+    },
+  },
+  failover: {
+    what: "SIGKILL the primary at 15s, promote the standby, move the proxy",
+    run: async (c, _f, mark) => {
+      const at = clock();
+      await at(15);
+      await failover(c, mark);
+    },
+  },
+  "failover-lag": {
+    what: "cut replication at 10s, then fail over at 15s",
+    run: async (c, _f, mark) => {
+      const at = clock();
+      await at(10);
+      await c.cutReplication();
+      mark("replication cut");
+      await at(15);
+      await failover(c, mark);
+    },
+  },
+  partition: {
+    what: "hold every database byte from 15s to 35s",
+    run: async (c, _f, mark) => {
+      const at = clock();
+      await at(15);
+      c.proxy.partition();
+      mark("partitioned");
+      await at(35);
+      c.proxy.heal();
+      mark("healed");
     },
   },
   rolling: {
@@ -128,6 +178,17 @@ export function recoveryReport(r: LoadResult): string {
         (back < 0 ? "not back to 90% in the window" : `back to 90% after ${back - m.second}s`) +
         (served ? (firstAnswer < 0 ? "; never answered" : `; first answer ${firstAnswer - m.second}s after`) : ""),
     );
+    // After the database comes back: when each instance first answered, and how many requests it
+    // still failed in the next 10s. An instance whose pool kept handing out connections that died
+    // with the old primary shows here as late and failing.
+    if (m.what === "proxy retargeted" || m.what === "healed") {
+      const per = t.perInstance.map((p, i) => {
+        const firstOk = p.findIndex((v, s) => s >= m.second && (v ?? 0) > 0);
+        const fails = t.failoversPerInstance[i].slice(m.second, m.second + 10).reduce((a, b) => a + (b ?? 0), 0);
+        return `inst${i} ${firstOk < 0 ? "never" : `+${firstOk - m.second}s`}, ${fails} failed`;
+      });
+      out.push(`         after it: ${per.join("; ")}`);
+    }
   }
   return out.join("\n");
 }

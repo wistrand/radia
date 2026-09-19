@@ -8,8 +8,8 @@
 > the fourth audit, run by CLASS rather than by file; **Package Z (2026-09-04)** is the fifth, an
 > external review re-derived line by line. Both CLOSED the day they opened. **Package AB (2026-09-06)**
 > is the sixth, an external review of the team and market surfaces: nine findings, all nine held.
-> **NO PACKAGE IS OPEN as
-> of 2026-09-06**, and no P0 ever stayed open (K closed 2026-08-03: definitions are revocable).
+> **PACKAGE AC (2026-09-19) IS OPEN**: six problems the cluster benchmark found or left behind,
+> none reproduced as data loss in a supported configuration. Nothing else is open, and no P0 ever stayed open (K closed 2026-08-03: definitions are revocable).
 >
 > **A third audit opened package W on 2026-08-22 and CLOSED it the same day** (fourteen
 > findings across seven root causes, five guards proved red first; two reported findings did not
@@ -71,8 +71,9 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | ~~Z~~ | ~~External review of v2026.8.5: sandbox claims the code did not deliver~~ | ~~P1~~ | **CLOSED 2026-09-02** |
 | ~~Z~~ | ~~External review re-derived: ops gate parse, event cursor, grant `$or` cap, `newestByHash` order~~ | ~~P1/P2~~ | **CLOSED 2026-09-04** (7 of 8 fixed; 1 not found) |
 | ~~AA~~ | ~~Self-audit while building the marketplace: shared code a second convention exposed~~ | ~~P2/P3~~ | **CLOSED 2026-09-06** |
+| AC | Cluster benchmark: a black-holed database hangs every instance, and five smaller gaps | P2/P3 | **OPEN** (opened 2026-09-19) |
 
-**Every package is closed as of 2026-09-06**, AA included (a self-audit rather than a review: the
+**Every package but AC is closed**; AC opened 2026-09-19. AA included (a self-audit rather than a review: the
 marketplace was the first convention to declare over a kind another convention owned, and the
 second to be driven through the MCP adapter, which is what exposed both). T included (2026-08-06; this line said otherwise until
 2026-08-30), Y (2026-08-29) and both Z entries (2026-09-02 and 2026-09-04, external reviews, each
@@ -81,6 +82,23 @@ three places and all three are the ledger; a reviewer reads whichever one they l
 close recorded in one of them is not recorded. Closed lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
+
+## Package AC: what the cluster benchmark left open (2026-09-19), OPEN
+
+Found running and then reviewing [plan-cluster-bench.md](plan-cluster-bench.md) phases 0-3. Four
+defects it found are FIXED there (a dead Postgres socket poisoned its slot, the driver's pool lost a
+slot per failed reconnect, a watch cursor from a lost timeline skipped surviving records, an S3
+dedupe paired one writer's ciphertext with another's key). These six are not. Each was checked
+against source on 2026-09-19; none has a guard yet.
+
+| # | Problem | Severity | Evidence and candidate fix |
+|---|---------|----------|----------------------------|
+| 1 | A black-holed database hangs every instance | P2 | Nothing times out a Postgres query and no socket sets TCP keepalive, so a host that vanishes without resetting its connections leaves every pooled connection waiting until the kernel gives up, and every request waiting on the pool. The benchmark's `partition` recovered only because its proxy held the bytes and delivered them on heal. Candidates: `setKeepAlive` in `patchDriverSockets` (`src/storage/postgres.ts`), a per-query deadline that ends the connection, an acquire timeout in `ClientPool` |
+| 2 | The TLS path of the socket patch is unexecuted | P2 | `patchDriverSockets` wraps `Deno.startTls` and patches the `TcpConn` in place so the upgrade still gets the real one, but no test or benchmark runs against a TLS Postgres, and a managed one will be. Candidate: a TLS-enabled Postgres in `docker/cluster/` and one `pgreconnect` case over it |
+| 3 | A database outage reaches clients as `500 internal` | P3 | A lost connection surfaces from the driver as an unclassified error, so the catch-all answers 500 where the request was fine and a retry would succeed (`blob_store_unavailable` already answers 503 for the same shape). An SDK or load balancer treats the two differently. Candidate: classify driver connection errors as `database_unavailable`, 503, in `statusFor` (`src/server/problem.ts`) |
+| 4 | An empty events page costs a second query on Postgres | P3 | `getEvents` asks `#aheadOf` (`pg_snapshot_xmax`) whenever a page is empty, and the notifier's cross-instance poll reads one event every `CHANGE_POLL_MS` (250ms) per instance while a stream is parked, which on an idle space is usually empty. Candidate: return `xmax` from the same statement |
+| 5 | A cursor from a lost timeline is detected only while it is still ahead | P3 | The check compares the cursor's xid with the database's next one. A watcher disconnected until the promoted primary's xids pass its cursor resumes without a 410 and skips what the new primary wrote below it. Candidate: carry the timeline (or the system identifier plus timeline) in the opaque cursor and refuse a mismatch |
+| 6 | A SQLite downgrade writes records `newer` ranks as oldest | P3 | SQLite fills `write_order` in `insertRecord`, not by a column default, so an older binary writing to an upgraded embedded database leaves it null, and `newer` (`sdk/ts/registry.ts`) ranks a record without `writeOrder` below every record with one: a revocation written during the downgrade loses to an earlier grant. Postgres is unaffected (the default fills it for any binary). Candidate: a trigger that fills it, or compare by `created_at` when either side lacks one |
 
 ## Package AB: an external review of the team and market surfaces (2026-09-06), CLOSED 2026-09-06
 

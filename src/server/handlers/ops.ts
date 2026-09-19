@@ -179,6 +179,10 @@ export async function handleEvents(space: Space, url: URL, scope?: StatsScope | 
   // response says where the log now begins. Unlike the watch's 410, the sentinel is INCLUDED:
   // "after=0" is exactly the read that needs the note.
   const h = await space.eventHorizon(after);
+  // A cursor AHEAD of the database (read before a failover to a standby that had not received it)
+  // would page empty forever. Kept to this endpoint's never-410 rule: an empty page whose `nextAfter`
+  // is the head, and `cursorAhead` saying why a follower jumped there.
+  if (h.ahead) return Response.json({ events: [], nextAfter: await space.latestCursor(), cursorAhead: h.ahead });
   const truncated = h.expired && h.horizon ? { logBeginsAfter: h.horizon.cursor, sweptBefore: h.horizon.swept } : {};
   if (!scope) {
     const events = await space.getEvents(after, limit);

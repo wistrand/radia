@@ -2666,7 +2666,16 @@ export class Space {
     // remote burst into K full fan-outs, in exactly the multi-instance case the kind-aware wakeup
     // was built for (audit package W6). One event is still enough to answer "did anything change";
     // what the cursor must not do is crawl.
-    const events = await this.storage.getEvents(this.changeCursor, 1);
+    let events;
+    try {
+      events = await this.storage.getEvents(this.changeCursor, 1);
+    } catch (e) {
+      // This instance's own cursor is ahead of the database (a failover to a standby that had not
+      // received it): restart from the head and report a change, or no foreign write wakes anyone.
+      if (!(e instanceof RadiaError && e.code === "cursor_expired")) throw e;
+      this.changeCursor = await this.storage.latestCursor();
+      return true;
+    }
     if (events.length === 0) return false;
     this.changeCursor = await this.storage.latestCursor();
     return true;

@@ -1008,7 +1008,10 @@ paths:
         Resume with `Last-Event-ID` (or `?cursor=`); delivery continues after that seq.
         An explicit cursor older than the retained event log returns 410 cursor_expired,
         with `horizon` (resume from it after re-syncing by query) and `swept` in the
-        problem body. The sentinel `0` (or no cursor) NEVER 410s: it starts from the
+        problem body. So does a cursor AHEAD of the database, one read before a failover to a
+        standby that had not received it, with `next` (the database's next transaction) in the
+        body: resuming from it would skip new events in silence. A stream already open when that
+        happens ends, and its reconnect gets the 410. The sentinel `0` (or no cursor) NEVER 410s: it starts from the
         oldest retained event, which is how a client recovers after a 410. The event
         sweep that creates a horizon is M2; until then the check finds nothing to refuse.
 
@@ -1823,6 +1826,12 @@ paths:
                   events: { type: array, items: { $ref: "#/components/schemas/Event" } }
                   logBeginsAfter: { type: string, description: The truncation horizon cursor; the log is complete after it. }
                   sweptBefore: { type: integer, description: How many events event-log GC removed below the horizon. }
+                  cursorAhead:
+                    type: string
+                    description: >-
+                      Present when `after` names a transaction this database never assigned (read before a
+                      failover to a standby that had not received it): the database's next transaction.
+                      `events` is empty and `nextAfter` is the current head; re-sync by query.
 
   /ops/records/{recordId}/envelope:
     get:
