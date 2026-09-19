@@ -753,6 +753,11 @@ since 2026-08-21 beside `excludeKinds` and `scope`; planted in `test/conformance
   failed 120 of the next 120 requests. `pg_terminate_backend` sends FATAL first and never triggered
   it, so a test built on it passes against the bug; sever the socket instead. `hardenSocket`
   (`src/storage/postgres.ts`) makes a failed socket answer end-of-stream. Guard: `test/pgreconnect.test.ts`.
+- **Every Postgres operation has a deadline, and a client that misses it is replaced, never reused.**
+  The driver times out nothing, so a vanished host held queries (and the pool behind them) until the
+  kernel gave up. `withConn` bounds the slot wait, the connect and the operation (`operationTimeoutMs`,
+  30s) and answers `database_unavailable` (503). Reusing the client is the trap: its abandoned query
+  still settles later and releases its query lock into the next session. Guard: `test/pgreconnect.test.ts`.
 - **The driver's `Pool` loses a slot on every failed reconnect.** `DeferredAccessStack.pop` never
   returns a client whose connect threw, so an outage emptied the pool and every request waited
   forever. `ClientPool` in `src/storage/postgres.ts` replaces it. Found by plan-cluster-bench.md phase 3.

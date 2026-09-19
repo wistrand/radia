@@ -75,15 +75,29 @@ Deno.test({
   },
 });
 
-/** A TCP forwarder to the test server that can refuse service: while `down`, it accepts and closes at
- *  once, which is what a client meets between a primary's death and its replacement. */
-function flakyProxy(): { url: string; down: boolean; sever(): void; close(): void } {
+/**
+ * A TCP forwarder to the test server with three faults. `down`: accept and close at once, what a
+ * client meets between a primary's death and its replacement. `sever()`: drop every open connection.
+ * `blackhole`: a host that vanished without a word; every connection open when it starts is LOST
+ * (its bytes dropped, forever), and a connection made while it holds is accepted and never
+ * forwarded. Clearing it lets NEW connections through, as a database back at its address would.
+ */
+function flakyProxy(): { url: string; down: boolean; blackhole: boolean; sever(): void; close(): void } {
   const target = new URL(PG_URL!);
   const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
   const open = new Set<Deno.Conn>();
+  const lost = new Set<Deno.Conn>();
+  let blackhole = false;
   const state = {
     url: "",
     down: false,
+    get blackhole() {
+      return blackhole;
+    },
+    set blackhole(on: boolean) {
+      if (on) for (const c of open) lost.add(c);
+      blackhole = on;
+    },
     /** Drop every open connection, as the death of the server at the other end would. */
     sever() {
       for (const c of open) {
@@ -96,11 +110,23 @@ function flakyProxy(): { url: string; down: boolean; sever(): void; close(): voi
     close() {
       listener.close();
       state.sever();
+      for (const c of lost) {
+        try {
+          c.close();
+        } catch { /* already */ }
+      }
     },
   };
-  const pipe = async (a: Deno.Conn, b: Deno.Conn) => {
+  /** Copy one way; a connection marked lost swallows what it reads. */
+  const pump = async (from: Deno.Conn, to: Deno.Conn) => {
+    const buf = new Uint8Array(64 * 1024);
     try {
-      await a.readable.pipeTo(b.writable);
+      for (;;) {
+        const n = await from.read(buf);
+        if (n === null) return;
+        if (lost.has(from) || lost.has(to)) continue;
+        for (let off = 0; off < n;) off += await to.write(buf.subarray(off, n));
+      }
     } catch { /* closed */ }
   };
   (async () => {
@@ -109,9 +135,16 @@ function flakyProxy(): { url: string; down: boolean; sever(): void; close(): voi
         client.close();
         continue;
       }
+      if (blackhole) {
+        // Accepted and never answered: a connect to a host that is not there.
+        lost.add(client);
+        open.add(client);
+        pump(client, client);
+        continue;
+      }
       const upstream = await Deno.connect({ hostname: target.hostname, port: Number(target.port || 5432) });
       open.add(client).add(upstream);
-      Promise.race([pipe(client, upstream), pipe(upstream, client)]).finally(() => {
+      Promise.race([pump(client, upstream), pump(upstream, client)]).finally(() => {
         for (const c of [client, upstream]) {
           open.delete(c);
           try {
@@ -127,6 +160,62 @@ function flakyProxy(): { url: string; down: boolean; sever(): void; close(): voi
   state.url = via.toString();
   return state;
 }
+
+/** How a query ended, within `ms`: "ok", its error code, or "hung". */
+async function within(ms: number, p: Promise<unknown>): Promise<string> {
+  return await Promise.race([
+    p.then(() => "ok", (e) => (e as { code?: string }).code ?? String(e)),
+    new Promise<string>((r) => setTimeout(() => r("hung"), ms)),
+  ]);
+}
+
+Deno.test({
+  name: "postgres: a black-holed connection fails its operation within the deadline, and the pool recovers",
+  ...needsPg,
+  fn: async () => {
+    // Nothing in the driver times out, so before the deadline a vanished host held every query, and
+    // every request queued behind the pool, until the kernel gave up (plan-audit-remediation.md AC1).
+    const proxy = flakyProxy();
+    const a = new PostgresAdapter(proxy.url, { schema: `radia_reconnect_${newUlid()}`, ephemeral: true, poolSize: 2, operationTimeoutMs: 800 });
+    await a.init();
+    try {
+      await raw(a).query("select 1");
+      proxy.blackhole = true;
+      const t0 = performance.now();
+      assertEquals(await within(5_000, raw(a).query("select 1")), "database_unavailable", "a black-holed query must fail, not hang");
+      assert(performance.now() - t0 < 3_000, `it took ${(performance.now() - t0).toFixed(0)}ms against a deadline of 800ms`);
+      proxy.blackhole = false;
+      // Every slot that still holds a lost connection costs one more deadline, then is replaced.
+      const r = await afterwards(a, 5);
+      assert(r.lastOk, "the pool never recovered from the black hole");
+      assert(r.failed <= 2, `${r.failed} of 5 failed after the black hole cleared; at most one per slot may`);
+    } finally {
+      proxy.blackhole = false;
+      await a.close().catch(() => {});
+      proxy.close();
+    }
+  },
+});
+
+Deno.test({
+  name: "postgres: a connect into a black hole fails within the deadline, and the next one works",
+  ...needsPg,
+  fn: async () => {
+    const proxy = flakyProxy();
+    const a = new PostgresAdapter(proxy.url, { poolSize: 1, operationTimeoutMs: 800 });
+    try {
+      await a.init();
+      proxy.blackhole = true;
+      assertEquals(await within(5_000, raw(a).query("select 1")), "database_unavailable", "a connect that is never answered must fail, not hang");
+      proxy.blackhole = false;
+      assertEquals(await within(5_000, raw(a).query("select 1")), "ok");
+    } finally {
+      proxy.blackhole = false;
+      await a.close().catch(() => {});
+      proxy.close();
+    }
+  },
+});
 
 Deno.test({
   name: "postgres: more failed reconnects than the pool has slots still leave a working pool",
