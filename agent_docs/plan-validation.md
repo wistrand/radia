@@ -117,7 +117,8 @@ which is the rule `concurrency.test.ts` states, and every adapter gets the same 
 CANNOT fail inside the storage transaction, so transactional rollback is not what is under test:
 what is, is the contract the runtime owes a caller across a connection that died. A real primary
 kill and replica promotion stays a DEPLOYMENT test, because it needs a cluster and exercises the
-driver's reconnect rather than any guarantee this codebase makes.
+driver's reconnect rather than any guarantee this codebase makes; it is planned in
+[plan-cluster-bench.md](plan-cluster-bench.md) phase 3.
 
 **The storm case makes its horizon with the real sweep** (`gcEvents`), not the planted truncation
 the older boundary tests use, and reconnects 24 streams at once. Beyond the 410 it pins two things

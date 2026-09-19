@@ -69,7 +69,7 @@ file's own header, never here.
 | `openapi/radia-ext.yaml`                | the extension HTTP bindings (`radia serve-ext` / `--ext`), versioned per extension and NOT frozen. [plan-extension-http.md](agent_docs/plan-extension-http.md) |
 | `agent_docs/`                           | design deep dives, one topic per file (linked below)       |
 | `docs/`                                 | the published site (no build); reader-facing, so it summarises and `agent_docs/` stays the record. `test/docs.test.ts` checks every claim a machine can |
-| `docker/`                               | deployment recipes, not examples: `keycloak/` (a real OIDC issuer), `s3/` (an object store for artifact bytes), `py-parity/` (pinned Pythons for the SDK parity suite). README in each |
+| `docker/`                               | deployment recipes, not examples: `keycloak/` (a real OIDC issuer), `s3/` (an object store for artifact bytes), `py-parity/` (pinned Pythons for the SDK parity suite), `cluster/` (primary, standby and S3 for `bench/cluster/`). README in each |
 | `notes/radia-runtime-outline-v0.3.md`   | origin design outline; provenance, not maintained doc      |
 
 Build/run: `deno task dev` (no build step; bare `--db` persists under `./.radia`, `--db <path>` to a
@@ -116,6 +116,7 @@ Architecture and design:
 Plans and research (status in each doc's header; the guard in `test/agentdocs.test.ts` holds this list to it):
 
 - [plan-m0-implementation.md](agent_docs/plan-m0-implementation.md): the phase-by-phase M0 record. [plan-milestones.md](agent_docs/plan-milestones.md): M0–M3 scope. [plan-validation.md](agent_docs/plan-validation.md): baselines and the fault matrix, complete.
+- [plan-cluster-bench.md](agent_docs/plan-cluster-bench.md): PHASES 0-1 BUILT (`bench/cluster/`), phases 2-4 planned. N instances, a standby and S3 under mixed load and scheduled faults, reporting violation counts beside throughput. Read before adding a multi-instance or failover measurement.
 - [plan-workspaces.md](agent_docs/plan-workspaces.md): the workspace build sequence, phases 0-13 DONE, ordered by model risk. [plan-executors.md](agent_docs/plan-executors.md): the chat's runners joined to the workspace agents' one, phases 1-3 BUILT. Read before adding a code runner or touching `save_procedure`.
 - [plan-chat-turn.md](agent_docs/plan-chat-turn.md): BUILT. The turn as records, with two rejected designs. Read before adding a state record to sequence anything or making `message` claimable.
 - [plan-chat-web-ui.md](agent_docs/plan-chat-web-ui.md): BUILT. The chat as a page joining a running space over SSO. Read before touching `examples/chat/client/` rendering or `message.index`.
