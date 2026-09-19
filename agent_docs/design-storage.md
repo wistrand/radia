@@ -208,6 +208,14 @@ enforced **in the storage transaction**, which is what makes this safe:
   effect no matter which instance handles the retry.
 - **Ordering/audit**: the append-only `events` table (monotonic seq) is written in the same
   transaction as each mutation; every instance reads one truth.
+- **Registry order**: `records.write_order` comes from one sequence (`records_write_order_seq`,
+  CACHE 1), so which of two records for a key is newer is decided by the database, not by a
+  process clock (`newer`, `sdk/ts/registry.ts`). Gaps from rollback or failover are harmless.
+
+Two deployment requirements follow, because authorization is resolved from records per request:
+authorization reads must see the latest committed write, so never point an instance at an
+ASYNCHRONOUS read replica; and a failover to an asynchronous standby can lose an acknowledged
+revocation, so HA for a space with grants needs synchronous replication.
 
 So the invariant "the runtime is the sole DB client" means *no non-runtime client speaks SQL*
 (agents speak the protocol), **not** one process. Requests carry a Bearer token and hold no

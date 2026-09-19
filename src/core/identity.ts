@@ -1105,11 +1105,11 @@ export async function resolveCredential(host: IdentityHost, token: string, now: 
  * The newest record of `kind` carrying this token hash. That is the current state of that
  * credential, because a stop or a revocation is written as a successor with the same hash.
  *
- * NEWEST BY THE DATABASE CLOCK, not by id. An id is a ULID minted by the INSTANCE that wrote the
- * record, so two instances with skewed clocks can give a stop a smaller id than the run it stops,
- * and "the newest by id" then resolves a stopped token as live. `created_at` is the DB clock and
- * `newer` reads it first, which is the rule every registry projection follows. Still one NARROW
- * read of one hash (plan-bounded-reads.md): a handful of rows by id, the newest of them by clock.
+ * NEWEST BY `newer`, not by id. An id is a ULID minted by the INSTANCE that wrote the record, so
+ * two instances with skewed clocks can give a stop a smaller id than the run it stops, and "the
+ * newest by id" then resolves a stopped token as live. `newer` reads the database-assigned
+ * `writeOrder` first, which is the rule every registry projection follows. Still one NARROW read
+ * of one hash (plan-bounded-reads.md): a handful of rows by id, the newest of them by `newer`.
  */
 export async function newestByHash(host: IdentityHost, kind: string, tokenHash: string): Promise<unknown | undefined> {
   const rows = await host.query({ kind, match: { tokenHash } }, 8, { dir: "desc" });

@@ -91,7 +91,7 @@ export interface SqlBackend extends Sql {
  *  ignores unknown columns, so a wildcard would fail silently, as bytes on the wire rather than as
  *  an error. */
 const RECORD_COLS = "id, kind, body_json, body_sha256, client_meta, created_by, delegation_context, " +
-  "parent_ids, taint, taint_labels, schema_version, created_at, deadline_at, retention_until";
+  "parent_ids, taint, taint_labels, schema_version, created_at, deadline_at, retention_until, write_order";
 
 const RECORD_COLS_R = RECORD_COLS.split(", ").map((c) => `r.${c}`).join(", ");
 
@@ -264,6 +264,15 @@ create index if not exists idx_records_id_c on records (id collate "C");
 -- permanent), so the index holds only the sweepable minority. Same index, same reason, in the
 -- SQLite schema.
 create index if not exists idx_records_retention on records (retention_until) where retention_until is not null;
+-- records.write_order: the authoritative "which is newer" (newer in sdk/ts/registry.ts), so two
+-- instances writing one key inside one DB millisecond are ordered by the database, not by the
+-- writing process's ULID clock. CACHE 1 is load-bearing: a per-session cache hands each connection
+-- its own block, so a later write could draw a lower number. Added nullable and the default set
+-- after: a volatile default on ADD COLUMN backfills existing rows in physical order, and a legacy
+-- row must stay null so newer orders it by created_at. Old binaries get a value through the default.
+create sequence if not exists records_write_order_seq cache 1;
+alter table records add column if not exists write_order bigint;
+alter table records alter column write_order set default nextval('records_write_order_seq');
 -- One-time backfill of the reverse edge index for a database written by an older build. The
 -- guard makes this free on every later startup: the NOT EXISTS is evaluated once, and on a
 -- populated table the whole INSERT reads nothing. A space that genuinely has no edges (no record
@@ -1413,10 +1422,12 @@ export class PgSqlAdapter implements StorageAdapter {
         if (!found.has(pid)) throw new RadiaError("parent_not_found", `parent ${pid} does not exist`);
       }
     }
-    await tx.query(
-      `insert into records (${RECORD_COLUMNS}) values (${pgPlaceholders(RECORD_COLUMN_COUNT)})`,
+    const wo = await tx.query<{ write_order: string }>(
+      `insert into records (${RECORD_COLUMNS}) values (${pgPlaceholders(RECORD_COLUMN_COUNT)})
+       returning write_order::text as write_order`,
       recordInsertValues(input),
     );
+    input.record.runtimeMeta.writeOrder = wo.rows[0].write_order;
     await tx.query(
       `insert into record_runtime
          (record_id, kind, state, attempt, available_at, claim_until, deadline_at, effective_priority)

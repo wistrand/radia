@@ -3,7 +3,8 @@
 // An id is a ULID minted by whichever instance wrote the record. Two instances with skewed clocks
 // can hand a stop a smaller id than the run it stops, and "newest by id" then resolves a stopped
 // token as live: the same shape as the three security incidents in plan-bounded-reads.md's census.
-// `created_at` is the DB clock; `newer` (sdk/ts/registry.ts) reads it first.
+// `newer` (sdk/ts/registry.ts) reads the database's `writeOrder` first, then the DB-clock
+// `created_at`; these fixtures carry no write order, so the clock decides.
 
 import { assertEquals } from "@std/assert";
 import { type IdentityHost, newestByHash } from "../src/core/identity.ts";
