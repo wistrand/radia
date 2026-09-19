@@ -15,6 +15,7 @@ import { Client } from "@db/postgres";
 import { NOW_SQL, PgSqlAdapter, type Sql, type SqlBackend, type SqlResult } from "./pgbase.ts";
 import type { RawRow } from "./row.ts";
 import { newUlid } from "../core/ids.ts";
+import { RadiaError } from "../core/errors.ts";
 
 // Two fixes to deno-postgres (0.19.x) sockets, applied by wrapping `Deno.connect` and `Deno.startTls`
 // once, since the driver exposes no socket hook. Only the driver's connects are affected (radia's
@@ -98,29 +99,68 @@ function patchDriverSockets(): void {
   });
 }
 
+/** Thrown by `withDeadline` when the operation outlived its budget. Internal: callers see
+ *  `database_unavailable`. */
+class Deadline extends Error {}
+
+/** Race `p` against `ms`. The loser is not cancelled (the driver has no cancellation), so its
+ *  eventual rejection is caught here: an unhandled one would end the process. */
+function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
+  p.catch(() => {});
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    p,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Deadline()), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+function databaseUnavailable(ms: number, what: string): RadiaError {
+  return new RadiaError(
+    "database_unavailable",
+    `the database did not answer ${what} within ${ms}ms. A write's outcome is unknown: retry it with ` +
+      `the same idempotency key, which returns the first result if it did commit.`,
+  );
+}
+
 /**
- * The connection pool, in place of the driver's `Pool`, which loses a slot for good whenever
- * reconnecting it fails: `DeferredAccessStack.pop` takes the client off the stack and does not put
- * it back when its connect throws, as every connect does while a primary is down. After as many
- * failed connects as the pool is wide, every request waited forever on an empty pool (measured
- * during a failover, plan-cluster-bench.md phase 3). Here a failed connect returns the client first.
+ * The connection pool, in place of the driver's `Pool`, for two reasons.
+ *
+ * The driver's pool loses a slot for good whenever reconnecting it fails: `DeferredAccessStack.pop`
+ * takes the client off the stack and does not put it back when its connect throws, as every connect
+ * does while a primary is down. After as many failed connects as the pool was wide, every request
+ * waited forever on an empty pool (measured during a failover, plan-cluster-bench.md phase 3). Here a
+ * failed connect returns the client first.
+ *
+ * And NOTHING in the driver times out. A database that vanishes without resetting its connections (a
+ * dead host, a dropped path) leaves a query waiting on a socket until the kernel gives up, which for
+ * an idle connection is never, and every request queued behind the pool waits with it
+ * (plan-audit-remediation.md AC1). So every step has a deadline: waiting for a slot, connecting, and
+ * the operation. A client that misses one is REPLACED, never reused: its query is still pending in
+ * the driver, and when it settles it releases the connection's internal query lock into whatever
+ * session the client has by then, which would let two queries interleave on one connection.
  */
 class ClientPool {
   readonly #all: Client[];
   readonly #idle: Client[];
   readonly #waiters: Array<(c: Client) => void> = [];
 
-  constructor(url: string, size: number) {
+  constructor(private readonly url: string, size: number, private readonly timeoutMs: number) {
     this.#all = Array.from({ length: size }, () => new Client(url)); // lazy: connects on acquire
     this.#idle = [...this.#all];
   }
 
   async acquire(): Promise<Client> {
-    const c = this.#idle.pop() ?? await new Promise<Client>((resolve) => this.#waiters.push(resolve));
+    const c = this.#idle.pop() ?? await this.#wait();
     if (!c.connected) {
       try {
-        await c.connect();
+        await withDeadline(c.connect(), this.timeoutMs);
       } catch (e) {
+        if (e instanceof Deadline) {
+          this.replace(c);
+          throw databaseUnavailable(this.timeoutMs, "a connect");
+        }
         await this.release(c);
         throw e;
       }
@@ -128,17 +168,50 @@ class ClientPool {
     return c;
   }
 
+  /** Wait for a released client, for no longer than the deadline: with every slot held by an
+   *  operation that will itself time out, queueing forever would outlast all of them. */
+  #wait(): Promise<Client> {
+    return new Promise<Client>((resolve, reject) => {
+      const waiter = (c: Client) => {
+        clearTimeout(timer);
+        resolve(c);
+      };
+      const timer = setTimeout(() => {
+        const i = this.#waiters.indexOf(waiter);
+        if (i >= 0) this.#waiters.splice(i, 1);
+        reject(databaseUnavailable(this.timeoutMs, "with a free connection"));
+      }, this.timeoutMs);
+      this.#waiters.push(waiter);
+    });
+  }
+
   /** A client handed back inside a transaction (its commit or rollback failed) is in no state to
    *  reuse, so it is ended and the next acquire reconnects it. */
   async release(c: Client): Promise<void> {
     if (c.connected && c.session.current_transaction !== null) await c.end().catch(() => {});
+    this.#handOut(c);
+  }
+
+  /** Abandon `c` (its operation outlived the deadline) and put a fresh client in its slot. Ending it
+   *  closes the socket, which settles the abandoned operation; that is left to run in the background,
+   *  since on a black-holed connection it may take as long as the kernel does. */
+  replace(c: Client): void {
+    c.end().catch(() => {});
+    const i = this.#all.indexOf(c);
+    if (i < 0) return; // already replaced: its slot has a fresh client
+    const fresh = new Client(this.url);
+    this.#all[i] = fresh;
+    this.#handOut(fresh);
+  }
+
+  #handOut(c: Client): void {
     const waiter = this.#waiters.shift();
     if (waiter) waiter(c);
     else this.#idle.push(c);
   }
 
   async end(): Promise<void> {
-    await Promise.all(this.#all.map((c) => c.end().catch(() => {})));
+    await Promise.all(this.#all.map((c) => withDeadline(c.end(), this.timeoutMs).catch(() => {})));
   }
 }
 
@@ -149,6 +222,11 @@ export interface PostgresOptions {
   ephemeral?: boolean;
   /** Pool size (concurrent connections). Default 8. */
   poolSize?: number;
+  /** The most one database operation may take, waiting for a connection and connecting included,
+   *  before it fails `database_unavailable` and its connection is replaced. Default 30s: well past
+   *  any single statement this runtime issues (GC and compaction work in bounded batches), and
+   *  short enough that a vanished database is reported rather than waited on forever. */
+  operationTimeoutMs?: number;
 }
 
 /** Wrap a deno-postgres connection pool to the SqlBackend port. */
@@ -157,16 +235,18 @@ class PostgresBackend implements SqlBackend {
   readonly #schema?: string;
   readonly #ephemeral: boolean;
   readonly #poolSize: number;
+  readonly #timeoutMs: number;
 
   constructor(private readonly url: string, opts: PostgresOptions = {}) {
     patchDriverSockets(); // before any connection is opened
     this.#schema = opts.schema;
     this.#ephemeral = opts.ephemeral ?? false;
     this.#poolSize = opts.poolSize ?? 8;
+    this.#timeoutMs = opts.operationTimeoutMs ?? 30_000;
   }
 
   async init(): Promise<void> {
-    this.#pool = new ClientPool(this.url, this.#poolSize);
+    this.#pool = new ClientPool(this.url, this.#poolSize, this.#timeoutMs);
     if (this.#schema && this.#ephemeral) {
       await this.withConn((c) => c.queryArray(`create schema if not exists "${this.#schema}"`).then(() => {}));
     }
@@ -233,12 +313,23 @@ class PostgresBackend implements SqlBackend {
     if (!this.#pool) throw new Error("PostgresBackend not initialized");
     const pool = this.#pool;
     const c = await pool.acquire();
-    try {
+    const op = (async () => {
       if (this.#schema) await c.queryArray(`set search_path to "${this.#schema}"`);
       return await fn(c);
-    } finally {
+    })();
+    let out: T;
+    try {
+      out = await withDeadline(op, this.#timeoutMs);
+    } catch (e) {
+      if (e instanceof Deadline) {
+        pool.replace(c);
+        throw databaseUnavailable(this.#timeoutMs, "an operation");
+      }
       await pool.release(c);
+      throw e;
     }
+    await pool.release(c);
+    return out;
   }
 }
 

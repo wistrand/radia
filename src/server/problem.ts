@@ -65,6 +65,9 @@ export function statusFor(code: string, fallback: number): number {
   // 410, the watch endpoint's answer for a cursor below the retained log, raised here too by a read
   // whose cursor is AHEAD of the database (`cursorAhead`): either way the position is gone.
   if (code === "cursor_expired") return 410;
+  // 503 like `blob_store_unavailable`: the request was fine, the database did not answer in time
+  // (`operationTimeoutMs`, src/storage/postgres.ts), and the same request can succeed on a retry.
+  if (code === "database_unavailable") return 503;
   return fallback;
 }
 

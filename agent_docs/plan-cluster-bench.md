@@ -290,8 +290,9 @@ failover can undo a revocation long after the 200ms windows).
    copy makes `put` write its own complete object. Re-run: the partition arm 0 violations. Guard:
    `test/s3race.test.ts`. Unexamined: the file store's key sidecar under two concurrent puts.
 
-What is still open (a black-holed database, the unexecuted TLS path, 500 for an outage, and three
-smaller gaps) is [plan-audit-remediation.md](plan-audit-remediation.md) package AC.
+What is still open (the unexecuted TLS path, 500 for an outage, and two smaller gaps) is
+[plan-audit-remediation.md](plan-audit-remediation.md) package AC; a black-holed database and the
+idle cost of the cursor check were fixed there since.
 
 Also found: a database outage reaches clients as `500 internal`, not a retryable `503`; the SDK
 and any load balancer treat those differently. Harness fixes: `run.ts` tears down on SIGTERM (a
