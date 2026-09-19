@@ -34,6 +34,7 @@
 
 import { Space } from "../src/core/space.ts";
 import { SqliteAdapter } from "../src/storage/sqlite.ts";
+import { benchEnv, sqliteVersion } from "./env.ts";
 
 const argv = Deno.args;
 const flag = (name: string, fallback: number) => {
@@ -262,7 +263,9 @@ function table(rows: Arm[], items: number): string {
 await queueArm(ITEMS, false, false);
 await routedArm(ITEMS, false, false);
 
-console.log(`baselines: ${ITEMS} items, sqlite in-memory, one process, no model\n`);
+console.log(`baselines: ${ITEMS} items, sqlite in-memory, one process, no model`);
+for (const line of [...await benchEnv(), `sqlite:  ${sqliteVersion()}`]) console.log(line);
+console.log("");
 
 console.log("CLEAN RUN: what coordination costs when nothing goes wrong.");
 console.log(table([staticArm(ITEMS, false, false), await queueArm(ITEMS, false, false), await routedArm(ITEMS, false, false)], ITEMS));

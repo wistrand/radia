@@ -4,6 +4,7 @@
 //   deno task bench -- --suite lineage  one suite
 //   deno task bench -- --scale 4        4x the iterations (slower, steadier numbers)
 //   deno task bench -- --adapter sqlite one adapter
+//   deno task bench -- --trials 5       5 independent runs per bench: pooled tails, SPREAD of p50s
 //   RADIA_PG_URL=postgres://… deno task bench      adds a live Postgres column
 //
 // What these numbers are: single-process, in-memory storage by default, measuring the RUNTIME
@@ -19,7 +20,8 @@ import { SqliteAdapter } from "../src/storage/sqlite.ts";
 import { PostgresAdapter } from "../src/storage/postgres.ts";
 import type { StorageAdapter } from "../src/storage/adapter.ts";
 import { newUlid } from "../src/core/ids.ts";
-import { type Bench, renderTable, withSpace } from "./harness.ts";
+import { type Bench, type Measurement, pool, renderTable, withSpace } from "./harness.ts";
+import { benchEnv, postgresSettings, sqliteVersion } from "./env.ts";
 import { recordBenches } from "./suites/records.ts";
 import { claimBenches } from "./suites/claims.ts";
 import { lineageBenches } from "./suites/lineage.ts";
@@ -39,6 +41,11 @@ function arg(name: string): string | undefined {
 }
 
 const scale = Number(arg("scale") ?? "1");
+const trials = Number(arg("trials") ?? "1");
+if (!Number.isInteger(trials) || trials < 1) {
+  console.error(`--trials must be a positive integer, got '${arg("trials")}'`);
+  Deno.exit(2);
+}
 const only = arg("suite");
 const onlyAdapter = arg("adapter");
 const benches = only ? ALL.filter((b) => b.name === only || b.name.startsWith(only)) : ALL;
@@ -57,18 +64,35 @@ if (pgUrl) {
 }
 const running = onlyAdapter ? factories.filter((f) => f.name === onlyAdapter) : factories;
 
-console.log(`radia bench (scale ${scale}), adapters: ${running.map((f) => f.name).join(", ")}${pgUrl ? "" : "  (set RADIA_PG_URL for a live Postgres column)"}`);
+/** The database version behind each adapter, and for Postgres the settings that decide write cost. */
+async function describe(f: { name: string; create: () => StorageAdapter }): Promise<string> {
+  if (f.name === "sqlite") return sqliteVersion();
+  const adapter = f.create();
+  await adapter.init();
+  try {
+    return await postgresSettings(adapter);
+  } finally {
+    await adapter.close();
+  }
+}
+
+console.log(`radia bench (scale ${scale}, trials ${trials}), adapters: ${running.map((f) => f.name).join(", ")}${pgUrl ? "" : "  (set RADIA_PG_URL for a live Postgres column)"}`);
+for (const line of await benchEnv()) console.log(line);
+for (const f of running) console.log(`${`${f.name}:`.padEnd(9)}${await describe(f)}`);
 console.log("in-memory storage, single process, no HTTP. A floor for latency, not capacity planning\n");
 
 const started = performance.now();
 for (const bench of benches) {
-  const rows: { adapter: string; m: import("./harness.ts").Measurement }[] = [];
+  const rows: { adapter: string; m: Measurement }[] = [];
   for (const f of running) {
     // The blob suites do not touch storage; run them once rather than once per adapter.
     if (bench.name === "blobs" && f.name !== running[0].name) continue;
-    await withSpace(f.create(), async (space, adapter) => {
-      for (const m of await bench.run({ space, scale, adapter })) rows.push({ adapter: bench.name === "blobs" ? "-" : f.name, m });
-    });
+    // Each trial on a fresh space, so a trial measures the same starting state as the first.
+    const runs: Measurement[][] = [];
+    for (let t = 0; t < trials; t++) {
+      runs.push(await withSpace(f.create(), (space, adapter) => bench.run({ space, scale, adapter })));
+    }
+    for (const m of trials > 1 ? pool(runs) : runs[0]) rows.push({ adapter: bench.name === "blobs" ? "-" : f.name, m });
   }
   console.log(`## ${bench.name}`);
   console.log(renderTable(rows));

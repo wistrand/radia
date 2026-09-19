@@ -8,6 +8,7 @@ deno task bench                          # every suite, both embedded adapters (
 deno task bench -- --suite lineage       # one suite
 deno task bench -- --adapter sqlite      # one adapter
 deno task bench -- --scale 4             # 4x iterations: slower, steadier
+deno task bench -- --trials 5            # 5 independent runs per bench, pooled, with a SPREAD column
 RADIA_PG_URL=postgres://… deno task bench    # adds a live Postgres column
 
 deno run -A bench/deployment.ts --url http://127.0.0.1:7899   # a real server, over HTTP
@@ -16,8 +17,14 @@ deno run -A bench/deployment.ts --url http://127.0.0.1:7899   # a real server, o
 Scaling suites account for most of the run time because they populate spaces with up to 40,000
 records. Use `--suite` for focused iteration and the full run for before/after comparisons.
 
-On the same machine, changes below ten percent should be treated as noise unless repeated runs
-confirm them.
+On the same machine, a difference is noise unless it exceeds the SPREAD of a `--trials` run:
+each trial runs the bench on a fresh space, samples are pooled across trials, and SPREAD is
+(max - min) of the per-trial p50s over their median, so p50 is then the median trial.
+
+Every run prints what produced it first: commit (flagged when there are uncommitted changes),
+Deno, OS, CPU, memory, and per adapter the database version, with `fsync`, `synchronous_commit`
+and `shared_buffers` for a Postgres dialect (`env.ts`). `deployment.ts` prints the server's
+reported version and storage instead, since it cannot see the server's database.
 
 ## How to read the numbers
 
@@ -28,7 +35,9 @@ throughput. `deployment.ts` measures a running server over HTTP. Nothing here as
 prints, and a regression is read off the table by a person.
 
 Every row carries p50/p95/p99 rather than a mean, because the tail is what a stalled agent
-feels. Scaling suites re-measure the *same* operation as the space fills; a rising p50 with a
+feels. A percentile with too few samples behind it prints `-`: p95 needs 20, p99 needs 100
+(`MIN_SAMPLES`, `harness.ts`), because at 20 samples a p99 is the max. `--trials` and `--scale`
+both raise the count. Scaling suites re-measure the *same* operation as the space fills; a rising p50 with a
 constant result size is the signal.
 
 ## Layout
@@ -36,7 +45,8 @@ constant result size is the signal.
 | File | Role |
 |------|------|
 | `run.ts` | entry point: flags, adapter selection, table output |
-| `harness.ts` | timing, percentiles, table rendering, per-bench fresh space |
+| `harness.ts` | timing, percentiles, table rendering, pooling trials, per-bench fresh space |
+| `env.ts` | the header every run prints: commit, runtime, machine, database version and settings |
 | `suites/records.ts` | put, read_one, query, predicate complexity |
 | `suites/claims.ts` | take/ack, ack-with-result, and contention across 1/4/16 claimers |
 | `suites/lineage.ts` | `childrenOf` and `getLineage`, the documented hotspot, measured |
