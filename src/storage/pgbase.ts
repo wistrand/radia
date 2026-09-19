@@ -963,29 +963,35 @@ export class PgSqlAdapter implements StorageAdapter {
     // stored one before this) and keeps its old meaning: everything after that whole transaction.
     const after = afterCursor && afterCursor.length > 0 ? afterCursor : "0";
     const [afterXid, afterSeq] = after.split(".");
-    const res = afterSeq !== undefined
-      ? await this.sql.query<RawRow>(
-        `select seq, xid::text || '.' || seq::text as cursor, id, ts, run_id, operation, record_id, kind, state, detail
-         from events
-         where (xid, seq) > ($1::text::xid8, $2::bigint)
-           and xid < pg_snapshot_xmin(pg_current_snapshot())
-         order by xid, seq asc limit $3`,
-        [afterXid, afterSeq, limit],
-      )
-      : await this.sql.query<RawRow>(
-        `select seq, xid::text || '.' || seq::text as cursor, id, ts, run_id, operation, record_id, kind, state, detail
-         from events
-         where xid > $1::text::xid8 and xid < pg_snapshot_xmin(pg_current_snapshot())
-         order by xid, seq asc limit $2`,
-        [afterXid, limit],
-      );
     // An empty page is also what a cursor AHEAD of this database returns, forever: every new event
-    // sorts below it. Asked only here, so a page with events pays nothing for the check.
-    if (res.rows.length === 0 && after !== "0") {
-      const next = await this.#aheadOf(afterXid);
-      if (next !== undefined) throw cursorAhead(after, next);
+    // sorts below it. So the page carries the database's next xid (`pg_snapshot_xmax`) in the SAME
+    // statement: the lateral join always yields a row, and an empty page is one row of nulls with
+    // `next` set. A second query for it cost a round trip on every idle poll (plan-audit-remediation.md
+    // AC4): the notifier reads one event per `CHANGE_POLL_MS` per instance, usually finding none.
+    const page = afterSeq !== undefined
+      ? `where (xid, seq) > ($1::text::xid8, $2::bigint) and xid < pg_snapshot_xmin(pg_current_snapshot())
+         order by xid, seq asc limit $3`
+      : `where xid > $1::text::xid8 and xid < pg_snapshot_xmin(pg_current_snapshot())
+         order by xid, seq asc limit $2`;
+    const res = await this.sql.query<RawRow & { next: string }>(
+      `with h as (select pg_snapshot_xmax(pg_current_snapshot())::text as next)
+       select e.*, h.next from h left join lateral (
+         select xid, seq, xid::text || '.' || seq::text as cursor, id, ts, run_id, operation, record_id, kind, state, detail
+           from events ${page}
+       ) e on true
+       order by e.xid, e.seq`,
+      afterSeq !== undefined ? [afterXid, afterSeq, limit] : [afterXid, limit],
+    );
+    const rows = res.rows.filter((r) => r.seq != null);
+    if (rows.length === 0 && after !== "0") {
+      const next = String(res.rows[0]?.next ?? "");
+      let ahead = false;
+      try {
+        ahead = next !== "" && BigInt(afterXid) >= BigInt(next);
+      } catch { /* not a Postgres cursor; nothing to compare */ }
+      if (ahead) throw cursorAhead(after, next);
     }
-    return res.rows.map(rowToEvent);
+    return rows.map(rowToEvent);
   }
 
   /** This database's next transaction id when `xid` is at or past it, else undefined. A cursor from
