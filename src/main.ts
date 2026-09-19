@@ -46,7 +46,7 @@ const USAGE = `radia <command>
       [--blobs <dir|memory|s3://bucket/prefix>[,<read-only origin>…]]
       [--blob-kek [file]] [--seal-key [file]] [--auth required|open] [--ext]
       [--artifact-port <n>] [--max-scan-rows <n>] [--event-retention <seconds>]
-      [--max-put-delay <seconds>] [--max-record-bytes <n>]
+      [--max-put-delay <seconds>] [--max-record-bytes <n>] [--pg-pool-size <n>]
       [--oidc-issuer <url> --oidc-audience <client-id>]
       Run an embedded space + web console. Everything it writes goes under ./.radia
       (RADIA_DIR moves it); bare --db and --blob-kek take their defaults from there.
@@ -193,7 +193,15 @@ async function runSpace(args: string[], posture: Posture): Promise<number> {
         }. For a file or directory pass --storage sqlite or --storage pglite; for a server pass postgres://…`,
       );
     }
-    storage = new PostgresAdapter(url);
+    // Per instance, so the database sees instances x this at peak; idle connections are closed after
+    // a minute down to one (`ClientPool`, src/storage/postgres.ts), so this bounds a burst, not the
+    // steady state. Measured: at 8 (the default), 8 busy instances held 61 of Postgres's default 100.
+    const poolFlag = flag(args, "--pg-pool-size");
+    const poolSize = poolFlag === undefined ? undefined : Number(poolFlag);
+    if (poolSize !== undefined && (!Number.isInteger(poolSize) || poolSize < 1)) {
+      throw new UsageError(`--pg-pool-size must be a whole number of connections, at least 1, got '${poolFlag}'`);
+    }
+    storage = new PostgresAdapter(url, poolSize === undefined ? {} : { poolSize });
   } else {
     throw new UsageError(`unknown --storage: ${backend} (expected pglite|sqlite|postgres)`);
   }

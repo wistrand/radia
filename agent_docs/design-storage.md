@@ -217,10 +217,11 @@ authorization reads must see the latest committed write, so never point an insta
 ASYNCHRONOUS read replica; and a failover to an asynchronous standby can lose an acknowledged
 revocation, so HA for a space with grants needs synchronous replication (measured: failing over to an
 asynchronous standby 5s behind lost 2,861 acknowledged writes, and the synchronous arm none;
-[plan-cluster-bench.md](plan-cluster-bench.md) phase 3). Each instance also holds
-its whole pool (`poolSize`, default 8, `src/storage/postgres.ts`), so `max_connections` must cover
-instances times pool size: measured, 8 instances hold 61 connections of the default 100
-([plan-cluster-bench.md](plan-cluster-bench.md) phase 1).
+[plan-cluster-bench.md](plan-cluster-bench.md) phase 3). Each instance's pool
+(`--pg-pool-size`, default 8, `ClientPool` in `src/storage/postgres.ts`) bounds a BURST: under
+load every slot opens (8 busy instances held 61 of Postgres's default 100 connections,
+[plan-cluster-bench.md](plan-cluster-bench.md) phase 1), and a connection idle for 60s is closed
+down to one per instance. So `max_connections` must cover instances times pool size at peak.
 
 So the invariant "the runtime is the sole DB client" means *no non-runtime client speaks SQL*
 (agents speak the protocol), **not** one process. Requests carry a Bearer token and hold no

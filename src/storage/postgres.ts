@@ -143,12 +143,50 @@ function databaseUnavailable(ms: number, what: string): RadiaError {
  */
 class ClientPool {
   readonly #all: Client[];
+  /** Released clients, most recently used LAST, so `pop` reuses a warm connection and the cold ones
+   *  settle at the bottom, where the reaper finds them. */
   readonly #idle: Client[];
   readonly #waiters: Array<(c: Client) => void> = [];
+  readonly #idleSince = new Map<Client, number>();
+  readonly #reaper?: ReturnType<typeof setInterval>;
 
-  constructor(private readonly url: string, size: number, private readonly timeoutMs: number) {
+  constructor(
+    private readonly url: string,
+    size: number,
+    private readonly timeoutMs: number,
+    /** Close a connection unused this long, keeping one open. 0 keeps every connection opened. */
+    private readonly idleTimeoutMs: number,
+  ) {
     this.#all = Array.from({ length: size }, () => new Client(url)); // lazy: connects on acquire
     this.#idle = [...this.#all];
+    if (idleTimeoutMs > 0) {
+      const reaper = setInterval(() => this.#reap(), Math.min(idleTimeoutMs, 10_000));
+      Deno.unrefTimer(reaper); // housekeeping never keeps a process alive
+      this.#reaper = reaper;
+    }
+  }
+
+  /**
+   * Close idle connections past `idleTimeoutMs`, oldest first, down to ONE. A connection opened for
+   * a burst otherwise stays open for the life of the process: measured, every instance of a busy
+   * cluster held its full pool of 8, and Postgres's default 100 connections ran out at about 13
+   * instances (plan-cluster-bench.md phase 1). The one kept is the warmest, so a quiet instance
+   * answers its next request without a connect.
+   */
+  #reap(): void {
+    const now = Date.now();
+    let open = this.#all.filter((c) => c.connected).length;
+    for (let i = 0; i < this.#idle.length && open > 1;) {
+      const c = this.#idle[i];
+      if (!c.connected || now - (this.#idleSince.get(c) ?? now) < this.idleTimeoutMs) {
+        i++;
+        continue;
+      }
+      // Out of the idle list while it closes, so no acquire can take a connection being ended.
+      this.#idle.splice(i, 1);
+      open--;
+      withDeadline(c.end(), this.timeoutMs).catch(() => {}).finally(() => this.#handOut(c, true));
+    }
   }
 
   async acquire(): Promise<Client> {
@@ -199,18 +237,24 @@ class ClientPool {
     c.end().catch(() => {});
     const i = this.#all.indexOf(c);
     if (i < 0) return; // already replaced: its slot has a fresh client
+    this.#idleSince.delete(c);
     const fresh = new Client(this.url);
     this.#all[i] = fresh;
-    this.#handOut(fresh);
+    this.#handOut(fresh, true);
   }
 
-  #handOut(c: Client): void {
+  /** To a waiter, or back to the idle list: on top when warm, at the BOTTOM when it was just closed,
+   *  so an acquire prefers an open connection to a reconnect. */
+  #handOut(c: Client, closed = false): void {
     const waiter = this.#waiters.shift();
-    if (waiter) waiter(c);
+    if (waiter) return waiter(c);
+    this.#idleSince.set(c, Date.now());
+    if (closed) this.#idle.unshift(c);
     else this.#idle.push(c);
   }
 
   async end(): Promise<void> {
+    if (this.#reaper !== undefined) clearInterval(this.#reaper);
     await Promise.all(this.#all.map((c) => withDeadline(c.end(), this.timeoutMs).catch(() => {})));
   }
 }
@@ -227,6 +271,9 @@ export interface PostgresOptions {
    *  any single statement this runtime issues (GC and compaction work in bounded batches), and
    *  short enough that a vanished database is reported rather than waited on forever. */
   operationTimeoutMs?: number;
+  /** Close a pooled connection unused this long, keeping one open (0 keeps all). Default 60s: a
+   *  burst's connections are returned to Postgres once the burst is over. */
+  idleTimeoutMs?: number;
 }
 
 /** Wrap a deno-postgres connection pool to the SqlBackend port. */
@@ -236,6 +283,7 @@ class PostgresBackend implements SqlBackend {
   readonly #ephemeral: boolean;
   readonly #poolSize: number;
   readonly #timeoutMs: number;
+  readonly #idleTimeoutMs: number;
 
   constructor(private readonly url: string, opts: PostgresOptions = {}) {
     patchDriverSockets(); // before any connection is opened
@@ -243,10 +291,11 @@ class PostgresBackend implements SqlBackend {
     this.#ephemeral = opts.ephemeral ?? false;
     this.#poolSize = opts.poolSize ?? 8;
     this.#timeoutMs = opts.operationTimeoutMs ?? 30_000;
+    this.#idleTimeoutMs = opts.idleTimeoutMs ?? 60_000;
   }
 
   async init(): Promise<void> {
-    this.#pool = new ClientPool(this.url, this.#poolSize, this.#timeoutMs);
+    this.#pool = new ClientPool(this.url, this.#poolSize, this.#timeoutMs, this.#idleTimeoutMs);
     if (this.#schema && this.#ephemeral) {
       await this.withConn((c) => c.queryArray(`create schema if not exists "${this.#schema}"`).then(() => {}));
     }

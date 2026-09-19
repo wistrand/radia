@@ -262,6 +262,16 @@ Deno.test("dev: --max-scan-rows tunes the budget, and 0 means unbounded rather t
   assert(/\[--max-scan-rows <n>\]/.test(main), "…or is missing from the usage text");
 });
 
+Deno.test("serve: --pg-pool-size reaches the Postgres adapter, and is in the usage text", async () => {
+  // Per-instance connections times instances is what a deployment sizes max_connections by, so the
+  // knob has to reach the pool. Read from the source like --max-scan-rows above: starting a server
+  // needs a Postgres, and this should fail the moment the literal stops being wired.
+  const main = await Deno.readTextFile(new URL("../src/main.ts", import.meta.url));
+  assert(/flag\(args, "--pg-pool-size"\)/.test(main), "--pg-pool-size is no longer parsed in main.ts");
+  assert(/new PostgresAdapter\(url, poolSize === undefined \? \{\} : \{ poolSize \}\)/.test(main), "…or no longer reaches the adapter");
+  assert(/\[--pg-pool-size <n>\]/.test(main), "…or is missing from the usage text");
+});
+
 Deno.test("dev: one writer per database, and the loser is told who holds it", async () => {
   // PGlite is a single-writer WASM Postgres with no locking of its own, so two `radia dev` on one
   // data directory both started, served private copies, both reported "chain OK" at different
