@@ -50,6 +50,22 @@ async function outcome(fn: () => Promise<unknown>): Promise<Outcome> {
 
 export const AUTHPROBE_KIND = "bench_authprobe";
 
+/**
+ * Rounds per agent. Every round writes two grant records on one identity, and the runtime caps a
+ * never-compacted grant history at 256 per (principal, kind) (`too_many_grants`), so a long run
+ * moves to a fresh agent before it gets there.
+ */
+const ROUNDS_PER_AGENT = 100;
+
+interface Identity {
+  agent: string;
+  definitionToken: string;
+  /** The agent's run, one client per instance. Grants attach to the agent, so one run serves every
+   *  round of the grant probe. */
+  agents: RadiaClient[];
+  rounds: number;
+}
+
 export class AuthRounds {
   readonly totals: AuthTotals = { staleGrant: empty(), staleCredential: empty(), staleDenial: empty() };
   rounds = 0;
@@ -57,9 +73,7 @@ export class AuthRounds {
   private constructor(
     private readonly admins: RadiaClient[],
     private readonly urls: string[],
-    private readonly agent: string,
-    private readonly definitionToken: string,
-    private readonly agents: RadiaClient[],
+    private id: Identity,
     private readonly windowMs: number,
   ) {}
 
@@ -69,12 +83,23 @@ export class AuthRounds {
    * process's memory, so one instance's is unknown to the next.
    */
   static async create(admins: RadiaClient[], urls: string[], opts: { windowMs: number }): Promise<AuthRounds> {
-    const agent = `agent:authprobe-${Date.now().toString(36)}`;
-    const { definitionToken } = await admins[0].createAgentDefinition(agent, []);
-    // Grants attach to the agent, so one run serves every round of the grant probe.
-    const run = await admins[0].createRun(definitionToken);
-    const agents = urls.map((u) => new RadiaClient(u, run.runToken));
-    return new AuthRounds(admins, urls, agent, definitionToken, agents, opts.windowMs);
+    return new AuthRounds(admins, urls, await AuthRounds.#identity(admins, urls), opts.windowMs);
+  }
+
+  /** A new agent and run, through the first instance that answers. */
+  static async #identity(admins: RadiaClient[], urls: string[]): Promise<Identity> {
+    const agent = `agent:authprobe-${Date.now().toString(36)}${crypto.randomUUID().slice(0, 4)}`;
+    let last: unknown;
+    for (const admin of admins) {
+      try {
+        const { definitionToken } = await admin.createAgentDefinition(agent, []);
+        const run = await admin.createRun(definitionToken);
+        return { agent, definitionToken, agents: urls.map((u) => new RadiaClient(u, run.runToken)), rounds: 0 };
+      } catch (e) {
+        last = e;
+      }
+    }
+    throw last;
   }
 
   /** Probe every instance back to back for the window after an acknowledged write, all instances in
@@ -98,24 +123,27 @@ export class AuthRounds {
 
   /** Round `r`. The writer and revoker rotate with `r`, so every ordered pair of instances is used. */
   async round(r: number): Promise<void> {
+    if (this.id.rounds >= ROUNDS_PER_AGENT) this.id = await AuthRounds.#identity(this.admins, this.urls);
+    const { agent, definitionToken, agents } = this.id;
     const writer = this.admins[r % this.admins.length];
     const revoker = this.admins[(r + 1) % this.admins.length];
-    const grant = { principal: this.agent, kind: AUTHPROBE_KIND, operations: ["query"] };
-    const query = (i: number) => this.agents[i].queryNewest({ kind: AUTHPROBE_KIND }, 1);
+    const grant = { principal: agent, kind: AUTHPROBE_KIND, operations: ["query"] };
+    const query = (i: number) => agents[i].queryNewest({ kind: AUTHPROBE_KIND }, 1);
 
     // A fresh idempotency key per write: the grant identity is the same every round (that is the
     // race under test), and a content key would replay the round-one write instead of appending.
-    await writer.put({ kind: "grant", body: grant }, `authprobe:${this.agent}:grant:${r}`);
+    await writer.put({ kind: "grant", body: grant }, `authprobe:${agent}:grant:${r}`);
     add(this.totals.staleDenial, await this.#probe(query, "ok"));
 
-    await revoker.put({ kind: "grant", body: { ...grant, retired: true } }, `authprobe:${this.agent}:revoke:${r}`);
+    await revoker.put({ kind: "grant", body: { ...grant, retired: true } }, `authprobe:${agent}:revoke:${r}`);
     add(this.totals.staleGrant, await this.#probe(query, "denied"));
 
-    const victim = await writer.createRun(this.definitionToken);
+    const victim = await writer.createRun(definitionToken);
     const holders = this.urls.map((u) => new RadiaClient(u, victim.runToken));
     await revoker.stopRun(victim.run);
     add(this.totals.staleCredential, await this.#probe((i) => holders[i].health(), "unauthenticated"));
     this.rounds++;
+    this.id.rounds++;
   }
 
   /** Stale grants plus stale credentials: the counts that are misauthorization. */

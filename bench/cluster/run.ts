@@ -17,19 +17,21 @@ import { renderTable } from "../harness.ts";
 import { AuthRounds } from "./authrounds.ts";
 import { Cluster } from "./cluster.ts";
 import { audit, DEFAULT_LOAD, PLANTS, runLoad } from "./load.ts";
+import { FAULTS, recoveryReport } from "./faults.ts";
 
 const argv = Deno.args;
 const mode = argv[0];
-if (!mode || has(argv, "--help") || !["check", "authprobe", "steady"].includes(mode)) {
+if (!mode || has(argv, "--help") || !["check", "authprobe", "steady", "faults"].includes(mode)) {
   console.log(
     "usage: deno run -A bench/cluster/run.ts check [--instances n] [--cycles n] [--async]\n" +
       "       deno run -A bench/cluster/run.ts authprobe [--instances n] [--async] [--rounds n] [--window-ms n]\n" +
-      "       deno run -A bench/cluster/run.ts steady [--instances 1,2,4,8] [--duration s] [--rate ops/s/loop] [--async]\n" +
-      `                                               [--plant ${Object.keys(PLANTS).join("|")}]`,
+      "       deno run -A bench/cluster/run.ts steady [--instances 1,2,4,8] [--duration s] [--warmup s] [--rate ops/s/loop] [--async]\n" +
+      `                                               [--plant ${Object.keys(PLANTS).join("|")}]\n` +
+      `       deno run -A bench/cluster/run.ts faults --fault ${Object.keys(FAULTS).join("|")} [--instances 3] [--duration 60] [--warmup 30] [--rate] [--plant no-cursor]`,
   );
   Deno.exit(mode ? 0 : 2);
 }
-const instances = mode === "steady" ? 0 : Number(flag(argv, "--instances") ?? 3);
+const instances = mode === "steady" || mode === "faults" ? 0 : Number(flag(argv, "--instances") ?? 3);
 const sync = !has(argv, "--async");
 const log = (line: string) => console.error(`  · ${line}`);
 
@@ -40,6 +42,14 @@ Deno.addSignalListener("SIGINT", async () => {
   console.error("\ninterrupted: tearing down");
   await live?.down().catch((e) => console.error(String(e)));
   Deno.exit(130);
+});
+// The same for an error thrown in a background loop: an unhandled rejection ends the process
+// without running any `finally`, which once left a whole cluster running for an hour.
+globalThis.addEventListener("unhandledrejection", async (e) => {
+  e.preventDefault();
+  console.error("unhandled:", e.reason);
+  await live?.down().catch((err) => console.error(String(err)));
+  Deno.exit(1);
 });
 
 for (const line of await benchEnv()) console.log(line);
@@ -53,9 +63,10 @@ if (mode === "steady") {
     console.error(`unknown --plant '${plant}': ${Object.keys(PLANTS).join(", ")}`);
     Deno.exit(2);
   }
-  const opts = { ...DEFAULT_LOAD, durationMs, rate, log };
+  const warmupMs = Number(flag(argv, "--warmup") ?? 30) * 1000;
+  const opts = { ...DEFAULT_LOAD, durationMs, rate, warmupMs, log };
   console.log(
-    `cluster steady state: N = ${sizes.join(", ")}, ${durationMs / 1000}s each, ${sync ? "synchronous" : "ASYNCHRONOUS"} standby, ` +
+    `cluster steady state: N = ${sizes.join(", ")}, ${durationMs / 1000}s each after ${warmupMs / 1000}s warm-up, ${sync ? "synchronous" : "ASYNCHRONOUS"} standby, ` +
       `${rate ? `${rate} ops/s per loop` : "closed loops"}${plant ? `, PLANTED: ${plant}` : ""}\n` +
       `loops: ${opts.recordLoops} records, ${opts.producers} producers, ${opts.workers} workers, ${opts.artifactLoops} artifacts, ` +
       `1 authorization, gc every ${opts.gcEveryMs / 1000}s from two instances, one watcher per instance\n`,
@@ -113,6 +124,60 @@ if (mode === "steady") {
   }
   console.log(violations === 0 ? "\nno violations" : `\n${violations} violation(s)`);
   Deno.exit(violations === 0 ? 0 : 1);
+}
+
+if (mode === "faults") {
+  const fault = flag(argv, "--fault") ?? "crash";
+  const n = Number(flag(argv, "--instances") ?? 3);
+  const durationMs = Number(flag(argv, "--duration") ?? 60) * 1000;
+  const rate = flag(argv, "--rate") ? Number(flag(argv, "--rate")) : undefined;
+  const warmupMs = Number(flag(argv, "--warmup") ?? 30) * 1000;
+  // The one fault-mode plant: watchers reconnect without their cursor, so a move must show gaps.
+  const noCursor = flag(argv, "--plant") === "no-cursor";
+  const schedule = FAULTS[fault];
+  if (!schedule) {
+    console.error(`unknown --fault '${fault}': ${Object.keys(FAULTS).join(", ")}`);
+    Deno.exit(2);
+  }
+  // Leases short enough that a stall outlasts one inside the window, and an orphan lease (a take
+  // whose answer died with its instance) comes back before the drain gives up.
+  const leaseSeconds = 10;
+  console.log(
+    `cluster faults: '${fault}' (${schedule.what}), N = ${n}, ${durationMs / 1000}s after ${warmupMs / 1000}s warm-up, lease ${leaseSeconds}s, ` +
+      `${sync ? "synchronous" : "ASYNCHRONOUS"} standby, ${rate ? `${rate} ops/s per loop` : "closed loops"}` +
+      `${noCursor ? ", PLANTED: watchers reconnect without their cursor" : ""}\n`,
+  );
+  live = await Cluster.up({ instances: n, sync, log });
+  let total = 0;
+  try {
+    const cluster = live;
+    const r = await runLoad(cluster, {
+      ...DEFAULT_LOAD,
+      durationMs,
+      rate,
+      leaseSeconds,
+      warmupMs,
+      watchResume: !noCursor,
+      log,
+      during: (fleet, mark) => schedule.run(cluster, fleet, mark),
+    });
+    const found = await audit(cluster, r);
+    console.log(renderTable(r.measurements.map((m) => ({ adapter: `N=${n}`, m })), "N"));
+    console.log("");
+    for (const v of found) console.log(`  ${v.count === 0 ? "ok  " : "FAIL"}  ${v.name.padEnd(22)} ${String(v.count).padStart(5)}  ${v.detail ?? ""}`);
+    total = found.reduce((a, v) => a + v.count, 0);
+    console.log(`\n${recoveryReport(r)}`);
+    const l = r.ledger;
+    console.log(
+      `\nfailovers ${r.fleet.failovers}, watch reconnects ${r.watchStats.reconnects} (${r.watchStats.moved} to another instance), ` +
+        `tasks executed more than once ${[...l.executions.values()].filter((x) => x > 1).length}, acks lease_lost ${l.ackLost}` +
+        (l.errors.size ? `\ngiven up after failing over for ${r.fleet.opts.deadlineMs / 1000}s: ${JSON.stringify(Object.fromEntries(l.errors))}` : ""),
+    );
+  } finally {
+    await live.down();
+  }
+  console.log(total === 0 ? "\nno violations" : `\n${total} violation(s)`);
+  Deno.exit(total === 0 ? 0 : 1);
 }
 
 console.log(`cluster: ${instances} instance(s), ${sync ? "synchronous" : "ASYNCHRONOUS"} standby\n`);

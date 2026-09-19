@@ -116,7 +116,7 @@ Architecture and design:
 Plans and research (status in each doc's header; the guard in `test/agentdocs.test.ts` holds this list to it):
 
 - [plan-m0-implementation.md](agent_docs/plan-m0-implementation.md): the phase-by-phase M0 record. [plan-milestones.md](agent_docs/plan-milestones.md): M0–M3 scope. [plan-validation.md](agent_docs/plan-validation.md): baselines and the fault matrix, complete.
-- [plan-cluster-bench.md](agent_docs/plan-cluster-bench.md): PHASES 0-1 BUILT (`bench/cluster/`), phases 2-4 planned. N instances, a standby and S3 under mixed load and scheduled faults, reporting violation counts beside throughput. Read before adding a multi-instance or failover measurement.
+- [plan-cluster-bench.md](agent_docs/plan-cluster-bench.md): PHASES 0-2 BUILT (`bench/cluster/`), phases 3-4 planned. N instances, a standby and S3 under mixed load and scheduled faults, reporting violation counts beside throughput. Read before adding a multi-instance or failover measurement.
 - [plan-workspaces.md](agent_docs/plan-workspaces.md): the workspace build sequence, phases 0-13 DONE, ordered by model risk. [plan-executors.md](agent_docs/plan-executors.md): the chat's runners joined to the workspace agents' one, phases 1-3 BUILT. Read before adding a code runner or touching `save_procedure`.
 - [plan-chat-turn.md](agent_docs/plan-chat-turn.md): BUILT. The turn as records, with two rejected designs. Read before adding a state record to sequence anything or making `message` claimable.
 - [plan-chat-web-ui.md](agent_docs/plan-chat-web-ui.md): BUILT. The chat as a page joining a running space over SSO. Read before touching `examples/chat/client/` rendering or `message.index`.
