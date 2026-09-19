@@ -215,7 +215,10 @@ enforced **in the storage transaction**, which is what makes this safe:
 Two deployment requirements follow, because authorization is resolved from records per request:
 authorization reads must see the latest committed write, so never point an instance at an
 ASYNCHRONOUS read replica; and a failover to an asynchronous standby can lose an acknowledged
-revocation, so HA for a space with grants needs synchronous replication.
+revocation, so HA for a space with grants needs synchronous replication. Each instance also holds
+its whole pool (`poolSize`, default 8, `src/storage/postgres.ts`), so `max_connections` must cover
+instances times pool size: measured, 8 instances hold 61 connections of the default 100
+([plan-cluster-bench.md](plan-cluster-bench.md) phase 1).
 
 So the invariant "the runtime is the sole DB client" means *no non-runtime client speaks SQL*
 (agents speak the protocol), **not** one process. Requests carry a Bearer token and hold no

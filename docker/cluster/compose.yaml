@@ -1,0 +1,71 @@
+# The database side of the cluster benchmark (agent_docs/plan-cluster-bench.md): a Postgres primary,
+# a streaming standby, and an S3 endpoint for artifact bytes. The Radia instances run on the host,
+# from the checkout, started by bench/cluster/cluster.ts; so does the TCP proxy they reach the
+# primary through, because a failover moves that endpoint and deno-postgres takes one host.
+#
+# The primary starts ASYNCHRONOUS and the harness switches it to synchronous (`alter system set
+# synchronous_standby_names`) once the standby streams. Never set it on the command line: the image's
+# init-time server takes the same flags, so the init script's first commit waits forever for a
+# standby that cannot exist until init finishes.
+#
+# Every port is published on an ephemeral host port, so several runs and the dev recipes
+# (docker/postgres, docker/s3) never collide; `docker compose port` names them. Throwaway
+# credentials. Not a deployment recipe: one host, no TLS, no persistence past `down -v`.
+services:
+  pg-primary:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: radia
+      POSTGRES_PASSWORD: radia
+      POSTGRES_DB: radia
+    command: >-
+      postgres -c wal_level=replica -c max_wal_senders=10 -c max_replication_slots=10
+      -c shared_preload_libraries=pg_stat_statements -c pg_stat_statements.track=all
+    ports:
+      - "127.0.0.1::5432"
+    volumes:
+      - ./primary-init.sh:/docker-entrypoint-initdb.d/10-replication.sh:ro
+    healthcheck:
+      # Over TCP on purpose: the image's init-time server listens on the socket only, so a socket
+      # probe reports ready before the init scripts (the replication role) have run.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U radia -d radia"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+
+  pg-standby:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: radia
+      PGPASSWORD: replicator
+    entrypoint: ["bash", "/standby.sh"]
+    ports:
+      - "127.0.0.1::5432"
+    volumes:
+      - ./standby.sh:/standby.sh:ro
+    depends_on:
+      pg-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U radia -d radia"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+
+  s3:
+    # The same store and identity file as docker/s3, so the cluster's blob store cannot drift from
+    # the one the S3 conformance run verifies.
+    image: chrislusf/seaweedfs:4.42
+    # `server` mode does not exit on SIGTERM (measured; `init: true` did not help), so every `down`
+    # waited out docker's 10s grace. Its bytes die with the volume anyway.
+    stop_grace_period: 1s
+    command: server -s3 -dir=/data -s3.config=/etc/seaweedfs/s3.json
+    ports:
+      - "127.0.0.1::8333"
+    volumes:
+      - ../s3/s3-config.json:/etc/seaweedfs/s3.json:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8333/status"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
