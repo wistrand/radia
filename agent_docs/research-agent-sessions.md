@@ -664,6 +664,14 @@ always answerable: `http.ts` checks `asksAboutSelf` before the ops gate, so a me
 power gets an answer, and a tool taking a principal argument would 403 on the one surface a refused
 caller reaches for. Guard: `test/team.test.ts`.
 
+**Listing a kind you cannot read** stalls a policy-bound agent (measured 2026-09-19). A deployer told
+to act only on authorized work called `space_kinds`, saw kinds whose usage described authorization
+it could not read, and exited on "not readable under my grants": 0 of 40 legitimate deployments in
+live thin-agent runs (0 of 2 on Codex), against 9 of 20 once that authorization was readable to it.
+Hiding such kinds is not the fix: in rendered contexts that mentioned no authority, agents acted on
+carried state as if it were authority (100% on one model). `space_kinds` therefore marks what the
+caller may do (`you`) and lists closed kinds by name only. Guard: `test/mcpkinds.test.ts`.
+
 ## What a run costs, measured
 
 | | Claude Code | Codex |

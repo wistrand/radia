@@ -30,13 +30,14 @@
 
 import { awaitResult, RadiaClient, RadiaClientError } from "../../../sdk/ts/client.ts";
 import { defaultBase, resolveDefinitionToken, resolveToken, saveSession, storedObserver, storedSession } from "../../credentials.ts";
-import { env } from "../../platform.ts";
+import { env, readTextFile, UsageError } from "../../platform.ts";
 import type { Lease, RadiaRecord } from "../../storage/adapter.ts";
 import type { Pattern } from "../../core/matching.ts";
 import { TOOLS } from "./tools.ts";
 import { ScopeFiller } from "./scope.ts";
 import { classify, fileTracer, type Tracer } from "./trace.ts";
 import { answer, one } from "./render.ts";
+import { withAccess } from "./kinds.ts";
 import { getLogger } from "../../log.ts";
 import { mediaTypeForPath } from "../media.ts";
 // A SURFACE MAY IMPORT AN EXTENSION, and this is the reason the rule exists: a workspace is a
@@ -107,7 +108,20 @@ export async function runMcp(argv: string[]): Promise<void> {
   // exported `RADIA_TOKEN=` silently discarded the `RADIA_DEFINITION_TOKEN` beside it and the
   // adapter came up as the observer, which cannot coordinate.
   const set = (name: string) => env(name) || undefined;
-  const explicit = set("RADIA_TOKEN") ?? set("RADIA_DEFINITION_TOKEN");
+  // `RADIA_DEFINITION_TOKEN_FILE` is the same explicit choice by reference (how Codex and `radia team
+  // up` configure a member). Left out, the observer `radia dev` stores outranked it and the member
+  // came up as `agent:local-observer`, unable to coordinate.
+  const explicit = set("RADIA_TOKEN") ?? set("RADIA_DEFINITION_TOKEN") ?? set("RADIA_DEFINITION_TOKEN_FILE");
+  // A token file that yields NOTHING must stop the adapter. Counted as explicit, it skips the observer,
+  // and `resolveToken` below then falls through to the stored OPERATOR token: a member whose file was
+  // deleted or rotated away would run privileged.
+  const tokenFile = set("RADIA_DEFINITION_TOKEN_FILE");
+  if (tokenFile && !set("RADIA_TOKEN") && !set("RADIA_DEFINITION_TOKEN") && !readTextFile(tokenFile)?.trim()) {
+    throw new UsageError(
+      `RADIA_DEFINITION_TOKEN_FILE names ${tokenFile}, which is missing or empty. Refusing to start rather ` +
+        `than act as another stored credential.`,
+    );
+  }
   const observer = explicit ? undefined : storedObserver(base)?.definitionToken;
   // THE DURABLE HALF, for an adapter given an identity of its own. Without it a per-agent session
   // is a run token that stops working in 15 minutes and cannot mint another, which is exactly the
@@ -391,8 +405,21 @@ async function call(
       return pretty(await client.permissions(me.agent ?? me.principal));
     }
 
-    case "space_kinds":
-      return answer("kinds", await client.listKinds());
+    case "space_kinds": {
+      // Joined with the caller's OWN permissions (kinds.ts): each kind says what you may do with it,
+      // and a kind you cannot use is listed by name only. Same self-resolution as `space_permissions`.
+      const defs = await client.listKinds();
+      let perms;
+      try {
+        await client.ensureCredential();
+        const me = await client.health();
+        perms = await client.permissions(me.agent ?? me.principal);
+      } catch {
+        return answer("kinds", defs, { notes: ["Your own access could not be read, so no kind says what you may do with it."] });
+      }
+      const v = withAccess(defs, perms);
+      return answer("kinds", v.kinds, { notes: v.notes });
+    }
 
     case "space_stats": {
       // The REPORT, never the bare array. A pattern-scoped member got `[]` from this call on a

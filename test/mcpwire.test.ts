@@ -150,6 +150,49 @@ Deno.test("[mcp] a model can defer a record and can parent what it answers with"
     const result = (await admin.getRecord(acked.resultId))!;
     assert(result.runtimeMeta.parentIds.includes(put.id), "the claimed record is prepended, as always");
     assert(result.runtimeMeta.parentIds.includes(evidence.id), "and the evidence the model named is kept");
+
+    // THE TOKEN BY REFERENCE is as explicit as the variable. `dev` stored an observer for this space
+    // in the same credentials file, and the file variant once lost to it: a Codex member came up as
+    // `agent:local-observer` and could not coordinate.
+    const tokenFile = `${dir}/definition-token`;
+    await Deno.writeTextFile(tokenFile, def.definitionToken + "\n");
+    const byFile = new Adapter({ ...env, RADIA_DEFINITION_TOKEN_FILE: tokenFile });
+    try {
+      const perms = JSON.parse(await byFile.call("space_permissions", {}));
+      assertEquals(perms.principal, agent, "RADIA_DEFINITION_TOKEN_FILE must outrank the stored observer");
+    } finally {
+      await byFile.close();
+    }
+
+    // A TOKEN FILE THAT YIELDS NOTHING STOPS THE ADAPTER. Counted as explicit, a missing file skipped
+    // the observer and fell through to the OPERATOR token `dev` stored for this space.
+    const gone = await new Deno.Command(Deno.execPath(), {
+      args: ["run", "-A", "src/main.ts", "mcp", "--url", url],
+      env: { ...env, RADIA_DEFINITION_TOKEN_FILE: `${dir}/no-such-token` },
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(gone.code, 2, "a missing token file must refuse to start, not run as another credential");
+    assertStringIncludes(new TextDecoder().decode(gone.stderr), "RADIA_DEFINITION_TOKEN_FILE");
+    assertEquals(new TextDecoder().decode(gone.stdout), "", "and says so on stderr, never on the JSON-RPC channel");
+
+    // SPACE_KINDS SAYS WHAT YOU MAY DO. A member holding a pattern-scoped read on `task` and nothing
+    // on `note` sees its own scope on the first and only the name of the second.
+    const scoped = "agent:mcpkinds";
+    const sdef = await admin.createAgentDefinition(scoped, [
+      { principal: scoped, kind: "kind_def", operations: ["query"] },
+      { principal: scoped, kind: "task", operations: ["query"], pattern: { title: "mine" } } as { principal: string; kind: string; operations: string[] },
+    ]);
+    const kindsAdapter = new Adapter({ ...env, RADIA_DEFINITION_TOKEN: sdef.definitionToken });
+    try {
+      const listed = JSON.parse(await kindsAdapter.call("space_kinds", {})).kinds as { kind: string; you: unknown; usage?: string }[];
+      const task = listed.find((k) => k.kind === "task")!;
+      assertEquals(task.you, { operations: ["query"], patterns: [{ title: "mine" }] }, JSON.stringify(task));
+      assertEquals(listed.find((k) => k.kind === "note"), { kind: "note", you: "no access" }, "a closed kind is listed by name only");
+    } finally {
+      await kindsAdapter.close();
+    }
   } finally {
     await mcp?.close();
     try {
