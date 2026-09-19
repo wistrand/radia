@@ -9,10 +9,9 @@
 // hold `created_at` fixed and vary only the ids: that is the intra-process question, and the ids
 // are what answers it. The cross-instance cases at the bottom do the opposite.
 //
-// One case remains deliberately absent: two records for the same key, from DIFFERENT instances,
-// inside the same DB millisecond. Their order is genuinely undefined, and the fail-closed rule
-// that would define it was implemented, measured against the suite, and reverted. It broke
-// same-millisecond revival, which is common, to fix a race that is not. See `newer` in
+// Two records for the same key from DIFFERENT instances inside one DB millisecond are ordered by
+// the database-assigned `writeOrder`; the cases for it are at the bottom. Without it (a legacy
+// record) that order is the ids', which is the residual race `writeOrder` closes. See `newer` in
 // sdk/ts/registry.ts and gotchas.md.
 
 import { assert, assertEquals } from "@std/assert";
@@ -121,6 +120,36 @@ Deno.test("registry: inside one DB millisecond the ids still decide", () => {
     0,
     "with no timestamps at all the id order still holds",
   );
+});
+
+/** `rec` with a database-assigned write order. */
+const ordered = (r: RadiaRecord, writeOrder: string) =>
+  ({ ...r, runtimeMeta: { ...r.runtimeMeta, writeOrder } }) as RadiaRecord;
+
+Deno.test("registry: writeOrder decides inside one DB millisecond, whatever the ids say", () => {
+  // The cross-instance race: instance B revokes after A's grant committed, inside the same DB
+  // millisecond, and B's clock runs behind, so its ULID sorts lower. The id tie-break alone keeps
+  // the grant; the database's write order does not.
+  const at = "2026-07-26T00:00:07.000Z";
+  const granted = ordered(rec(MS_B, "A", GRANT, at), "41");
+  const revoked = ordered(rec(MS_A, "B", REVOKED, at), "42");
+  assertEquals(activeByKey(pop([granted, revoked]), grantKey).size, 0, "the later write order wins");
+  assertEquals(activeByKey(pop([revoked, granted]), grantKey).size, 0, "…in either arrival order");
+  assertEquals(activeByKey(pop([rec(MS_B, "A", GRANT, at), rec(MS_A, "B", REVOKED, at)]), grantKey).size, 1, "the ids alone get it wrong");
+
+  // Compared as numbers, not text: "9" < "10".
+  const nine = ordered(rec(MS_B, "A", REVOKED, at), "9");
+  const ten = ordered(rec(MS_A, "A", GRANT, at), "10");
+  assertEquals(activeByKey(pop([ten, nine]), grantKey).size, 1, "10 is newer than 9");
+});
+
+Deno.test("registry: a legacy record without writeOrder precedes every record with one", () => {
+  // Records written before the column existed carry none. Every record written since does, so the
+  // legacy one is older whatever its created_at says (a skewed legacy stamp cannot outrank it).
+  const legacy = rec(MS_B, "Z", GRANT, "2026-07-26T00:00:09.000Z");
+  const current = ordered(rec(MS_A, "A", REVOKED, "2026-07-26T00:00:08.000Z"), "1");
+  assertEquals(activeByKey(pop([legacy, current]), grantKey).size, 0);
+  assertEquals(activeByKey(pop([current, legacy]), grantKey).size, 0);
 });
 
 Deno.test("registry: a grant whose scoping field this build does not understand grants nothing", () => {

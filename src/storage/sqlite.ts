@@ -355,6 +355,14 @@ export class SqliteAdapter implements StorageAdapter {
         .map((c) => c.name),
     );
     if (!idemCols.has("created_at")) this.#db!.exec("alter table idempotency add column created_at text not null default ''");
+    // The authoritative "which is newer" (see the Postgres DDL). Legacy rows stay null and order by
+    // created_at. A counter row rather than max()+1: GC can delete the highest record, and a value
+    // must never be handed out twice.
+    if (!cols.has("write_order")) this.#db!.exec("alter table records add column write_order integer");
+    this.#db!.exec(
+      "create table if not exists write_order_seq (k integer primary key check (k = 1), v integer not null);" +
+        "insert or ignore into write_order_seq (k, v) values (1, 0);",
+    );
   }
 
   close(): Promise<void> {
@@ -1202,9 +1210,11 @@ export class SqliteAdapter implements StorageAdapter {
         throw new RadiaError("parent_not_found", `parent ${pid} does not exist`);
       }
     }
+    const { v } = this.db.prepare("update write_order_seq set v = v + 1 where k = 1 returning v").get() as { v: number };
     this.db.prepare(
-      `insert into records (${RECORD_COLUMNS}) values (${qmarks(RECORD_COLUMN_COUNT)})`,
-    ).run(...toSqlValues(recordInsertValues(input)));
+      `insert into records (${RECORD_COLUMNS}, write_order) values (${qmarks(RECORD_COLUMN_COUNT + 1)})`,
+    ).run(...toSqlValues(recordInsertValues(input)), v);
+    input.record.runtimeMeta.writeOrder = String(v);
     this.db.prepare(
       `insert into record_runtime
          (record_id, kind, state, attempt, available_at, claim_until, deadline_at, effective_priority)

@@ -72,6 +72,9 @@ export interface RuntimeMeta {
   taint: string[];
   schemaVersion: number;
   createdAt: string; // DB clock, ISO 8601
+  /** Database-assigned write order, a decimal string (a bigint). The authoritative "which is
+   *  newer" (`newer` in `registry.ts`); absent on a record written before the column existed. */
+  writeOrder?: string;
 }
 
 /** Immutable content half of a record. Never rewritten after commit. */

@@ -108,6 +108,8 @@ export function rowToRecord(row: RawRow): RadiaRecord {
         : (row.taint ? [TAINT_UNKNOWN] : []),
       schemaVersion: Number(row.schema_version),
       createdAt: String(row.created_at),
+      // bigint in Postgres (a string or BigInt from the driver), integer in SQLite; decimal on the wire.
+      ...(row.write_order != null ? { writeOrder: String(row.write_order) } : {}),
     },
     deadlineAt: row.deadline_at != null ? String(row.deadline_at) : undefined,
     retentionUntil: row.retention_until != null

@@ -38,16 +38,18 @@ export function isRetired(body: unknown): boolean {
 }
 
 /**
- * Which of two records for one key is NEWER: `created_at` first, the id only as a tie-break.
+ * Which of two records for one key is NEWER: `writeOrder` when both carry it, else `created_at`
+ * with the id as the tie-break.
  *
- * `created_at` is stamped by the DATABASE, so it is the one ordering every instance agrees on. A
- * ULID's timestamp is the writing PROCESS's clock, so ordering by id alone lets two skewed
- * instances sort a second of writes backwards and a revocation lose to the grant it revokes.
- * Inside one DB millisecond the ids decide, deliberately: they are monotonic per process, and
- * retire-then-revive lands there routinely (resolving that tie toward retirement was tried and
- * reverted for breaking revival). NOT commit order — `created_at` is read before commit, so a
- * same-millisecond cross-instance race stays undefined; closing it needs the event cursor's `xid8`
- * machinery carried on the record, i.e. through the frozen wire contract.
+ * `writeOrder` is drawn from one database sequence at insert, so two writes that do not overlap in
+ * time are ordered as they happened, whichever instance made them, and every reader agrees on the
+ * order of two that do. It is a decimal string (a bigint), compared by length and then digits. A
+ * record without it predates the column and every such record precedes every record with one.
+ *
+ * The fallback: `created_at` is the DB clock but only to the millisecond, and inside one
+ * millisecond the ULID decides, which is the writing PROCESS's clock. Ordering by id alone lets
+ * two skewed instances sort a revocation before the grant it revokes; that residual race is what
+ * `writeOrder` closes for every record written since.
  *
  * EXPORTED because a second definition of newest is a bug with a delay on it. `radia gc`'s
  * compaction kept the first record per key while paging by id, which is precisely the
@@ -56,6 +58,12 @@ export function isRetired(body: unknown): boolean {
  * `retired: true` tombstone (audit package W3).
  */
 export function newer(a: RadiaRecord, b: RadiaRecord): boolean {
+  const ao = a.runtimeMeta?.writeOrder, bo = b.runtimeMeta?.writeOrder;
+  if (ao !== bo) {
+    if (ao === undefined) return true;
+    if (bo === undefined) return false;
+    return ao.length !== bo.length ? bo.length > ao.length : bo > ao;
+  }
   const at = a.runtimeMeta?.createdAt, bt = b.runtimeMeta?.createdAt;
   if (at && bt && at !== bt) return bt > at;
   return a.id < b.id;

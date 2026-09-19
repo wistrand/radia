@@ -38,6 +38,23 @@ function newSpace(adapter: Parameters<Suite["run"]>[0], operators?: string[]): S
 
 export const recordSuites: Suite[] = [
   {
+    name: "every committed record carries a database-assigned writeOrder that increases per write",
+    run: async (adapter) => {
+      // The authoritative "which is newer" (`newer`, sdk/ts/registry.ts). A decimal string on the
+      // wire, compared as a number, strictly increasing for writes that do not overlap in time.
+      const space = newSpace(adapter);
+      const orders: bigint[] = [];
+      for (let i = 0; i < 3; i++) {
+        const { id } = await space.put({ kind: "task", body: { n: i, tag: "wo" } });
+        const rec = await space.getRecord(id);
+        const wo = rec?.runtimeMeta.writeOrder;
+        assert(wo !== undefined && /^[0-9]+$/.test(wo), `writeOrder missing or not decimal: ${wo}`);
+        orders.push(BigInt(wo));
+      }
+      assert(orders[0] < orders[1] && orders[1] < orders[2], `not increasing: ${orders.join(", ")}`);
+    },
+  },
+  {
     name: "put returns an id; read_one returns the committed record",
     run: async (adapter) => {
       const space = newSpace(adapter);

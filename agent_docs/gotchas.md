@@ -365,11 +365,12 @@ that something was missing. A rule a caller can get wrong is one that will be go
   retirement outranked by the record it retired. It surfaced as a conformance test that passed alone
   and failed in a full run, the signature of same-millisecond collisions. `newUlid()` uses
   `monotonicUlid()`, and monotonicity is PER PROCESS.
-- **Across instances the id is the TIE-BREAK, not the clock: registries order by `created_at`
-  first.** A ULID timestamp is the WRITING PROCESS's clock, so id order alone imports clock skew
-  into authorization. `newer` (`sdk/ts/registry.ts`) orders by the DB-clock `created_at`, the id
-  deciding inside a millisecond ("prefer the retirement on a tie" broke revival). Not commit order:
-  it is read before commit, so a same-DB-millisecond cross-instance race stays undefined.
+- **`newer` orders by `runtimeMeta.writeOrder`, then `created_at`, then the id.** `writeOrder` is a
+  database sequence drawn at insert (`records_write_order_seq`, CACHE 1; a counter row on SQLite), a
+  decimal string compared numerically, so non-overlapping writes from any instance order as they
+  happened. A legacy record without one precedes all that have one and falls back to the DB-clock
+  `created_at`, then the id (a ULID is the WRITING PROCESS's clock). Never give the sequence a
+  cache: each session would draw from its own block. Guard: `test/registry.test.ts`.
 - **Kinds are records (`kind_def`), and the `kind_def` meta-kind is the one bootstrap in code.**
   `Space.loadKinds` rebuilds the registry from `kind_def` records, so the Space constructor
   registers `META_KIND_DEF` first. `Space.put` special-cases `kind_def` (validate, register after
@@ -774,10 +775,10 @@ since 2026-08-21 beside `excludeKinds` and `scope`; planted in `test/conformance
   second silently replaces the first, and the CLI's remediation verbs, the chat's bootstrap and the
   MCP adapter all act as whoever logged in last. Logins live under their own suffix; the operator
   entry is never touched. Guard: `test/exchange.test.ts`.
-- **`newestByHash` picks the newest by the DB clock, never by id.** A record's id is a ULID minted
+- **`newestByHash` picks the newest by `newer`, never by id.** A record's id is a ULID minted
   by the INSTANCE that wrote it, so a stop written by an instance whose clock runs behind sorts
   BEFORE the run it stops, and "newest by id" resolved a stopped token as live. A handful of rows by
-  id, then `newer` (created_at first) picks: still one narrow read of one hash (package Z). Guard:
+  id, then `newer` (writeOrder first) picks: still one narrow read of one hash (package Z). Guard:
   `test/credential-order.test.ts`.
 - **`writeEntry` in `src/credentials.ts` is locked, atomic, and refuses a file it cannot parse.**
   A `read` answering `{}` for a torn file let a booting space write back a file holding only its

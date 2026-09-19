@@ -2106,6 +2106,14 @@ components:
             later redeclaration changes only future records. A record of an undeclared kind carries
             the space's own version instead.
         createdAt: { type: string }
+        writeOrder:
+          type: string
+          pattern: "^[0-9]+$"
+          description: >
+            Database-assigned write order, a bigint as a decimal string. The authoritative "which
+            is newer" for two records of one key: writes that do not overlap in time are ordered as
+            they happened, whichever instance made them. Absent on a record written before the
+            field existed; such a record precedes every record that carries one.
 
     Envelope:
       description: Mutable claim-state envelope, one per record.
