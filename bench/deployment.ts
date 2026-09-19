@@ -31,6 +31,7 @@ import { RadiaClient, RadiaClientError } from "../sdk/ts/client.ts";
 import { measure, type Measurement, renderTable } from "./harness.ts";
 import { flag, has } from "../src/flags.ts";
 import { resolveToken } from "../src/credentials.ts";
+import { benchEnv } from "./env.ts";
 
 const argv = Deno.args;
 const url = flag(argv, "--url");
@@ -47,6 +48,12 @@ const checkpoints = (flag(argv, "--checkpoints") ?? "25000,100000,400000").split
 const concurrency = Number(flag(argv, "--concurrency") ?? 64);
 
 const client = new RadiaClient(url, token ? { token } : {});
+
+// The client machine, then the server as it reports itself. The database settings stay unknown
+// from here: the server does not expose them, and a bench has no business asking it to.
+for (const line of await benchEnv()) console.log(line);
+const served = await client.health();
+console.log(`server:  radia ${served.version}, storage ${served.storage}\n`);
 
 const DOC = "bench_doc";
 const JOB = "bench_job";

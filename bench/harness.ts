@@ -8,7 +8,8 @@
 //   - MEASURE THE RUNTIME, NOT THE HARNESS. Setup (seeding records, minting tokens) happens
 //     outside the timed region, and every suite warms up before it counts.
 //   - REPORT THE SHAPE, NOT ONE NUMBER. A mean hides the tail that actually hurts, so every
-//     measurement carries p50/p95/p99, and scaling suites report cost at several sizes.
+//     measurement carries p50/p95/p99 (blank below MIN_SAMPLES), and scaling suites report cost
+//     at several sizes.
 //
 // `Deno.bench` is deliberately not used: it is built for ns-scale microbenchmarks of a single
 // function, and what matters here is throughput under contention and how cost grows with the
@@ -43,7 +44,13 @@ export interface Measurement {
   ops?: number;
   /** Total elapsed for the whole run, for a throughput figure that includes overheads. */
   elapsedMs?: number;
+  /** One p50 per independent trial, set by `pool` when `--trials` ran the bench more than once. */
+  trialP50s?: number[];
 }
+
+/** Fewer samples than this and the percentile is blank: at 20 samples a p99 IS the max, and a
+ *  column that looks like a tail but reports one observation is worse than an empty one. */
+export const MIN_SAMPLES = { p95: 20, p99: 100 } as const;
 
 export function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0;
@@ -73,22 +80,64 @@ export async function measure(label: string, n: number, fn: (i: number) => Promi
   return { label, samples, elapsedMs: performance.now() - t0 };
 }
 
+/**
+ * Merge independent trials of one bench into one row per label. Samples and operation counts are
+ * pooled, so the tail columns get the combined sample count; each trial's own p50 is kept, because
+ * the spread between trials is the run-to-run noise a single run cannot show.
+ */
+export function pool(trials: Measurement[][]): Measurement[] {
+  const byLabel = new Map<string, Measurement>();
+  for (const trial of trials) {
+    for (const m of trial) {
+      const p50 = m.samples.length > 0 ? [percentile([...m.samples].sort((a, b) => a - b), 50)] : [];
+      const ops = m.ops ?? m.samples.length;
+      const prev = byLabel.get(m.label);
+      if (!prev) {
+        byLabel.set(m.label, { label: m.label, samples: [...m.samples], ops, elapsedMs: m.elapsedMs, trialP50s: p50 });
+        continue;
+      }
+      prev.samples.push(...m.samples);
+      prev.ops = (prev.ops ?? 0) + ops;
+      if (m.elapsedMs !== undefined) prev.elapsedMs = (prev.elapsedMs ?? 0) + m.elapsedMs;
+      prev.trialP50s!.push(...p50);
+    }
+  }
+  return [...byLabel.values()];
+}
+
+const median = (xs: number[]) => {
+  const s = [...xs].sort((a, b) => a - b);
+  return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
+};
+
 const fmt = (ms: number) => ms >= 100 ? `${ms.toFixed(0)}ms` : ms >= 1 ? `${ms.toFixed(1)}ms` : `${(ms * 1000).toFixed(0)}µs`;
 
 /** `heading` names the first column: the adapter under test for an in-process suite, the scale
  *  checkpoint for the deployment one. Everything else about the row is the same. */
 export function renderTable(rows: { adapter: string; m: Measurement }[], heading = "ADAPTER"): string {
-  const head = [heading, "OPERATION", "OPS", "OPS/S", "p50", "p95", "p99", "MAX"];
+  // SPREAD only when trials ran: (max - min) of the per-trial p50s over their median. It is the
+  // run-to-run noise, so a before/after difference smaller than it is not a difference.
+  const trials = rows.some(({ m }) => (m.trialP50s?.length ?? 0) > 1);
+  const head = [heading, "OPERATION", "OPS", "OPS/S", "p50", ...(trials ? ["SPREAD"] : []), "p95", "p99", "MAX"];
   const body = rows.map(({ adapter, m }) => {
     const sorted = [...m.samples].sort((a, b) => a - b);
-    const ops = m.ops ?? m.samples.length;
+    const n = sorted.length;
+    const ops = m.ops ?? n;
     const perSec = m.elapsedMs && m.elapsedMs > 0 ? (ops / m.elapsedMs) * 1000 : 0;
+    const p50s = m.trialP50s ?? [];
+    const mid = p50s.length > 1 ? median(p50s) : percentile(sorted, 50);
+    const spread = p50s.length > 1 && mid > 0 ? `${(((Math.max(...p50s) - Math.min(...p50s)) / mid) * 100).toFixed(0)}%` : "-";
     // A row with no per-op samples measured THROUGHPUT only (a concurrent fill, where a per-op
     // duration would time queueing rather than the operation). Blank percentiles, not zeros: `0µs`
-    // reads as instant, which is the opposite of what an unmeasured column means.
-    const tail = m.samples.length === 0
-      ? ["-", "-", "-", "-"]
-      : [fmt(percentile(sorted, 50)), fmt(percentile(sorted, 95)), fmt(percentile(sorted, 99)), fmt(sorted[sorted.length - 1] ?? 0)];
+    // reads as instant, which is the opposite of what an unmeasured column means. A tail with too
+    // few samples behind it is blank for the same reason (MIN_SAMPLES).
+    const tail = n === 0 ? ["-", ...(trials ? ["-"] : []), "-", "-", "-"] : [
+      fmt(mid),
+      ...(trials ? [spread] : []),
+      n >= MIN_SAMPLES.p95 ? fmt(percentile(sorted, 95)) : "-",
+      n >= MIN_SAMPLES.p99 ? fmt(percentile(sorted, 99)) : "-",
+      fmt(sorted[n - 1]),
+    ];
     return [
       adapter,
       m.label,
