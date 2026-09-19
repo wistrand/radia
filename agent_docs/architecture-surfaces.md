@@ -547,7 +547,11 @@ worker blocks a record for an hour) and a model that loses its claim constantly.
 
 Tool descriptions in `tools.ts` are the documentation. A model learns *how* to use a tool from
 its description, never from a system prompt that teaches the space. Kinds are discovered via
-`space_kinds`, so a kind declared after startup is immediately usable.
+`space_kinds`, so a kind declared after startup is immediately usable. Each kind carries `you`, the
+caller's own access joined from `permissions` (operations, and the patterns that bound them, marked
+`patternsPartial` when they bound only some operations, since that view unions across grants); a kind
+the caller cannot use is listed by name only, never hidden (`src/surfaces/mcp/kinds.ts`, guard
+`test/mcpkinds.test.ts`). Why not hide it: research-agent-sessions.md, "Listing a kind you cannot read".
 
 **Both protocol eras are served.** MCP 2026-07-28 made the protocol STATELESS: no `initialize`
 handshake, per-request `_meta` carrying `io.modelcontextprotocol/protocolVersion` and

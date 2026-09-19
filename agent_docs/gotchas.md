@@ -767,7 +767,11 @@ since 2026-08-21 beside `excludeKinds` and `scope`; planted in `test/conformance
   MCP server's environment through `-c` flags, so the Codex member template put a member's
   definition token in argv, readable by every local user through the process list, beside a config
   file `team up` chmods to owner-only for the same secret. Templates name `{{tokenFile}}`;
-  `resolveDefinitionToken` reads the file. Guard: `test/teamfile.test.ts`.
+  `resolveDefinitionToken` reads the file. Guard: `test/teamfile.test.ts`. The file counts as
+  EXPLICIT in `runMcp` (`src/surfaces/mcp/server.ts`); left out, the observer `radia dev` stores
+  outranked it and a Codex member ran as `agent:local-observer`. A file that yields nothing REFUSES
+  to start: counted as explicit, it would fall through to the stored operator token. Guard:
+  `test/mcpwire.test.ts`.
 - **A spawned child inherits the whole environment unless the set is CLEARED.** `harness-worker.ts`
   handed every member's harness whatever the launcher held, `RADIA_TOKEN` (the variable `radia dev`
   prints the OPERATOR token for, and the one `resolveToken` ranks first) included. Filter with

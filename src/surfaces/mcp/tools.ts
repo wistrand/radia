@@ -56,7 +56,8 @@ export const TOOLS: McpTool[] = [
     description:
       "List the record kinds declared in this space, with the paths each one indexes (matchable) " +
       "and sorts by. Call this FIRST: which kinds exist, and what you may match on, is a property " +
-      "of the running space, not of this tool list.",
+      "of the running space, not of this tool list. Each kind says what YOU may do with it (`you`: " +
+      "operations, and the patterns that bound them); a kind you have no access to is listed by name only.",
     inputSchema: { type: "object", properties: {} },
   },
   {
