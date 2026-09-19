@@ -12,6 +12,7 @@ deno task bench -- --trials 5            # 5 independent runs per bench, pooled,
 RADIA_PG_URL=postgres://… deno task bench    # adds a live Postgres column
 
 deno run -A bench/deployment.ts --url http://127.0.0.1:7899   # a real server, over HTTP
+scripts/authprobe-cluster.sh 3           # 3 instances over a throwaway Postgres: stale authorization, counted
 ```
 
 Scaling suites account for most of the run time because they populate spaces with up to 40,000
@@ -58,6 +59,7 @@ constant result size is the signal.
 | `suites/fanout.ts` | the watch fan-out: queries one write triggers as N streams park, counting the kind-blind `notify` tax directly |
 | `suites/chatload.ts` | N chat sessions against one space, five parked streams each, taking real turns through one shared worker. Reports turns/s, p99 turn latency and QUERIES PER TURN as N grows, the column that decides whether the shape scales and the one that caught coalescing decaying at 200 streams on a queueing store (plan-scaling.md); `CHATLOAD_DEBUG=1` prints the per-method breakdown that says which term moved |
 | `profile.ts` | `deno task profile <script> [args…]`: CPU-profile any workload with zero external tooling (see Profiling below) |
+| `authprobe.ts` | standalone, COUNTED not timed: grant, revoke and stop through one instance, then probe every instance for `--window-ms` after each acknowledgement. Any success after a revoke or stop is a violation (stale grant, stale credential); a denial after a grant is lag (stale denial). One operator token per URL, since operator tokens live in process memory. `scripts/authprobe-cluster.sh N` runs it against N `radia serve` over one throwaway Postgres. It writes grants and runs it cannot delete |
 | `deployment.ts` | standalone: one space over HTTP against whatever storage it was started with, re-measured as it fills. Takes a `--url` instead of an adapter, so it measures the thing the suites above cannot. **It writes records and cannot delete them**; point it at a throwaway space |
 | `baselines.ts` | standalone: plan-validation.md's BASELINES. One pipeline workload run three ways (static orchestration, a plain worker queue, content-routed) over the same storage, measured clean, with a worker death, and with work of an unforeseen shape. `deno task bench:baselines [-- --items N]` |
 | `edit-cost.ts` | standalone: what an edit costs versus rewriting a tree, in emitted characters and in records written. Not a timing suite, so it is run directly rather than through the harness |
