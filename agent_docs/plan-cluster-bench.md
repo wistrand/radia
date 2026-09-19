@@ -1,9 +1,10 @@
 # Plan: the cluster and failover benchmark
 
-**Status: PHASES 0-1 BUILT 2026-09-19; phases 2-4 planned.** Phase 0 is `bench/cluster/`
+**Status: PHASES 0-2 BUILT 2026-09-19; phases 3-4 planned.** Phase 0 is `bench/cluster/`
 (`cluster.ts`, `pgproxy.ts`, `authrounds.ts`, `run.ts check`) over `docker/cluster/compose.yaml`;
 phase 1 is `load.ts` and `run.ts steady`, zero violations at N = 1, 2, 4, 8 with every audit line
-proved red. Claims about current behaviour were checked against source the same day.
+proved red; phase 2 is `fleet.ts`, `faults.ts` and `run.ts faults`, zero violations through a
+crash, a stall and a rolling restart. Claims about current behaviour were checked against source the same day.
 
 ## The problem
 
@@ -112,8 +113,8 @@ the steady-state spread (`--trials` SPREAD from a baseline run).
    that nothing is left: no container, volume, process, bound port or work directory. Record below.
 1. **Steady state, scaling. BUILT.** `run.ts steady [--instances 1,2,4,8] [--duration s] [--rate]
    [--plant name]`: all streams, no faults, a fresh cluster per N, then the audit. Record below.
-2. **Instance faults.** Crash, stall, rolling restart. First real question: does a watcher's
-   `Last-Event-ID` resume on another instance without a gap.
+2. **Instance faults. BUILT.** `run.ts faults --fault none|crash|stall|rolling [--plant no-cursor]`.
+   Answered: a watcher's `Last-Event-ID` resumes on another instance without a gap. Record below.
 3. **Database failover.** Sync and async arms. First real question: whether the deno-postgres pool
    discards connections that died with the primary or hands them out again. The fault matrix cannot
    answer that, because the Proxy never breaks a socket.
@@ -155,6 +156,9 @@ run's output):
 | 4 | 1704  | 7.8         | 32          | 11.1 / 101ms    | 0          |
 | 8 | 1421  | 8.9         | 61          | 15.3 / 103ms    | 0          |
 
+- **These numbers were taken without a warm-up, so each window straddles a clock step** (found in
+  phase 2, below): the first 15s or so of every run ran at turbo clock. `--warmup` (default 30s) now
+  precedes every timed window; the shapes above hold, the absolute ops/s are high by up to a third.
 - **Throughput does not scale with N here, and is not expected to.** Every instance shares one host
   and one Postgres, and the loops are closed at a fixed concurrency, so the ceiling is the commit:
   a put's p50 is 12-15ms at every N under synchronous replication. The table measures cost and
@@ -193,6 +197,45 @@ a temporary edit to `src/`, reverted after the run (the runtime fault reaches th
 The fence and the stop each have TWO layers, and removing one was not enough: `leaseValid` refuses
 before the SQL fence is reached, and a stop successor carries no `expiresAt`, so the expiry check
 refuses it too. Both plants reported zero until both layers were gone.
+
+## Phase 2 record
+
+N = 3, 60s after a 30s warm-up, 10s leases, synchronous standby. Every request goes through
+`Fleet` (`bench/cluster/fleet.ts`), which does what a load balancer would: a network error, a 5s
+silence, a 5xx or a stale operator token sets the instance aside until a health check through its
+operator client passes, and the SAME request (same idempotency key; acks keyed by lease) goes to the
+next instance. Watchers are `resumableWatch`: re-created on the next instance with `Last-Event-ID`.
+
+| Fault (`faults.ts`)                   | Failovers | Watchers moved | Worst second       | Back to 90%        | Violations |
+|---------------------------------------|-----------|----------------|--------------------|--------------------|------------|
+| none (control)                        | 0         | 0              | flat, 1000-1400/s  | -                  | 0          |
+| crash: SIGKILL at 15s, restart at 25s | 8         | 2              | no dip below 90%   | 1s; restarted instance answers in its first second | 0 |
+| stall: SIGSTOP 15s, SIGCONT 30s       | 30        | 4              | 0 ops/s at 17s     | 5s after the stop; 1s after it resumes | 0 |
+| rolling: each instance restarted, 12s apart | 22  | 8              | 218 ops/s at 34s   | 1-2s per restart   | 0          |
+
+- **The cursor is portable.** Watchers moved in every fault run and none missed a record. Proved
+  red: `--plant no-cursor` (reconnect without `Last-Event-ID`) reported 22 gaps on the one watcher
+  that moved during a crash.
+- **A stall costs the whole load one request timeout.** Every loop has a request on the stalled
+  instance within a second, so throughput is zero until the 5s timeout fires; after that the other
+  two carry it. That part is inherent to a stall behind any balancer and is bounded by its timeout.
+- **Late answers converge.** Acks the stalled instance held were resent elsewhere under the same
+  lease-keyed idempotency key; zero duplicate results and zero stale settlements, and no ack answered
+  `lease_lost`. Inferred, not observed per request: the stalled originals, answered after SIGCONT,
+  replayed the stored response. The fence itself is exercised by the zombies (phase 1).
+- **Harness findings, fixed in the harness.** (1) A fixed 2s ejection re-admitted the STALLED
+  instance on a timer, so every loop's next request went to it at once and the load dropped to zero
+  every 7s until it resumed; ejection now lasts until a health check passes. (2) The authprobe hit
+  `too_many_grants` after 128 rounds (256 grant records per principal and kind, never compacted,
+  so the cap is working); `AuthRounds` moves to a fresh agent every 100 rounds. (3) A laptop CPU
+  drops from about 3.2 to 2.0 GHz after about 15s of this load (sampled from `scaling_cur_freq`) and
+  throughput drops a third with it, identically in the no-fault control; hence `--warmup`. It was
+  first taken for a runtime regression, and ruled out as the amortized ANALYZE (disabled: same step)
+  and as the buffer cache (the database was 50MB with a 100% hit rate; 1GB of buffers: same step).
+  (4) The `too_many_grants` error was thrown in a background loop, and the unhandled rejection ended
+  the process without its `finally`, leaving a cluster running; `run.ts` now tears down on one.
+- **Not a violation, counted apart:** authorization rounds whose writer or revoker was the dead
+  instance are abandoned whole (about 20 per crash run), since their probes would measure the outage.
 
 ## Known exclusions
 

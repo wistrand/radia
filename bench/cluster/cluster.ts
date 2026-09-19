@@ -226,11 +226,18 @@ export class Cluster {
     throw new Error(`instance ${index} did not start; ${logPath}:\n${await Deno.readTextFile(logPath).catch(() => "")}`);
   }
 
-  /** SIGTERM (or the signal given), escalating to SIGKILL after 10s. */
+  /** Send a signal without waiting for anything: SIGSTOP and SIGCONT for a stall. */
+  signal(index: number, signal: Deno.Signal): void {
+    this.instances[index]?.child?.kill(signal);
+  }
+
+  /** SIGTERM (or the signal given), escalating to SIGKILL after 10s. A stopped (SIGSTOP) process
+   *  cannot act on SIGTERM, so it is continued first. */
   async stopInstance(index: number, signal: Deno.Signal = "SIGTERM"): Promise<Deno.CommandStatus | undefined> {
     const child = this.instances[index]?.child;
     if (!child) return undefined;
     try {
+      if (signal !== "SIGKILL") child.kill("SIGCONT");
       child.kill(signal);
     } catch { /* already exited */ }
     const timer = setTimeout(() => {

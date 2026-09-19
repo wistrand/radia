@@ -14,10 +14,12 @@
 // stream per instance on the record kind), authorization (`AuthRounds`), artifacts (bytes through one
 // instance, read back through another) and housekeeping (`gc` from two instances at once).
 
-import { RadiaClient, RadiaClientError } from "../../sdk/ts/client.ts";
+import type { RadiaClient } from "../../sdk/ts/client.ts";
+import type { Lease } from "../../sdk/ts/wire.ts";
 import type { Measurement } from "../harness.ts";
 import { AuthRounds } from "./authrounds.ts";
 import type { Cluster } from "./cluster.ts";
+import { Fleet, resumableWatch, unavailable, type WatchStats } from "./fleet.ts";
 
 export const REC = "bench_rec";
 export const TASK = "bench_task";
@@ -36,6 +38,14 @@ export interface LoadOptions {
   retryFraction: number;
   /** Loops producing zombies: a lease left to lapse, reclaimed elsewhere, then settled late. */
   zombieLoops: number;
+  /** A worker's lease. Fault runs shorten it so a stall can outlast it inside the window. */
+  leaseSeconds: number;
+  /** False makes a reconnecting watcher drop its cursor: the planted fault for watch gaps. */
+  watchResume?: boolean;
+  /** Load before the timed window, discarded from every measurement (see `runLoad`). */
+  warmupMs: number;
+  /** A fault schedule, started with the timed window; `mark` stamps an event on the timeline. */
+  during?: (fleet: Fleet, mark: (what: string) => void) => Promise<void>;
   gcEveryMs: number;
   authWindowMs: number;
   /** After the load stops: how long workers may drain the task backlog, and watchers catch up. */
@@ -52,6 +62,8 @@ export const DEFAULT_LOAD: Omit<LoadOptions, "log"> = {
   artifactLoops: 2,
   retryFraction: 0.1,
   zombieLoops: 1,
+  leaseSeconds: 30,
+  warmupMs: 0,
   gcEveryMs: 10_000,
   authWindowMs: 200,
   drainMs: 60_000,
@@ -90,6 +102,10 @@ export class Ledger {
 /** Per-operation samples, one Measurement per label at the end. */
 class Samples {
   readonly #by = new Map<string, number[]>();
+  /** Forget everything, at the end of the warm-up. */
+  reset(): void {
+    this.#by.clear();
+  }
   async time<T>(label: string, fn: () => Promise<T>): Promise<T> {
     const t0 = performance.now();
     const out = await fn();
@@ -106,14 +122,12 @@ class Samples {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const hex = async (b: Uint8Array) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(b)))].map((x) => x.toString(16).padStart(2, "0")).join("");
 
-/** A 5xx or a network failure: counted per stream, never an authorization or a coordination answer. */
-function isTransport(e: unknown): boolean {
-  return !(e instanceof RadiaClientError) || e.status >= 500;
-}
-
 export interface LoadResult {
   ledger: Ledger;
   auth: AuthRounds;
+  fleet: Fleet;
+  watchStats: WatchStats;
+  timeline: Timeline;
   measurements: Measurement[];
   elapsedMs: number;
   /** Client operations issued during the timed window, for queries per operation. */
@@ -130,10 +144,8 @@ export async function declareKinds(admin: RadiaClient): Promise<void> {
 }
 
 export async function runLoad(cluster: Cluster, o: LoadOptions): Promise<LoadResult> {
-  const admins = cluster.admins();
-  const n = admins.length;
-  let turn = 0;
-  const pick = () => admins[turn++ % n];
+  const fleet = new Fleet(cluster);
+  const call = <T>(fn: (c: RadiaClient) => Promise<T>) => fleet.call(fn);
   const ledger = new Ledger();
   const s = new Samples();
   const tag = Date.now().toString(36);
@@ -141,33 +153,34 @@ export async function runLoad(cluster: Cluster, o: LoadOptions): Promise<LoadRes
   let stopped = false; // the timed load
   let draining = false; // producers stopped, workers finishing the backlog
   const pace = o.rate ? 1000 / o.rate : 0;
+  let t0 = performance.now();
+  const second = () => Math.floor((performance.now() - t0) / 1000);
+  let timeline = new Timeline(fleet.n);
+  fleet.onSuccess = (i) => timeline.success(second(), i);
+  fleet.onFailover = () => timeline.failover(second());
+  const done = () => ops++;
 
-  await declareKinds(admins[0]);
+  await declareKinds(fleet.clients[0]);
 
-  // Watchers first, and given a moment to connect: a watch sees what commits after it exists.
+  // Watchers first, and given a moment to connect: a watch sees what commits after it exists. Each
+  // starts on its own instance and resumes on another when that one fails.
   const watchAbort = new AbortController();
-  const watchers = admins.map((a, i) => {
+  const watchStats: WatchStats = { reconnects: 0, moved: 0 };
+  const watchers = fleet.clients.map((_, i) => {
     ledger.seen[i] = new Set();
-    return (async () => {
-      try {
-        for await (const w of a.watch({ kind: REC }, watchAbort.signal)) {
-          ledger.seen[i].add(w.recordId);
-          const at = ledger.recAckedAt.get(w.recordId);
-          if (at !== undefined) ledger.watchLatencies.push(performance.now() - at);
-        }
-      } catch (e) {
-        if (!watchAbort.signal.aborted) ledger.error(`watch ${i}: ${e}`);
-      }
-    })();
+    return resumableWatch(fleet, i, { kind: REC }, (w) => {
+      ledger.seen[i].add(w.recordId);
+      const at = ledger.recAckedAt.get(w.recordId);
+      if (at !== undefined) ledger.watchLatencies.push(performance.now() - at);
+    }, watchAbort.signal, watchStats, 5_000, o.watchResume !== false);
   });
   await sleep(1_000);
 
-  const auth = await AuthRounds.create(admins, cluster.urls, { windowMs: o.authWindowMs });
+  // `fleet.clients` is replaced in place on a restart, so the rounds follow the new tokens.
+  const auth = await AuthRounds.create(fleet.clients, cluster.urls, { windowMs: o.authWindowMs });
 
-  // Counted from here: queries per operation covers the timed window only.
-  await cluster.sql("select pg_stat_statements_reset()");
-  const connSamples: number[] = [];
-  const t0 = performance.now();
+  let connSamples: number[] = [];
+  t0 = performance.now();
 
   const loop = (stream: string, body: (i: number) => Promise<void>, until: () => boolean = () => stopped) =>
     async (i: number) => {
@@ -176,7 +189,7 @@ export async function runLoad(cluster: Cluster, o: LoadOptions): Promise<LoadRes
         try {
           await body(i);
         } catch (e) {
-          if (isTransport(e)) ledger.error(stream);
+          if (unavailable(e)) ledger.error(stream);
           else throw e;
         }
         if (pace) await sleep(Math.max(0, pace - (performance.now() - started)));
@@ -188,42 +201,45 @@ export async function runLoad(cluster: Cluster, o: LoadOptions): Promise<LoadRes
     const k = recN++;
     const key = `${tag}:r:${k}`;
     const body = { key, bucket: k % 64, loop: i };
-    const { id } = await s.time("rec put", () => pick().put({ kind: REC, body }, key));
-    ops++;
+    const { id } = await s.time("rec put", () => call((c) => c.put({ kind: REC, body }, key)));
+    done();
     ledger.recByKey.set(key, id);
     ledger.recAckedAt.set(id, performance.now());
     if (Math.random() < o.retryFraction) {
       // The retry a client makes when it never saw the answer: same key, another instance.
-      const again = await s.time("rec put retry", () => pick().put({ kind: REC, body }, key));
-      ops++;
+      const again = await s.time("rec put retry", () => call((c) => c.put({ kind: REC, body }, key)));
+      done();
       if (again.id !== id) ledger.retryNewId++;
     }
-    const read = await s.time("rec read_one", () => pick().readOne({ kind: REC, match: { key } }));
-    ops++;
+    const read = await s.time("rec read_one", () => call((c) => c.readOne({ kind: REC, match: { key } })));
+    done();
     if (read?.id !== id) ledger.staleReads++;
-    await s.time("rec query", () => pick().queryNewest({ kind: REC, match: { bucket: k % 64 } }, 10));
-    ops++;
+    await s.time("rec query", () => call((c) => c.queryNewest({ kind: REC, match: { bucket: k % 64 } }, 10)));
+    done();
   });
 
   let taskN = 0;
   const producers = loop("claims", async () => {
     const key = `${tag}:t:${taskN++}`;
-    const { id } = await s.time("task put", () => pick().put({ kind: TASK, body: { key } }, key));
-    ops++;
+    const { id } = await s.time("task put", () => call((c) => c.put({ kind: TASK, body: { key } }, key)));
+    done();
     ledger.tasks.add(id);
   });
 
-  const settle = async (via: RadiaClient, lease: Parameters<RadiaClient["ack"]>[0], task: string) => {
-    const r = await s.time("ack", () => via.ack(lease, { kind: RESULT, body: { task } }));
-    ops++;
+  // Keyed by the LEASE, so an ack whose answer was lost and is resent through another instance
+  // replays the stored answer instead of reading as lease_lost (idempotency before lease validation).
+  const settle = async (lease: Lease, task: string, via?: RadiaClient) => {
+    const ack = (c: RadiaClient) => c.ack(lease, { kind: RESULT, body: { task } }, `ack:${lease.leaseId}`);
+    const r = await s.time("ack", () => via ? ack(via) : call(ack));
+    done();
     if (r.status === "ok") {
       ledger.completed.add(task);
       if (r.resultId) ledger.results.add(r.resultId);
     } else ledger.ackLost++;
   };
   const workers = loop("claims", async () => {
-    const claim = await s.time("take", () => pick().take({ pattern: { kind: TASK } }, { leaseSeconds: 30 }));
-    ops++;
+    const claim = await s.time("take", () => call((c) => c.take({ pattern: { kind: TASK } }, { leaseSeconds: o.leaseSeconds })));
+    done();
     if (!claim) {
       ledger.emptyTakes++;
       await sleep(20);
@@ -231,48 +247,55 @@ export async function runLoad(cluster: Cluster, o: LoadOptions): Promise<LoadRes
     }
     const id = claim.record.id;
     ledger.executions.set(id, (ledger.executions.get(id) ?? 0) + 1);
-    await settle(pick(), claim.lease, id);
+    await settle(claim.lease, id);
   }, () => draining ? ledger.completed.size >= ledger.tasks.size : stopped);
 
   // The zombie: a task of its OWN kind, so no ordinary worker claims it first (with them sharing
   // one kind, every lapsed lease was taken by a worker and the late settle was never asked). Its
   // lease lapses, another instance reclaims it by id, and only then does the original holder try to
-  // settle. Both of its settles must be refused.
+  // settle. Both of its settles must be refused. The holder's settles go through the instance that
+  // granted the lease, without failover, since which instance asks is the point.
   let zombieN = 0;
   const zombies = loop("claims", async () => {
     const key = `${tag}:z:${zombieN++}`;
-    const { id } = await pick().put({ kind: ZTASK, body: { key } }, key);
+    const { id } = await call((c) => c.put({ kind: ZTASK, body: { key } }, key));
     ledger.tasks.add(id);
-    const a = pick();
-    const claim = await a.take({ recordId: id }, { leaseSeconds: 1 });
+    let holder: RadiaClient | undefined;
+    const claim = await call((c) => (holder = c).take({ recordId: id }, { leaseSeconds: 1 }));
     ops += 2;
-    if (!claim) return void ledger.zombieReclaimMiss++;
+    if (!claim || !holder) return void ledger.zombieReclaimMiss++;
     ledger.zombies++;
     ledger.executions.set(id, 1);
     await sleep(1_300);
-    const b = pick();
-    const again = await b.take({ recordId: id }, { leaseSeconds: 30 });
+    const again = await call((c) => c.take({ recordId: id }, { leaseSeconds: o.leaseSeconds }));
     ops++;
     if (!again) {
       // Not reclaimable after its lease lapsed: nothing to fence against, so the late settle is not
       // asked, and the task is settled by its holder rather than left stranded.
       ledger.zombieReclaimMiss++;
-      return settle(a, claim.lease, id);
+      return settle(claim.lease, id);
     }
     ledger.executions.set(id, 2);
-    const late = await a.ack(claim.lease, { kind: RESULT, body: { task: id, zombie: true } });
-    const renew = await a.renew(claim.lease, { leaseSeconds: 30 });
-    ops += 2;
-    if (late.status === "ok") ledger.staleSettlements++;
-    if (renew.status === "ok") ledger.staleSettlements++;
-    await settle(b, again.lease, id);
+    try {
+      const late = await holder.ack(claim.lease, { kind: RESULT, body: { task: id, zombie: true } });
+      const renew = await holder.renew(claim.lease, { leaseSeconds: 30 });
+      ops += 2;
+      if (late.status === "ok") ledger.staleSettlements++;
+      if (renew.status === "ok") ledger.staleSettlements++;
+    } catch (e) {
+      // The holder's instance went away: its late settle was never asked, which proves nothing.
+      if (!unavailable(e)) throw e;
+      ledger.error("zombie holder");
+    }
+    await settle(again.lease, id);
   });
 
   const artifacts = loop("artifacts", async () => {
     const bytes = crypto.getRandomValues(new Uint8Array(1024 + Math.floor(Math.random() * 63 * 1024)));
-    const rec = await s.time("artifact put", () => pick().putArtifact(bytes, { mediaType: "application/octet-stream" }));
+    const key = `${tag}:a:${crypto.randomUUID()}`;
+    const rec = await s.time("artifact put", () => call((c) => c.putArtifact(bytes, { mediaType: "application/octet-stream", idempotencyKey: key })));
     ledger.artifacts.push({ id: rec.id, bytes });
-    const back = await s.time("artifact get", () => pick().getArtifact(rec.id));
+    const back = await s.time("artifact get", () => call((c) => c.getArtifact(rec.id)));
     ops += 2;
     if (await hex(back) !== await hex(bytes)) ledger.artifactMismatch++;
   });
@@ -282,7 +305,9 @@ export async function runLoad(cluster: Cluster, o: LoadOptions): Promise<LoadRes
       try {
         await s.time("auth round", () => auth.round(r));
       } catch (e) {
-        if (isTransport(e)) ledger.error("authorization");
+        // A round whose writer or revoker is down is abandoned whole: its probes would measure the
+        // outage, not authorization.
+        if (unavailable(e)) ledger.error("authorization");
         else throw e;
       }
     }
@@ -292,10 +317,9 @@ export async function runLoad(cluster: Cluster, o: LoadOptions): Promise<LoadRes
     while (!stopped) {
       await sleep(o.gcEveryMs);
       if (stopped) break;
-      // Two instances at once: plan-gc.md says concurrent sweeps are safe, and this is where that
-      // claim meets a live space.
-      await Promise.all([admins[0], admins[1 % n]].map((a) =>
-        s.time("gc", () => a.gc({ compact: true })).then(() => ops++, (e) => isTransport(e) ? ledger.error("gc") : Promise.reject(e))
+      // Two at once: plan-gc.md says concurrent sweeps are safe, and this is where that meets a live space.
+      await Promise.all([0, 1].map(() =>
+        s.time("gc", () => call((c) => c.gc({ compact: true }))).then(done, (e) => unavailable(e) ? ledger.error("gc") : Promise.reject(e))
       ));
     }
   })();
@@ -317,8 +341,28 @@ export async function runLoad(cluster: Cluster, o: LoadOptions): Promise<LoadRes
     ...Array.from({ length: o.artifactLoops }, (_, i) => artifacts(i)),
     ...Array.from({ length: o.zombieLoops }, (_, i) => zombies(i)),
   ];
-  const progress = setInterval(() => o.log(`${((performance.now() - t0) / 1000).toFixed(0)}s: ${ops} ops`), 10_000);
+  const progress = setInterval(() => o.log(`${second()}s: ${ops} ops, ${fleet.failovers} failovers`), 10_000);
+  if (o.warmupMs > 0) {
+    // The load runs, and then everything that MEASURES starts over: samples, the op count, the
+    // timeline, the connection samples and pg_stat_statements. A laptop holds its turbo clock for
+    // the first 15s or so of sustained load and then drops about a third of its frequency, and a
+    // window straddling that step reads as a fault or a recovery. The ledger is not reset: every
+    // write, warm-up included, is audited.
+    o.log(`warming up for ${o.warmupMs / 1000}s`);
+    await sleep(o.warmupMs);
+    s.reset();
+    ops = 0;
+    connSamples = [];
+    timeline = new Timeline(fleet.n);
+    t0 = performance.now();
+  }
+  await cluster.sql("select pg_stat_statements_reset()");
+  const faults = o.during?.(fleet, (what) => {
+    timeline.mark(second(), what);
+    o.log(`${second()}s: ${what}`);
+  });
   await sleep(o.durationMs);
+  await faults; // a schedule longer than the window finishes before the load stops
   stopped = true;
   draining = true;
   const elapsedMs = performance.now() - t0;
@@ -341,17 +385,42 @@ export async function runLoad(cluster: Cluster, o: LoadOptions): Promise<LoadRes
   await sleep(o.graceMs); // watchers catch up to the last write
   watchAbort.abort();
   await Promise.all(watchers);
+  fleet.close();
 
   const mean = connSamples.reduce((a, b) => a + b, 0) / Math.max(1, connSamples.length);
   return {
     ledger,
     auth,
+    fleet,
+    watchStats,
+    timeline,
     measurements: s.measurements(elapsedMs),
     elapsedMs,
     ops: opsInWindow,
     dbCalls: Number(calls.calls),
     connections: { max: Math.max(0, ...connSamples), mean },
   };
+}
+
+/** Successes per second, overall and per instance, failovers per second, and the fault marks. */
+export class Timeline {
+  readonly ops: number[] = [];
+  readonly failovers: number[] = [];
+  readonly perInstance: number[][];
+  readonly marks: { second: number; what: string }[] = [];
+  constructor(n: number) {
+    this.perInstance = Array.from({ length: n }, () => []);
+  }
+  success(sec: number, i: number): void {
+    this.ops[sec] = (this.ops[sec] ?? 0) + 1;
+    this.perInstance[i][sec] = (this.perInstance[i][sec] ?? 0) + 1;
+  }
+  failover(sec: number): void {
+    this.failovers[sec] = (this.failovers[sec] ?? 0) + 1;
+  }
+  mark(sec: number, what: string): void {
+    this.marks.push({ second: sec, what });
+  }
 }
 
 /**
