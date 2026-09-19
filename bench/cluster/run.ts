@@ -26,6 +26,7 @@ if (!mode || has(argv, "--help") || !["check", "authprobe", "steady", "faults"].
     "usage: deno run -A bench/cluster/run.ts check [--instances n] [--cycles n] [--async]\n" +
       "       deno run -A bench/cluster/run.ts authprobe [--instances n] [--async] [--rounds n] [--window-ms n]\n" +
       "       deno run -A bench/cluster/run.ts steady [--instances 1,2,4,8] [--duration s] [--warmup s] [--rate ops/s/loop] [--async]\n" +
+      "                                               [--pool-size n] [--idle-check]\n" +
       `                                               [--plant ${Object.keys(PLANTS).join("|")}]\n` +
       `       deno run -A bench/cluster/run.ts faults --fault ${Object.keys(FAULTS).join("|")} [--instances 3] [--duration 60] [--warmup 30] [--rate] [--plant no-cursor]`,
   );
@@ -68,9 +69,14 @@ if (mode === "steady") {
   }
   const warmupMs = Number(flag(argv, "--warmup") ?? 30) * 1000;
   const opts = { ...DEFAULT_LOAD, durationMs, rate, warmupMs, log };
+  // Per-instance Postgres connections (`--pg-pool-size`), and whether to wait out the idle timeout
+  // after the load to count what the pool gave back.
+  const poolSize = flag(argv, "--pool-size");
+  const serveArgs = poolSize ? ["--pg-pool-size", poolSize] : [];
+  const idleCheck = has(argv, "--idle-check");
   console.log(
     `cluster steady state: N = ${sizes.join(", ")}, ${durationMs / 1000}s each after ${warmupMs / 1000}s warm-up, ${sync ? "synchronous" : "ASYNCHRONOUS"} standby, ` +
-      `${rate ? `${rate} ops/s per loop` : "closed loops"}${plant ? `, PLANTED: ${plant}` : ""}\n` +
+      `${rate ? `${rate} ops/s per loop` : "closed loops"}, pool ${poolSize ?? "8 (default)"}${plant ? `, PLANTED: ${plant}` : ""}\n` +
       `loops: ${opts.recordLoops} records, ${opts.producers} producers, ${opts.workers} workers, ${opts.artifactLoops} artifacts, ` +
       `1 authorization, gc every ${opts.gcEveryMs / 1000}s from two instances, one watcher per instance\n`,
   );
@@ -79,9 +85,19 @@ if (mode === "steady") {
   let plantSeen = true;
   for (const n of sizes) {
     console.log(`## N = ${n}`);
-    live = await Cluster.up({ instances: n, sync, log });
+    live = await Cluster.up({ instances: n, sync, log, serveArgs });
     try {
       const r = await runLoad(live, opts);
+      let afterIdle = "-";
+      if (idleCheck) {
+        // The pool closes connections idle past 60s down to one per instance (`ClientPool`).
+        log("idle check: waiting 75s after the load");
+        await new Promise((res) => setTimeout(res, 75_000));
+        const [row] = await live.sql<{ n: number }>(
+          "select count(*)::int as n from pg_stat_activity where datname = 'radia' and backend_type = 'client backend' and pid <> pg_backend_pid()",
+        );
+        afterIdle = String(row.n);
+      }
       if (plant) await PLANTS[plant].apply(live, r);
       const found = await audit(live, r);
       console.log(renderTable(r.measurements.map((m) => ({ adapter: `N=${n}`, m })), "N"));
@@ -100,6 +116,7 @@ if (mode === "steady") {
         ((r.ops / r.elapsedMs) * 1000).toFixed(0),
         (r.dbCalls / Math.max(1, r.ops)).toFixed(1),
         `${r.connections.max} / ${r.connections.mean.toFixed(0)}`,
+        afterIdle,
         String(l.emptyTakes),
         `${dupExec} / ${l.executions.size}`,
         lat.length ? `${lat[Math.floor(lat.length / 2)].toFixed(1)}ms` : "-",
@@ -113,7 +130,7 @@ if (mode === "steady") {
     }
     console.log("");
   }
-  const head = ["N", "OPS/S", "DB CALLS/OP", "CONNS MAX/MEAN", "EMPTY TAKES", "DUP EXEC", "WATCH p50", "WATCH p99", "ERRORS", "VIOLATIONS"];
+  const head = ["N", "OPS/S", "DB CALLS/OP", "CONNS MAX/MEAN", "CONNS IDLE", "EMPTY TAKES", "DUP EXEC", "WATCH p50", "WATCH p99", "ERRORS", "VIOLATIONS"];
   const widths = head.map((h, i) => Math.max(h.length, ...summary.map((r) => r[i].length)));
   const line = (cells: string[]) => cells.map((c, i) => c.padStart(widths[i])).join("  ");
   console.log([line(head), widths.map((w) => "─".repeat(w)).join("  "), ...summary.map(line)].join("\n"));

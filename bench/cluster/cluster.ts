@@ -43,6 +43,8 @@ export interface ClusterOptions {
   sync?: boolean;
   /** First instance port; instance i listens on basePort + i. */
   basePort?: number;
+  /** Extra `radia serve` arguments for every instance, e.g. `["--pg-pool-size", "4"]`. */
+  serveArgs?: string[];
   log?: (line: string) => void;
 }
 
@@ -86,6 +88,7 @@ export class Cluster {
     readonly blobSpec: string,
     private readonly kek: string,
     private readonly log: (line: string) => void,
+    private readonly serveArgs: string[] = [],
   ) {}
 
   /** Bring everything up, or tear down what came up and throw. */
@@ -109,7 +112,7 @@ export class Cluster {
       await new S3BlobStore(parseS3Spec(blobSpec, (k) => (S3_KEYS as Record<string, string>)[k])).ensureBucket();
       const proxy = PgProxy.start(primary);
       const kek = b64(crypto.getRandomValues(new Uint8Array(32)));
-      cluster = new Cluster(project, workDir, sync, primary, standby, proxy, blobSpec, kek, log);
+      cluster = new Cluster(project, workDir, sync, primary, standby, proxy, blobSpec, kek, log, opts.serveArgs);
       await cluster.waitForStandby();
       for (let i = 0; i < opts.instances; i++) await cluster.startInstance(i, opts.basePort ?? 7950);
       return cluster;
@@ -196,6 +199,7 @@ export class Cluster {
         "--storage", "postgres", "--db", `postgres://radia:radia@127.0.0.1:${this.proxy.port}/radia`,
         "--port", String(port), "--blobs", this.blobSpec, "--artifact-port", "0",
         "--operator-token-file", tokenFile, "--log-level", "warn",
+        ...this.serveArgs,
       ],
       cwd: this.workDir,
       env: { ...S3_KEYS, RADIA_BLOB_KEK: this.kek, RADIA_DIR: `${this.workDir}/radia${index}`, RADIA_CREDENTIALS: `${this.workDir}/credentials.json` },

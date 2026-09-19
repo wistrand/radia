@@ -14,7 +14,7 @@ RADIA_PG_URL=postgres://… deno task bench    # adds a live Postgres column
 deno run -A bench/deployment.ts --url http://127.0.0.1:7899   # a real server, over HTTP
 deno run -A bench/cluster/run.ts check   # cluster phase 0: up, verify, down, twice (needs docker)
 deno run -A bench/cluster/run.ts authprobe  # stale authorization, counted, on a throwaway 3-instance cluster
-deno run -A bench/cluster/run.ts steady  # cluster phase 1: mixed load at N = 1,2,4,8, then the oracle
+deno run -A bench/cluster/run.ts steady  # cluster phase 1: mixed load at N = 1,2,4,8, then the oracle (--pool-size n, --idle-check)
 deno run -A bench/cluster/run.ts faults --fault crash  # cluster phase 2: crash|stall|rolling|none under load
 ```
 

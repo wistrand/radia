@@ -167,7 +167,20 @@ run's output):
   correctness per instance added, not capacity.
 - **Each instance holds its full pool** (`poolSize` 8, `src/storage/postgres.ts`), so 8 instances
   use 61 of Postgres's default 100 connections and a 13th cannot start. Size `max_connections` for
-  `instances x poolSize` plus headroom.
+  `instances x poolSize` plus headroom. Since then: `--pg-pool-size` sets it, and `ClientPool` closes
+  a connection idle for 60s down to one per instance. Measured (`run.ts steady --instances 4
+  --pool-size n [--idle-check]`, 40s after a 30s warm-up, one run each):
+
+  | pool | connections | ops/s | put p50 / p99 | read_one p50 / p99 | 75s after the load |
+  |------|-------------|-------|---------------|--------------------|--------------------|
+  | 2    | 8           | 840   | 19.1 / 91.5ms | 11.4 / 63.5ms      |                    |
+  | 4    | 16          | 1,124 | 16.4 / 41.3ms | 6.4 / 22.4ms       |                    |
+  | 8    | 32          | 1,090 | 16.9 / 44.6ms | 6.7 / 18.2ms       | 4 (one per instance) |
+
+  At this load (about 5 concurrent operations per instance) 4 matches 8 within noise on half the
+  connections, and 2 costs a quarter of the throughput and doubles the tails. The default stays 8:
+  a single instance carrying a whole deployment's concurrency needs the headroom, and the reaper
+  makes it cost nothing once a burst is over.
 - **DB calls per op rise with N** (7.1 to 8.9): each instance with a parked watch polls the event log
   every `CHANGE_POLL_MS` (250ms, `src/core/notifier.ts`), so the polling is per instance.
 - **Cross-instance watch latency is poll-bound**: p99 grows from 19ms at N=1 to about 100ms once most

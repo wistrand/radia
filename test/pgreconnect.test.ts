@@ -218,6 +218,40 @@ Deno.test({
 });
 
 Deno.test({
+  name: "postgres: connections idle past the timeout are closed, down to one",
+  ...needsPg,
+  fn: async () => {
+    // A connection opened for a burst stayed open for the life of the process, so every instance of
+    // a busy cluster held its whole pool (plan-cluster-bench.md phase 1). Four concurrent sleeps open
+    // four; once idle past the timeout, one stays.
+    // Counted by application_name, so connections other cases are still closing do not count.
+    const name = `radia_reap_${newUlid().toLowerCase()}`;
+    const url = new URL(PG_URL!);
+    url.searchParams.set("application_name", name);
+    const probe = new PostgresAdapter(PG_URL!, { poolSize: 1, idleTimeoutMs: 0 });
+    await probe.init();
+    const backends = async () =>
+      (await raw(probe).query<{ n: number }>("select count(*)::int as n from pg_stat_activity where application_name = $1", [name])).rows[0].n;
+    const a = new PostgresAdapter(url.toString(), { poolSize: 4, idleTimeoutMs: 300 });
+    await a.init();
+    try {
+      await Promise.all([0, 1, 2, 3].map(() => raw(a).query("select pg_sleep(0.2)")));
+      assertEquals(await backends(), 4, "the burst should have opened every slot");
+      let open = 4;
+      for (let i = 0; i < 40 && open > 1; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        open = await backends();
+      }
+      assertEquals(open, 1, "idle connections past the timeout should close, down to one");
+      assertEquals((await raw(a).query<{ ok: number }>("select 1 as ok")).rows[0].ok, 1, "and the pool still answers");
+    } finally {
+      await a.close();
+      await probe.close();
+    }
+  },
+});
+
+Deno.test({
   name: "postgres: more failed reconnects than the pool has slots still leave a working pool",
   ...needsPg,
   fn: async () => {
