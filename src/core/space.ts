@@ -125,7 +125,11 @@ export interface SpaceContext {
   defaultBackoffSeconds: number;
   maxAttempts: number;
   maxCumulativeSeconds: number;
-  /** The one supervisor agent that, like an operator, may write grants/signal and reach `/ops/*`. */
+  /** The one supervisor agent, whose ENTIRE privilege is writing `grant` and `signal` records.
+   *  Otherwise ordinary: no ops powers by right, no coordination bypass, and `ops_grant`/`agent_*`
+   *  stay operator-only, since a power-granter could grant itself powers. It held the whole
+   *  operator bit until the phase-5 demotion, which is also what made it mintable, a definition
+   *  being refused a privileged principal (architecture-ops-tiers.md). */
   supervisor: string;
   /**
    * The human principals with operator authority, named one by one.
