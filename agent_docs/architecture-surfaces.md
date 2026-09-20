@@ -600,6 +600,11 @@ refusal proves the field is REQUIRED, so a write goes out as the model wrote it 
 one is retried filled in; the scope is then remembered per kind for the process. Ambiguity is
 ASKED about, never guessed: a member of two teams gets both names back.
 
+What it asks for is the scope of the grants carrying THAT VERB (`byOperation`), not the kind's
+union. The union is two entries whenever a member's write is narrower than its reads, which is
+the ordinary shape of a team whose members must not read each other, and every such write was
+refused as ambiguous when exactly one grant carried `put` (`examples/teams/poker/`).
+
 `radia artifact put <file|-> | get <id> [--out <path|->]` moves bytes in and out of a terminal, so
 "if the CLI can do it, an external client can too" now holds for payloads too. It had held in one
 direction only: artifacts were reachable from an SDK and from the MCP adapter, and from a shell only

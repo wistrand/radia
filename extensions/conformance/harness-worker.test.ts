@@ -107,6 +107,45 @@ Deno.test("harness-worker: a harness past its timeout is killed and the record n
   assertEquals(r.env.state, "available");
 });
 
+Deno.test("harness-worker: stopClaiming ends the loop without killing the harness in flight", async () => {
+  // The two halves of stopping, which were one signal and could not both be had. `signal` kills:
+  // a running harness reads an aborted one as its lease being lost and dies `fenced`, nacking the
+  // claim. A run that has its answer needs the other half, and `radia team up` had no way to ask
+  // for it: on `done` it waited for the in-flight count to fall while its loops kept claiming, so
+  // the wait refilled itself and spent the whole grace period launching a model per turn.
+  const team = uniq("hwstop");
+  const m = await member(team);
+  const { id } = await admin.put({ kind: "task", body: { team, title: "slow one", tags: ["fake"] } });
+  const runs: HarnessRun[] = [];
+  const ac = new AbortController();
+  const claim = new AbortController();
+  const hard = setTimeout(() => ac.abort(), 30_000);
+  await runHarnessMember(m.client, {
+    agent: m.agent,
+    command: [Deno.execPath(), "run", "-A", fixture],
+    prompt: "record {{recordId}} claim {{claimId}}",
+    patterns: [{ kind: "task", match: { team } }],
+    leaseSeconds: 30,
+    timeoutSeconds: 20,
+    concurrency: 1,
+    env: { FAKE_MODE: "settle", FAKE_TOKEN: m.token, FAKE_TEAM: team },
+  }, {
+    signal: ac.signal,
+    stopClaiming: claim.signal,
+    log: () => {},
+    onRun: (r) => runs.push(r),
+    // Stop claiming the moment the first harness is spawned: it must still reach its answer.
+    beforeSpawn: () => {
+      claim.abort();
+      return Promise.resolve();
+    },
+  });
+  clearTimeout(hard);
+  assertEquals(runs.length, 1, "the loop stopped claiming rather than taking a second record");
+  assertEquals(runs[0].outcome, "settled", "and the harness already in flight was left to finish");
+  assertEquals((await admin.getEnvelope(id))!.state, "consumed", "so its claim is settled, not nacked back");
+});
+
 Deno.test("harness-worker: a lease lost mid-run kills the harness (a fenced worker stops at the fence)", async () => {
   // The operator DEAD-LETTERS the record while the harness hangs (a live lease cannot be reclaimed,
   // only an expired one): the loop's next heartbeat sees lease_lost, and because the record is

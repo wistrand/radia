@@ -40,9 +40,21 @@ export interface TeamFileMember {
   env?: Record<string, string>;
   /** A command of this member's own, in place of the harness template. */
   command?: string[];
-  /** Grants beyond the standard member set, `<kind>:<op,op>`, scoped to the team like the rest
-   *  (`radia team add --grant`). Applied by `--init` when the member is minted. */
-  grants?: string[];
+  /**
+   * Grants beyond the standard member set, scoped to the team like the rest (`radia team add
+   * --grant`). Applied by `--init` when the member is minted.
+   *
+   * `"<kind>:<op,op>"` is the whole kind within the team. The object form narrows FURTHER, which
+   * is what a team whose members must not read each other needs: `pattern` is AND-ed with the
+   * team label, and a value of exactly `"self"` becomes this member's principal, so one line
+   * serves every member and none of them can be given somebody else's name by mistake.
+   *
+   *     {"kind": "hole", "operations": ["query"], "pattern": {"owner": "self"}}
+   *
+   * The team label is applied first and may not be named in `pattern`: an extra grant must never
+   * be the one hole that reads across teams.
+   */
+  grants?: (string | TeamGrant)[];
   /** Grants written WITHOUT the team pattern, for reference kinds that carry no team (`sandbox`,
    *  `interest`); a team-scoped grant on one of those matches nothing. */
   unscopedGrants?: string[];
@@ -56,6 +68,13 @@ export interface TeamFileMember {
   /** A JSONL file the launched adapter appends one line per tool call to (`radia mcp --trace`),
    *  which is how the agent lab sees what a launched harness ASKED FOR. */
   trace?: string;
+}
+
+/** A member grant that narrows within the team. See `TeamFileMember.grants`. */
+export interface TeamGrant {
+  kind: string;
+  operations: string[];
+  pattern?: Record<string, unknown>;
 }
 
 export interface SeedRecord {
@@ -356,7 +375,36 @@ export function parseTeamFile(text: string, where = "team.json"): TeamFile {
     for (const k of ["grants", "unscopedGrants"]) {
       const v = mm[k];
       if (v === undefined) continue;
-      if (!Array.isArray(v) || !v.every((g) => typeof g === "string" && /^[a-z_]+:[a-z_,]+$/.test(g))) fail(where, `${at}.${k} must be a list of '<kind>:<op,op>'`);
+      if (!Array.isArray(v)) fail(where, `${at}.${k} must be a list`);
+      for (const [gi, g] of (v as unknown[]).entries()) {
+        const gat = `${at}.${k}[${gi}]`;
+        if (typeof g === "string") {
+          if (!/^[a-z_]+:[a-z_,]+$/.test(g)) fail(where, `${gat} must be '<kind>:<op,op>'`);
+          continue;
+        }
+        // The OBJECT form, which `unscopedGrants` deliberately does not take: what it exists for
+        // is a reference kind that carries no team, and a pattern on one of those is the scoping
+        // it was written to avoid.
+        if (k === "unscopedGrants") fail(where, `${gat}: unscopedGrants takes '<kind>:<op,op>' only, since an unscoped grant is the one that carries no pattern`);
+        if (!g || typeof g !== "object" || Array.isArray(g)) fail(where, `${gat} must be '<kind>:<op,op>' or {kind, operations, pattern?}`);
+        const go = g as Record<string, unknown>;
+        for (const f of Object.keys(go)) {
+          if (!["kind", "operations", "pattern"].includes(f)) fail(where, `${gat}: unknown field '${f}' (fields: kind, operations, pattern)`);
+        }
+        if (typeof go.kind !== "string" || !go.kind) fail(where, `${gat}.kind must be a kind name`);
+        if (!Array.isArray(go.operations) || !go.operations.length || !go.operations.every((o) => typeof o === "string")) {
+          fail(where, `${gat}.operations must be a non-empty list of operations`);
+        }
+        if (go.pattern !== undefined) {
+          if (!go.pattern || typeof go.pattern !== "object" || Array.isArray(go.pattern)) fail(where, `${gat}.pattern must be a match object`);
+          for (const [pk, pv] of Object.entries(go.pattern as Record<string, unknown>)) {
+            // The team label is applied by the scoping and must not be overridable here: a grant
+            // naming another team would be the one hole that reads across them.
+            if (pk === "team") fail(where, `${gat}.pattern may not name 'team': the team label is added to every member grant already`);
+            if (pv === null || typeof pv === "object") fail(where, `${gat}.pattern.${pk} must be a scalar; an operator states a set, which is not a value to write`);
+          }
+        }
+      }
     }
     for (const k of ["model", "prompt", "promptFile", "resumePrompt", "resumePromptFile", "cwd", "session", "definitionToken", "trace"]) {
       if (mm[k] !== undefined && typeof mm[k] !== "string") fail(where, `${at}.${k} must be a string`);

@@ -935,6 +935,18 @@ tokens keep minting, while `revokeDefinition` reaches only the NEWEST record
 
 ### Grants, scopes and narrowed answers
 
+- **`patterns` unions across VERBS too, so it cannot say what bounds a `put`.** A player holding
+  `action: put` scoped to itself beside `action: query` scoped to its team rendered as one line,
+  `put,query,read_one scoped to [{team,player},{team}]`, promising a bounded put AND an unbounded
+  one; and `scope.fill` read the same union, saw two candidate scopes and refused every ack as
+  ambiguous although exactly one grant carried `put`. Ask `byOperation`, computed by
+  `constraintFrom`'s own rule. Guards: `test/http.test.ts` (the view), `test/team.test.ts` (the
+  fill).
+- **A member that only `take`s a kind cannot settle what it claims.** `radia team up` builds the
+  adapter's claim id from the claimed record's ENVELOPE, an ops-plane read, and the pattern tier
+  opens it only for a grant carrying `query` or `read_one`. With `take` alone the read is refused,
+  `harness-worker.ts` fails soft, and the harness runs with an EMPTY claim id: the model settles
+  nothing, the turn returns, and it is launched again. Grant the read beside the take.
 - **`patterns` on a permissions row is a UNION, so a non-empty list never means "no unpatterned
   grant".** Two readers concluded it did: `team up` accepted a team-scoped grant as the
   `unscopedGrants` entry a file asked for (the member then failed at claim time on a reference

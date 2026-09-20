@@ -455,7 +455,9 @@ Rules any tiering must hold:
 - Power 7 never travels below full either: an "observer" that can also write ungranted is not one.
 - Always fail-closed: no ops grant means no access, and an incomplete registry read denies.
 - Every tier is inspectable through `effectivePermissions` / `GET /v0/ops/permissions` before it
-  is believed; every grant defect so far was a promise that did not match the enforcement.
+  is believed; every grant defect so far was a promise that did not match the enforcement. The
+  answer is PER OPERATION (`byOperation`), because `operations` and `patterns` are separate unions
+  over a kind's grants and reading them together over-reports a narrow write as a wide one.
 
 Who holds the whole bit now (phase 5 built, 2026-08-06): `ctx.operators` and the space's own
 in-process identity, nobody else. The supervisor is DEMOTED to its `grant`/`signal` carve-out and

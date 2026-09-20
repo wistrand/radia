@@ -23,6 +23,8 @@
     "test:analysis": "deno run -A examples/analysis/smoke.ts",
     "test:mud": "deno run -A examples/mud/smoke.ts",
     "test:market": "deno run -A examples/market/smoke.ts",
+    "test:poker": "deno run -A examples/poker/smoke.ts",
+    "test:poker-team": "deno run -A examples/teams/poker/smoke.ts",
     "test:teams": "deno run -A examples/teams/go-fish/smoke.ts",
     "test:song": "deno run -A examples/teams/song-creator/smoke.ts",
     "test:song-team": "deno run -A examples/teams/song-creator/smoke-team.ts",

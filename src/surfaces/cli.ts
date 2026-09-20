@@ -24,10 +24,10 @@ import { BINDING, type Binding, declareBinding, type Outcome, readBindings, sand
 import { brokeredInvoker, declareBrokerSandbox } from "../../extensions/ts/broker.ts";
 import { selectJavascriptJail } from "../../extensions/ts/exec-tool.ts";
 import { auditCompartment } from "../../extensions/ts/compartment.ts";
-import { addMember, DEFAULT_TEAM, declareKind, declareTeamKinds, liveKinds, type MemberRemoval, type ObserveChange, readDefinition, removeMember, TEAM_FIELD, teamRoster } from "../../extensions/ts/team.ts";
+import { addMember, DEFAULT_TEAM, declareKind, declareTeamKinds, liveKinds, type MemberRemoval, memberGrantPattern, type ObserveChange, readDefinition, removeMember, TEAM_FIELD, teamRoster } from "../../extensions/ts/team.ts";
 import { configLocation, type Harness, mcpInvocation, renderMcpConfig, renderMcpInstall } from "./mcp/config.ts";
 import { TOOLS } from "./mcp/tools.ts";
-import { framePrompt, harnessTemplates, loadTeamFile, substitute, type TeamFileMember } from "./teamfile.ts";
+import { framePrompt, harnessTemplates, loadTeamFile, substitute, type TeamFileMember, type TeamGrant } from "./teamfile.ts";
 import { CREDENTIAL_ENV, type HarnessRun, learnCodexThread, pumpLines, runHarnessMember } from "../../extensions/ts/harness-worker.ts";
 import { extensionFor, mediaTypeForPath } from "./media.ts";
 import {
@@ -1000,7 +1000,13 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         complete: boolean;
         ops: { reachable: boolean; kinds: string[] };
         opsPowers?: string[];
-        kinds: { kind: string; operations: string[]; readsScopedToSelf: boolean; patterns: unknown[] }[];
+        kinds: {
+          kind: string;
+          operations: string[];
+          readsScopedToSelf: boolean;
+          patterns: unknown[];
+          byOperation?: { operation: string; patterns: unknown[]; unpatterned: boolean }[];
+        }[];
       };
       return out(ctx, p, () => {
         if (p.privileged) return `${who} is PRIVILEGED (operator): every kind, every operation, full ops plane.`;
@@ -1008,8 +1014,29 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         if (p.kinds.length === 0) lines.push("  no grants");
         for (const k of p.kinds) {
           const scope = k.readsScopedToSelf ? "   reads: own records only" : "";
-          const pat = k.patterns.length > 0 ? `   scoped to ${JSON.stringify(k.patterns)}` : "";
-          lines.push(`  ${k.kind.padEnd(20)} ${k.operations.join(",")}${scope}${pat}`);
+          // ONE LINE PER CONSTRAINT, never the two unions side by side. `put` scoped to one
+          // player beside an unscoped `query` used to print as "put,query scoped to [<player>]",
+          // which promises a bounded put and an unbounded one in the same breath; the space
+          // refuses that put with a 403 while this view said it was allowed. Operations sharing
+          // a constraint stay on one line, so the common case reads exactly as it did.
+          const groups = new Map<string, { ops: string[]; patterns: unknown[] }>();
+          for (const b of k.byOperation ?? []) {
+            // Two grants carrying the same verb and the same pattern are one constraint to a
+            // reader, and printing the pattern twice reads as something narrower than it is.
+            const seen = new Map(b.patterns.map((p) => [JSON.stringify(p), p]));
+            const patterns = b.unpatterned ? [] : [...seen.values()];
+            const key = b.unpatterned ? "" : JSON.stringify(patterns);
+            const g = groups.get(key) ?? { ops: [], patterns };
+            g.ops.push(b.operation);
+            groups.set(key, g);
+          }
+          if (groups.size === 0) groups.set("", { ops: k.operations, patterns: k.patterns });
+          let first = true;
+          for (const g of groups.values()) {
+            const pat = g.patterns.length > 0 ? `   scoped to ${JSON.stringify(g.patterns)}` : "";
+            lines.push(`  ${(first ? k.kind : "").padEnd(20)} ${g.ops.join(",")}${first ? scope : ""}${pat}`);
+            first = false;
+          }
         }
         if (p.opsPowers && p.opsPowers.length > 0) lines.push(`  ops powers: ${p.opsPowers.join(", ")}`);
         lines.push(`  ops plane: ${p.ops.reachable ? `self-scoped reads for ${p.ops.kinds.join(", ")}` : p.opsPowers?.includes("observe") ? "unscoped reads (observe)" : "no"}`);
@@ -2649,7 +2676,17 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
   // WHAT THIS TEAM CLAIMS, from the file alone: the kinds its loop members match, and the kinds any
   // member holds a `take` grant on. A SERVICE states only the grant, so patterns alone miss it.
   // Read by `--fresh` (which leftovers to retire) and by the foreign-claimant check below.
-  const takes = (g: string) => (g.split(":")[1] ?? "").split(",").map((o) => o.trim()).includes("take") ? [g.split(":")[0]] : [];
+  /** A member grant in either spelling: `"<kind>:<op,op>"`, or `{kind, operations, pattern?}`
+   *  for one that narrows within the team (`TeamFileMember.grants`). */
+  const grantOf = (g: string | TeamGrant): TeamGrant =>
+    typeof g === "string"
+      ? { kind: g.split(":")[0], operations: (g.split(":")[1] ?? "").split(",").map((o) => o.trim()).filter(Boolean) }
+      : g;
+  const grantLabel = (g: string | TeamGrant): string => {
+    const p = grantOf(g);
+    return `${p.kind}:${p.operations.join(",")}${p.pattern ? ` ${JSON.stringify(p.pattern)}` : ""}`;
+  };
+  const takes = (g: string | TeamGrant) => (grantOf(g).operations.includes("take") ? [grantOf(g).kind] : []);
   const loopPatterns = (m: TeamFileMember) => (m.service ? [] : (m.patterns ?? [{ kind: "task" }]));
   // Where this team's members keep their working directory, MCP config and warm session id. SCOPED
   // BY TEAM, because a member name is only unique within its file: `go-fish` and `song-creator` both
@@ -2689,10 +2726,7 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
         say(`[kinds] ${String((k as { kind: string }).kind)} declared${live.has(String((k as { kind: string }).kind)) ? " (merged over the live declaration)" : ""}`);
       }
     }
-    const parseGrant = (g: string) => {
-      const [kind, ops] = g.split(":");
-      return { kind, operations: ops.split(",").map((o) => o.trim()).filter(Boolean) };
-    };
+    const parseGrant = grantOf;
     for (const m of chosen) {
       const agent = `agent:${m.name}`;
       if (m.definitionToken) continue;
@@ -2707,6 +2741,24 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
         ...(m.grants ?? []).map((g) => ({ ...parseGrant(g), unscoped: false })),
         ...(m.unscopedGrants ?? []).map((g) => ({ ...parseGrant(g), unscoped: true })),
       ];
+      // What a PATTERNED ask is satisfied by, asked of enforcement the same way the rest is. A
+      // held grant with the right kind and operations is not enough when the file narrowed: a
+      // member minted before the pattern was added holds the wide one, which is exactly the
+      // shortfall this re-mints for. `byOperation` is the only place that pairs a verb with the
+      // pattern bounding it; `patterns` unions across verbs and would call the wide grant a match.
+      const satisfiesPattern = (
+        k: { byOperation?: { operation: string; patterns: unknown[]; unpatterned: boolean }[]; patterns: unknown[] },
+        w: { operations: string[]; pattern?: Record<string, unknown> },
+      ): boolean => {
+        if (!w.pattern) return true;
+        const want = JSON.stringify(memberGrantPattern(label, agent, w.pattern));
+        const has = (op: string) => {
+          const b = k.byOperation?.find((x) => x.operation === op);
+          const from = b ? (b.unpatterned ? [] : b.patterns) : k.patterns;
+          return from.some((p) => JSON.stringify(p) === want);
+        };
+        return w.operations.every(has);
+      };
       if (storedMember(base, agent)) {
         // CONVERGE rather than skip. A token stored by an earlier file (or an earlier version of
         // this one) lacks the grants this file adds, and a definition removed on the space cannot
@@ -2717,7 +2769,7 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
         const missing = wanted.filter((w) =>
           !held.some((k) =>
             k.kind === w.kind && w.operations.every((o) => (k.operations as string[]).includes(o)) &&
-            (!w.unscoped || k.unpatterned)
+            (!w.unscoped || k.unpatterned) && satisfiesPattern(k, w)
           )
         );
         if (prior.state === "active" && missing.length === 0) continue;
@@ -2725,7 +2777,7 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
           `[${agent}] re-minting: ${
             prior.state !== "active"
               ? "its definition is not live on this space"
-              : `it lacks ${missing.map((w) => `${w.kind}:${w.operations.join(",")}${w.unscoped ? " (unscoped)" : ""}`).join(" ")}`
+              : `it lacks ${missing.map((w) => `${w.kind}:${w.operations.join(",")}${w.pattern ? ` ${JSON.stringify(w.pattern)}` : ""}${w.unscoped ? " (unscoped)" : ""}`).join(" ")}`
           }`,
         );
       } else if (prior.state === "active") {
@@ -2739,7 +2791,7 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
         await admin.put({ kind: "grant", body: { principal: agent, kind, operations } });
       }
       saveMember(base, agent, { token: member.definitionToken, definitionToken: member.definitionToken, mintedAt: new Date().toISOString() });
-      say(`[${agent}] minted for team ${label}, token stored${m.grants?.length ? `, +${m.grants.join(" ")}` : ""}${m.unscopedGrants?.length ? `, unscoped ${m.unscopedGrants.join(" ")}` : ""}`);
+      say(`[${agent}] minted for team ${label}, token stored${m.grants?.length ? `, +${m.grants.map(grantLabel).join(" ")}` : ""}${m.unscopedGrants?.length ? `, unscoped ${m.unscopedGrants.map(grantLabel).join(" ")}` : ""}`);
     }
   }
   // LEFTOVERS. Unclaimed claimable work is never swept, so every earlier run's open tasks are
@@ -2938,6 +2990,9 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
   const donePattern = doneFlag ? JSON.parse(doneFlag) as { kind: string; match?: Record<string, unknown> } : team.done;
   let inFlight = 0;
   let answer: RadiaRecord | undefined;
+  // Aborted on `done` before the drain: it stops the loops claiming without killing the harness
+  // each is running, which `ac` would (a killed harness is `fenced` and its claim nacked).
+  const claimAc = new AbortController();
   // `--once`: the run ends when every loop member has handled one claim. A member's own loop stops
   // itself after its claim; the shared controller is what also stops the SERVICES, which would
   // otherwise hold the run open forever (the first service member did).
@@ -2957,6 +3012,10 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
         if (newest && newest.runtimeMeta.createdAt >= startedAt) {
           answer = newest;
           say(`[done] ${newest.kind} ${newest.id} matches ${JSON.stringify(donePattern)}; stopping${inFlight ? ` after ${inFlight} harness${inFlight === 1 ? "" : "es"} in flight` : ""}`);
+          // STOP CLAIMING FIRST, then drain. Waiting on `inFlight` alone never drained: the
+          // loops kept claiming, each new launch refilled the count, and the grace period ran to
+          // its cap while paying for a model per turn.
+          claimAc.abort();
           const until = Date.now() + 60_000;
           while (inFlight > 0 && Date.now() < until) await new Promise((r) => setTimeout(r, 500));
           ac.abort();
@@ -3018,6 +3077,15 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
         if (escalate !== undefined) clearTimeout(escalate);
         ac.signal.removeEventListener("abort", stop);
         if (ac.signal.aborted) break;
+        // EXIT 0 IS FINISHED, not crashed. A service whose job is finite (a dealer that deals N
+        // hands and writes the run's `done` record) exited cleanly and was restarted, which
+        // started a second game: on examples/teams/poker it dealt a whole extra hand, at a model
+        // launch per turn, after the run was already decided. A crash is a non-zero code or a
+        // signal, and those still restart with backoff.
+        if (status.code === 0 && !status.signal) {
+          say(`[${agent}] service finished (exit 0); not restarting`);
+          break;
+        }
         backoff = Date.now() - startedAt > 60_000 ? 0 : Math.min(60_000, backoff + 5_000);
         say(`[${agent}] service exited ${status.signal ? "on " + status.signal : status.code}; restarting in ${backoff / 1000}s`);
         await new Promise<void>((r) => {
@@ -3113,6 +3181,7 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
       env: m.env,
     }, {
       signal: ac.signal,
+      stopClaiming: claimAc.signal,
       log: say,
       once,
       verbose: has(argv, "--verbose"),

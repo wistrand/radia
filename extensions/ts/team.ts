@@ -421,6 +421,29 @@ export async function readDefinition(
 }
 
 /**
+ * The pattern an extra member grant is written with: the team label, plus the member's own
+ * narrowing if the file asked for one.
+ *
+ * The team label is applied FIRST and cannot be overridden, because an extra grant must not be
+ * the one unscoped hole that reads across every team. A pattern value of exactly `"self"` becomes
+ * the member's principal, which is how a file says "only this member's own records" without
+ * repeating the name once per member and getting one of them wrong.
+ *
+ * Shared with `radia team up`'s convergence check on purpose: that check asks whether a member
+ * already HOLDS what the file asks for, and a second copy of this rule would answer differently
+ * from what was written.
+ */
+export function memberGrantPattern(
+  team: string,
+  agent: string,
+  own?: Record<string, unknown>,
+): Record<string, unknown> {
+  const resolved: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(own ?? {})) resolved[k] = v === "self" ? agent : v;
+  return { [TEAM_FIELD]: team, ...resolved };
+}
+
+/**
  * Add a member: a durable principal holding exactly its teams' grants.
  *
  * `observe` DEFEATS team isolation and is therefore off unless asked for. It is the one power that
@@ -436,7 +459,7 @@ export async function addMember(
   opts: {
     teams?: string[];
     observe?: boolean;
-    extra?: { kind: string; operations: string[] }[];
+    extra?: { kind: string; operations: string[]; pattern?: Record<string, unknown> }[];
     /** The definition record this create replaces, from `readDefinition`. Passing it makes the
      *  read-then-create atomic; omitting it keeps the unconditional write. */
     supersedes?: string | null;
@@ -446,7 +469,12 @@ export async function addMember(
   // An `extra` grant is scoped the same way, per team: a grant handed out beside the standard set
   // must not be the one unscoped hole that reads across every team.
   const extra = teams.flatMap((team) =>
-    (opts.extra ?? []).map((g) => ({ principal: agent, ...g, pattern: { [TEAM_FIELD]: team } }))
+    (opts.extra ?? []).map((g) => ({
+      principal: agent,
+      kind: g.kind,
+      operations: g.operations,
+      pattern: memberGrantPattern(team, agent, g.pattern),
+    }))
   );
   const def = await admin.createAgentDefinition(
     agent,

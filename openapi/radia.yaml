@@ -1939,6 +1939,22 @@ paths:
                           description: >-
                             At least one grant on this kind carries no pattern. `patterns` is a
                             union over grants, so it cannot answer this on its own.
+                        byOperation:
+                          type: array
+                          description: >-
+                            The constraint per operation, which is the unit enforcement decides
+                            in. `operations` and `patterns` are separate unions over the kind's
+                            grants, so reading them together over-reports: a narrow `put` beside
+                            an unscoped `query` looks like a bounded put AND an unbounded one.
+                            Computed by the rule `authorize` uses. `unpatterned` here means one
+                            grant carrying this verb has no pattern, which widens that verb to
+                            the whole kind and leaves `patterns` empty.
+                          items:
+                            type: object
+                            properties:
+                              operation: { type: string, enum: [put, take, query, read_one] }
+                              patterns: { type: array, items: { type: object } }
+                              unpatterned: { type: boolean }
         "400": { $ref: "#/components/responses/Problem" }
 
   /ops/records/{recordId}/children:

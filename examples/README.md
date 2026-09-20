@@ -12,6 +12,7 @@ its own setup and source guide. The Keycloak configuration in
 | [`analysis/`](analysis/) | A web application whose stages are keyed by dataset, input digest and code digest. | no |
 | [`mud/`](mud/) | A shared world where NPCs are principals with their own grants, not branches in a game loop. | no |
 | [`market/`](market/) | Request, bid and award as a convention over `take` and `ack`, with scripted bidders and no model. | no |
+| [`poker/`](poker/) | Hidden information enforced by pattern-scoped grants: a player cannot read another's hole cards, forge its action, or take its turn. Harness version in [`teams/poker/`](teams/poker/). | no |
 | [`teams/`](teams/) | Harness teams for `radia team up`, one directory each: twenty-questions, story-relay, go-fish, song-creator. | for live model calls |
 | [`chat/`](chat/) | A multi-process LLM application with discovered tools, artifacts, encrypted conversations and sandboxed code. | for live model calls |
 
@@ -56,6 +57,11 @@ bug in the example.
 **`mud/`** makes an NPC a principal: its grants pin which room it may speak in and whose name it may
 speak under, so misbehaviour is refused at the write rather than checked for. Phase 1 of
 [agent_docs/plan-mud.md](../agent_docs/plan-mud.md); the contest over a scarce item is phase 3.
+
+**`poker/`** is where a player's hidden state is load-bearing rather than polite: `hole` is scoped
+to `{owner: self}`, turn order is which `action_request` a grant lets you claim, and the smoke
+attempts each violation instead of asserting the grant list. It also shows what the space does not
+do: an abandoned turn stays `available`, because nothing expires an unclaimed record.
 
 **`market/`** is request/bid/award with no models in it: five scripted bidders with strategies that
 CROSS OVER, so which one leads depends on the sequence of jobs and on what each has already won. It

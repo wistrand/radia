@@ -189,6 +189,36 @@ Deno.test("teamfile: kinds, per-member grants and service members are typed and 
   };
   bad({ members: [{ name: "svc", service: true }] }, /a service member needs its own command/);
   bad({ members: [{ name: "a", harness: "claude", grants: ["thing"] }] }, /<kind>:<op,op>/);
+
+  // THE OBJECT FORM, which narrows a grant WITHIN the team. `"<kind>:<op,op>"` scopes to the team
+  // and no further, so a team whose members must not read each other (examples/teams/poker) had
+  // to assign those grants out of band until this existed.
+  const narrow = parseTeamFile(JSON.stringify({
+    members: [{
+      name: "a",
+      harness: "claude",
+      grants: [{ kind: "hole", operations: ["query"], pattern: { owner: "self" } }, "board:query"],
+    }],
+  }));
+  assertEquals(narrow.members[0].grants, [
+    { kind: "hole", operations: ["query"], pattern: { owner: "self" } },
+    "board:query",
+  ], "both spellings survive parsing, unchanged");
+
+  const g = (grant: unknown) => ({ members: [{ name: "a", harness: "claude", grants: [grant] }] });
+  bad(g({ kind: "hole", operations: ["query"], scope: "self" }), /unknown field 'scope'/);
+  bad(g({ kind: "hole" }), /operations must be a non-empty list/);
+  bad(g({ kind: "hole", operations: [] }), /operations must be a non-empty list/);
+  // The team label is the isolation, and a grant naming another team would be the one hole that
+  // reads across them. It is added by the scoping, never written here.
+  bad(g({ kind: "hole", operations: ["query"], pattern: { team: "other" } }), /may not name 'team'/);
+  // An operator states a SET, which is not a value a write can be filled with.
+  bad(g({ kind: "hole", operations: ["query"], pattern: { owner: { $in: ["a"] } } }), /must be a scalar/);
+  // `unscopedGrants` exists to carry NO pattern, so the object form there is a contradiction.
+  bad(
+    { members: [{ name: "a", harness: "claude", unscopedGrants: [{ kind: "sandbox", operations: ["query"] }] }] },
+    /unscopedGrants takes '<kind>:<op,op>' only/,
+  );
   bad({ members: [{ name: "a", harness: "claude" }], kinds: [{ indexedPaths: [] }] }, /kind_def bodies/);
   bad({ members: [{ name: "a", harness: "claude", service: "yes" }] }, /service must be true or false/);
 });
