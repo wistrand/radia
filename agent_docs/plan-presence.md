@@ -1,7 +1,7 @@
 # Plan: presence, ephemeral liveness as an extension convention
 
 **Status: ALL FOUR PHASES BUILT 2026-08-30** (`extensions/ts/presence.ts`, plus
-`liveAdvertisements` and a fail-closed `collapseByTool` in `extensions/ts/capability.ts`; eighteen
+`liveAdvertisements` and a fail-closed `collapseByTool` in `extensions/ts/capability.ts`; the
 conformance cases, five proved red by planting: the incomplete-view guard, the relevance-bounded
 walk, the per-window beat key, the presence bit in the capability content key and the withholding
 default. The chat beats as `chat_presence`, hides the tools of a fleet that stopped, and offers a
@@ -124,7 +124,7 @@ anything withdrew it. `retireProviderCapabilities` stays for readers outside the
 ## Phases
 
 1. **The module and its contract. BUILT 2026-08-30.** `extensions/ts/presence.ts` (`presenceSpec`,
-   `presenceKind`, `announcePresence`, `livePresence`, `retireIfLast`) and seven cases in
+   `presenceKind`, `announcePresence`, `livePresence`, `retireIfLast`) and the cases in
    `extensions/conformance/presence.test.ts`. Two things the build settled:
    - The conformance fixture is a live instance hidden behind a full page of TOMBSTONES, not
      merely behind fresher beats. The first draft used live ones, and the incomplete-view test

@@ -214,6 +214,8 @@ Deno.test("docs: no banned prose tells (agent_docs/plan-prose-tells.md)", () => 
     "surprisingly good",
     "genuine operational win",
     "pulls its weight",
+    "powerful",
+    "seamless",
     "—", // em dash
   ];
   const bad: string[] = [];

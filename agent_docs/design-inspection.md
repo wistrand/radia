@@ -343,7 +343,8 @@ becomes a defect.
   the most trusted artifact an inspector has.
 - **Patterns match bodies only.** They cannot express taint or envelope state, so any filter over
   those needs the envelope selector as a separate input.
-- **A watch per view leaks.** The watches map is never pruned and `Notifier` waiters accumulate.
+- **A watch per view leaks.** Watches are pruned only when idle for `watchIdleSeconds`, never on
+  disconnect, and `Notifier` waiters accumulate.
   Inspection UIs are precisely the workload that opens many short-lived watches.
 - **Never let an inspection feature declare topology.** The shape is mined, never asserted.
 - **A view that cannot be linked to is not evidence.** An inspection answer is a claim, and a claim
@@ -363,7 +364,7 @@ revealed the error.
 |--------------------------------------------------------------------|-------------------------------------------------------------------------|
 | `childrenOf` needs a reverse edge index built                       | Already indexed through `record_edges`, keyset-paged, backfilled under a conformance test |
 | `matchesEvent` is the dry-run machinery                             | Watch-specific, fires only on `state === "available"`; use `compile` + `matchesRecord` |
-| Watches leave a queryable trace                                     | In-memory only, die with the runtime, never pruned                      |
-| Replay depth is durable                                             | Unbounded only because retention GC does not exist; `retention_until` is written and never consulted |
-| Taint can be filtered or explained                                  | One bit, outside the body, no provenance recorded                       |
+| Watches leave a queryable trace                                     | In-memory only, die with the runtime; swept when idle past `watchIdleSeconds`, capped per principal |
+| Replay depth is durable                                             | Retention GC is built (`src/core/gc.ts`); with `eventRetentionSeconds` set the window is the event horizon |
+| Taint can be filtered or explained                                  | Three labels (`file`/`net`/`foreign`), outside the body, no per-ancestor provenance |
 | `delegation_context` needs work before it can be shown              | Recorded and server-derived; rendering only                             |

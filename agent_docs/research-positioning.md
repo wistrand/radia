@@ -5,7 +5,7 @@ update when the competitive landscape or evidence base changes.
 
 > **State of the thing being positioned** (2026-08-04). All of M0 plus a growing M1 slice is built,
 > on three storage backends behind a frozen wire contract that is checked in both directions. Every
-> audit package is closed; no P0 or P1 is open, and what remains is a low-severity batch
+> audit package but one is closed (AC, P2/P3, opened 2026-09-19); no P0 or P1 is open, and what remains is a low-severity batch
 > ([plan-audit-remediation.md](plan-audit-remediation.md)). It is not production ready, and there is
 > no second user. Attach this to any pitch: it is the most checkable sentence here, so saying it
 > costs less than being caught not saying it, and every other claim in this file spends the same

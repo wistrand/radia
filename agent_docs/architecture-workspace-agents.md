@@ -349,7 +349,7 @@ gains nothing and the wire contract gains no entry:
 | `bind <agent> --digest --entrypoint` | the escalation root. Prints whether the grant AGREES, so an inert binding or a `digest_mismatch` is visible at write time rather than at claim time |
 | `bind <agent> --retire` | the off switch |
 | `bindings` | every live binding |
-| `host --agent <p>=<token>` | runs bound agents' code as them. BROKERED by default, since that is the invoker that leaves the jail no way to reach the API. `--agents -` takes the token map on stdin, keeping it out of `ps` |
+| `host --agent <p>=<token>` | runs bound agents' code as them. Plain jail unless the BINDING asks to be brokered; `--broker` forces the channel on for a whole fleet, which is what leaves the jail no way to reach the API. `--agents -` takes the token map on stdin, keeping it out of `ps` |
 | `compartment --inside <kinds>` | the audit, including the two doors that are not grants |
 
 The deferral this replaced ("the extension is the contract, the verb would be convenience") was
@@ -359,8 +359,9 @@ could reach none of it.
 
 Verified end to end against a live space (18 checks: rotation, both locks agreeing and
 disagreeing, the brokered write attributed to the agent, retire, stdin tokens, malformed pins).
-NOT covered by an automated test, in common with almost every other CLI verb: the only test that
-drives `runCli` is the `query` output guard in `test/defaults.test.ts`.
+NOT covered by an automated test, in common with almost every other CLI verb: the only tests that
+drive `runCli` are the CLI-output guards in `test/defaults.test.ts` and the offboarding case in
+`test/delegation.test.ts`.
 
 ## How it was built, phase by phase
 

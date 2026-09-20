@@ -1,6 +1,7 @@
 # Plan: inspecting emergent flows
 
-> Status: backlog. Items 1, 2, 3 and part of 4 are built (see design-inspection.md); the rest is not.
+> Status: backlog. Items 1-6, 9 (the colour half) and 12 are built (see design-inspection.md);
+> 7, 8, 9's provenance walk and the narrative half of 1 are not.
 
 Sequence, status and dependencies. The reasoning lives in
 [design-inspection.md](design-inspection.md): why inspection is a distinct problem in a

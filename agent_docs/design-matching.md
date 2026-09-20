@@ -73,7 +73,6 @@ Explicit, deterministic, conformance-tested:
 - No type coercion. Cross-type comparison is false.
 - Explicit array quantifiers `$any` / `$each`. Scalar predicates never silently
   distribute over arrays.
-- `$not` is field-level only, depth 1.
 - Dotted paths only. Literal dots in keys are rejected at schema registration.
 - A path addresses STORED DATA. A segment resolves an own property, or an array element by a
   canonical index (`items.0`, never `items.00`); nothing on the prototype (`arr.length`,
@@ -86,7 +85,7 @@ Explicit, deterministic, conformance-tested:
 
 - **Whitelist (early):** `$eq` (implicit), `$gt` / `$gte` / `$lt` / `$lte`, `$in`,
   `$exists`, `$any` / `$each`, `$and` / `$or` (depth ≤ 3).
-- **Deferred:** `$ne` / `$nin` / `$not` (poor selectivity; slow lane if ever);
+- **Deferred:** `$ne` / `$nin` / `$not` (poor selectivity; `$not` would be field-level only, depth 1);
   `$prefix` and full-text (indexable, later; semantic matching is not a substitute for
   deterministic prefix/token/filename matching).
 - **Never:** `$regex`, `$where`, `$expr`. Rejected at compile as `operator_forbidden`
@@ -121,17 +120,17 @@ client-shaped and forgeable, which is the property authorization cannot tolerate
 ## Per-kind indexing contract
 
 Each kind declares `indexed_paths` (typed: keyword / integer / number / timestamp / array) and
-`sortable_paths`. Registration rejects predicates on undeclared paths (or routes them to
-the rate-limited slow lane) and `order_by` on non-sortable paths. Hot declared paths
-become generated columns / expression indexes on `record_runtime` (see
+`sortable_paths`. Registration rejects predicates on undeclared paths (`undeclared_path`) and
+`order_by` on non-sortable paths. Declaring a path needs no DDL: one generated column over the
+whole body carries one index that serves every path (see
 [design-storage.md](design-storage.md)).
 
 A kind also declares `claimable` (default `true`): whether its records are *work* (claimed by a
 worker with `take`) or *reference* data (facts, config, history: written once, read by `query`,
 never taken). It's a diagnostic hint, not a matching rule: `claimable:false` opts the kind out of
 the starvation check (`Space.diagnostics`), since a reference record sitting `available` forever is
-normal, not stale. The reserved control kinds (`kind_def`/`grant`/`signal`/`agent_*`) default to
-`claimable:false`.
+normal, not stale. The language default is `claimable: true`; every RESERVED kind declares
+`claimable: false` explicitly.
 
 A declaration is itself a **record** of the reserved `kind_def` kind (body = the contract
 above), expressed through the space rather than a bespoke table/endpoint (see

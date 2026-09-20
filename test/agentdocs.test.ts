@@ -184,6 +184,8 @@ Deno.test("agent_docs: no banned prose tells in the docs an agent reads", async 
     "surprisingly good",
     "genuine operational win",
     "pulls its weight",
+    "powerful",
+    "seamless",
   ];
   const bad: string[] = [];
   for (const file of await markdownFiles()) {
@@ -214,7 +216,7 @@ const EM_DASH_CEILING: Record<string, number> = {
   "design-observability.md": 2,
   "design-storage.md": 1,
   "design-taint.md": 2,
-  "design-workspaces.md": 15,
+  "design-workspaces.md": 14,
   "gotchas.md": 0,
   "plan-audit-remediation.md": 89,
   "plan-browser-space.md": 5,

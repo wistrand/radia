@@ -87,7 +87,7 @@ permanent record, so a credential exchanged by SHORT-LIVED processes appends one
 every read-only CLI verb did, and inspecting a space grew it (766 `agent_run` rows in four days).
 Reuse derives the token from the presented definition token and a `runMaxLifetimeSeconds` bucket,
 the mechanism `mintDelegatedRun` already used, so the same credential finds its own run through the
-`tokenHash` lookup and writes nothing while that run is live; both paths share `Space.reuseRun`, so
+`tokenHash` lookup and writes nothing while that run is live; both paths share `reuseRun` (`src/core/identity.ts`), so
 the three rules cannot drift (stopped stays stopped, live returns unwritten, expired-inside-the-
 ceiling extends in place). OPT-IN, because reuse collapses run identity: two processes holding one
 definition token share a run principal, and `runs --stop` stops both. The CLI and the MCP adapter
@@ -167,7 +167,7 @@ clocks); `stopRun({quarantine:true})` (HTTP: `POST /v0/agent-runs/{id}/stop` wit
 releases the run's in-flight leases now (epoch-bumped, so a late `ack`/`renew` fences out as
 `lease_lost`). Settlement is also **owner-bound**: a non-operator principal that presents a lease
 it doesn't own fences out as `lease_lost` on **every** settle verb: `ack`/`nack`/`release`/`renew`
-(`Space.ownerGuard`, defense-in-depth on the `leaseId`+`epoch` fencing). This closes lease-leak
+(`LeaseRef.expectOwner`, checked by `leaseValid` inside each adapter's settle transaction after idempotent replay, defense-in-depth on the `leaseId`+`epoch` fencing). This closes lease-leak
 impersonation (an ack-emitted result carries the *owner's* authority + delegation chain) and
 lease-leak DoS (a stranger driving another agent's task to available/dead-letter). The rejection is
 the same opaque `lease_lost` fencing returns (never a distinguishable error, which would leak lease
@@ -428,7 +428,7 @@ miss a delegated run's attenuation ([plan-delegation.md](plan-delegation.md)).
 
 ## The operator bit: a power taxonomy
 
-`Space.isPrivileged` is ONE bit (`ctx.operators` + the supervisor + the space's own identity), and
+`Space.isPrivileged` is ONE bit (`ctx.operators` + the space's own identity), and
 that bit bundles seven separable powers. Named here so tiers can be discussed at all.
 **Powers 1–5 are now grantable individually** ([architecture-ops-tiers.md](architecture-ops-tiers.md), built
 2026-08-06): a reserved `ops_grant` record `{principal, operations}` over the closed vocabulary
@@ -566,7 +566,7 @@ claim-time ALLOWLIST, `core/take.ts`). See [design-data-model.md](design-data-mo
 vs. authority". Deferred: per-principal trust classification (auto-tainting untrusted principals'
 puts) and the taint-composed chain-intersection policy (M3).
 
-The grant-side barrier is `Space.taintBarrier`: it reports the allowlist every applicable grant
+The grant-side barrier is `barrierFrom` (`src/core/authorization.ts`), surfaced as `readAccess().allowTaint`: it reports the allowlist every applicable grant
 agrees on (their UNION, since grants widen), and `handleTake` INTERSECTS that with the caller's own
 `allowTaint` — a caller may narrow what it accepts and may never widen past what its grants permit.
 
@@ -698,7 +698,7 @@ Per-endpoint disposition, because they do not all behave the same:
 | `ops/records` (envelope query), `ops/records/{id}`, `/envelope`, `/lineage`, `/children`, `/graph` | yes | per-record; the scope filters or refuses |
 | `ops/events` | yes, filtered by `runId` (events the caller CAUSED) | under-returns on purpose: an event another agent caused on your record is not shown, because resolving each event's record to check its author is a lookup per event on the busiest read in the plane. Note that filtering breaks cursor paging, since an empty page is how callers detect the end of the log, so the handler scans forward across raw pages and reports `nextAfter` from the last RAW event examined |
 | `ops/stats`, `ops/diagnostics` | yes, as a GENUINE self-aggregate | not a filtered whole-space total; the aggregate is *computed over the scope*. A filtered-after total would leak other agents' activity as counts, and a whole-space total answered to a scoped caller is simply wrong |
-| `ops/remediate`, `ops/admin`, `ops/declassify` | **no** | these are the interrupt half (build order step 5) and a write. Declassify especially: taint clears only via privileged declassify, so a self-scope must never reach it |
+| `ops/remediate`, the per-record `reclaim`/`dead-letter`/`requeue`, `ops/declassify` | **no** | these are the interrupt half (build order step 5) and a write. Declassify especially: taint clears only via privileged declassify, so a self-scope must never reach it |
 
 **The coordination plane is narrowed for READS** (`query`/`read_one`), because that is the plane an
 agent actually reads records through. Scoping only the ops plane leaves an approval promising "its

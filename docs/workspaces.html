@@ -285,8 +285,9 @@ scraper           9        22  t1:07b3e5c918&#8230;  human:alice</code></pre>
   <div class="container">
     <h2>Sandboxed execution</h2>
     <p>
-      Radia ships a Deno permission jail for JavaScript and a bubblewrap backend for available host
-      interpreters. Sandbox records describe the guarantees of each backend.
+      Radia ships a Deno permission jail for JavaScript, a bubblewrap backend on Linux for available
+      host interpreters, a Seatbelt backend for macOS Python, and a Web Worker backend for a
+      browser tab. Sandbox records describe the guarantees of each backend.
     </p>
     <p>
       A worker probes a sandbox before advertising it. A backend is available only when the probe
@@ -531,12 +532,11 @@ landing-page  9      8         a41c7f0e2b9d31…  human:oidc-alice</code></pre>
       Anyone who has purged a leaked credential
       from a repository knows what it costs: every downstream hash changes, every fork force-pushes,
       every clone is invalidated, signed tags die. Here a file is an artifact, so one payload can be
-      destroyed while the tree digest still verifies and the history still reads. The blast radius is
-      gone.
+      destroyed while the tree digest still verifies and the history still reads.
     </p>
 
     <div class="callout warn">
-      <strong>And the guarantee is narrower than it sounds; here it is in full.</strong> The
+      <strong>The guarantee is narrower than it sounds.</strong> The
       manifest keeps the path and the hash of the erased file, in a record body that has no erasure
       path of its own. So <code>credentials/prod-db.txt</code> outlives its own contents, and anyone
       holding a candidate secret can hash it and confirm that exact value was in that tree. A

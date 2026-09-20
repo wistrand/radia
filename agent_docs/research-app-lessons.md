@@ -1,6 +1,6 @@
 # What two applications taught the runtime
 
-**Status: analysis, with proposed actions. Nothing here is scheduled.** The findings are evidence
+**Status: analysis. The actions at the bottom were proposals; all but the rejected one have since shipped, each row carrying its build date.** The findings are evidence
 from building [examples/chat/](../examples/chat/) and [examples/analysis/](../examples/analysis/)
 against `src/`; the actions at the bottom are proposals, sized, not a plan of record. Where a claim
 was checked, the ledger at the end says how.
@@ -276,7 +276,7 @@ would have shown nothing.
 |---|---|
 | `readOne` returns the oldest match | Empirically: enrolment wrote a successor and the reader kept returning the original wrap set until the query became `dir: "desc"`; a plant reproduced it |
 | The space sends no CORS headers | `grep -c "Access-Control" src/server/http.ts` is 0 |
-| Neither SDK has `readNewest` | grep, both files |
+| ~~Neither SDK has `readNewest`~~ true when checked; both have it now | `sdk/ts/client.ts`, `sdk/py/radia.py` |
 | `observe` opens every read unscoped | `src/server/http.ts` ops gate, plus architecture-ops-tiers.md |
 | Self-scope needs `createdBy: "self"` on every grant | `src/core/kinds.ts`: "`authorScope` restricts only when every applicable grant says `createdBy: \"self\"`" |
 | Nothing verifies a `stage_code` digest | By construction: the worker writes its own advertisement |

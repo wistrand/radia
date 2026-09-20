@@ -54,7 +54,7 @@ the record it claimed and then exits, so an interval was never available to it, 
 
 The chain cannot break at the hop, because `ack` is consume-and-emit atomically: either the cue is
 still claimable and gets redelivered, or it is consumed and its successor exists. It CAN die if a
-cue dead-letters after its attempts, and the repair is `radia remediate requeue`, never restarting
+cue dead-letters after its attempts, and the repair is `radia requeue <record-id>`, never restarting
 the launcher. `seedAmbient` starts a chain only when the NPC has none, because two self-perpetuating
 chains for one NPC is two clocks with nothing to notice or stop them.
 

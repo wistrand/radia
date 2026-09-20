@@ -82,7 +82,8 @@ barriers rather than complete information-flow control.
   the database clock passes it, so a worker picks it up on its next poll and an idle space still
   runs nothing
 - **registry**: an application's current-value view over an append-only kind, computed as
-  latest-wins-minus-retired. It is the shape most often got wrong, so the SDKs name the readings:
+  latest-wins-minus-retired. A page read as if it were the whole kind is the mistake the naming exists to prevent, so the
+  SDKs name the readings:
   `queryNewest` / `queryOldest` return a page and say which end, while `queryAll` and `registry`
   exhaust and never hand back a plausible prefix (`queryAll` raises, `registry` reports
   `complete: false`). There is no unnamed `query` with a limit. A page cursor carries its own

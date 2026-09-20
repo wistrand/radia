@@ -48,7 +48,7 @@ answer omits, which is the same probe from one step further out.
 the strength of a limitation that had been removed.** For a caller whose grants carry a pattern,
 `ops/records/{id}`, `/lineage`, `/children` and `/graph` all answer 200 with the real record, so the
 console's GRAPH tab, record detail and lineage work with NO ops power (the MCP adapter's
-`space_get`/`space_lineage`/`space_children`/`space_graph`/`space_thread`, which three apps in turn
+`space_get`/`space_lineage`/`space_children`, and the chat's `space_thread`, which three apps in turn
 had handed out `observe` to make work). `ops/stats` and `ops/events`
 answer 200 with an empty set plus the `scope` that names the pattern-scoped kinds they left out, so
 the Feed, the Space map and the Overview counts are what `observe` still buys, and nothing else.
@@ -120,7 +120,7 @@ The vocabulary, CLOSED, extended only when a real failure names the next entry:
 
 | operation    | reaches                                                                                   |
 |--------------|-------------------------------------------------------------------------------------------|
-| `observe`    | every ops READ, unscoped: `READ_ONLY_OPS` plus integrity, erasures, dry-run, thread, anyone's permissions |
+| `observe`    | every ops READ, unscoped: `READ_ONLY_OPS` plus integrity, erasures, dry-run, anyone's permissions |
 | `remediate`  | `POST /v0/ops/remediate`, the per-record reclaim/dead-letter/requeue transitions            |
 | `sweep`      | live `POST /v0/ops/gc` (records, compaction, event truncation) and live `POST /v0/ops/rewrap` (re-seal artifact bytes under the current blob key); both dry-run under `observe` |
 | `declassify` | `POST /v0/ops/records/{id}/declassify`                                                      |

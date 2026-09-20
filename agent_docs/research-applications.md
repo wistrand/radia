@@ -427,14 +427,14 @@ get rediscovered as new.
 | Event log carries no bodies (`seq, cursor, id, ts` + operation/record/kind/state)   | `SpaceEvent`, `src/storage/adapter.ts`          |
 | Procedure source is a content-addressed artifact; result carries `{name, recordId, artifactId}` and the procedure record as lineage parent | `examples/chat/workers/exec.ts` |
 | Sandbox child holds no credentials                                                 | `extensions/ts/sandbox.ts`                      |
-| Hash-chained log unbuilt; events table has no hash column                          | both adapters; `design-observability.md`        |
-| No sweeper exists; expiry evaluated lazily                                         | the only `setInterval` in the RUNTIME is the MCP heartbeat (the console page has its own, in the browser) |
+| ~~Hash-chained log unbuilt~~ BUILT: `event_seal` carries `hash`, `prev_hash`, `sig`               | `src/core/seal.ts`, `GET /v0/ops/integrity`, `radia integrity` |
+| No sweeper exists; expiry evaluated lazily                                         | the recurring timers are the MCP heartbeat and the Postgres pool's idle reaper (`src/storage/postgres.ts`), neither of which sweeps or issues SQL |
 | `GrantDef` has no TTL/expiry field                                                 | `src/core/kinds.ts`                             |
 | ~~Retention GC absent~~ BUILT 2026-08-05: `retention_until` is consulted by an on-demand sweep | `Space.gc`, `POST /v0/ops/gc`, `radia gc`; registry compaction beside it. Still nothing on a schedule, by design. See [plan-gc.md](plan-gc.md) |
 | **An artifact's payload can be erased on demand**, keeping the record, its digest and its lineage | `Space.shredArtifact`, `POST /v0/ops/records/{id}/shred`, `shred` records; a shredded read is 410 |
 | Record BODIES have no erasure path, because the routing language matches on them     | bodies are plaintext JSON; see design-data-model.md, "Erasure" |
 | No reactive recomputation or invalidation primitive                                | no dependency edges beyond `parent_ids`         |
-| Budgets entirely unbuilt                                                           | zero hits for `budget` in `src/**/*.ts`         |
+| COST budgets unbuilt; RESOURCE budgets built                                       | `Space.checkGrantBudget` / `checkOpsGrantBudget`, `maxScanRows`, `scan_budget_exceeded` → 429 |
 | **A grant can bar tainted work, so a worker cannot opt out**: `scope: {taint: "none"}` | `VALID_SCOPE_VALUES` in `src/core/kinds.ts`; `Space.taintBarrier` folds it into `readAccess`, and the code says "this one the principal cannot decline" |
 | **`declassify` records the principal that performed it**                           | `Space.declassify(recordId, principal?)`, `src/core/space.ts`  |
 | **Reads and ack-emitted writes authorize inside `Space`**, not only at the boundary  | `Space.readAccess` → `authorize`; `Space.ack` → `authorize(owner, "put", kind)` |
@@ -453,7 +453,7 @@ These circulate, and some appeared in other `agent_docs/` files. Check here befo
 | "The exec worker acks every result with `taint:true`"      | **Partly wrong.** Artifacts and execution results yes; `saveProcedure`/`retireProcedure` success returns omit taint |
 | "Only the exec worker can write `procedure` records"       | **Configuration, not invariant**, though the hole it named is closed. The chat once defaulted to a role that ran the session as the operator; there are no roles now and a session token is required, so the session holds only `procedure: query`. It stays configuration because the grant list is the app's, not the runtime's |
 | "Three processes at three privilege levels"                | The repo's own diagram shows two; the third is the REPL/launcher         |
-| "Resource limits are hard and enforced"                    | Only `$and`/`$or` depth ≤ 3 and the 32 MiB artifact cap                  |
+| ~~"Resource limits are hard and enforced"~~ VERIFIED TRUE since      | `maxRecordBytes`, body depth, array length, pattern size, predicate/branch/`$in` counts, `maxWatchesPerPrincipal`, `maxInterestsPerPrincipal`, `maxScanRows`; `test/conformance/suites/limits.ts` |
 | "`Pattern` is not wire-visible"                           | It is: the take selector request field, plus the grant body field       |
 
 ### Gaps
@@ -489,8 +489,9 @@ rediscovered as new; the corresponding positive claim is in "verified true" abov
   pre-payload check now runs over `{...appFields, mediaType, filename}` (`handlers/artifacts.ts`,
   `ActingSpace.mayPut`), parsed before the check, and the record write re-checks the full body in
   core. The team convention depends on exactly this: a compartment label is an appField.
-- Schema versioning and migration of kinds are unbuilt (`plan-milestones.md`: `[~]`). Every
-  application here depends on it eventually; a capability mesh at org scale reaches it first.
+- Schema versioning: phases 1-3 BUILT 2026-08-29 (`incompatibleChanges`, `KindRegistry.versionOf`,
+  `Space.checkRedeclaration`, `test/conformance/suites/schemaversion.ts`); phase 4 is what remains.
+  Every application here depends on it eventually; a capability mesh at org scale reaches it first.
 
 ---
 

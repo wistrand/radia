@@ -160,7 +160,7 @@ grant the file names (held grants are read from `permissions`, so the file conve
 rather than being skipped as "already minted"), `--seed` writes the file's starting records
 with the label added (`--seed-body '{…}'` merges the caller's own fields over each, so what a team is
 ASKED FOR changes without editing the file into a scratchpad; the team label is never overridable),
-and a member's `promptFile` resolves beside the file. The two examples,
+and a member's `promptFile` resolves beside the file. The two simplest examples,
 `twenty-questions` and `story-relay`, are games whose rules are the prompts: a member claims by a
 tag of its own, hands the turn on by writing the next task with the other's tag, and parents it on
 the previous one so the match is one thread.
@@ -223,7 +223,7 @@ Rules the design rests on:
 - **Warm sessions are the worker's, not the harness's.** `resume: true` keeps one harness session
   per member across claims (the analysis's method B): the worker mints a UUID before the first
   launch (`claude --session-id`, later `--resume`) or learns it from Codex's `thread.started` and
-  passes it to `codex exec resume <id> -`, stores it in `~/.radia/team/<member>.harness-session`,
+  passes it to `codex exec resume <id> -`, stores it in `~/.radia/team/<team>/<member>.harness-session`,
   and DROPS it after a failed run; a fence (a Ctrl-C, a stop) or a timeout keeps it, being the
   loop's doing rather than the session's. `resumePrompt` is what a session that already
   holds the earlier moves is told, which is where the speed comes from: a resumed move reads one

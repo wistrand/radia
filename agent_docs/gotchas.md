@@ -129,15 +129,15 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   on the record graph and nowhere else, or the copy drifts from the fact. `writeWorkspace` does the
   first; a write-back and an edit do the second.
 - **Taint follows DATA parents; delegation follows the LEASE. Never cross them.**
-  `Space.computeTaint` ORs `taint:true` (client raise) with any `parent_ids` parent's taint, on both
-  put and ack (the leased record is a data parent, so taint rides through `ack`).
+  `Space.computeTaint` UNIONS the client's raised labels with every `parent_ids` parent's labels
+  (a union, not an OR, which is the whole point of labels), on both put and ack (the leased record is a data parent, so taint rides through `ack`).
   `delegation_context` derives from the lease, never `parent_ids`. Two separate lineages by design;
   don't compute one from the other.
-- **`taint` is the one authoritative field a client may RAISE (never lower).** `put`'s `taint:true`
-  is honored (source attestation); `taint:false` from a client is ignored, since propagation and
-  declassify decide: the handler maps `taint === true` only, a narrow exception to "clients submit
-  only claims". Clearing taint is a privileged `Space.declassify`, which emits a clean successor
-  (same body, `taint:false`, the tainted original as data parent) rather than mutating anything.
+- **`taint` is the one authoritative field a client may RAISE (never lower).** `put`'s `taint` is
+  an ARRAY of labels and is honoured (source attestation); anything else is `invalid_taint`, a 400,
+  so the retired `taint: true`/`false` booleans are now refused rather than mapped or ignored.
+  Clearing is the privileged per-label `Space.declassify`, whose successor carries the labels that
+  were NOT cleared, with the original as data parent, rather than mutating anything.
 - **The one operation whose purpose is accountability must name its actor and be its own event
   operation.** `Space.declassify` threads the approving operator (never `putRaw` with no principal,
   which made the successor's `created_by` and the event's `runId` the space's own identity) and
@@ -419,7 +419,7 @@ that something was missing. A rule a caller can get wrong is one that will be go
   with `attempt` unchanged.
 - **A settle that expects an owner fails CLOSED on a row that stores none.** The adapters compared
   `lease_owner` only when one was present, so a row with NULL (claimed before the column existed)
-  let anyone holding the lease id and epoch settle as the owner. Both `settleGuard` paths now refuse
+  let anyone holding the lease id and epoch settle as the owner. Both adapters' `leaseValid` now refuse
   when `expectOwner` is set and the row has no owner; the runtime's own raw verb, which names no
   owner, still settles it. Guard: `test/backfill.test.ts`, the owner nulled by SQL on both dialects.
 - **A watcher wakes on the COMMIT, which beats your own `put` returning.** A transcript cursor
@@ -593,8 +593,9 @@ that something was missing. A rule a caller can get wrong is one that will be go
   contract, not a bug.
 - **Physical execution overlaps lease expiry.** A fenced worker keeps running until it
   observes `lease_lost`. "At most one valid lease" is not "at most one running process".
-- **`take(record_id=...)` is a selector, not a bypass.** The server re-verifies pattern,
-  grants, admission, availability, and `claim_until` every time.
+- **`take(record_id=...)` is a selector, not a bypass.** The server re-verifies pattern, grants
+  and availability every time. (Admission is the unbuilt M3 scheduler; `claim_until` is a column
+  nothing compares.)
 
 ### Storage, SQL and the planner
 
@@ -928,7 +929,7 @@ definition token is lost and `radia mcp` comes up as the observer. Guard: `test/
 
 **A second `agent_definition` for one agent is not a rotation, and looks exactly like one.** Both
 tokens keep minting, while `revokeDefinition` reaches only the NEWEST record
-(`Space.definitionRecord` reads the newest 5 desc and takes the first with a `tokenHash`).
+(`definitionRecord`, src/core/identity.ts, reads the newest 5 desc and takes the first with a `tokenHash`).
 `radia team add` therefore refuses an existing agent and names `--rotate`, which revokes first
 (`definitionState`, `extensions/ts/team.ts`). Guard: `test/team.test.ts`, the shadowed token mints.
 
@@ -977,7 +978,7 @@ REDUCES authority) and ABSORBS an identical re-put (exempted, 40 re-puts passed 
   make another's record their child); [research-app-lessons.md](research-app-lessons.md) action 6.
 
 - **A delegated run can never exceed its CALLER, so a worker capability cannot be delegated**
-  (`intersectGrants`, src/core/space.ts). Authority is `worker INTERSECT caller`, so what the caller
+  (`intersectGrants`, src/core/identity.ts). Authority is `worker INTERSECT caller`, so what the caller
   lacks intersects to nothing: exec's `check: put` and `workspace: put` stay on its own token (the
   session holds neither; under `delegable:` they broke `save_procedure`). Split a worker's
   grants READ/WRITE, never "session data". Guard: test/delegation.test.ts "a SUBSET on every axis".
@@ -1001,7 +1002,7 @@ REDUCES authority) and ABSORBS an identical re-put (exempted, 40 re-puts passed 
   refuses those (an operator has no grant set to narrow to) and the whole suite failed at once.
   Write records as the principal production uses.
 - **A refusal for an UNDECLARED kind must say so, or a guessing agent reads it as a permissions
-  problem** (`Space.noGrant`). Authorization runs before pattern compilation, so a caller naming a
+  problem** (`noGrant`, src/core/authorization.ts). Authorization runs before pattern compilation, so a caller naming a
   kind nobody declared hunted for a grant that could never help. The status and code stay 403
   `forbidden`; only the sentence grows, the remedy in the SPACE's vocabulary ("query `kind_def`"),
   not a surface verb. Guard: test/delegation.test.ts "a refusal SAYS when the kind does not exist".
@@ -1066,7 +1067,7 @@ REDUCES authority) and ABSORBS an identical re-put (exempted, 40 re-puts passed 
   answer lands in the same turn. The decision travels as a successor `grant_request` record carrying
   what was ACTUALLY granted; the tool's deadline is human (240s), the REPL's longer.
 - **Kind-scoped is not conversation-scoped: every chat session ran as one agent, so each could read
-  every other session's messages.** (`USER_GRANTS`) Grants are now PATTERN-scoped to the
+  every other session's messages.** (`userGrants`, examples/chat/space/roles.ts) Grants are now PATTERN-scoped to the
   conversation (OPERATOR-created; a session has no `conversation: put`); `llm_chunk`, `llm_result`
   and `tool_result` carry `conversationId`; `Space.putArtifact` merges `x-radia-meta` with runtime
   fields LAST; patterns UNION, so approval inherits the replaced pattern (`smoke-inspect.ts`).
@@ -1344,7 +1345,7 @@ report absent, not present, or the banner advertises a tool that can only hang a
   explicitly for this.
 - **`round` must be copied onto the assistant message** (`finished()`, `workers/inference.ts`). It
   rides on the `llm_call`; dropped, the turn worker reads undefined, re-emits round 1 forever, and
-  `MAX_ROUNDS` never trips. Assert the BOUND (how many calls happened), not that a value changed:
+  `maxRounds` never trips. Assert the BOUND (how many calls happened), not that a value changed:
   under the bug the rounds still read `[0,1,1,1…]`. Guard: `smoke-turnlink.ts` "round cap".
 - **`i`/`of`/`round`/`turnAt` must be copied from a `tool_call` onto its reply** (`asTurnReply`,
   `extensions/ts/turn.ts`). Dropped, `of` defaults to 1, every reply looks like the only one of its
@@ -1750,7 +1751,7 @@ decorates); `radia get` prints the same line. Lasting attribution names the AGEN
   lacking a `workspace` it sent). It also escapes control characters in string literals (a model
   escapes newlines for 7 KB, then stops). Guard: `extensions/conformance/tool-worker.test.ts`.
 - **Testing the client is not testing the TOOL the model calls.** `smoke-selfgrant.ts` paged the log
-  itself and passed; the chat's `tools/space.ts` `space_events` fetched one page from cursor `0`,
+  itself and passed; the `space_events` tool (`extensions/ts/agent-tools.ts`) fetched one page from cursor `0`,
   all foreign events, so the tool returned `{events: [], withheld: 500}` each retry, the session's
   own activity at the far end of an 11,588-event log. **A wrapper that adds a bound can hide a bug
   from every test of the thing it wraps**; `smoke-inspect.ts` drives the tools.

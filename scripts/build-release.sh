@@ -86,7 +86,7 @@ cat > "$OUT/npm/radia/package.json" <<JSON
 {
   "name": "radia",
   "version": "$VERSION",
-  "description": "Content-routed coordination runtime for LLM agents: TypeScript SDK and extensions",
+  "description": "Content-routed coordination runtime for agent systems: TypeScript SDK and extensions",
   "license": "Apache-2.0",
   "files": ["sdk", "extensions", "LICENSE"],
   "exports": {
@@ -119,7 +119,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "radia-space"
 version = "$VERSION"
-description = "Content-routed coordination runtime for LLM agents: Python SDK"
+description = "Content-routed coordination runtime for agent systems: Python SDK"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.9"

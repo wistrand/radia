@@ -73,7 +73,8 @@ planning against them will find no behaviour there. Verified against `src/`:
 - `effective_priority` is set to `0` with the comment "scheduler sets this for real in M3". It is
   indexed and ordered by, so the ranking machinery is real and its input is constant; `Space.take`
   ranks by it and therefore always falls through to the next tiebreak. "Aged by sweeper" is doubly
-  wrong: nothing ages it, and there is no sweeper (the only `setInterval` in the runtime is the MCP
+  wrong: nothing ages it, and nothing sweeps records (the one recurring timer in the runtime is the
+  Postgres pool's idle-connection reaper; the MCP
   heartbeat).
 
 Both are honest scaffolding for [design-scheduler.md](design-scheduler.md) (M3). Neither is a
@@ -198,8 +199,8 @@ flows down **data parents** (taint), and neither leaks into the other.
 One of these is enforcement and the rest are vocabulary.
 
 **Reserved by the runtime** (`RESERVED_KINDS`, `src/core/kinds.ts`): `kind_def`, `grant`, `signal`,
-`agent_definition`, `agent_run`, `artifact`, `interest`, `shred`, `ops_grant`. Of those, `grant`,
-`signal`, `agent_*`, `shred` and `ops_grant` are additionally WRITE-PROTECTED, meaning an operator
+`agent_definition`, `agent_run`, `artifact`, `interest`, `shred`, `ops_grant`, `oidc_identity`.
+Of those, `grant`, `signal`, `agent_*`, `shred`, `ops_grant` and `oidc_identity` are additionally WRITE-PROTECTED, meaning an operator
 only, whatever grants say — with one carve-out: the supervisor may put `grant`/`signal`, its entire
 remaining privilege ([architecture-ops-tiers.md](architecture-ops-tiers.md)).
 
@@ -213,7 +214,8 @@ cause. But BOTH readers of a stored declaration swallow a validation failure and
 validator would turn a stored `kind_def` into an UNLOADABLE KIND and, through `refreshKind`, mean a
 kind declared on another instance never registers on this one. `assertKnownKindDefFields` therefore
 hangs off `validateReservedBody` and never off `kindDefFromBody`. Allowed: `kind`, `indexedPaths`,
-`sortablePaths`, `claimable`, `contentKey`, `defaultRetentionSeconds`, `usage`, `retired`.
+`sortablePaths`, `claimable`, `contentKey`, `defaultRetentionSeconds`, `usage`, `retired`,
+`supersedes`.
 
 **`usage` is prose for whoever DISCOVERS the kind, and it participates in the content key.** It says
 how to use the kind (what a body holds, how to match it), is never interpreted, and is bounded at
@@ -473,7 +475,9 @@ original, it is the copies: which results quoted it, which artifacts came from i
 lineage and `children` answer exactly that, and `taint` marks which descendants carry untrusted
 provenance. That closure is a query here.
 
-**Only raster images, audio and video are served `inline`; everything else downloads.** Artifact
+**Only raster images, audio and video are inline on the MAIN origin; everything else downloads.**
+The isolated artifact origin (`port + 1` by default) additionally renders the scriptable text
+formats under its own CSP. Artifact
 bytes are attacker-supplied and served from the space's OWN origin (the origin whose console page
 carries an operator token), so `text/html` (or `image/svg+xml`, which is why the allowlist names
 raster formats rather than `image/`) rendered inline would be a same-origin XSS reachable by anyone
@@ -504,7 +508,8 @@ Four properties, each with a reason:
   content address is authenticated, not merely conventional.
 - **Storage paths are HMAC(KEK, digest).** A content-addressed encrypted store whose filenames are
   plaintext hashes still answers "do you hold this exact file?" to whoever steals the disk.
-- **The wrapped DEK lives in a sidecar beside the blob**, never in the artifact record: records are
+- **The wrapped DEK lives beside the blob** (a sidecar for the filesystem store, object metadata
+  for S3), never in the artifact record: records are
   immutable and crypto-shredding means *deleting* the key. Delete the sidecar and the payload is
   gone while the record, its digest and the event chain remain verifiable.
 
@@ -518,6 +523,6 @@ even address its sealed blobs, so reads are `404` while the records remain intac
 record whose writer declared `retention_until` sweeps like any reference record, and a live
 `gc` ends with a blob pass deleting bytes no surviving artifact record references (grace-windowed
 against in-flight puts; `BlobStore.retainOnly`). A record with no retention keeps the old
-posture: permanent, blob and all. **Built:** KEK rotation. A `SealedKey` carries `kid`, reads and sweeps span retired keys, an unknown key is reported rather than deleted, and `radia rewrap` re-seals referenced payloads under the current key so the retired one can be destroyed (`already == scanned` with `foreign == 0` is the state in which dropping it is safe). Still open:
-renaming every path, since the name is derived from the key). Recipient-keyed / token-derived
-keys stay out; see [gotchas.md](gotchas.md).
+posture: permanent, blob and all. **Built:** KEK rotation. A `SealedKey` carries `kid`, reads and sweeps span retired keys, an unknown key is reported rather than deleted, and `radia rewrap` re-seals referenced payloads under the current key so the retired one can be destroyed (`already == scanned` with `foreign == 0` is the state in which dropping it is safe). Rotation
+does NOT rename existing paths, since `storageName` is HMAC(KEK, digest). Recipient-keyed and
+token-derived keys stay out; see [gotchas.md](gotchas.md).

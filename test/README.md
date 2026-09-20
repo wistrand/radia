@@ -34,7 +34,7 @@ flowchart LR
 and a backend nobody runs the suite against drifts.
 
 ```bash
-deno task test                # check + everything under test/ + the extension contracts
+deno task test                # check + all of test/ + the extension contracts + the lab
 deno task test:quick          # the structural guards only                        (~1s)
 deno task test:runtime        # all of test/: the standalone files AND the matrix  (~1min)
 deno task test:conformance    # the port matrix alone: sqlite + pglite + blobs     (~20s)
@@ -67,8 +67,8 @@ are added; the claim to check is 0 failed), and it is the only run that actually
 change needs it (see "Writing a suite" below). The two cases in `concurrency.test.ts` are ignored
 entirely without it.
 
-**All three run in CI** (`.github/workflows/ci.yml`), in three jobs: `embedded` (check +
-conformance + extensions), `postgres` (the same suite against a service container) and `s3` (the
+**All three run in CI** (`.github/workflows/ci.yml`), in three jobs: `embedded` (check + all of
+test/, both bundles, extensions, the lab and py-parity), `postgres` (the same suite against a service container) and `s3` (the
 blob columns against the `docker/s3/` endpoint, the same recipe a local space uses). Until 2026-08-04 the
 Postgres run was manual, while CLAUDE.md's invariant said the suite runs on every implementation
 "in CI from day one" — an invariant naming a guard that was not running.

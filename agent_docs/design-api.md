@@ -9,7 +9,8 @@ and all ten operations are built: HTTP handlers in `src/server/handlers/`, the s
 `Space` is the one facade every caller holds (put/take/settle, watches, lineage and graph,
 kinds-as-records, envelope query, taint); the features it DELEGATES to rather than contains
 (`authorization.ts`, `identity.ts`, `seal.ts`, `gc.ts`, `flows.ts`, `artifacts.ts`,
-`inspection.ts`) each reach it through a narrow `XxxHost` port, so the dependency runs one way.
+`inspection.ts`) each reach it through a narrow host port (`ChainHost`, `IdentityHost`,
+`FlowSource`, …), so the dependency runs one way.
 Watches are implemented (see Wire protocol below), as is the artifact payload plane (below), and
 `query` takes a keyset cursor (`after`/`dir`, or an opaque `cursor` that carries its own direction;
 see [design-matching.md](design-matching.md)).
@@ -34,7 +35,8 @@ here is authoritative.
   overlap after lease expiry.
 - Idempotency is checked **before** lease validation, for every state-changing operation.
 - `take(record_id=...)` is a selector, never a bypass: the server re-verifies pattern,
-  grants, admission, availability, and `claim_until`.
+  grants and availability. (Admission is the unbuilt M3 scheduler; `claim_until` is a column
+  nothing compares.)
 - Client disconnect releases nothing. Only leases hold state. A WATCH is the same rule seen from the
   other side: it survives a disconnect so the client can resume from its cursor, and is dropped only
   after an idle window with nothing attached (`watchIdleSeconds`), with `maxWatchesPerPrincipal` as
@@ -128,13 +130,13 @@ keys; stale `nack` retries may be terminal.
 put(record, idempotency_key) -> id
 read_one(pattern) -> record | null
 query(pattern, cursor, limit) -> page          # keyset cursor, see below
-take(pattern | record_id, lease_s, block, timeout, explain) -> {record, lease} | null
+take(pattern | record_id, lease_s, allow_taint, require_untainted, explain) -> {record, lease} | null
 ack(lease, result_record?, idempotency_key) -> ok | lease_lost | idempotency_conflict
-nack(lease, reason, backoff_s) -> ok | lease_lost
-release(lease, reason) -> ok | lease_lost       # cooperative cancel, attempt +0
+nack(lease, backoff_s) -> ok | lease_lost
+release(lease) -> ok | lease_lost               # cooperative cancel, attempt +0
 renew(lease) -> lease' | lease_lost
 watch(pattern) -> watch_id / event stream
-control-plane ops (kinds, patterns, definitions, runs; see design-auth.md)
+control-plane ops (agent definitions, runs, grants; kinds and interests are records, not verbs)
 ops plane      (stats, events, envelope query, diagnostics, remediation; see design-observability.md)
 ```
 
@@ -151,9 +153,8 @@ See [design-data-model.md](design-data-model.md) §2.4.
   `{record: null, explain}`, since `null` cannot carry a note, and leaves every other caller
   byte-identical. See design-inspection.md, "`explain` on a CLAIM".
 - **`take(record_id=...)` is only an efficient selector, never a bypass.** The server
-  re-verifies: a registered pattern of this run matches the record; grants permit the
-  take; scheduler admission exists (in scheduler mode); the record is `available` and
-  within `claim_until`.
+  re-verifies: grants permit the take, the caller's own pattern matches if one was given, and the
+  record is `available` and past `available_at`.
 - **Pagination is keyset, not snapshot.** Stable with respect to the selected *immutable*
   sort keys (`created_at`, record ID); runtime eligibility is evaluated per page fetch.
   `effective_priority` is mutable under aging, so it is not a cursor key. Aging
@@ -173,10 +174,10 @@ See [design-data-model.md](design-data-model.md) §2.4.
   wire field of `orderBy`) answered 200 unsorted; `mach` on the registry verb returned the whole
   registry as a slice; `Kind` on `remediate` swept every app's backlog; `allow_taint` on a take
   removed the caller's barrier entirely, because an absent `allowTaint` means "send me anything".
-  `put` is the ONE exception and keeps ignoring unknown fields, since that is how the
-  server-assigned half gets dropped and how a record read back out can be written again; it refuses
-  only NEAR-MISSES, where ignoring loses an instruction the caller gave (`parent_ids`,
-  `available_at`).
+  `put` keeps ignoring unknown fields, since that is how the server-assigned half gets dropped and
+  how a record read back out can be written again; it refuses only NEAR-MISSES, where ignoring
+  loses an instruction the caller gave (`parent_ids`, `available_at`). The four settle verbs
+  (`ack`/`nack`/`release`/`renew`) also still pick by name rather than calling `rejectUnknown`.
 - **Long-poll cancellation:** client disconnect releases nothing; only leases hold
   state. Reactive mode retains priority aging so low-priority work cannot starve.
 
@@ -268,8 +269,9 @@ content-routing) rather than as scattered endpoints; see [CLAUDE.md](../CLAUDE.m
   `agentLoop` treats a `403` as a permanent config error, logging it loudly and relying on the poll
   fallback, while a transient watch drop is retried. (For the `agentLoop` pattern this never fires:
   the loop watches the kinds it `take`s, and the required `take` grant already authorizes the watch.)
-- Watches are **ephemeral run resources** (die with the run). Durable subscriptions are
-  deferred.
+- Watches are **ephemeral in-process resources**, dropped after `watchIdleSeconds` idle and never
+  on disconnect; a revoked run's stream fails re-authorization on its next attach. Durable
+  subscriptions are deferred.
 - Patterns are never in query strings.
 - Errors: RFC 9457. `lease_lost` and lost-race are distinct non-error statuses.
 - **Where the HTTP surface lives (`src/server/`).** `http.ts` is `startServer`: the route table,
@@ -317,9 +319,9 @@ async def agent_loop(space, run):
             if status == "lease_lost":
                 log_fenced(claimed)                    # duplicate work possible: at-least-once
         except CancelRequested:
-            await space.release(claimed.lease, reason="preempted")
+            await space.release(claimed.lease)
         except RetryableError as e:
-            await space.nack(claimed.lease, reason=str(e), backoff_s=backoff(claimed.record))
+            await space.nack(claimed.lease, backoff_s=backoff(claimed.record))
         finally:
             hb.cancel()
 ```

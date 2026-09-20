@@ -264,8 +264,7 @@
       hosted agent's grants, and code launched by that host receives no credential.
     </p>
     <p>
-      Radia's chat example is the demonstration: its command loop contains no tool list, no model
-      name and no routing. It learns what tools exist by reading records, and starting another worker
+      The command loop of Radia's chat example contains no tool list, no model name and no routing. It learns what tools exist by reading records, and starting another worker
       changes what the assistant can do without touching the assistant.
     </p>
     <p class="explanation">
@@ -283,8 +282,7 @@
     <p>
       DBOS is the closest thing to a sibling. It makes the same underlying bets: Postgres as the one
       source of truth, stateless processes above it, durability recorded per operation rather than as
-      a stream of events to replay. Its published performance numbers are the best evidence available
-      for what this shape of architecture can do, and where it slows down is contention on the front
+      a stream of events to replay. Its published performance numbers slow down on contention at the front
       of a queue, which is the same wall a single-winner claim hits.
     </p>
     <p>

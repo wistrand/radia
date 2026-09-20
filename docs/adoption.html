@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Adopting Radia: move credentials out of callers</title>
-  <meta name="description" content="An adoption guide for moving powerful credentials out of callers and into narrow capability workers, with prerequisites, decision gates and costs stated explicitly.">
+  <meta name="description" content="An adoption guide for moving downstream credentials out of callers and into narrow capability workers, with prerequisites, decision gates and costs stated explicitly.">
   <link rel="stylesheet" href="shared.css">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
 
@@ -385,7 +385,8 @@
   <div class="container">
     <h2>Move the credential to a narrow worker</h2>
     <p>
-      This is the transition where the security position actually changes.
+      After this transition, compromise of the caller yields only what its grants permit, not the
+      ERP token.
     </p>
 
     <figure class="diagram-scroll">
@@ -467,7 +468,7 @@
         <text x="300" y="222" text-anchor="start" class="muted">erp.customer.export</text>
         <text x="520" y="200" text-anchor="start" class="muted">erp.admin.*</text>
       </svg>
-      <figcaption>Secret-manager policy limits who holds the powerful credential; Radia grants limit what callers may ask that holder to do.</figcaption>
+      <figcaption>Secret-manager policy limits who holds the downstream credential; Radia grants limit what callers may ask that holder to do.</figcaption>
     </figure>
 
     <p>
@@ -813,7 +814,7 @@
         </defs>
         <rect x="20" y="26" width="350" height="190" rx="7" class="box" stroke="#4ade80"/>
         <text x="195" y="54" text-anchor="middle" class="label">what improves</text>
-        <text x="44" y="86" text-anchor="start" class="muted">fewer holders of each powerful credential</text>
+        <text x="44" y="86" text-anchor="start" class="muted">fewer holders of each downstream credential</text>
         <text x="44" y="110" text-anchor="start" class="muted">authority is enumerable and auditable</text>
         <text x="44" y="134" text-anchor="start" class="muted">tenant scoping is enforced before</text>
         <text x="44" y="158" text-anchor="start" class="muted">the worker runs</text>
@@ -949,13 +950,13 @@
     </figure>
 
     <p>
-      The objective is not zero credentials. It is that very few processes hold a powerful one, and
+      The objective is not zero credentials. It is that very few processes hold one that can act on an external system, and
       that possession stops being how application code expresses authority. Two numbers say whether
       that is happening.
     </p>
 
     <div class="callout">
-      <strong>How many processes can exfiltrate each powerful credential, and how many principals
+      <strong>How many processes can exfiltrate each downstream credential, and how many principals
       can read each sensitive body?</strong> The first should fall as credentials move. Track the
       second from the moment requests become records, and keep it small with narrow kinds and
       pattern-scoped grants.

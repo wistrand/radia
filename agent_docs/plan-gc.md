@@ -143,7 +143,7 @@ The one place the trade is stated whole; the sections below carry the mechanics.
   every one of them.
 - `interest` is neither retention nor keep-newest: an interest is live while its RUN is live, so
   interests of terminal runs sweep (the `liveInterests` liveness test, applied destructively).
-- **Never compacted: `grant`, `kind_def`, `signal`, `agent_definition`.** "The audit trail
+- **Never compacted: `grant`, `kind_def`, `signal`, `agent_definition`, `ops_grant`.** "The audit trail
   survives revocation" is a documented property of grants; the others are small, security-load-bearing,
   or both. Revisit only with the event-horizon story (phase 3) in hand.
 
