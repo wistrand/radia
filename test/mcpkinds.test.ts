@@ -13,9 +13,9 @@ const perms = (over: Partial<EffectivePermissions> = {}): EffectivePermissions =
   subject: "agent:m",
   privileged: false,
   kinds: [
-    { kind: "attestation", operations: ["put"], readsScopedToSelf: false, patterns: [{ check: "integrity" }], unpatterned: false },
-    { kind: "board", operations: ["query", "read_one"], readsScopedToSelf: true, patterns: [], unpatterned: true },
-    { kind: "kind_def", operations: ["query"], readsScopedToSelf: false, patterns: [], unpatterned: true },
+    { kind: "attestation", operations: ["put"], readsScopedToSelf: false, patterns: [{ check: "integrity" }], unpatterned: false, byOperation: [] },
+    { kind: "board", operations: ["query", "read_one"], readsScopedToSelf: true, patterns: [], unpatterned: true, byOperation: [] },
+    { kind: "kind_def", operations: ["query"], readsScopedToSelf: false, patterns: [], unpatterned: true, byOperation: [] },
   ],
   ops: { reachable: false, kinds: [] },
   opsPowers: [],
@@ -36,7 +36,7 @@ Deno.test("[mcp kinds] a pattern is shown as exact only when every grant on the 
   // The union `EffectivePermissions` reports is across ALL grants on a kind; enforcement asks only
   // the grants for the operation. A patterned put beside an unpatterned query is not an unbounded put.
   const row = (patterns: Record<string, unknown>[], unpatterned: boolean) =>
-    withAccess([def("attestation")], perms({ kinds: [{ kind: "attestation", operations: ["put", "query"], readsScopedToSelf: false, patterns, unpatterned }] }));
+    withAccess([def("attestation")], perms({ kinds: [{ kind: "attestation", operations: ["put", "query"], readsScopedToSelf: false, patterns, unpatterned, byOperation: [] }] }));
   const mixed = row([{ check: "integrity" }], true);
   assertEquals(mixed.kinds[0].you, { operations: ["put", "query"], patterns: [{ check: "integrity" }], patternsPartial: true });
   assertEquals(mixed.notes.length, 1, "the partial flag is explained, once");

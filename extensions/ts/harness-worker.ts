@@ -80,6 +80,17 @@ export interface WorkerOptions {
   /** Runs just before each spawn: the CLI uses it to write the session's current run where the
    *  harness's adapter will resume it, since a run past its ceiling is replaced mid-loop. */
   beforeSpawn?: () => Promise<void>;
+  /**
+   * Stop CLAIMING, but let the harness in flight finish and settle.
+   *
+   * Distinct from `signal`, which kills: a running harness sees an aborted `signal` as its lease
+   * being lost and is killed `fenced` (see `kill` below). A run that has reached its answer needs
+   * the other half, and had no way to say it: `radia team up` waited for `inFlight` to fall to
+   * zero while its loops kept claiming, so the wait refilled itself and ran the full grace period,
+   * launching a model per turn the whole time. Measured on examples/teams/poker: a minute of
+   * launches after the game was decided.
+   */
+  stopClaiming?: AbortSignal;
 }
 
 /**
@@ -214,6 +225,12 @@ export async function runHarnessMember(client: RadiaClient, m: HarnessMember, o:
   }
   const ctl = new AbortController();
   o.signal.addEventListener("abort", () => ctl.abort(), { once: true });
+  // What the CLAIM loop watches: either a full stop, or a stop-claiming that leaves the harness
+  // in flight alone. `ctl` stays the one that kills.
+  const claimCtl = new AbortController();
+  const stopClaims = () => claimCtl.abort();
+  ctl.signal.addEventListener("abort", stopClaims, { once: true });
+  o.stopClaiming?.addEventListener("abort", stopClaims, { once: true });
   // A harness that fails to start comes back in 200ms and the loop would nack and reclaim it at
   // once, forever. Each consecutive failure waits longer before the nack (5s, 10s, … 60s), reset
   // by a run that got anywhere, so a broken launch costs one line a minute rather than a spin.
@@ -376,7 +393,7 @@ export async function runHarnessMember(client: RadiaClient, m: HarnessMember, o:
     patterns: m.patterns,
     leaseSeconds: m.leaseSeconds,
     concurrency: m.concurrency,
-    signal: ctl.signal,
+    signal: claimCtl.signal,
     handle,
     log: o.log,
   });

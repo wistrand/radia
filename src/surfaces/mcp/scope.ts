@@ -57,8 +57,8 @@ export class ScopeFiller {
    * reach, so the record it lands on may belong to the wrong one. Empty means the grants scope this
    * kind no way, and nothing should be narrowed.
    */
-  candidates(kind: string): Promise<Record<string, string | number | boolean>[]> {
-    const memo = this.scopes.get(kind);
+  candidates(kind: string, op?: "put" | "take" | "query" | "read_one"): Promise<Record<string, string | number | boolean>[]> {
+    const memo = this.scopes.get(op ? `${kind}\u0000${op}` : kind);
     if (memo) return memo;
     const p = (async () => {
       // RESOLVE THE CREDENTIAL FIRST, or `health` answers `anonymous` while the request still
@@ -73,13 +73,21 @@ export class ScopeFiller {
       const me = (await this.client.health()).principal;
       const perms = await this.client.permissions(me);
       const row = perms.kinds.find((k) => k.kind === kind);
-      const found = (row?.patterns ?? []).map(flat).filter((p): p is Record<string, string | number | boolean> => !!p);
+      // PER OPERATION when the space reports it. `patterns` is the union over every grant on the
+      // kind whatever verb it permits, which this module's header already names as wrong for a
+      // write: a read grant scoped `{team}` beside a write grant scoped `{team, player}` reads as
+      // two candidates, and `discover` then refuses the write as ambiguous although exactly one
+      // grant carries `put`. Falls back to the union for a space too old to answer per operation.
+      const perOp = op ? row?.byOperation?.find((b) => b.operation === op) : undefined;
+      const source = perOp ? (perOp.unpatterned ? [] : perOp.patterns) : (row?.patterns ?? []);
+      const found = source.map(flat).filter((p): p is Record<string, string | number | boolean> => !!p);
       return [...new Map(found.map((c) => [JSON.stringify(c), c])).values()];
     })();
     // A failed lookup is not an answer: drop it so the next call asks again rather than replaying
     // one unreachable moment for the rest of the process.
-    p.catch(() => this.scopes.delete(kind));
-    this.scopes.set(kind, p);
+    const key = op ? `${kind}\u0000${op}` : kind;
+    p.catch(() => this.scopes.delete(key));
+    this.scopes.set(key, p);
     return p;
   }
 
@@ -133,7 +141,8 @@ export class ScopeFiller {
       return await write(this.known(kind));
     } catch (e) {
       if (!isScopeRefusal(e) ) throw e;
-      const scope = await this.discover(kind);
+      // A write, so the grants that matter are the ones carrying `put`.
+      const scope = await this.discover(kind, "put");
       const merged = { ...this.known(kind), ...scope };
       if (Object.keys(merged).length === 0) throw e;
       const r = await write(merged);
@@ -148,8 +157,8 @@ export class ScopeFiller {
    * Throws with both names when there is more than one candidate: a guess would put the work in
    * the wrong team, which is exactly the thing the scoping exists to prevent.
    */
-  private async discover(kind: string): Promise<Record<string, string | number | boolean>> {
-    const distinct = await this.candidates(kind);
+  private async discover(kind: string, op?: "put" | "take" | "query" | "read_one"): Promise<Record<string, string | number | boolean>> {
+    const distinct = await this.candidates(kind, op);
     if (distinct.length === 0) return {};
     if (distinct.length > 1) {
       throw new Error(

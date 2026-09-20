@@ -5,7 +5,7 @@ space, run as workers by `radia team up`, with everything the team is in one fol
 
 | file | what |
 |------|------|
-| `team.json` | the members (name, harness, model, what each claims, extra `grants`), the team label, `kinds` the team declares, the seed records that start the work, and `done`, the pattern a final answer matches; a `service` member is a process spawned once rather than a harness per claim |
+| `team.json` | the members (name, harness, model, what each claims, extra `grants`: `"<kind>:<op,op>"` for the whole kind within the team, or `{kind, operations, pattern}` to narrow further, where `"self"` is this member's principal), the team label, `kinds` the team declares, the seed records that start the work, and `done`, the pattern a final answer matches; a `service` member is a process spawned once rather than a harness per claim |
 | `prompts/*.md` | the RULES of the game, and nothing else: the launcher wraps every prompt in a frame that says who the harness is, which record it holds, and the exact calls to read, answer and hand on; a `-resume` variant for a session that already holds the earlier moves |
 | `README.md` | the game and how to run it |
 
@@ -48,6 +48,7 @@ like one.
 | `twenty-questions/` | the introduction: two players, every move a task for the other, routed by `tags`, the match one lineage |
 | `story-relay/` | a fixed number of rounds with one shared prompt: the baton names who writes next |
 | `go-fish/` | six members exercising workspace agents, the broker, a team-declared kind under pattern-scoped grants, two harnesses, a service beside five per-claim launches, and repair of model-written code as ordinary coordination. Not a first example; its README opens with what it puts under load |
+| `poker/` | per-member isolation INSIDE a team: a player cannot read a teammate's hole cards, forge its action or take its turn. The three grants that do it use the OBJECT form of `grants`, whose `pattern` narrows past the team label and whose `"self"` resolves to the member; this example is why that form exists. `deno task test:poker-team` runs the wiring with scripted seats |
 | `song-creator/` | five models and two services, and the only example whose output has a MEASURABLE quality: players write parts in parallel, two reviewers judge blind, and a revision has to move a fault count. Its own claimable kinds rather than tagged tasks, a service beside the harnesses, and a page a browser plays. `deno task test:song` plays the pipeline model-free and `test:song-team` checks the team file itself |
 
 Every team runs WARM SESSIONS (`"resume": true`): one harness session per member across moves,

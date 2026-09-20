@@ -426,6 +426,9 @@ export async function runPrincipalsOf(h: AuthorizationHost, subject: string, pri
   return [...new Set([...view.entries.keys(), subject, principal])];
 }
 
+/** Every coordination verb a grant may carry, in the order a view lists them. */
+const GRANT_OPS: GrantOp[] = ["put", "take", "query", "read_one"];
+
 /**
  * What a principal can actually do, computed once and shown, rather than only ever recomputed
  * inside a decision nobody can see.
@@ -453,12 +456,13 @@ export async function effectivePermissions(h: AuthorizationHost, principal: stri
   }
   const byKind = new Map<
     string,
-    { kind: string; operations: GrantOp[]; scoped: boolean; unscoped: boolean; opsEligible: boolean; patterns: Record<string, unknown>[]; unpatterned: boolean }
+    { kind: string; operations: GrantOp[]; scoped: boolean; unscoped: boolean; opsEligible: boolean; patterns: Record<string, unknown>[]; unpatterned: boolean; grants: GrantDef[] }
   >();
   for (const g of acc.defs as (GrantDef & { scope?: { createdBy?: string } })[]) {
     if (typeof g.kind !== "string" || !Array.isArray(g.operations)) continue;
     const row = byKind.get(g.kind) ??
-      { kind: g.kind, operations: [], scoped: false, unscoped: false, opsEligible: false, patterns: [], unpatterned: false };
+      { kind: g.kind, operations: [], scoped: false, unscoped: false, opsEligible: false, patterns: [], unpatterned: false, grants: [] };
+    row.grants.push(g);
     for (const op of g.operations) if (!row.operations.includes(op)) row.operations.push(op);
     if (g.scope?.createdBy === "self") row.scoped = true;
     else row.unscoped = true;
@@ -498,6 +502,24 @@ export async function effectivePermissions(h: AuthorizationHost, principal: stri
       readsScopedToSelf: (await authorScope(h, principal, "query", r.kind)) !== undefined,
       patterns: r.patterns,
       unpatterned: r.unpatterned,
+      // PER OPERATION, because that is the unit enforcement decides in and the two unions above
+      // cannot be read together: a narrow `put` beside an unscoped `query` renders as
+      // "put,query scoped to [<the narrow pattern>]", which promises a bounded put AND an
+      // unbounded one at once. Measured on the poker example, where a player's own view said it
+      // could write any teammate's action while the space refused exactly that with a 403.
+      // Same move as `unpatterned` above, one level finer, and computed by `constraintFrom`'s
+      // rule so it cannot drift from what `authorize` returns.
+      byOperation: GRANT_OPS.filter((op) => r.operations.includes(op)).map((op) => {
+        const applicable = r.grants.filter((g) => Array.isArray(g.operations) && g.operations.includes(op));
+        const unbounded = applicable.some((g) => !g.pattern || Object.keys(g.pattern).length === 0);
+        return {
+          operation: op,
+          unpatterned: unbounded,
+          // Empty when unbounded: one unpatterned grant widens the operation to the whole kind,
+          // so listing the others beside it would again read as a restriction that is not there.
+          patterns: unbounded ? [] : applicable.map((g) => g.pattern as Record<string, unknown>),
+        };
+      }),
     });
   }
   return {

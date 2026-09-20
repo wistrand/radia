@@ -15,7 +15,7 @@ import { makeHandler } from "../src/server/http.ts";
 import { Space } from "../src/core/space.ts";
 import { SqliteAdapter } from "../src/storage/sqlite.ts";
 import { RadiaClient } from "../sdk/ts/client.ts";
-import { addMember, declareKind, DEFAULT_TEAM, declareTeamKinds, definitionState, liveKinds, mergeKind, NOTE, readDefinition, removeMember, TASK, TEAM_FIELD, teamRoster } from "../extensions/ts/team.ts";
+import { addMember, declareKind, DEFAULT_TEAM, declareTeamKinds, definitionState, liveKinds, memberGrantPattern, mergeKind, NOTE, readDefinition, removeMember, TASK, TEAM_FIELD, teamRoster } from "../extensions/ts/team.ts";
 import { configLocation, mcpInvocation, renderMcpConfig, renderMcpInstall } from "../src/surfaces/mcp/config.ts";
 import { ScopeFiller } from "../src/surfaces/mcp/scope.ts";
 import { newer, newestByKey } from "../sdk/ts/registry.ts";
@@ -1588,4 +1588,81 @@ Deno.test("[team] a third harness needs a config location and an install line, n
   // NO `--scope local`, and that absence is the finding behind the private HOME: agy has one server
   // list per machine, so two members on one machine are one principal unless HOME moves.
   assert(!install.includes("--scope"), "agy has no per-project scope; claiming one would be false");
+});
+
+Deno.test("[team] the scope fill asks PER OPERATION, so a narrow write beside a wide read is not ambiguous", async () => {
+  // Found on examples/teams/poker. A player holds `poker_action: put` scoped to itself beside
+  // `poker_action: query` scoped to the team, which is two entries in the kind's `patterns`
+  // UNION; `discover` then refused every ack as ambiguous although exactly one grant carries
+  // `put`. The union is the wrong question for a write, and `byOperation` is the right one.
+  const t = await newSpace();
+  try {
+    await t.space.registerKind({
+      kind: "move",
+      indexedPaths: [{ path: "team", type: "keyword" }, { path: "player", type: "keyword" }],
+    });
+    const { definitionToken } = await t.space.createAgentDefinition("agent:ada", [
+      { principal: "agent:ada", kind: "move", operations: ["put"], pattern: { team: "poker", player: "agent:ada" } },
+      { principal: "agent:ada", kind: "move", operations: ["query", "read_one"], pattern: { team: "poker" } },
+    ]);
+    const { runToken } = await t.space.mintRun(definitionToken);
+    const ada = new RadiaClient(t.base, { token: runToken });
+
+    const filler = new ScopeFiller(ada);
+    assertEquals((await filler.candidates("move")).length, 2, "the union over all grants is still two");
+    const forPut = await filler.candidates("move", "put");
+    assertEquals(forPut, [{ team: "poker", player: "agent:ada" }], "but exactly one grant carries put");
+
+    // And the fill an ack performs now lands, with both fields taken from the grant rather than
+    // from the caller, so a model neither has to know them nor can forge them.
+    const written = await new ScopeFiller(ada).fill(
+      "move",
+      (extra) => ada.put({ kind: "move", body: { ...extra, note: "called" } }),
+    );
+    const back = await t.admin.readNewest<{ team: string; player: string }>({ kind: "move", match: { player: "agent:ada" } });
+    assertEquals(back!.body.team, "poker");
+    assertEquals(back!.body.player, "agent:ada");
+    assert(written.id.length > 0);
+  } finally {
+    await t.close();
+  }
+});
+
+Deno.test("[team] a member grant may narrow WITHIN the team, and never out of it", async () => {
+  // The team convention isolates one team from another; a team whose members must not read each
+  // other needs a second narrowing, and `TeamGrant`'s `pattern` is it. `self` resolves to the
+  // member's own principal, so one line in team.json serves every member and none of them can be
+  // handed somebody else's name. examples/teams/poker is the worked case.
+  const t = await newSpace();
+  try {
+    // The standard member grants are team-scoped, so the team's own kinds must carry the path
+    // before anyone is minted. The same order `--init` uses.
+    await declareTeamKinds(t.admin);
+    await t.space.registerKind({
+      kind: "hole",
+      indexedPaths: [{ path: TEAM_FIELD, type: "keyword" }, { path: "owner", type: "keyword" }],
+    });
+    const ada = await addMember(t.admin, "agent:ada", {
+      teams: ["poker"],
+      extra: [{ kind: "hole", operations: ["query"], pattern: { owner: "self" } }],
+    });
+    const perms = await t.admin.permissions("agent:ada");
+    const hole = perms.kinds.find((k) => k.kind === "hole")!;
+    assertEquals(hole.patterns, [{ [TEAM_FIELD]: "poker", owner: "agent:ada" }], "team label AND the member's own narrowing");
+
+    // The label is applied FIRST and is not the member's to move: a grant that could name another
+    // team would be the one hole that reads across them.
+    assertEquals(memberGrantPattern("poker", "agent:ada", { owner: "self" }), { team: "poker", owner: "agent:ada" });
+    assertEquals(memberGrantPattern("poker", "agent:ada"), { team: "poker" }, "no narrowing is still team-scoped");
+
+    // And it enforces: ada reads her own row and not a teammate's, on the same team.
+    await t.admin.put({ kind: "hole", body: { team: "poker", owner: "agent:ada", cards: ["As"] } });
+    await t.admin.put({ kind: "hole", body: { team: "poker", owner: "agent:ben", cards: ["Kd"] } });
+    const asAda = new RadiaClient(t.base, { definitionToken: ada.definitionToken });
+    const mine = await asAda.queryNewest<{ owner: string }>({ kind: "hole" });
+    assertEquals(mine.map((r) => r.body.owner), ["agent:ada"], "a teammate's row is not hers to read");
+    assertEquals((await asAda.queryNewest({ kind: "hole", match: { owner: "agent:ben" } })).length, 0);
+  } finally {
+    await t.close();
+  }
 });

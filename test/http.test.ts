@@ -297,6 +297,59 @@ Deno.test("http: --auth required closes the no-header shortcut but keeps the con
   }
 });
 
+Deno.test("http: the permissions view reports a constraint PER OPERATION, not two unions", async () => {
+  // The defect this pins: `operations` and `patterns` are separate unions over a kind's grants,
+  // so a narrow `put` beside an unscoped `query` rendered as "put,query scoped to [<narrow>]" and
+  // promised a bounded put AND an unbounded one. Measured on examples/teams/poker, where a
+  // player's own view said it could write a teammate's action while the space answered 403.
+  const { space, handler, close } = await newHandler();
+  try {
+    await space.registerKind({
+      kind: "move",
+      indexedPaths: [{ path: "player", type: "keyword" }, { path: "team", type: "keyword" }],
+    });
+    const { definitionToken } = await space.createAgentDefinition("agent:ada", [
+      // put is narrowed to this player; the reads are not.
+      { principal: "agent:ada", kind: "move", operations: ["put"], pattern: { team: "t", player: "agent:ada" } },
+      { principal: "agent:ada", kind: "move", operations: ["query", "read_one"], pattern: { team: "t" } },
+    ]);
+    const { runToken } = await space.mintRun(definitionToken);
+    const auth = { authorization: `Bearer ${runToken}` };
+
+    const view = await (await handler(get("/v0/ops/permissions?principal=agent:ada", auth))).json();
+    const move = view.kinds.find((k: { kind: string }) => k.kind === "move");
+    const by = new Map(
+      (move.byOperation as { operation: string; patterns: unknown[]; unpatterned: boolean }[])
+        .map((b) => [b.operation, b]),
+    );
+    assertEquals(by.get("put")!.patterns, [{ team: "t", player: "agent:ada" }], "put keeps its own narrowing");
+    assertEquals(by.get("query")!.patterns, [{ team: "t" }], "the reads keep theirs");
+    assert(!by.get("put")!.unpatterned && !by.get("query")!.unpatterned);
+
+    // And it agrees with enforcement, which is the only reason to believe it.
+    assertEquals(
+      await space.authorize("agent:ada", "put", "move"),
+      [{ team: "t", player: "agent:ada" }],
+    );
+
+    // An UNPATTERNED grant on one verb widens that verb alone, and empties its pattern list
+    // rather than listing the others beside it as if they still bounded it.
+    const { definitionToken: d2 } = await space.createAgentDefinition("agent:ben", [
+      { principal: "agent:ben", kind: "move", operations: ["query"], pattern: { team: "t" } },
+      { principal: "agent:ben", kind: "move", operations: ["query"] },
+    ]);
+    await space.mintRun(d2);
+    const benView = await (await handler(get("/v0/ops/permissions?principal=agent:ben"))).json();
+    const benMove = benView.kinds.find((k: { kind: string }) => k.kind === "move");
+    const q = benMove.byOperation.find((b: { operation: string }) => b.operation === "query");
+    assert(q.unpatterned, "one unpatterned grant widens the verb to the whole kind");
+    assertEquals(q.patterns, [], "so no pattern is listed beside it");
+    assertEquals(await space.authorize("agent:ben", "query", "move"), null, "which is what authorize answers");
+  } finally {
+    await close();
+  }
+});
+
 Deno.test("http: a principal may read its OWN permissions, and only its own", async () => {
   const { space, handler, close } = await newHandler();
   try {

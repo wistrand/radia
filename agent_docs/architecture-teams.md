@@ -452,6 +452,41 @@ unlabelled lane.
 | `note` | no | same |
 | `artifact` | no | same, via a redeclaration adding `team` |
 | `capability` | no | same; `team` joins its `contentKey` too, or one member advertising one tool in two teams is one registry entry and compaction keeps only the newer |
+| `workspace` | no | same, via a redeclaration adding `team` |
+
+**Within a team, a member grant may narrow FURTHER.** The table above separates one team from
+another, which is the wrong question for a team whose members must not read each other: four
+players at a card table are one team and each holds its own hand. A `grants` entry written as an
+object carries a `pattern` that is AND-ed with the team label, and a value of exactly `"self"`
+resolves to that member's principal, so one line in `team.json` serves every member:
+
+```json
+{"kind": "poker_hole", "operations": ["query", "read_one"], "pattern": {"owner": "self"}}
+```
+
+The label is applied FIRST and `pattern` may not name it (`memberGrantPattern`,
+`extensions/ts/team.ts`): an extra grant must never be the one hole that reads across teams.
+`unscopedGrants` takes the string form only, since what it exists for is a reference kind carrying
+no team at all. Two consequences worth knowing before using it:
+
+- **Do not also grant the wide form.** Grants UNION, so a team-scoped `poker_hole: query` beside
+  the narrow one opens every hand and leaves the narrow grant decorative.
+- **A claimed kind needs a READ verb, not just `take`.** `radia team up` builds the adapter's
+  claim id from the claimed record's ENVELOPE, an ops-plane read that a pattern-scoped grant opens
+  only when it carries `query` or `read_one`. With `take` alone the worker fails soft and the
+  harness is launched with an EMPTY claim id, so the model cannot settle the turn it was started
+  for. [examples/teams/poker/](../examples/teams/poker/) is the worked case.
+
+**A service that exits 0 has FINISHED and is not restarted.** The supervisor restarts on a
+non-zero code or a signal, with backoff; a clean exit is a deliberate end. A dealer that deals
+three hands and writes the run's `done` record used to be restarted into a second game, which on
+`examples/teams/poker` dealt a whole extra hand at a model launch per turn.
+
+**`done` stops the loops CLAIMING before it drains them.** The two halves of stopping are
+different signals: aborting the worker's `signal` kills the harness in flight, which reads as its
+lease being lost and nacks the claim, so the grace period uses `stopClaiming` instead. Waiting on
+the in-flight count alone never drained, because the loops kept claiming and each launch refilled
+it.
 
 There is deliberately **no `status` field** on `task`: state lives in the envelope (available /
 leased / acked), which is the one copy nothing can disagree with, and a body field beside it goes

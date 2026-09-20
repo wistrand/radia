@@ -548,6 +548,17 @@ export interface EffectivePermissions {
      *  by body match. `patterns` is a union and cannot answer this: a non-empty list says a
      *  pattern-scoped grant exists, never that an unpatterned one does not. */
     unpatterned: boolean;
+    /**
+     * The constraint PER OPERATION, which is the unit enforcement decides in.
+     *
+     * `operations` and `patterns` above are two separate unions over the kind's grants, and
+     * reading them together over-reports: a narrow `put` beside an unscoped `query` renders as
+     * "put,query scoped to [<the narrow pattern>]", promising a bounded put and an unbounded one
+     * at once. Computed by the rule `authorize` uses, so the view cannot drift from the decision.
+     * `unpatterned` here means one grant carrying this verb has no pattern, which widens the verb
+     * to the whole kind and empties `patterns`.
+     */
+    byOperation: { operation: GrantOp; patterns: Record<string, unknown>[]; unpatterned: boolean }[];
     /** Set when NO such kind is declared on this space, so the grant authorizes nothing. A grant
      *  may legitimately precede its kind (an operator bootstraps an agent before the fleet declares
      *  its kinds), so this is a flag rather than an error. But an agent that guessed a kind name
