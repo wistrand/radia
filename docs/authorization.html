@@ -440,11 +440,12 @@
     </p>
 
     <div class="code-block">
-      <div class="code-title">what this agent can really do, right now</div>
+      <div class="code-title">what this agent can do, after revocations and superseding grants</div>
       <pre class="terminal"><code>$ radia permissions agent:summarizer
-KIND       OPERATIONS          SCOPE
-document   take, query         classification=public
-summary    put                 own records only</code></pre>
+agent:summarizer
+  document             take,query   scoped to [{"classification":"public"}]
+  summary              put   reads: own records only
+  ops plane: no</code></pre>
     </div>
 
     <p>

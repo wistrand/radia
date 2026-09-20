@@ -64,7 +64,7 @@ other.
 
 | kind          | indexedPaths                                              | sealed              |
 |---------------|-----------------------------------------------------------|---------------------|
-| `message`     | `conversationId`, `owner`, `index`, `role`                | `content`           |
+| `message`     | `conversationId`, `owner`, `index`, `role`, `callId`, `tool_call_id`, `turnAt`, `round`, `usage.*` | `content` |
 | `llm_chunk`   | `callId`, `index`, `conversationId`, `owner`              | `delta`             |
 | `tool_call`   | `tool`, `conversationId`, `owner`, `attempt`, `retryOf`, `turnAt` | `args`      |
 | `tool_result` | `callId`, `conversationId`, `owner`                       | `output`            |

@@ -3,7 +3,7 @@ Guidance for agents working in this repo. Read this first, then the relevant fil
 
 ## What this is
 
-Radia is a content-routed coordination runtime for LLM agents. **All of M0 (Phases 0–7) plus a
+Radia is a content-routed coordination runtime for agent systems. **All of M0 (Phases 0–7) plus a
 growing M1 slice are built.** That covers watches (SSE), the **authorization stack** (kind- and
 pattern-scoped grants as records, the bootstrap chain + run tokens, OIDC sign-in minting runs
 from an IdP's id_token, per-run lease ownership
@@ -46,7 +46,7 @@ file's own header, never here.
 | Path                                    | Role                                                       |
 |-----------------------------------------|------------------------------------------------------------|
 | `deno.json`                             | tasks + import map, verb-first: `dev*` runs a space, `cli` is the CLI from a checkout, `check`/`test*` verify (`test` is the aggregate; `test:quick`, `test:runtime`, `test:conformance[:pg\|:s3]`, `test:extensions`, `test:lab`, `test:pipeline`, `test:chat`, `test:analysis`, `test:mud`, `test:market`, `test:teams`, `test:song[-team]`), `bench`/`profile` measure, `bump` stamps the next version, `compile`/`release`/`bundle-*` build |
-| `src/main.ts`                           | the `radia` entry: `dev` (laptop: embedded space + console, operator credential provisioned), `serve` (the same space in deployment posture: no credential file, nothing on stdout, persistent storage required), `mcp`, else a CLI verb. `--config` is a JSON object of the same flag names; `--ext` co-hosts the extension routes at `/ext/`. [architecture-surfaces.md](agent_docs/architecture-surfaces.md) |
+| `src/main.ts`                           | the `radia` entry: `dev` (laptop: embedded space + console, operator credential provisioned), `serve` (the same space in deployment posture: no credential file, nothing on stdout, persistent storage required), `mcp`, else a CLI verb. `--config <file>` is a JSON object keyed by these flag names without the dashes; `--ext` co-hosts the extension routes at `/ext/`. [architecture-surfaces.md](agent_docs/architecture-surfaces.md) |
 | `src/surfaces/`                         | the client layer inside the binary: every way to reach a space that is not raw HTTP. Talks `/v0` through the SDK like an external client, may import an extension, and NEVER takes a value from `src/core`/`server`/`storage` (`test/layering.test.ts`). [architecture-surfaces.md](agent_docs/architecture-surfaces.md) |
 | `src/surfaces/cli.ts`                   | the CLI verbs, public `/v0` only; `radia help` is the list. `runs --for` and `team remove` are the offboarding cascade; `git-serve` and `serve-ext` are clients that happen to listen; `git-credential` is git's helper over the stored login; `login --sso` is the RFC 8252 loopback; `activity` is the console's Activity timeline in ANSI; `team up` runs a `team.json`'s members as workers that launch their harness per claim. [architecture-surfaces.md](agent_docs/architecture-surfaces.md) |
 | `src/surfaces/mcp/`                     | the MCP adapter over stdio: credential and lease held outside the model, both protocol eras, `--trace <file>` for the lab, `config.ts` for the harness block `radia team add` prints. Tool descriptions ARE the docs. [architecture-surfaces.md](agent_docs/architecture-surfaces.md), [architecture-teams.md](agent_docs/architecture-teams.md) |
@@ -59,18 +59,19 @@ file's own header, never here.
 | `src/storage/`                          | the `StorageAdapter` and `BlobStore` ports and their implementations (PGlite, Postgres, SQLite; memory, filesystem, S3, migrating), the sound SQL pushdown, blob encryption and the keyring. [design-storage.md](agent_docs/design-storage.md) |
 | `src/core/`                             | storage-agnostic logic. `space.ts` is the one facade; `as(principal)` returns the authorized handle every caller holds. Authorization, identity, the seal chain, gc, flows, artifacts and inspection are delegated through narrow host ports. [design-auth.md](agent_docs/design-auth.md), [design-observability.md](agent_docs/design-observability.md), [plan-gc.md](agent_docs/plan-gc.md) |
 | `sdk/ts/`, `sdk/py/radia.py`            | the TS SDK (`mod.ts` is the entry; `wire.ts` defines the frozen vocabulary and `src/` imports it, never the reverse; `loop.ts` has `agentLoop` and `reactorLoop`) and the stdlib-only Python SDK at parity. [sdk/README.md](sdk/README.md) |
-| `extensions/`                           | conventions built ON the space (workspaces, sandboxes, git, teams and their harness workers, presence, encryption, the broker host, OTLP). Imports the SDK, never `src/`; three surfaces are normative and `extensions/conformance/` is their contract. [extensions/README.md](extensions/README.md) |
-| `examples/`                             | runnable apps, one README each: `pipeline/` (+ `pipeline-py/`), `stress/`, `analysis/`, `chat/` (the full LLM agent, where bugs surface first), `mud/`, `market/` (scripted bidders, no models), `teams/` (harness teams, one directory each, for `radia team up`: `twenty-questions/` introduces, `go-fish/` stresses, `song-creator/` is MEASURED so a review that stops improving fails a test). `operator.ts` is the credential they bootstrap with. [examples/README.md](examples/README.md) |
+| `extensions/`                           | conventions built ON the space (workspaces, sandboxes, git, teams and their harness workers, presence, encryption, the broker host, OTLP). Imports the SDK, never `src/`; four surfaces are normative and `extensions/conformance/` is their contract. [extensions/README.md](extensions/README.md) |
+| `examples/`                             | runnable apps, one README each: `pipeline/` (+ `pipeline-py/`), `stress/`, `analysis/`, `chat/` (the full LLM agent, where bugs surface first), `mud/`, `market/` (scripted bidders, no models), `teams/` (harness teams, one directory each, for `radia team up`: `twenty-questions/` and `story-relay/` introduce, `go-fish/` stresses, `song-creator/` is MEASURED so a review that stops improving fails a test). `operator.ts` is the credential they bootstrap with. [examples/README.md](examples/README.md) |
 | `scripts/agent-lab/`                    | real harnesses run against a fresh binary on a script (`deno task lab`). A client that reads nothing private. [plan-agent-lab.md](agent_docs/plan-agent-lab.md) |
 | `scripts/build-release.sh`              | `deno compile` per OS plus SDK-only npm/pip packages as release assets (`deno task release`); the install is `curl \| sh`. [architecture-surfaces.md](agent_docs/architecture-surfaces.md), [design-storage.md](agent_docs/design-storage.md) "Distribution" |
-| `bench/`                                | throughput, latency and scaling per adapter, in-process; `chatload.ts` is the app-shaped one, `deployment.ts` the over-HTTP one. Nothing asserts. README there |
+| `bench/`                                | throughput, latency and scaling per adapter, in-process; `suites/chatload.ts` is the app-shaped one, `deployment.ts` the over-HTTP one. Nothing asserts. README there |
 | `test/`                                 | `test/conformance/` is the port contract, run against every adapter and blob store; `test/*.test.ts` is everything with one implementation, including the structural guards. Extension contracts live in `extensions/conformance/`, lab contracts beside the lab. [test/README.md](test/README.md) |
 | `openapi/radia.yaml`                    | the frozen wire contract, source of truth; `test/openapi.test.ts` holds it to the router both ways |
 | `openapi/radia-ext.yaml`                | the extension HTTP bindings (`radia serve-ext` / `--ext`), versioned per extension and NOT frozen. [plan-extension-http.md](agent_docs/plan-extension-http.md) |
 | `agent_docs/`                           | design deep dives, one topic per file (linked below)       |
 | `docs/`                                 | the published site (no build); reader-facing, so it summarises and `agent_docs/` stays the record. `test/docs.test.ts` checks every claim a machine can |
-| `docker/`                               | deployment recipes, not examples: `keycloak/` (a real OIDC issuer), `s3/` (an object store for artifact bytes), `py-parity/` (pinned Pythons for the SDK parity suite), `cluster/` (primary, standby and S3 for `bench/cluster/`). README in each |
+| `docker/`                               | deployment recipes, not examples: `keycloak/` (a real OIDC issuer), `s3/` (an object store for artifact bytes), `py-parity/` (pinned Pythons for the SDK parity suite), `cluster/` (primary, standby and S3 for `bench/cluster/`), `postgres/`. README in each of the first four |
 | `notes/radia-runtime-outline-v0.3.md`   | origin design outline; provenance, not maintained doc      |
+| `notes/*-explained.md`                  | orientation for a newcomer, in figures: [the model](notes/radia-explained.md), [the auth stack](notes/radia-auth-explained.md), [the implementation](notes/radia-implementation-explained.md) |
 
 Build/run: `deno task dev` (no build step; bare `--db` persists under `./.radia`, `--db <path>` to a
 SQLite file or PGlite dir of your choosing, in-memory otherwise), `deno task test` (the whole tree),
@@ -117,7 +118,7 @@ Plans and research (status in each doc's header; the guard in `test/agentdocs.te
 
 - [plan-m0-implementation.md](agent_docs/plan-m0-implementation.md): the phase-by-phase M0 record. [plan-milestones.md](agent_docs/plan-milestones.md): M0–M3 scope. [plan-validation.md](agent_docs/plan-validation.md): baselines and the fault matrix, complete.
 - [plan-cluster-bench.md](agent_docs/plan-cluster-bench.md): PHASES 0-3 BUILT (`bench/cluster/`), phase 4 planned. N instances, a standby and S3 under mixed load and scheduled faults, reporting violation counts beside throughput. Read before adding a multi-instance or failover measurement.
-- [plan-workspaces.md](agent_docs/plan-workspaces.md): the workspace build sequence, phases 0-13 DONE, ordered by model risk. [plan-executors.md](agent_docs/plan-executors.md): the chat's runners joined to the workspace agents' one, phases 1-3 BUILT. Read before adding a code runner or touching `save_procedure`.
+- [plan-workspaces.md](agent_docs/plan-workspaces.md): the workspace build sequence, phases 0-13 DONE, ordered by model risk. [plan-executors.md](agent_docs/plan-executors.md): the chat's runners joined to the workspace agents' one, phases 1-3 BUILT, 4 closed unbuilt, 5 open. Read before adding a code runner or touching `save_procedure`.
 - [plan-chat-turn.md](agent_docs/plan-chat-turn.md): BUILT. The turn as records, with two rejected designs. Read before adding a state record to sequence anything or making `message` claimable.
 - [plan-chat-web-ui.md](agent_docs/plan-chat-web-ui.md): BUILT. The chat as a page joining a running space over SSO. Read before touching `examples/chat/client/` rendering or `message.index`.
 - [plan-encryption.md](agent_docs/plan-encryption.md) and [plan-sealed-field-shape.md](agent_docs/plan-sealed-field-shape.md): BUILT. Chat prose sealed per conversation; sealing renames the field. Read before encrypting, indexing, or passing an id where a value went.
@@ -125,14 +126,14 @@ Plans and research (status in each doc's header; the guard in `test/agentdocs.te
 - [plan-oidc.md](agent_docs/plan-oidc.md) and [plan-console-auth.md](agent_docs/plan-console-auth.md): BUILT. SSO minting runs from an id_token; the console holding the definition/run split. Read before touching the verifier, the mapping kind, or the sign-in gate.
 - [plan-scaling.md](agent_docs/plan-scaling.md): BUILT. The three ceilings and the chat load test. Read before tuning a worker's concurrency or proposing a fan-out change.
 - [plan-read-write-split.md](agent_docs/plan-read-write-split.md): analysis only. Read before proposing a plane split or a second server binary.
-- [plan-extension-http.md](agent_docs/plan-extension-http.md): BUILT. Extension conventions served over HTTP (`radia serve-ext`, `--ext`). Read before adding an extension endpoint or a `/v0` addition whose subject is a convention.
+- [plan-extension-http.md](agent_docs/plan-extension-http.md): FIRST SLICE BUILT. Extension conventions served over HTTP (`radia serve-ext`, `--ext`). Read before adding an extension endpoint or a `/v0` addition whose subject is a convention.
 - [plan-bounded-reads.md](agent_docs/plan-bounded-reads.md): BUILT. The census of the "page read as a population" bug and the three read strategies. Read before adding a read helper or picking a request field by name.
 - [plan-registry-cost.md](agent_docs/plan-registry-cost.md): items 1-3 BUILT, item 4 decided against. What a registry read costs, measured. Read before adding a registry read or touching `access`.
 - [plan-gc.md](agent_docs/plan-gc.md): all four phases BUILT (retention, compaction, event-log retention, blob GC). Read before touching deletion, `retention_until`, or the event chain.
 - [plan-schema-versioning.md](agent_docs/plan-schema-versioning.md): phases 1-3 BUILT. A kind declares a routing contract, not a schema. Read before adding a `KindDef` field or changing what a redeclaration does.
 - [plan-audit-remediation.md](agent_docs/plan-audit-remediation.md): the defect ledger from every audit and external review, package AC open (cluster benchmark). Read before touching auth scope enforcement, credential resolution, lease settle, grant supersede, pushdown, or declassify.
 - [plan-inspection.md](agent_docs/plan-inspection.md): the inspection backlog and the console's tabs. [plan-presence.md](agent_docs/plan-presence.md): BUILT, liveness as a convention; read before adding a heartbeat or a TTL. [plan-reactor-loop.md](agent_docs/plan-reactor-loop.md): BUILT; read before adding a watch loop.
-- [plan-startup-ergonomics.md](agent_docs/plan-startup-ergonomics.md): items 1-9 BUILT. Read before touching `dev()`, the credential file, `doctor`, or CLI output.
+- [plan-startup-ergonomics.md](agent_docs/plan-startup-ergonomics.md): items 1-7 and 9 BUILT, item 8's reporting open. Read before touching `dev()`, the credential file, `doctor`, or CLI output.
 - [plan-self-update.md](agent_docs/plan-self-update.md): BUILT, signing designed and deferred. Read before adding a release asset or touching the installer.
 - [plan-browser-space.md](agent_docs/plan-browser-space.md) and [plan-webworker-sandbox.md](agent_docs/plan-webworker-sandbox.md): a space in a web page and its Web Worker jail, partly and fully BUILT. Read before proposing a browser port or assuming a Worker is isolated.
 - [plan-mud.md](agent_docs/plan-mud.md): phase 1 BUILT. Read before a game-shaped example or assuming a per-move scope can be a grant.
@@ -179,14 +180,14 @@ out-of-band. Four applications already made:
   matches record *bodies* (for routing), so aggregation (stats), DAG-traversal (lineage/graph),
   and get-by-id are legitimately first-class, not endpoints pretending to be queries.
 - **Capabilities are records the space routes and the agent discovers.** Tool-workers
-  publish `capability` records ({tool, schema}); an agent *watches/queries* them to build its
+  publish `capability` records ({tool, provider, def}); an agent *watches/queries* them to build its
   tool list and dispatches by content (`tool_call{tool}` → whichever worker registered it), with no
   preconfigured routing table (§7). Add a worker → the agent gains the tool, no code change.
 - **Withdrawal is a successor record, not a delete, and the projection is shared.** Kinds, grants,
   capabilities, models and saved procedures are all registries: mutable-looking views over an
   append-only stream. So removing one is a successor carrying `retired: true`, honoured once in
-  `src/core/registry.ts` (`activeByKey` for latest-wins, `activeSet` for additive entries like
-  grants) rather than re-implemented per consumer, which it was, six times, before it was shared.
+  `sdk/ts/registry.ts`, re-exported from `src/core/registry.ts` (`activeByKey` for latest-wins,
+  `activeSet` for additive entries like grants) rather than re-implemented per consumer, which it was, six times, before it was shared.
   Revoking a grant is exactly this, and the audit trail survives it. See
   [agent_docs/gotchas.md](agent_docs/gotchas.md).
 - **Grants are records the runtime reads, not a config table.** A kind-scoped grant is a
@@ -206,7 +207,7 @@ a stopped run's token kept resolving after a restart. So:
   codebase is one question answered with another's mechanism** (27 recorded incidents, 3 of them
   security; [agent_docs/plan-bounded-reads.md](agent_docs/plan-bounded-reads.md)):
   - **NARROW**: one current thing. Match down to a key and take the newest 1 (`readNewest`,
-    `Space.newestByHash` matching one `tokenHash`). O(1), no projection, no direction question, no
+    `newestByHash` in `src/core/identity.ts`, matching one `tokenHash`). O(1), no projection, no direction question, no
     ceiling needed. **The best answer wherever it applies**, and the one people reach for last.
   - **EXHAUST**: the whole set. For a KEYED kind that is `client.registry(kind)`, projected
     server-side from the key the kind declares, so the key is stated once rather than restated as a
@@ -305,8 +306,9 @@ live at the top of the relevant `agent_docs/` file, not here.
 - **Client-submitted vs. runtime-authoritative metadata is a hard API split.** Clients
   submit *claims* (`confidence`, `requested_priority`); the runtime decides what they
   are worth. `created_by`, `delegation_context`, `created_at`, `schema_version`,
-  `taint`, `effective_priority`, and all lease fields are server-assigned and never
-  client-editable. See [agent_docs/design-data-model.md](agent_docs/design-data-model.md).
+  `effective_priority`, and all lease fields are server-assigned and never client-editable.
+  `taint` is the one hybrid: a client RAISES labels on its own output, the runtime computes the
+  union with the parents', and only declassify subtracts. See [agent_docs/design-data-model.md](agent_docs/design-data-model.md).
 - **Provenance is not authority.** `parent_ids` is data/causality lineage only;
   `delegation_context` is the single authorization chain, server-derived from the
   claimed lease. Deriving data from a privileged record grants nothing. Never intersect
@@ -320,7 +322,7 @@ live at the top of the relevant `agent_docs/` file, not here.
 - **Patterns are data, not code.** No `$regex`, `$where`, `$expr`, ever. The query
   language is analyzable and storable.
 - **All time comparisons use the database clock.** Never a client or app-server clock.
-- **`available_at` is the one envelope column a writer may seed.** `PutRequest.availableAt`
+- **`available_at` is the one envelope column a writer may seed that changes CLAIM behaviour.** `PutRequest.availableAt`
   (and the same field on an `ack` result) defers when a record becomes CLAIMABLE. Nothing fires at
   that instant: it stops being a take candidate until the DB clock passes it, which is the
   machinery `nack({backoffSeconds})` always used, so a worker sees it on its next poll and an idle

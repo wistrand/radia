@@ -1,6 +1,6 @@
 # Plan: an agent lab, so real harnesses can be run and mined without a human in the loop
 
-**Status: PHASES 0, 1 AND 2 BUILT (0 and 1 on 2026-08-28, 2 on 2026-08-29).** Phases 3 and 4 planned. Written after four hand-run
+**Status: PHASES 0-3 BUILT (0 and 1 on 2026-08-28, 2 and 3 on 2026-08-29).** Phase 4 planned. Written after four hand-run
 sessions with Claude Code and Codex on one team space, which produced three code changes in two
 days: the `$in`-on-array claim that answered nothing, settled tasks reported as available, and an
 answer written as a separate put instead of riding the ack. Each was found by reading a pasted

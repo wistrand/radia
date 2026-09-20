@@ -7,7 +7,8 @@
 > [plan-delegation.md](plan-delegation.md)); a real M2
 > slice is built too (GC + compaction, event-log retention, ops-plane tiers, revocation,
 > pushdown + the scan budget); the rest of M2/M3 is unbuilt. Workspaces and the git projection
-> are complete beside the list, bar push. Origin: outline §11.
+> are complete beside the list, push included (fast-forward only, plan-workspaces.md §12.4).
+> Origin: outline §11.
 >
 > **Read `[~]` before assuming an item is work waiting to be done.** A box here is one of three
 > things, and an audit on 2026-08-29 found the third outnumbering the first: OPEN (nobody decided),

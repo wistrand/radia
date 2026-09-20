@@ -275,8 +275,9 @@ The brand does NOT mean "complete" (`readExhaustively` brands its accumulation w
 what separates it from `query(p, 500)`. `unsafeAsPopulation(records, why: string)` is the named
 escape, `why` mandatory, and the ledger in `test/registrycost.test.ts` asserts the EXACT set of
 sites, so a new one is a deliberate edit and a rising count is the signal the brand is being routed
-around. Six escapes today: the two reads that earn it, a concatenation of two `queryAll` halves in
-`runs --for`, and three tests over sets they wrote themselves.
+around. Eight escapes today: three reads that earn it (`readExhaustively`, `queryAll`,
+`readAllManifests`), the two-`queryAll` concatenation in `runs --for`, and four tests over sets
+they wrote themselves.
 
 The idiom matters: `{ __exhaustive: unique symbol }` as a property TYPE degrades the intersection to
 `{}` and takes `.map`/`.length` with it. `declare const exhaustive: unique symbol` plus a computed

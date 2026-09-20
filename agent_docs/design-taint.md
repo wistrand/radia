@@ -6,7 +6,8 @@ server-computed") and [design-data-model.md](design-data-model.md). Read before 
 relying on `scope: {taint: …}`.
 
 > **Status: BUILT.** `TAINT_LABELS` in `src/core/kinds.ts`, union propagation in
-> `Space.computeTaint`, the allowlist barrier in `src/core/take.ts` and `Space.taintBarrier`,
+> `Space.computeTaint`, the allowlist barrier in `src/core/take.ts` and `barrierFrom`
+> (`src/core/authorization.ts`),
 > per-label `Space.declassify`, a nullable `taint_labels` column in both adapters with a guarded
 > migration. Conformance in `test/conformance/suites/taint.ts`; the chat's sites are relabelled.
 >
@@ -168,7 +169,7 @@ it is not on that list. A blocklist would silently permit it, and the grant woul
 correct while admitting a class of data nobody considered when it was written.
 
 **True of SCOPED grants only, which the union rule below makes precise.** A grant stating no
-allowlist turns the barrier off entirely (`Space.barrierFrom` returns undefined unless every
+allowlist turns the barrier off entirely (`barrierFrom`, `src/core/authorization.ts`, returns undefined unless every
 applicable grant carries one). That is fine for what labels are for, since a policy that cares
 about `file` writes the scope that says so, and it is why a label cannot contain a class of data:
 there the default must hold for grants nobody revisited.

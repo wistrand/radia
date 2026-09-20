@@ -363,10 +363,12 @@ where to split first, because it is the one where per-file inheritance is sound.
 
 ## Editing in place
 
-Planned, not built: [plan-workspaces.md](plan-workspaces.md) §10. The shape is settled — an exact
-`oldString` → `newString` match, never a regex (a search predicate that is code), a diff (a grammar
-between the model and the file) or a line range (breaks under the concurrent writers this design
-assumes); a non-unique match is an error rather than a first-match; a BATCH of edits is one version,
+BUILT: `editWorkspace` (`extensions/ts/workspace.ts`), [plan-workspaces.md](plan-workspaces.md)
+§10. Every edit carries a precondition, in one of two forms. The content form is an exact
+`oldString` → `newString` match, never a regex (a search predicate that is code) or a diff (a
+grammar between the model and the file); the positional form is a `startLine`/`endLine` range,
+which is safe only because `expectDigest` plus boundary assertions are mandatory on it. A
+non-unique match is an error rather than a first-match; a BATCH of edits is one version,
 because a version-per-edit turns `versions` from "how many attempts" into "how many keystrokes"; and
 an optional `expectDigest` makes the lost update an error instead of a merge.
 

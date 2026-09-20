@@ -154,9 +154,10 @@ that lineage (nothing declares them), and open a record for its body + lineage. 
 the URL, so any of it is a link you can send. The **Auth** tab
 shows the bootstrap chain and, as an operator, mints a session for a person; paste any session
 token into the principal pill to see the space as they see it. See
-[examples/README.md](examples/README.md) for the five examples (a keyless coordination pipeline, a
-load generator, a content-keyed analysis application, a shared world whose NPCs are principals, and
-the full LLM agent), each with its own directory and README.
+[examples/README.md](examples/README.md) for the examples: a keyless coordination pipeline (in TS
+and Python), a load generator, a content-keyed analysis application, a shared world whose NPCs are
+principals, a scripted marketplace that calls no model, the harness teams, and the full LLM agent.
+Each has its own directory and README.
 
 ### The CLI
 
@@ -276,8 +277,8 @@ radia team up examples/teams/twenty-questions --seed --fresh  # a new game: reti
 Each member claims its patterns and launches its harness only when a record is claimed for it, so an
 idle team costs nothing; the harness settles the claim through the same MCP tools, warm sessions keep
 one harness session per member across moves, and the run ends itself when a record matches `done`.
-Two games ship in [`examples/teams/`](examples/teams/): twenty questions and a story relay, both run
-end to end with Claude Code and Codex. See
+Four ship in [`examples/teams/`](examples/teams/): twenty questions, a story relay, go-fish and a
+song creator, all run end to end with Claude Code and Codex. See
 [agent_docs/architecture-teams.md](agent_docs/architecture-teams.md), "Members as workers".
 
 **Teams are isolated by default.** `--team alpha` scopes every grant with `pattern: {team: "alpha"}`,

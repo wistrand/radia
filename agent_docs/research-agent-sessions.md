@@ -5,7 +5,7 @@ the fixes are linked to where they landed.** The subject is CLAUDE CODE and CODE
 space through `radia mcp`, first by hand and then through the lab
 ([plan-agent-lab.md](plan-agent-lab.md), which is the harness rather than the findings).
 
-Forty-four sessions so far, 2026-08-26 to 2026-08-29: four hand-run and pasted into a review,
+Forty-four sessions through 2026-08-29; entries after that date carry their own run counts. Of those forty-four: four hand-run and pasted into a review,
 forty through `deno task lab`. Each cost roughly $0.30 to $1.00 and 45 to 120 seconds; a three-model scenario is about $0.90.
 
 This doc does not restate. The traps live in [gotchas.md](gotchas.md), the team convention in

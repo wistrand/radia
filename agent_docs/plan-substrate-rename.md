@@ -1,7 +1,7 @@
 # Plan: retire "substrate" for the runtime/space split
 
 **Status: DONE 2026-08-18, executed the same day.** The word survives only in `notes/`
-(provenance) and in this doc. Analysis 2026-08-18. The word "substrate" left the
+(provenance), one generic use in research-positioning.md, and in this doc. Analysis 2026-08-18. The word "substrate" left the
 project's vocabulary: it is a low-frequency word that does not travel outside domain expertise,
 in English or in translation. There is no single replacement. The job splits between two words
 the project already owns, both common everywhere: **the RUNTIME is the software** (what you

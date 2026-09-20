@@ -41,7 +41,7 @@ Four surfaces cross trust boundaries and are normative:
 - **The broker's BEHAVIOUR** (`ts/broker.ts`) crosses the biggest trust boundary here:
   model-written code against an agent's authority. The contract is what a brokered run does, not
   how its bytes are laid out: the escape probe, and the host-side rules (labels, the compartment
-  stamp, the forced parent, the idempotency key) that every one of the 22 cases actually asserts.
+  stamp, the forced parent, the idempotency key) that every case actually asserts.
   The FRAME FORMAT was listed as normative for three weeks and is not: the frames travel between a
   shim and a host that ship in one file, no record contains one, and a second implementation could
   use any encoding and produce identical records. Its details still matter to whoever writes a
@@ -89,9 +89,10 @@ has to meet, in any language.
 | `ts/progress.ts` | what a worker is doing, as records keyed to the call the caller awaits; ABSENCE is a signal too (no worker serves this versus still thinking). Retention is declared on the kind |
 | `conformance/` | the contract an implementation must meet (`deno task test:extensions`) |
 
-Three isolation backends ship: `deno-permissions` (JS, safe by ABSENCE of flags), `bubblewrap` (any
-interpreter, safe by PRESENCE of them) and `sandbox-exec` (macOS Python, where a Seatbelt profile is
-the whole boundary because Python brings no permission model). Safe-by-presence is why every
+Three PROCESS isolation backends ship: `deno-permissions` (JS, safe by ABSENCE of flags),
+`bubblewrap` (any interpreter, safe by PRESENCE of them) and `sandbox-exec` (macOS Python, where a
+Seatbelt profile is the whole boundary because Python brings no permission model). `web-worker`,
+in `ts/sandbox-web.ts`, is the fourth and runs in a browser tab. Safe-by-presence is why every
 declaration is PROBED before it is served: verified directly, a bwrap jail missing `--unshare-all`
 reaches the network while its record still claims it cannot.
 

@@ -123,7 +123,8 @@ request path, and sync keeps async colouring out of the call sites); `readTextFi
 
 ### Invariants (subsystem-local)
 
-- Nothing in `src/` outside `platform.ts` references `Deno.*`, except the two rows above.
+- Nothing in `src/` outside `platform.ts` references `Deno.*`, except `storage/postgres.ts` (the
+  second row above is outside `src/`).
 - Nothing outside `src/main.ts` calls `exit`. Deeper code returns a status or throws
   `UsageError`, so a caller always gets the chance to clean up and every function stays testable.
 
@@ -161,7 +162,7 @@ booted beside their running one (2026-09-04), and the other half of that fix is 
 spawns a `dev` for a test writes the person's file: every such spawner sets `RADIA_CREDENTIALS` to a
 temp path. `test/credentials.test.ts` runs twenty processes at one file.
 
-**Four identities share the file, under separate keys.** The operator credential sits at the base
+**Six credential kinds share the file, under separate keys.** The operator credential sits at the base
 URL; a person's `radia login` sits at `<base>#login` (`storedLogin`/`saveLogin`); the OBSERVER sits
 at `<base>#observer` (`storedObserver`/`saveObserver`): an `agent:local-observer` definition token,
 mint-only and revocable, whose `ops_grant` holds `observe`, plus two metadata `query` grants on
@@ -183,7 +184,7 @@ the observer, which cannot coordinate. `resolveDefinitionToken` and the adapter 
 token is only the fallback for a file written before observers existed), so the model behind a
 harness inspects the space and cannot write grants, coordinate ungranted, or destroy anything.
 The CLI's read-only verbs (`OBSERVER_VERBS` in `cli.ts`: stats, events, doctor, erasures, flows,
-integrity, permissions, get, lineage, children) ride the observer too; coordination and
+integrity, permissions, get, lineage, children, otlp, activity) ride the observer too; coordination and
 destructive verbs keep the operator credential.
 
 Keyed by base URL means keyed by HOST: a space on `127.0.0.1` has no credential under `localhost`,
@@ -191,7 +192,7 @@ even though both reach it. Every default in this repo says `127.0.0.1` for that 
 
 **It is the USER's file, not a space's, so `radia credentials [--prune]` owns it**: the one CLI
 verb about this machine rather than a space, and it never prints a token. `--prune` drops only what
-a restart can rebuild (operator, `#observer`), never a `#login` durable half or a content key, and
+a restart can rebuild (operator, `#observer`, `#session:`), never a `#login` durable half or a content key, and
 PROBES each dormant base first, since an entry is rewritten only when a space starts and age alone
 cannot tell a dead space from a long-running one (`credentialKind`; the trap is in
 [gotchas.md](gotchas.md#surfaces-http-console-cli-and-the-sdks)).
@@ -284,8 +285,8 @@ extension, a surface takes no runtime value, an extension never imports `src/`, 
 
 ## The CLI: `src/surfaces/cli.ts`
 
-Five verb groups (inspect, coordinate, remediate, the identity verbs `login` / `permissions` /
-`team`, and workspaces), plus `--json` on every one and `--url` to point elsewhere. `radia help` prints the
+Five verb groups (inspect, coordinate, remediate, workspaces, workspace agents; the identity
+verbs `login` / `permissions` / `team` sit inside Inspect), plus `--json` on every one and `--url` to point elsewhere. `radia help` prints the
 authoritative list with flags; it is not restated here, because a hand-copied verb list is the
 drift this doc exists to avoid.
 
@@ -308,7 +309,7 @@ the wire's own near-miss refusal never sees it.
 DURABLE principal per name, and prints the harness config for that agent. Two of its behaviours are
 refusals rather than conveniences. It REFUSES a second definition for an existing agent and names
 `--rotate`, because a second one is not a rotation and looks like one: both tokens keep minting
-while `radia revoke` reaches only the newest (`Space.definitionRecord` takes the newest record's
+while `radia revoke` reaches only the newest (`definitionRecord`, `src/core/identity.ts`, takes the newest record's
 status). And `radia team` LISTS THE TEAM rather than every definition on the space: a real space
 carries an app's workers, its logins and its probes, and listing all of them buried the four rows
 the verb is about under twenty that it is not (`--all` is the escape). It reports the three ways
@@ -320,7 +321,7 @@ team, crossers, and members holding `observe`.
 per member, its handler launching the harness per claim. It holds only each member's durable half,
 which `team add` now stores on the machine it ran on (`#member:<agent>` in the credentials file,
 never pruned), and mints nothing: setup stays the privileged step. It writes each member's MCP
-config under `.radia/team/` naming the adapter with `--session <member>`, and claims under that
+config under `<credentials dir>/team/<team>/` naming the adapter with `--session <member>`, and claims under that
 session's run itself, so the claim id the harness is handed is one it may settle. A team directory
 (`examples/teams/<name>/`) bootstraps with `--init --seed`, and the file's `done` pattern ends the
 run with the matching record printed as the answer.
@@ -388,7 +389,7 @@ the entry point wires the surface's handler in as a VALUE, the runtime forwards 
 learns nothing, and the mounted facade still relays `/v0` over loopback rather than touching
 `Space`. Default port when standalone is 7791, since 7788+7789 are a space's two ports and
 git-serve holds 7790. The route groups are workspace, capability, presence, turn (seed-and-wait),
-promotion, host bindings, compartment audit, and `permissions/v1/scopes`, which surfaces the
+promotion, marketplace, host bindings, compartment audit, and `permissions/v1/scopes`, which surfaces the
 caller's own pattern-scope fields so a stateless app can pass `scope` explicitly instead of
 learning the label from a refusal the way the MCP adapter does. `test/extserve.test.ts` is the
 guard: every case runs an operation through the binding OR the direct TS API and verifies it
@@ -403,8 +404,9 @@ convention" buys: promotion is a grant rotation and a binding is a record, so al
 long-running one, and it is a client that happens to run other people's code: it holds each
 hosted agent's DEFINITION token (mint-only, so it cannot read, write or claim), mints each run,
 and claims under that run, which is why one host serving ten agents needs none of their authority.
-Two choices. It is BROKERED by default, because that is the invoker leaving the jail
-no way to reach the API, and a default that is merely convenient would be the wrong one here. And
+Two choices. It runs each binding in the PLAIN jail unless that binding asked to be brokered
+(`radia bind --brokered`); `--broker` forces the channel on for a whole fleet, and brokering is
+what leaves the jail no way to reach the API. And
 `--agents -` reads the token map from stdin, since a credential passed as an argument is visible
 in `ps` to every user on the box.
 Building them also found a defect the layering guard catches by construction: three new valueless
@@ -448,9 +450,9 @@ carries the same finding, and names the chain even when it is healthy: an all-cl
 check it ran claims more than it checked.
 
 `runCli` returns an exit code and never terminates the process itself. One trap it works around:
-`GET /v0/health` is public, so a *rejected* token still returns 200 with `principal=anonymous`.
-Without the explicit warning in the `health` output that reads as "no credential" when it actually
-means "bad credential".
+`GET /v0/health` is public only for a request with NO header, which reads as `anonymous`; a token
+that fails to resolve is a 401 even here. The explicit warning in the `health` output is what keeps
+the anonymous case from reading as "bad credential".
 
 ## The MCP adapter: `src/surfaces/mcp/`
 

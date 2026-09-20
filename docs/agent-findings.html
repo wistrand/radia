@@ -213,7 +213,7 @@ exec_request@operator &#8594; note@agent:runner &#8594; note@agent:claude-verify
     <div class="callout">
       <strong>Recorded runs replay.</strong> The calls the models made can be re-issued through the
       MCP adapter against a space rebuilt from the run's own scenario, with no model and no API key.
-      Six recorded runs ship in the repository and replay in the test suite, so a call that was
+      Recorded runs ship in the repository and replay in the test suite, so a call that was
       answered in the recording and refuses after a code change fails the build. A difference caused
       by a race between agents is reported but does not fail.
     </div>

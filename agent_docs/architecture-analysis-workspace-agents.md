@@ -84,8 +84,8 @@ the binding are all writes only an operator can make.
 3. **Drive the host from work. BUILT** in the example (`examples/analysis/host.ts`): drain on
    start, then a watch on `stage_request` under the reader identity; a drain stops when nothing
    acks or fails, so `digest_mismatch` waits for an operator instead of spinning. The two
-   regressions stand as predicted: no `interest` published, and "blocked" still means "no
-   advertisement" until step 5.
+   regressions stand as predicted: no `interest` published, and "blocked" meant "no
+   advertisement" until step 5, after which it means "no binding".
 
 ## Rejected
 
@@ -117,7 +117,8 @@ the binding are all writes only an operator can make.
    identity. The smoke's "left unclaimed" check now passes through AUTHORIZATION: no pin matches
    the bumped digest.
 5. Planner reads bindings; delete `stage_code` and its grants from `roles.ts`. BUILT 2026-08-17:
-   `liveCode` is now `readBindings` keyed by `stageAgent(stage)`, the kind, the bridge write and
+   `liveCode` is now `readBindings` (keyed by `stageAgent(stage)` at the time; step 7 inverted it
+   to a `/^agent:analysis-(.+)$/` match), the kind, the bridge write and
    every `stage_code` grant are gone (persons and the planner read `binding` instead), and the
    smoke's code-change test rebinds rather than re-advertises — which also demonstrates the two
    locks: a rebind without a promotion leaves the new digest's work unclaimable.

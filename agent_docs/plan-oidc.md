@@ -4,7 +4,7 @@ Status: BUILT 2026-08-11 (server + console + CLI). Sources:
 `src/core/oidc.ts` (the verifier), `mintOidcRun` in `src/core/identity.ts`,
 `handleOidcSession` in `src/server/handlers/agents.ts`, the sign-in flow in `src/ui/index.html`
 (`oidcStart`/`oidcFinish` and the return leg in `start()`), `httpGetJson` in `src/platform.ts`
-(the runtime's one outbound-HTTP function). Guards: `test/oidc.test.ts` (10 suites, the
+(the runtime's one outbound-HTTP function). Guards: `test/oidc.test.ts` (the
 in-repo issuer in `test/oidc-issuer.ts`), the OIDC harness tests in
 `test/console.test.ts`, the `oidc: null` posture pin in `test/defaults.test.ts`.
 

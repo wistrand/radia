@@ -63,8 +63,9 @@ dropped.** Both objections were about the state of the space at the time: automa
 compaction (item 3) made registries flat, so the hidden cost is now a FLAT hidden cost, which is the
 bar this paragraph itself sets; and nothing has to remember to sweep any more, so there is no
 pressure left to remove. What it still needs first is the invariant the reopening turns on, "a
-registry is either compactable or capped, never neither", because `ops_grant` is currently neither
-and is read per principal on EVERY ops-plane request. See
+registry is either compactable or capped, never neither", because `ops_grant` was neither when
+this was written and is read per principal on EVERY ops-plane request. It was CAPPED 2026-08-25
+(`maxOpsGrantRecordsPerPrincipal`, 64), so the invariant now holds. See
 [plan-bounded-reads.md](plan-bounded-reads.md), findings 3 and 4.
 
 ## The plan, in order

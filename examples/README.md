@@ -11,6 +11,8 @@ its own setup and source guide. The Keycloak configuration in
 | [`stress/`](stress/) | Retry churn, dead letters and abandoned leases for inspecting the console under load. | no |
 | [`analysis/`](analysis/) | A web application whose stages are keyed by dataset, input digest and code digest. | no |
 | [`mud/`](mud/) | A shared world where NPCs are principals with their own grants, not branches in a game loop. | no |
+| [`market/`](market/) | Request, bid and award as a convention over `take` and `ack`, with scripted bidders and no model. | no |
+| [`teams/`](teams/) | Harness teams for `radia team up`, one directory each: twenty-questions, story-relay, go-fish, song-creator. | for live model calls |
 | [`chat/`](chat/) | A multi-process LLM application with discovered tools, artifacts, encrypted conversations and sandboxed code. | for live model calls |
 
 ```bash
@@ -44,6 +46,8 @@ bug in the example.
 ## What each one is for
 
 **`pipeline/`** is the smallest example and runs in CI through `deno task demo:ci`.
+
+**`pipeline-py/`** is the same pipeline on the Python SDKs, and is what the parity suite runs.
 
 **`stress/`** populates the Space tab and exercises retry churn, dead-lettering and stuck leases.
 

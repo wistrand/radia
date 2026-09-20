@@ -2,8 +2,9 @@
 //
 // The put handler is where client-supplied authoritative fields are dropped: it builds a
 // PutRequest by PICKING ONLY client-submittable fields from the wire JSON. Anything else
-// the client sends (createdBy, runtimeMeta, schemaVersion, taint, ...) is ignored, so the
-// server-side metadata assignment in core/record.ts is authoritative.
+// the client sends (createdBy, runtimeMeta, schemaVersion, ...) is ignored, so the
+// server-side metadata assignment in core/record.ts is authoritative. `taint` is the exception
+// and IS picked: raising a label is monotone, so it needs no trust (see `bodyTaint`).
 
 import type { Space } from "../../core/space.ts";
 import { clientTaint } from "../../core/kinds.ts";
@@ -11,7 +12,7 @@ import { clientTaint } from "../../core/kinds.ts";
 /**
  * The snake_case spelling of a field `pickPut` DOES accept.
  *
- * Unknown fields stay IGNORED on this path, deliberately: that is how `createdBy`, `taint` and the
+ * Unknown fields stay IGNORED on this path, deliberately: that is how `createdBy` and the
  * rest of the server-assigned half get dropped (see the file header), and it is what lets a record
  * read back out be written again. So this list is only the near-misses, where ignoring means the
  * caller's instruction vanished rather than a claim being refused. `parent_ids` and `available_at`

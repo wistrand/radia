@@ -449,7 +449,7 @@ $ pip install https://github.com/wistrand/radia/releases/download/v2026.9.5/radi
       </div>
       <div class="card">
         <h3>Move a credential</h3>
-        <p>Start with one external operation and move its powerful credential from callers into a
+        <p>Start with one external operation and move the credential that acts on it from callers into a
         narrow worker.
         <a href="adoption.html">Read the adoption guide &#8594;</a></p>
       </div>
@@ -460,6 +460,7 @@ $ pip install https://github.com/wistrand/radia/releases/download/v2026.9.5/radi
 <span class="kw">import</span> { agentLoop } <span class="kw">from</span> <span class="str">"radia/loop"</span>;
 
 <span class="kw">await</span> <span class="fn">agentLoop</span>(<span class="kw">new</span> <span class="fn">RadiaClient</span>(url, { token }), {
+  name: <span class="str">"summarizer"</span>,
   patterns: [{ kind: <span class="str">"document"</span>, match: { type: <span class="str">"pdf"</span> } }],
   handle: summarize,
 });</code></pre>

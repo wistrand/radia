@@ -197,7 +197,8 @@ fails your own tests is telling you they were resting on the defect.
 Roughly in the order they blocked work, and all eight settled on 2026-09-05. Each keeps its number
 and its rejected alternatives, so a discarded shape does not get rediscovered as a new idea.
 
-**The code is now built** (`extensions/ts/marketplace.ts`, eight contract cases, and
+**The code is now built** (`extensions/ts/marketplace.ts`, the contract cases in
+`extensions/conformance/marketplace.test.ts`, and
 `examples/market/`), and building it changed one answer: see question 7, where the awarder's
 missing `bid: query` turned out to fail LOUDLY on the recommended read and silently only on the
 rejected one. Two things carry forward. `claim_until` would
