@@ -137,7 +137,9 @@
         "--team",
         "poker",
         "--hands",
-        "3"
+        "3",
+        "--action-timeout",
+        "150"
       ],
       "grants": [
         "poker_hole:put,query,read_one",
@@ -148,16 +150,51 @@
       ]
     },
     {
+      "name": "supervisor",
+      "service": true,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/examples/teams/poker/floor.ts",
+        "--url",
+        "{{url}}",
+        "--token",
+        "{{token}}",
+        "--team",
+        "poker",
+        "--policy",
+        "disclosure"
+      ],
+      "grants": [
+        "poker_hole:query,read_one",
+        "poker_action:query,read_one",
+        "poker_hand_result:query,read_one"
+      ],
+      "unscopedGrants": [
+        "grant:query"
+      ]
+    },
+    {
       "name": "ada",
-      "harness": "claude",
-      "model": "sonnet",
-      "patterns": [
-        {
-          "kind": "poker_action_request",
-          "match": {
-            "player": "agent:ada"
-          }
-        }
+      "service": true,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/examples/poker/llm-player.ts",
+        "--url",
+        "{{url}}",
+        "--token",
+        "{{token}}",
+        "--player",
+        "ada",
+        "--model",
+        "x-ai/grok-4.6",
+        "--trace",
+        "trace.jsonl",
+        "--system-file",
+        "{{repo}}/examples/teams/poker/prompts/llm-partnership.md"
       ],
       "grants": [
         {
@@ -193,24 +230,28 @@
         "poker_action:query,read_one",
         "poker_board:query,read_one",
         "poker_hand_result:query,read_one"
-      ],
-      "promptFile": "prompts/player.md",
-      "resume": true,
-      "resumePromptFile": "prompts/player-resume.md",
-      "timeoutSeconds": 180,
-      "frame": false
+      ]
     },
     {
       "name": "ben",
-      "harness": "codex",
-      "model": "gpt-5.6-luna",
-      "patterns": [
-        {
-          "kind": "poker_action_request",
-          "match": {
-            "player": "agent:ben"
-          }
-        }
+      "service": true,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/examples/poker/llm-player.ts",
+        "--url",
+        "{{url}}",
+        "--token",
+        "{{token}}",
+        "--player",
+        "ben",
+        "--model",
+        "x-ai/grok-4.6",
+        "--trace",
+        "trace.jsonl",
+        "--system-file",
+        "{{repo}}/examples/teams/poker/prompts/llm-partnership.md"
       ],
       "grants": [
         {
@@ -246,24 +287,26 @@
         "poker_action:query,read_one",
         "poker_board:query,read_one",
         "poker_hand_result:query,read_one"
-      ],
-      "promptFile": "prompts/player.md",
-      "resume": true,
-      "resumePromptFile": "prompts/player-resume.md",
-      "timeoutSeconds": 180,
-      "frame": false
+      ]
     },
     {
       "name": "cy",
-      "harness": "claude",
-      "model": "sonnet",
-      "patterns": [
-        {
-          "kind": "poker_action_request",
-          "match": {
-            "player": "agent:cy"
-          }
-        }
+      "service": true,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/examples/poker/llm-player.ts",
+        "--url",
+        "{{url}}",
+        "--token",
+        "{{token}}",
+        "--player",
+        "cy",
+        "--model",
+        "x-ai/grok-4.6",
+        "--trace",
+        "trace.jsonl"
       ],
       "grants": [
         {
@@ -299,24 +342,26 @@
         "poker_action:query,read_one",
         "poker_board:query,read_one",
         "poker_hand_result:query,read_one"
-      ],
-      "promptFile": "prompts/player.md",
-      "resume": true,
-      "resumePromptFile": "prompts/player-resume.md",
-      "timeoutSeconds": 180,
-      "frame": false
+      ]
     },
     {
       "name": "dee",
-      "harness": "codex",
-      "model": "gpt-5.6-luna",
-      "patterns": [
-        {
-          "kind": "poker_action_request",
-          "match": {
-            "player": "agent:dee"
-          }
-        }
+      "service": true,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/examples/poker/llm-player.ts",
+        "--url",
+        "{{url}}",
+        "--token",
+        "{{token}}",
+        "--player",
+        "dee",
+        "--model",
+        "x-ai/grok-4.6",
+        "--trace",
+        "trace.jsonl"
       ],
       "grants": [
         {
@@ -352,12 +397,7 @@
         "poker_action:query,read_one",
         "poker_board:query,read_one",
         "poker_hand_result:query,read_one"
-      ],
-      "promptFile": "prompts/player.md",
-      "resume": true,
-      "resumePromptFile": "prompts/player-resume.md",
-      "timeoutSeconds": 180,
-      "frame": false
+      ]
     }
   ],
   "done": {

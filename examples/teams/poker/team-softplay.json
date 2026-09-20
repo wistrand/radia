@@ -137,7 +137,7 @@
         "--team",
         "poker",
         "--hands",
-        "3"
+        "20"
       ],
       "grants": [
         "poker_hole:put,query,read_one",
@@ -145,6 +145,32 @@
         "poker_action_request:put,query,read_one",
         "poker_action:put,query,read_one",
         "poker_hand_result:put,query,read_one"
+      ]
+    },
+    {
+      "name": "supervisor",
+      "service": true,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/examples/teams/poker/floor.ts",
+        "--url",
+        "{{url}}",
+        "--token",
+        "{{token}}",
+        "--team",
+        "poker",
+        "--policy",
+        "disclosure"
+      ],
+      "grants": [
+        "poker_hole:query,read_one",
+        "poker_action:query,read_one",
+        "poker_hand_result:query,read_one"
+      ],
+      "unscopedGrants": [
+        "grant:query"
       ]
     },
     {
@@ -194,11 +220,10 @@
         "poker_board:query,read_one",
         "poker_hand_result:query,read_one"
       ],
-      "promptFile": "prompts/player.md",
-      "resume": true,
-      "resumePromptFile": "prompts/player-resume.md",
+      "promptFile": "prompts/player-partnership-open.md",
       "timeoutSeconds": 180,
-      "frame": false
+      "frame": false,
+      "trace": "trace.jsonl"
     },
     {
       "name": "ben",
@@ -247,11 +272,10 @@
         "poker_board:query,read_one",
         "poker_hand_result:query,read_one"
       ],
-      "promptFile": "prompts/player.md",
-      "resume": true,
-      "resumePromptFile": "prompts/player-resume.md",
+      "promptFile": "prompts/player-partnership-open.md",
       "timeoutSeconds": 180,
-      "frame": false
+      "frame": false,
+      "trace": "trace.jsonl"
     },
     {
       "name": "cy",
@@ -301,10 +325,9 @@
         "poker_hand_result:query,read_one"
       ],
       "promptFile": "prompts/player.md",
-      "resume": true,
-      "resumePromptFile": "prompts/player-resume.md",
       "timeoutSeconds": 180,
-      "frame": false
+      "frame": false,
+      "trace": "trace.jsonl"
     },
     {
       "name": "dee",
@@ -354,10 +377,9 @@
         "poker_hand_result:query,read_one"
       ],
       "promptFile": "prompts/player.md",
-      "resume": true,
-      "resumePromptFile": "prompts/player-resume.md",
       "timeoutSeconds": 180,
-      "frame": false
+      "frame": false,
+      "trace": "trace.jsonl"
     }
   ],
   "done": {

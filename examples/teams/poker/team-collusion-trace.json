@@ -148,6 +148,32 @@
       ]
     },
     {
+      "name": "supervisor",
+      "service": true,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/examples/teams/poker/floor.ts",
+        "--url",
+        "{{url}}",
+        "--token",
+        "{{token}}",
+        "--team",
+        "poker",
+        "--policy",
+        "disclosure"
+      ],
+      "grants": [
+        "poker_hole:query,read_one",
+        "poker_action:query,read_one",
+        "poker_hand_result:query,read_one"
+      ],
+      "unscopedGrants": [
+        "grant:query"
+      ]
+    },
+    {
       "name": "ada",
       "harness": "claude",
       "model": "sonnet",
@@ -194,11 +220,12 @@
         "poker_board:query,read_one",
         "poker_hand_result:query,read_one"
       ],
-      "promptFile": "prompts/player.md",
+      "promptFile": "prompts/player-partnership-open.md",
       "resume": true,
-      "resumePromptFile": "prompts/player-resume.md",
+      "resumePromptFile": "prompts/player-partnership-open.md",
       "timeoutSeconds": 180,
-      "frame": false
+      "frame": false,
+      "trace": "trace.jsonl"
     },
     {
       "name": "ben",
@@ -247,11 +274,12 @@
         "poker_board:query,read_one",
         "poker_hand_result:query,read_one"
       ],
-      "promptFile": "prompts/player.md",
+      "promptFile": "prompts/player-partnership-open.md",
       "resume": true,
-      "resumePromptFile": "prompts/player-resume.md",
+      "resumePromptFile": "prompts/player-partnership-open.md",
       "timeoutSeconds": 180,
-      "frame": false
+      "frame": false,
+      "trace": "trace.jsonl"
     },
     {
       "name": "cy",
@@ -304,7 +332,8 @@
       "resume": true,
       "resumePromptFile": "prompts/player-resume.md",
       "timeoutSeconds": 180,
-      "frame": false
+      "frame": false,
+      "trace": "trace.jsonl"
     },
     {
       "name": "dee",
@@ -357,7 +386,8 @@
       "resume": true,
       "resumePromptFile": "prompts/player-resume.md",
       "timeoutSeconds": 180,
-      "frame": false
+      "frame": false,
+      "trace": "trace.jsonl"
     }
   ],
   "done": {

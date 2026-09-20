@@ -184,9 +184,12 @@ export const KINDS = [
     ],
     claimable: false,
     usage:
-      "What a player did: fold, check, call, bet or raise. Public, so the betting history is " +
-      "auditable by everyone. A player's `action: put` grant is scoped to {player: self}, so one " +
-      "player cannot write another's action even though the kind is world-readable.",
+      "What a player did. body: {session, handId, street, type, amount}. `type` is fold, check, " +
+      "call, bet or raise. FIXED LIMIT, so `amount` is not free: 0 to fold or check, `toCall` to " +
+      "call, `toCall + betSize` to bet or raise, and no other value. Check only when `toCall` is 0; " +
+      "bet when `toCall` is 0, raise when it is not; neither while `canRaise` is false. Write no " +
+      "`player` and no `team`: both are filled in from your grant, which is why you cannot write " +
+      "another player's action. Public, so the betting history is auditable.",
   },
   {
     kind: RESULT,
@@ -269,6 +272,20 @@ export interface DealerOptions {
   /** How long to wait for a player to act before folding them. There is no timer in the space. */
   actionTimeoutMs?: number;
   log?: (line: string) => void;
+}
+
+/**
+ * Move the button one seat, which every caller dealing a SEQUENCE of hands must do between them.
+ *
+ * `playHand` posts the blinds on `seats[0]` and `seats[1]`, so a table that never rotates hands
+ * each seat one fixed decision problem for the whole session: the same seat completes from the
+ * small blind every hand while another checks its option for free and two more open under the
+ * gun. Three hands of that read as four player types and are four positions. It also breaks any
+ * between-seat comparison, which is how `examples/teams/poker/softplay.ts` came to measure a
+ * placebo pair that never sat in a blind against a partnership that always did.
+ */
+export function rotateButton(seats: Seat[]): void {
+  seats.push(seats.shift()!);
 }
 
 /**
@@ -405,6 +422,18 @@ export async function playHand(
         log(`  ${seat.name} ${owed > 0 ? `calls ${owed}` : "checks"}`);
         continue;
       }
+      // ANYTHING ELSE IS A FOLD. The branch below used to be the `else`, so a body whose `type`
+      // this dealer does not know fell into it and became a RAISE: a model that wrote
+      // `{action: "fold"}` instead of `{type: "fold"}` had its fold played as an aggressive bet.
+      // Observed with a live OpenRouter player. The record is valid (a kind constrains routing,
+      // not shape), so the dealer is the only thing that can catch it, and the safe reading of a
+      // move it cannot parse is the one that risks nothing.
+      if (action.type !== "bet" && action.type !== "raise") {
+        live.set(p, false);
+        log(`  ${seat.name} folds (unreadable action ${JSON.stringify(action.type)})`);
+        if (remaining() < 2) break;
+        continue;
+      }
       // bet or raise: match what is owed, then put in one more bet.
       post(p, owed + betSize);
       toMatch = committed.get(p)!;
@@ -436,12 +465,27 @@ export async function playHand(
       } else if (score === best) winners.push(s.principal);
     }
   }
+  // The odd chip goes to the first winner in seat order, as it does at a real table. Splitting
+  // with `Math.floor` alone destroys it, and the smoke's chip-conservation check is the only
+  // thing that notices: a chip short per split pot reads as nothing until the totals are added.
   const share = Math.floor(pot / winners.length);
-  for (const w of winners) seats.find((s) => s.principal === w)!.stack += share;
+  let odd = pot - share * winners.length;
+  for (const w of winners) seats.find((s) => s.principal === w)!.stack += share + (odd-- > 0 ? 1 : 0);
 
   await dealer.put({
     kind: RESULT,
-    body: stamp({ session, handId, pot, winners, shown, board: board.map(cardName) }),
+    // STANDINGS ON EVERY HAND, not only the last one. Stacks are otherwise unpublished, and a
+    // reader is left inferring them from whichever `action_request` last named a seat, which can
+    // be several hands old and does not include the pot just awarded.
+    body: stamp({
+      session,
+      handId,
+      pot,
+      winners,
+      shown,
+      board: board.map(cardName),
+      standings: seats.map((s) => ({ player: s.principal, stack: s.stack })),
+    }),
   }, `result:${session}:${handId}`);
   log(`  pot ${pot} to ${winners.map((w) => seats.find((s) => s.principal === w)!.name).join(", ")}`);
 
