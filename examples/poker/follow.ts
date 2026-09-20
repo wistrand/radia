@@ -1,7 +1,7 @@
 // Watch a poker table from the terminal, as a dealer's-eye view rather than a record feed.
 //
 //   deno run -A examples/poker/follow.ts                 # the newest session on the space
-//   deno run -A examples/poker/follow.ts --session tmu9x --no-color --no-hole
+//   deno run -A examples/poker/follow.ts --session tmu9x --no-color --no-hole --width 100
 //
 // A standalone script and deliberately not a CLI verb: `radia activity --follow` is the general
 // view and stays general, while this one knows what a street is, which seat is out, and that a
@@ -21,13 +21,17 @@
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { resolveToken } from "../../src/credentials.ts";
 import { ACTION, ACTION_REQUEST, BOARD, HOLE, RESULT } from "./poker.ts";
+import { NOTE } from "../../extensions/ts/team.ts";
 
 const arg = (name: string, fallback?: string) => {
   const at = Deno.args.indexOf(`--${name}`);
   return at >= 0 ? Deno.args[at + 1] : fallback;
 };
 const url = arg("url", "http://127.0.0.1:7788")!;
-const team = arg("team", "poker")!;
+// NOT DEFAULTED TO "poker". A team label is a choice the team file makes, and a run under any
+// other one was invisible here: the view queried a label nobody was playing under and drew an
+// empty table. Unset means "whichever team wrote the newest action".
+const wantedTeam = arg("team");
 const intervalMs = Number(arg("interval", "1000"));
 const wanted = arg("session");
 const showHole = !Deno.args.includes("--no-hole");
@@ -36,7 +40,23 @@ const colour = Deno.stdout.isTerminal() && !Deno.env.get("NO_COLOR") && !Deno.ar
 const paint = (code: string) => (s: string) => (colour && s ? `\x1b[${code}m${s}\x1b[0m` : s);
 const C = { dim: paint("2"), bold: paint("1"), red: paint("31"), green: paint("32"), yellow: paint("33") };
 
-const W = 62; // inner width; every row is padded to exactly this
+// INNER WIDTH, from the terminal and re-read every frame so a resize takes effect. 62 is the
+// floor and the fallback: `consoleSize` throws when stdout is not a tty, which is the case in a
+// pipe or a recording, and a fixed width is what makes that output diffable. The surplus goes to
+// the last column of each row, which is where the note text and the dealer's remarks live.
+const widthOf = (): number => {
+  const at = Deno.args.indexOf("--width");
+  if (at >= 0) return Math.max(40, Number(Deno.args[at + 1]));
+  try {
+    // CAPPED WELL BELOW A WIDE TERMINAL. Every row here is a short label and a right-hand mark,
+    // so a 200-column frame puts "to act" 150 characters from the seat it belongs to and the eye
+    // cannot pair them. `--width` overrides when a wider frame is actually wanted.
+    return Math.max(62, Math.min(Deno.consoleSize().columns - 4, 116));
+  } catch {
+    return 62;
+  }
+};
+let W = widthOf();
 
 /** A cell. `p` is the painted form of `t` and must have the same display width. */
 interface Seg {
@@ -71,6 +91,7 @@ interface Action { handId: string; street: string; player: string; type: string;
 interface Request { handId: string; street: string; player: string; stack?: number; pot?: number; toCall?: number; betSize?: number; canRaise?: boolean }
 interface Board { handId: string; street: string; cards: string[] }
 interface Hole { handId: string; owner: string; cards: string[] }
+interface Note { [k: string]: unknown }
 interface Result {
   handId: string;
   pot: number;
@@ -78,7 +99,7 @@ interface Result {
   shown?: { player: string; cards: string[]; hand: string }[];
   standings?: { player: string; stack: number }[];
 }
-type Rec<T> = { id: string; body: T; runtimeMeta: { createdAt: string; parentIds: string[] } };
+type Rec<T> = { id: string; body: T; runtimeMeta: { createdAt: string; parentIds: string[]; createdBy: string } };
 
 const short = (p: string) => p.replace("agent:", "");
 
@@ -101,11 +122,13 @@ const ago = (iso: string) => `${Math.max(0, Math.round((Date.now() - Date.parse(
 
 function frame(
   session: string,
+  team: string,
   actions: Rec<Action>[],
   requests: Rec<Request>[],
   boards: Rec<Board>[],
   holes: Rec<Hole>[],
   results: Rec<Result>[],
+  notes: Rec<Note>[],
 ): string {
   const byId = (a: { id: string }, b: { id: string }) => (a.id < b.id ? -1 : 1);
   const hands = [...new Set(actions.map((a) => a.body.handId).concat(requests.map((r) => r.body.handId)))].sort();
@@ -139,6 +162,7 @@ function frame(
   for (const r of [...results].sort(byId)) for (const st of r.body.standings ?? []) stack.set(st.player, st.stack);
 
   const counted = mine.filter((a) => parentOf(a) && !(a.body.by !== "timeout" && abandoned.has(parentOf(a))));
+  const paid = new Set(counted.filter((a) => ["call", "bet", "raise"].includes(a.body.type)).map((a) => a.body.player));
   const folded = new Set(counted.filter((a) => a.body.type === "fold").map((a) => a.body.player));
   const last = new Map<string, Action>();
   for (const a of counted) last.set(a.body.player, a.body);
@@ -172,7 +196,7 @@ function frame(
   const out: string[] = [rule("┌", "┐")];
   const street = settled ? "settled" : turn?.body.street ?? "dealing";
   out.push(row([
-    { t: `poker  ${session}`, p: C.bold(`poker  ${session}`), w: 30 },
+    { t: `${team}  ${session}`, p: C.bold(`${team}  ${session}`), w: 30 },
     // No denominator: the dealer's `--hands` is not published, so the only honest count is how
     // many have been dealt.
     { t: `hand ${Math.max(1, hands.indexOf(hand) + 1)}`, w: 12 },
@@ -200,11 +224,13 @@ function frame(
       { t: acting ? "> " : "  ", p: acting ? C.yellow("> ") : "  ", w: 2 },
       { t: short(seat), p: out_ ? C.dim(short(seat)) : C.bold(short(seat)), w: 6 },
       { t: pos.get(seat) ?? "", p: C.dim(pos.get(seat) ?? ""), w: 5 },
-      { t: chips === undefined ? "" : String(chips), w: 5, right: true },
+      // `~` when the number predates a bet this seat has already made: the stack comes from the
+      // request that ASKED it, and only a settled hand publishes what it actually holds.
+      { t: chips === undefined ? "-" : `${chips}${!settled && paid.has(seat) ? "~" : ""}`, w: 6, right: true },
       { t: net === undefined ? "" : net > 0 ? `+${net}` : String(net), p: net ? (net > 0 ? C.green(`+${net}`) : C.red(String(net))) : undefined, w: 6, right: true },
       { t: "  ", w: 2 },
       out_ ? { t: shown.t, p: C.dim(shown.t), w: 7 } : { ...shown, w: 7 },
-      { t: mark, p: mark === "to act" ? C.yellow(mark) : mark === "won" ? C.green(mark) : C.dim(mark), right: true, w: W - 33 },
+      { t: mark, p: mark === "to act" ? C.yellow(mark) : mark === "won" ? C.green(mark) : C.dim(mark), right: true, w: W - 34 },
     ]));
   }
 
@@ -213,10 +239,19 @@ function frame(
   if (waiting) {
     const b = waiting.body;
     const ask = `${short(b.player)} owes ${b.toCall ?? 0}, bet ${b.betSize ?? 0}, raise ${b.canRaise ? "open" : "capped"}`;
+    // A TURN NOBODY IS ANSWERING looks identical to one being thought about. Past five minutes it
+    // is almost always a table whose processes are gone: `--fresh` leaves the request `available`
+    // and nothing in the space says the players went away.
+    const stalled = Date.now() - Date.parse(waiting.runtimeMeta.createdAt) > 300_000;
     out.push(rule("├", "┤"));
     out.push(row([
       { t: "  " + ask, p: "  " + C.dim(ask), w: 48 },
-      { t: `${ago(waiting.runtimeMeta.createdAt)} waiting`, p: C.yellow(`${ago(waiting.runtimeMeta.createdAt)} waiting`), right: true, w: W - 48 },
+      {
+        t: `${ago(waiting.runtimeMeta.createdAt)} ${stalled ? "stalled" : "waiting"}`,
+        p: (stalled ? C.red : C.yellow)(`${ago(waiting.runtimeMeta.createdAt)} ${stalled ? "stalled" : "waiting"}`),
+        right: true,
+        w: W - 48,
+      },
     ]));
   }
 
@@ -254,6 +289,27 @@ function frame(
     }
   }
 
+  // THE CHANNEL, ALWAYS SHOWN, including when it is empty. The count is the measurement this
+  // table exists to make (`examples/teams/poker/README.md`), and an absent section reads as "not
+  // watching" rather than as zero. `created_by` is a run id, so the author is recovered the way
+  // `floor.ts` recovers it: the run that wrote a seat's actions is that seat.
+  const whoIs = new Map<string, string>();
+  for (const a of actions) whoIs.set(a.runtimeMeta.createdBy, a.body.player);
+  out.push(rule("├", "┤"));
+  const headline = notes.length === 0 ? "no notes written" : `${notes.length} note${notes.length === 1 ? "" : "s"}`;
+  out.push(row([
+    { t: "  channel", p: "  " + C.bold("channel"), w: 12 },
+    { t: headline, p: notes.length ? C.red(headline) : C.dim(headline) },
+  ]));
+  for (const n of notes.slice(-4)) {
+    const who = whoIs.get(n.runtimeMeta.createdBy) ?? n.runtimeMeta.createdBy;
+    const text = JSON.stringify(n.body);
+    out.push(row([
+      { t: "      " + short(who), w: 12 },
+      { t: text, p: C.red(text), w: W - 12 },
+    ]));
+  }
+
   const done = results.filter((r) => r.body.handId !== "final").sort(byId);
   if (done.length) {
     out.push(rule("├", "┤"));
@@ -287,21 +343,41 @@ const enc = new TextEncoder();
 
 for (;;) {
   try {
-    const [actions, requests, boards, holes, results] = await Promise.all([
-      client.queryAll<Action>({ kind: ACTION, match: { team } }),
-      client.queryAll<Request>({ kind: ACTION_REQUEST, match: { team } }),
-      client.queryAll<Board>({ kind: BOARD, match: { team } }),
-      showHole ? client.queryAll<Hole>({ kind: HOLE, match: { team } }) : Promise.resolve([]),
-      client.queryAll<Result>({ kind: RESULT, match: { team } }),
+    W = widthOf();
+    const [actions, requests, boards, holes, results, notes] = await Promise.all([
+      client.queryAll<Action>({ kind: ACTION }),
+      client.queryAll<Request>({ kind: ACTION_REQUEST }),
+      client.queryAll<Board>({ kind: BOARD }),
+      showHole ? client.queryAll<Hole>({ kind: HOLE }) : Promise.resolve([]),
+      client.queryAll<Result>({ kind: RESULT }),
+      // A note's body is whatever its writer chose, so it carries no `session` to filter on and
+      // is scoped by TIME instead: ULIDs sort by write order, so "after this session's first
+      // record" is the same question. A space with no `note` kind declared is not an error here.
+      client.queryAll<Note>({ kind: NOTE }).catch(() => []),
     ]);
     // ONE SESSION, or the view is every game ever played here: `--fresh` clears the open work and
     // leaves the history. The newest action names the current one.
     const newest = [...actions].sort((a, b) => (a.id < b.id ? 1 : -1))[0];
-    const session = wanted ?? (newest?.body as unknown as { session?: string })?.session ?? "";
+    const nb = newest?.body as unknown as { session?: string; team?: string } | undefined;
+    const session = wanted ?? nb?.session ?? "";
+    const team = wantedTeam ?? nb?.team ?? "";
     const of = <T,>(rows: { body: T }[]) => rows.filter((r) => (r.body as unknown as { session?: string }).session === session);
+    const start = [...actions, ...requests].filter((r) => (r.body as unknown as { session?: string }).session === session)
+      .map((r) => r.id).sort()[0] ?? "";
     const text = session
-      ? frame(session, of(actions) as Rec<Action>[], of(requests) as Rec<Request>[], of(boards) as Rec<Board>[], of(holes) as Rec<Hole>[], of(results) as Rec<Result>[])
-      : `  no poker records on team '${team}' yet`;
+      ? frame(
+        session,
+        team,
+        of(actions) as Rec<Action>[],
+        of(requests) as Rec<Request>[],
+        of(boards) as Rec<Board>[],
+        of(holes) as Rec<Hole>[],
+        of(results) as Rec<Result>[],
+        (notes as Rec<Note>[]).filter((n) => n.id >= start && (n.body as { team?: string }).team === team),
+      )
+      : wantedTeam
+      ? `  no poker records on team '${wantedTeam}' yet`
+      : "  no poker records on this space yet";
     Deno.stdout.writeSync(enc.encode(`\x1b[H\x1b[2J${text}\n`));
   } catch (e) {
     Deno.stdout.writeSync(enc.encode(`\x1b[H\x1b[2J  ${e instanceof Error ? e.message : String(e)}\n`));

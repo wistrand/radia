@@ -286,7 +286,17 @@ export async function runLlmPlayer(
         }, `ack:${claim.record.id}`).catch(() => {});
       }
     } catch (e) {
-      log(`[${principal}] ${e instanceof Error ? e.message : String(e)}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      // A REVOKED GRANT IS TERMINAL, not a hiccup to retry. Being refused `take` means this seat
+      // no longer holds the grant, and nothing this process does will bring it back: the floor
+      // ejects by retiring grants, and grants resolve per request. Retrying logged the same
+      // refusal five times a second for as long as the table ran.
+      if (/forbidden|no '\w+' grant/.test(msg)) {
+        log(`[${principal}] ${msg}`);
+        log(`[${principal}] seat revoked, stopping`);
+        return;
+      }
+      log(`[${principal}] ${msg}`);
       await new Promise((r) => setTimeout(r, 200));
     }
   }

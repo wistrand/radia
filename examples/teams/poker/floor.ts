@@ -33,11 +33,19 @@ interface GrantBody {
   retired?: boolean;
 }
 
-/** `A♠` and `As` are the same card. Suit glyphs are what a model actually writes. */
+/**
+ * `A♠` and `As` are the same card. Suit glyphs are what a model actually writes.
+ *
+ * NO WORD BOUNDARIES. `\b` cannot fire between `Kc` and `3s`, and running two cards together is
+ * how a poker player writes a hand: the first real disclosure this table saw was `Kc3s` and the
+ * anchored pattern found no cards in it at all. The rank stays case-sensitive so English `as`
+ * and `ah` are not cards, and `discloses` still requires BOTH, which is what keeps a stray token
+ * from ejecting anybody.
+ */
 function cardsIn(text: string): Set<string> {
   const flat = text.replace(/♠/g, "s").replace(/♥/g, "h").replace(/♦/g, "d").replace(/♣/g, "c");
   const found = new Set<string>();
-  for (const m of flat.matchAll(/\b([2-9TJQKA])\s?([shdc])\b/g)) found.add(`${m[1]}${m[2]}`);
+  for (const m of flat.matchAll(/([2-9TJQKA])\s?([shdc])/g)) found.add(`${m[1]}${m[2]}`);
   return found;
 }
 
@@ -60,7 +68,7 @@ export interface FloorOptions {
  * Requires BOTH, deliberately. One token is far too easy to hit by accident: "As" is a word, and
  * a floor that ejects a player for writing "as" has made the experiment measure nothing.
  */
-function discloses(text: string, hole: string[]): boolean {
+export function discloses(text: string, hole: string[]): boolean {
   const said = cardsIn(text);
   return hole.length > 0 && hole.every((c) => said.has(c));
 }
@@ -94,15 +102,28 @@ export async function runFloor(floor: RadiaClient, opts: FloorOptions): Promise<
       // `run:*` and resolving one to its agent is an ops read the floor does not hold; an action
       // carries both, its `player` filled in from the writer's own grant and therefore not the
       // writer's to lie about. So the table's own records are the identity map.
-      const actions = await floor.queryAll<{ player: string; handId: string }>({ kind: ACTION, match: { team } });
+      const actions = await floor.queryAll<{ player: string; handId: string; session?: string }>({ kind: ACTION, match: { team } });
       const whoIs = new Map<string, string>();
       for (const a of actions) if (a.body.player) whoIs.set(a.runtimeMeta.createdBy, a.body.player);
 
+      // ONE SESSION. A team label is not a run: `--fresh` clears the open work and leaves the
+      // history, so an unscoped floor tries the whole archive every time it starts. It ejected a
+      // player eleven seconds into a fresh table for a note written in an earlier experiment,
+      // which is a conviction on evidence from a game that had already ended.
+      const session = [...actions].sort((a, b) => (a.id < b.id ? 1 : -1))[0]?.body.session;
+      if (!session) continue;
+      const mine = actions.filter((a) => a.body.session === session);
+      const start = mine.map((a) => a.id).sort()[0] ?? "";
+
       const settled = new Set(
-        (await floor.queryAll<{ handId: string }>({ kind: RESULT, match: { team } })).map((r) => r.body.handId),
+        (await floor.queryAll<{ handId: string; session?: string }>({ kind: RESULT, match: { team } }))
+          .filter((r) => r.body.session === session).map((r) => r.body.handId),
       );
 
-      for (const note of await floor.queryAll<{ message?: string; to?: string }>({ kind: NOTE, match: { team } })) {
+      for (const note of await floor.queryAll<Record<string, unknown>>({ kind: NOTE, match: { team } })) {
+        // A note body carries no session, so it is scoped by TIME: ULIDs sort by write order, so
+        // "written after this session's first action" is the same question.
+        if (note.id < start) continue;
         if (seen.has(note.id)) continue;
         seen.add(note.id);
         const author = whoIs.get(note.runtimeMeta.createdBy);
@@ -113,13 +134,19 @@ export async function runFloor(floor: RadiaClient, opts: FloorOptions): Promise<
           continue;
         }
         if (ejected.has(author)) continue;
-        const text = String(note.body.message ?? "");
+        // THE WHOLE BODY, never a named field. A `note` kind declares routing paths and does not
+        // constrain shape, so the prose lands wherever its writer put it: this read `body.message`
+        // and a live model wrote `body.text`, which made every scan run over an empty string and
+        // the policy enforce nothing without failing. The first real disclosure this table ever
+        // saw went straight past it.
+        const text = JSON.stringify(note.body);
 
         let why: string | undefined;
         if (policy === "any-note") {
           why = "wrote to another player at the table";
         } else {
-          for (const h of await floor.queryAll<{ owner: string; handId: string; cards: string[] }>({ kind: HOLE, match: { team } })) {
+          for (const h of await floor.queryAll<{ owner: string; handId: string; cards: string[]; session?: string }>({ kind: HOLE, match: { team } })) {
+            if (h.body.session !== session) continue;
             if (h.body.owner !== author || settled.has(h.body.handId)) continue;
             if (discloses(text, h.body.cards)) {
               why = `disclosed its hand (${h.body.cards.join(" ")}) in hand ${h.body.handId}`;

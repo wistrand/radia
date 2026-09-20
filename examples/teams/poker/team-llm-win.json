@@ -1,0 +1,409 @@
+{
+  "team": "poker",
+  "kinds": [
+    {
+      "kind": "poker_hole",
+      "indexedPaths": [
+        {
+          "path": "owner",
+          "type": "keyword"
+        },
+        {
+          "path": "handId",
+          "type": "keyword"
+        },
+        {
+          "path": "session",
+          "type": "keyword"
+        },
+        {
+          "path": "team",
+          "type": "keyword"
+        }
+      ],
+      "claimable": false,
+      "usage": "One player's two hole cards for one hand, written by the dealer. Every player holds `hole: query` scoped to {owner: self}, so this kind is readable only by the player it belongs to and by the dealer that dealt it. Never claimed."
+    },
+    {
+      "kind": "poker_board",
+      "indexedPaths": [
+        {
+          "path": "handId",
+          "type": "keyword"
+        },
+        {
+          "path": "street",
+          "type": "keyword"
+        },
+        {
+          "path": "session",
+          "type": "keyword"
+        },
+        {
+          "path": "team",
+          "type": "keyword"
+        }
+      ],
+      "claimable": false,
+      "usage": "The community cards for one street of one hand. Public: every player queries it unscoped."
+    },
+    {
+      "kind": "poker_action_request",
+      "indexedPaths": [
+        {
+          "path": "player",
+          "type": "keyword"
+        },
+        {
+          "path": "handId",
+          "type": "keyword"
+        },
+        {
+          "path": "street",
+          "type": "keyword"
+        },
+        {
+          "path": "session",
+          "type": "keyword"
+        },
+        {
+          "path": "team",
+          "type": "keyword"
+        }
+      ],
+      "claimable": true,
+      "usage": "It is this player's turn. Claimable by exactly one principal, because each player's `action_request: take` grant is scoped to {player: self}. Claiming it IS taking the turn; there is no lock and no orchestrator. Ack it with an `action`."
+    },
+    {
+      "kind": "poker_action",
+      "indexedPaths": [
+        {
+          "path": "player",
+          "type": "keyword"
+        },
+        {
+          "path": "handId",
+          "type": "keyword"
+        },
+        {
+          "path": "street",
+          "type": "keyword"
+        },
+        {
+          "path": "session",
+          "type": "keyword"
+        },
+        {
+          "path": "team",
+          "type": "keyword"
+        }
+      ],
+      "claimable": false,
+      "usage": "What a player did. body: {session, handId, street, type, amount}. `type` is fold, check, call, bet or raise. FIXED LIMIT, so `amount` is not free: 0 to fold or check, `toCall` to call, `toCall + betSize` to bet or raise, and no other value. Check only when `toCall` is 0; bet when `toCall` is 0, raise when it is not; neither while `canRaise` is false. Write no `player` and no `team`: both are filled in from your grant, which is why you cannot write another player's action. Public, so the betting history is auditable."
+    },
+    {
+      "kind": "poker_hand_result",
+      "indexedPaths": [
+        {
+          "path": "handId",
+          "type": "keyword"
+        },
+        {
+          "path": "session",
+          "type": "keyword"
+        },
+        {
+          "path": "team",
+          "type": "keyword"
+        }
+      ],
+      "claimable": false,
+      "usage": "Who won one hand, with how much and by what, plus every hand shown at showdown."
+    }
+  ],
+  "members": [
+    {
+      "name": "dealer",
+      "service": true,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/examples/teams/poker/dealer.ts",
+        "--url",
+        "{{url}}",
+        "--token",
+        "{{token}}",
+        "--team",
+        "poker",
+        "--hands",
+        "3",
+        "--action-timeout",
+        "150"
+      ],
+      "grants": [
+        "poker_hole:put,query,read_one",
+        "poker_board:put,query,read_one",
+        "poker_action_request:put,query,read_one",
+        "poker_action:put,query,read_one",
+        "poker_hand_result:put,query,read_one"
+      ]
+    },
+    {
+      "name": "supervisor",
+      "service": true,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/examples/teams/poker/floor.ts",
+        "--url",
+        "{{url}}",
+        "--token",
+        "{{token}}",
+        "--team",
+        "poker",
+        "--policy",
+        "disclosure"
+      ],
+      "grants": [
+        "poker_hole:query,read_one",
+        "poker_action:query,read_one",
+        "poker_hand_result:query,read_one"
+      ],
+      "unscopedGrants": [
+        "grant:query"
+      ]
+    },
+    {
+      "name": "ada",
+      "service": true,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/examples/poker/llm-player.ts",
+        "--url",
+        "{{url}}",
+        "--token",
+        "{{token}}",
+        "--player",
+        "ada",
+        "--model",
+        "x-ai/grok-4.6",
+        "--trace",
+        "trace.jsonl",
+        "--system-file",
+        "{{repo}}/examples/teams/poker/prompts/llm-partnership-win.md"
+      ],
+      "grants": [
+        {
+          "kind": "poker_hole",
+          "operations": [
+            "query",
+            "read_one"
+          ],
+          "pattern": {
+            "owner": "self"
+          }
+        },
+        {
+          "kind": "poker_action_request",
+          "operations": [
+            "take",
+            "query",
+            "read_one"
+          ],
+          "pattern": {
+            "player": "self"
+          }
+        },
+        {
+          "kind": "poker_action",
+          "operations": [
+            "put"
+          ],
+          "pattern": {
+            "player": "self"
+          }
+        },
+        "poker_action:query,read_one",
+        "poker_board:query,read_one",
+        "poker_hand_result:query,read_one"
+      ]
+    },
+    {
+      "name": "ben",
+      "service": true,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/examples/poker/llm-player.ts",
+        "--url",
+        "{{url}}",
+        "--token",
+        "{{token}}",
+        "--player",
+        "ben",
+        "--model",
+        "x-ai/grok-4.6",
+        "--trace",
+        "trace.jsonl",
+        "--system-file",
+        "{{repo}}/examples/teams/poker/prompts/llm-partnership-win.md"
+      ],
+      "grants": [
+        {
+          "kind": "poker_hole",
+          "operations": [
+            "query",
+            "read_one"
+          ],
+          "pattern": {
+            "owner": "self"
+          }
+        },
+        {
+          "kind": "poker_action_request",
+          "operations": [
+            "take",
+            "query",
+            "read_one"
+          ],
+          "pattern": {
+            "player": "self"
+          }
+        },
+        {
+          "kind": "poker_action",
+          "operations": [
+            "put"
+          ],
+          "pattern": {
+            "player": "self"
+          }
+        },
+        "poker_action:query,read_one",
+        "poker_board:query,read_one",
+        "poker_hand_result:query,read_one"
+      ]
+    },
+    {
+      "name": "cy",
+      "service": true,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/examples/poker/llm-player.ts",
+        "--url",
+        "{{url}}",
+        "--token",
+        "{{token}}",
+        "--player",
+        "cy",
+        "--model",
+        "x-ai/grok-4.6",
+        "--trace",
+        "trace.jsonl"
+      ],
+      "grants": [
+        {
+          "kind": "poker_hole",
+          "operations": [
+            "query",
+            "read_one"
+          ],
+          "pattern": {
+            "owner": "self"
+          }
+        },
+        {
+          "kind": "poker_action_request",
+          "operations": [
+            "take",
+            "query",
+            "read_one"
+          ],
+          "pattern": {
+            "player": "self"
+          }
+        },
+        {
+          "kind": "poker_action",
+          "operations": [
+            "put"
+          ],
+          "pattern": {
+            "player": "self"
+          }
+        },
+        "poker_action:query,read_one",
+        "poker_board:query,read_one",
+        "poker_hand_result:query,read_one"
+      ]
+    },
+    {
+      "name": "dee",
+      "service": true,
+      "command": [
+        "deno",
+        "run",
+        "-A",
+        "{{repo}}/examples/poker/llm-player.ts",
+        "--url",
+        "{{url}}",
+        "--token",
+        "{{token}}",
+        "--player",
+        "dee",
+        "--model",
+        "x-ai/grok-4.6",
+        "--trace",
+        "trace.jsonl"
+      ],
+      "grants": [
+        {
+          "kind": "poker_hole",
+          "operations": [
+            "query",
+            "read_one"
+          ],
+          "pattern": {
+            "owner": "self"
+          }
+        },
+        {
+          "kind": "poker_action_request",
+          "operations": [
+            "take",
+            "query",
+            "read_one"
+          ],
+          "pattern": {
+            "player": "self"
+          }
+        },
+        {
+          "kind": "poker_action",
+          "operations": [
+            "put"
+          ],
+          "pattern": {
+            "player": "self"
+          }
+        },
+        "poker_action:query,read_one",
+        "poker_board:query,read_one",
+        "poker_hand_result:query,read_one"
+      ]
+    }
+  ],
+  "done": {
+    "kind": "poker_hand_result",
+    "match": {
+      "handId": "final"
+    }
+  }
+}
