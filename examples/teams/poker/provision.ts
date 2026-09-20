@@ -14,6 +14,7 @@
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
 import { addMember, declareKind, declareTeamKinds, liveKinds, readDefinition } from "../../../extensions/ts/team.ts";
 import type { KindDef } from "../../../sdk/ts/wire.ts";
+import { KINDS } from "../../poker/poker.ts";
 import type { TeamGrant } from "../../../src/surfaces/teamfile.ts";
 
 export const PLAYERS = ["ada", "ben", "cy", "dee"];
@@ -46,6 +47,17 @@ export async function provisionTeam(
   dir: string,
 ): Promise<{ team: string; declared: number; tokens: Map<string, string> }> {
   const file = await readTeamFile(dir);
+  // `team.json` carries a COPY of the kinds, because `--init` must declare them before it mints
+  // any member and a grant pattern does not compile against an undeclared path. Two sources, so
+  // they drift: the scripted example declares `KINDS` and the team declares the file's, and a
+  // change to one is silently absent from the other. Cheap to check, and the fix is one line of
+  // `deno eval` writing `KINDS` back into the file.
+  if (JSON.stringify(file.kinds) !== JSON.stringify(KINDS)) {
+    throw new Error(
+      "examples/teams/poker/team.json kinds have drifted from examples/poker/poker.ts KINDS; " +
+        "regenerate the file's `kinds` from that export",
+    );
+  }
   // The TEAM's own kinds first, then the file's, which is the order `--init` uses and not an
   // arbitrary one: the standard member grants are scoped to `{team}`, so `task`, `note`,
   // `artifact`, `capability` and `workspace` must carry that indexed path before any member is

@@ -99,7 +99,7 @@
         }
       ],
       "claimable": false,
-      "usage": "What a player did: fold, check, call, bet or raise. Public, so the betting history is auditable by everyone. A player's `action: put` grant is scoped to {player: self}, so one player cannot write another's action even though the kind is world-readable."
+      "usage": "What a player did. body: {session, handId, street, type, amount}. `type` is fold, check, call, bet or raise. FIXED LIMIT, so `amount` is not free: 0 to fold or check, `toCall` to call, `toCall + betSize` to bet or raise, and no other value. Check only when `toCall` is 0; bet when `toCall` is 0, raise when it is not; neither while `canRaise` is false. Write no `player` and no `team`: both are filled in from your grant, which is why you cannot write another player's action. Public, so the betting history is auditable."
     },
     {
       "kind": "poker_hand_result",

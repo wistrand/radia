@@ -8,7 +8,7 @@
 // buy nothing. What the example constrains is the PLAYERS, in `team.json`'s per-member grants.
 
 import { RadiaClient } from "../../../sdk/ts/client.ts";
-import { playHand, rng, type Seat, shuffled } from "../../poker/poker.ts";
+import { playHand, rng, rotateButton, type Seat, shuffled } from "../../poker/poker.ts";
 
 export interface DealerRunOptions {
   team: string;
@@ -48,6 +48,7 @@ export async function runDealer(
       log,
     });
     log(`  stacks: ${seats.map((s) => `${s.name} ${s.stack}`).join(", ")}`);
+    rotateButton(seats);
   }
 
   // The team's `done` pattern, so `radia team up` ends itself rather than waiting to be killed.
@@ -85,6 +86,10 @@ if (import.meta.main) {
     team: arg("team", "poker")!,
     players: (arg("players", "ada,ben,cy,dee")!).split(","),
     hands: Number(arg("hands", "3")),
+    // Two minutes suits a harness launch. An LLM seat answers in about fifteen seconds, and at
+    // that speed the dealer's own clock becomes the slowest thing at the table: one stalled
+    // player costs two minutes for a decision that takes fourteen. Set it per table.
+    ...(arg("action-timeout") ? { actionTimeoutMs: Number(arg("action-timeout")) * 1000 } : {}),
     seed: arg("seed") ? Number(arg("seed")) : undefined,
   });
   console.error(`poker: ${out.hands} hands dealt; ${out.seats.map((s) => `${s.name} ${s.stack}`).join(", ")}`);

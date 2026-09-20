@@ -20,6 +20,7 @@ import {
   playHand,
   RESULT,
   rng,
+  rotateButton,
   runPlayer,
   type Seat,
   shuffled,
@@ -149,6 +150,7 @@ try {
   const outcomes = [];
   for (let h = 1; h <= 4; h++) {
     outcomes.push(await playHand(dealer, seats, `${session}-h${h}`, shuffled(next), { session, log: (l) => console.log(`  ${l}`) }));
+    rotateButton(seats);
   }
   const chipsAfter = seats.reduce((n, s) => n + s.stack, 0);
   console.log(`  stacks: ${seats.map((s) => `${s.name} ${s.stack}`).join(", ")}\n`);
