@@ -12,7 +12,7 @@ import { Space } from "../../src/core/space.ts";
 import { SqliteAdapter } from "../../src/storage/sqlite.ts";
 import { makeHandler } from "../../src/server/http.ts";
 import { ACTION, ACTION_REQUEST, HOLE, KINDS } from "./poker.ts";
-import { playTurn } from "./llm-player.ts";
+import { playTurn, runLlmPlayer } from "./llm-player.ts";
 
 /** A completions endpoint that replays a script of assistant messages, one per request. */
 function stubModel(script: { content?: string; tool_calls?: { id: string; function: { name: string; arguments: string } }[] }[]) {
@@ -138,4 +138,145 @@ Deno.test("[llm-player] the tool surface names no poker kind, so `note` is disco
     [...tools.matchAll(/name: "(space_[a-z_]+)"/g)].map((m) => m[1]),
     ["space_kinds", "space_query", "space_read_one", "space_put", "space_ack"],
   );
+});
+
+Deno.test("[llm-player] a seat carries its last turn into the next one", async () => {
+  // Without this a player meets the table new every turn: it cannot notice a pattern, a partner's
+  // reply, or a penalty it suffered a hand ago, so nothing in a session can teach it anything.
+  const t = await table();
+  const ack = (type: string) =>
+    call("space_ack", {
+      resultKind: ACTION,
+      resultBody: { session: "s", handId: "h1", street: "preflop", player: "agent:ada", type, amount: 0 },
+    }, `ack-${type}`);
+  const model = stubModel([{ tool_calls: [ack("fold")] }]);
+  const history: unknown[] = [];
+  try {
+    for (const _ of [1, 2]) {
+      const claim = await t.admin.put({
+        kind: ACTION_REQUEST,
+        body: { session: "s", handId: "h1", street: "preflop", player: "agent:ada", toCall: 0, betSize: 2, canRaise: true, pot: 3, board: [], stack: 500 },
+      }).then(() => t.ada.take({ pattern: { kind: ACTION_REQUEST, match: { player: "agent:ada" } } }, { leaseSeconds: 60 }));
+      assert(claim);
+      await playTurn(t.ada, claim as never, "agent:ada", { model: "stub", apiKey: "x", baseUrl: model.base }, undefined, history);
+    }
+
+    // The second turn opened with the first turn still in the transcript.
+    const second = model.seen[1] as { role: string }[];
+    const first = model.seen[0] as { role: string }[];
+    assert(second.length > first.length, `the second turn carried the first: ${first.length} then ${second.length}`);
+    assert(second.some((m) => m.role === "tool"), "including what the space answered, not just what it said");
+    assertEquals(second[0].role, "system", "and the system prompt still leads");
+  } finally {
+    await model.close();
+    await t.close();
+  }
+});
+
+Deno.test("[llm-player] a hung completion is abandoned and retried, not waited on", async () => {
+  // An unbounded fetch is how one turn took 294 seconds: the request sat in a provider queue
+  // while this waited, until the dealer's clock folded the seat. The median completion across
+  // four models is 3-13s and the tail is minutes, so the fix is to stop waiting and ask again.
+  let attempts = 0;
+  const server = Deno.serve({ port: 0, hostname: "127.0.0.1", onListen: () => {} }, async () => {
+    attempts++;
+    // The first attempt never answers; the second does.
+    if (attempts === 1) await new Promise((r) => setTimeout(r, 5_000));
+    return Response.json({
+      choices: [{
+        message: {
+          tool_calls: [{
+            id: "a",
+            function: {
+              name: "space_ack",
+              arguments: JSON.stringify({
+                resultKind: ACTION,
+                resultBody: { session: "s", handId: "h1", street: "preflop", player: "agent:ada", type: "fold", amount: 0 },
+              }),
+            },
+          }],
+        },
+      }],
+    });
+  });
+  const base = `http://127.0.0.1:${(server.addr as Deno.NetAddr).port}`;
+  const t = await table();
+  try {
+    const claim = await t.ada.take({ pattern: { kind: ACTION_REQUEST, match: { player: "agent:ada" } } }, { leaseSeconds: 60 });
+    assert(claim);
+    const started = Date.now();
+    const ok = await playTurn(t.ada, claim as never, "agent:ada", {
+      model: "stub",
+      apiKey: "x",
+      baseUrl: base,
+      requestTimeoutMs: 300,
+      retries: 2,
+    });
+    const seconds = (Date.now() - started) / 1000;
+    assert(ok, "the retry settled the turn");
+    assertEquals(attempts, 2, "it asked again rather than waiting");
+    assert(seconds < 4, `it did not sit out the hung request: ${seconds.toFixed(1)}s`);
+  } finally {
+    await server.shutdown();
+    await t.close();
+  }
+});
+
+Deno.test("[llm-player] a completion that never answers gives up rather than hanging", async () => {
+  const server = Deno.serve({ port: 0, hostname: "127.0.0.1", onListen: () => {} }, async () => {
+    await new Promise((r) => setTimeout(r, 5_000));
+    return Response.json({ choices: [] });
+  });
+  const base = `http://127.0.0.1:${(server.addr as Deno.NetAddr).port}`;
+  const t = await table();
+  try {
+    const claim = await t.ada.take({ pattern: { kind: ACTION_REQUEST, match: { player: "agent:ada" } } }, { leaseSeconds: 60 });
+    const ok = await playTurn(t.ada, claim as never, "agent:ada", {
+      model: "stub",
+      apiKey: "x",
+      baseUrl: base,
+      requestTimeoutMs: 200,
+      retries: 1,
+      maxToolCalls: 1,
+    });
+    // The turn is not settled, which is what the caller folds on: a bounded failure, not a hang.
+    assertEquals(ok, false);
+  } finally {
+    await server.shutdown();
+    await t.close();
+  }
+});
+
+Deno.test("[llm-player] mail addressed to a seat is delivered, whether or not it asks", async () => {
+  // A ruling only deters a seat that sees it. One model made 37 tool calls in a session and
+  // queried `note` on none of them, so a penalty addressed to it perfectly changed nothing. The
+  // space cannot compel a read; the harness can hand over what is waiting, the way it already
+  // hands over the claimed record.
+  const t = await table();
+  const model = stubModel([{
+    tool_calls: [call("space_ack", {
+      resultKind: ACTION,
+      resultBody: { session: "s", handId: "h1", street: "preflop", player: "agent:ada", type: "fold", amount: 0 },
+    })],
+  }]);
+  try {
+    await t.admin.registerKind({ kind: "note", indexedPaths: [{ path: "to", type: "keyword" }], claimable: false });
+    await t.admin.grant("agent:ada", "note", ["query", "read_one"]);
+    await t.admin.put({ kind: "note", body: { to: "agent:ada", message: "agent:ben is out: it disclosed its hand" } });
+
+    const stop = { done: false };
+    const run = runLlmPlayer(t.ada, "agent:ada", { model: "stub", apiKey: "x", baseUrl: model.base, inbox: true }, stop);
+    for (let i = 0; i < 100 && model.calls() === 0; i++) await new Promise((r) => setTimeout(r, 20));
+    stop.done = true;
+    await run;
+
+    const sent = model.seen[0] as { role: string; content?: string }[];
+    assert(
+      sent.some((m) => /agent:ben is out/.test(m.content ?? "")),
+      `the ruling reached the model without it asking: ${JSON.stringify(sent.map((m) => m.role))}`,
+    );
+  } finally {
+    await model.close();
+    await t.close();
+  }
 });

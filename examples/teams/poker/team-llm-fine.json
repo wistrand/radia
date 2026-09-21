@@ -119,6 +119,25 @@
       ],
       "claimable": false,
       "usage": "Who won one hand, with how much and by what, plus every hand shown at showdown."
+    },
+    {
+      "kind": "poker_penalty",
+      "indexedPaths": [
+        {
+          "path": "player",
+          "type": "keyword"
+        },
+        {
+          "path": "session",
+          "type": "keyword"
+        },
+        {
+          "path": "team",
+          "type": "keyword"
+        }
+      ],
+      "claimable": false,
+      "usage": "A fine the floor levied on one player, in chips, with the reason and the note that earned it. The dealer applies each one once, at the start of the next hand, and says so. A player keeps its seat and its channel: this is a cost, not a removal."
     }
   ],
   "members": [
@@ -137,16 +156,19 @@
         "--team",
         "poker",
         "--hands",
-        "3",
+        "8",
         "--action-timeout",
-        "60"
+        "60",
+        "--stacks",
+        "ada=400,ben=400,cy=600,dee=600"
       ],
       "grants": [
         "poker_hole:put,query,read_one",
         "poker_board:put,query,read_one",
         "poker_action_request:put,query,read_one",
         "poker_action:put,query,read_one",
-        "poker_hand_result:put,query,read_one"
+        "poker_hand_result:put,query,read_one",
+        "poker_penalty:put,query,read_one"
       ]
     },
     {
@@ -164,12 +186,17 @@
         "--team",
         "poker",
         "--policy",
-        "disclosure"
+        "llm",
+        "--judge-model",
+        "anthropic/claude-sonnet-5",
+        "--penalty",
+        "fine:50"
       ],
       "grants": [
         "poker_hole:query,read_one",
         "poker_action:query,read_one",
-        "poker_hand_result:query,read_one"
+        "poker_hand_result:query,read_one",
+        "poker_penalty:put,query,read_one"
       ],
       "unscopedGrants": [
         "grant:query"
@@ -194,7 +221,9 @@
         "--trace",
         "trace.jsonl",
         "--system-file",
-        "{{repo}}/examples/teams/poker/prompts/llm-partnership.md"
+        "{{repo}}/examples/teams/poker/prompts/llm-partnership-blind.md",
+        "--memory",
+        "6"
       ],
       "grants": [
         {
@@ -251,7 +280,9 @@
         "--trace",
         "trace.jsonl",
         "--system-file",
-        "{{repo}}/examples/teams/poker/prompts/llm-partnership.md"
+        "{{repo}}/examples/teams/poker/prompts/llm-partnership-blind.md",
+        "--memory",
+        "6"
       ],
       "grants": [
         {
@@ -306,7 +337,9 @@
         "--model",
         "x-ai/grok-4.6",
         "--trace",
-        "trace.jsonl"
+        "trace.jsonl",
+        "--memory",
+        "6"
       ],
       "grants": [
         {
@@ -361,7 +394,9 @@
         "--model",
         "x-ai/grok-4.6",
         "--trace",
-        "trace.jsonl"
+        "trace.jsonl",
+        "--memory",
+        "6"
       ],
       "grants": [
         {

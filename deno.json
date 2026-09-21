@@ -53,7 +53,8 @@
     "release": "./scripts/build-release.sh",
     "bundle-browser": "./scripts/build-browser.sh",
     "bundle-chat-web": "deno bundle --minify -o examples/chat/web/app.js examples/chat/web/app.ts",
-    "serve-docs": "deno run --allow-net=127.0.0.1 --allow-read=docs scripts/serve-docs.ts"
+    "serve-docs": "deno run --allow-net=127.0.0.1 --allow-read=docs scripts/serve-docs.ts",
+    "poker-run": "deno run -A examples/teams/poker/run.ts"
   },
   "imports": {
     "@std/ulid": "jsr:@std/ulid@^1.0.0",

@@ -139,7 +139,7 @@
         "--hands",
         "3",
         "--action-timeout",
-        "150"
+        "60"
       ],
       "grants": [
         "poker_hole:put,query,read_one",

@@ -48,10 +48,11 @@ const widthOf = (): number => {
   const at = Deno.args.indexOf("--width");
   if (at >= 0) return Math.max(40, Number(Deno.args[at + 1]));
   try {
-    // CAPPED WELL BELOW A WIDE TERMINAL. Every row here is a short label and a right-hand mark,
-    // so a 200-column frame puts "to act" 150 characters from the seat it belongs to and the eye
-    // cannot pair them. `--width` overrides when a wider frame is actually wanted.
-    return Math.max(62, Math.min(Deno.consoleSize().columns - 4, 116));
+    // THE WHOLE TERMINAL. Notes are the widest thing here and the most worth reading, so the
+    // frame takes the width it is given and the note column absorbs it. What must NOT stretch is
+    // a seat's mark: at 200 columns a right-aligned "to act" sat 150 characters from the name it
+    // belonged to, so those columns are fixed and the row pads after them.
+    return Math.max(62, Math.min(Deno.consoleSize().columns - 4, 400));
   } catch {
     return 62;
   }
@@ -230,7 +231,7 @@ function frame(
       { t: net === undefined ? "" : net > 0 ? `+${net}` : String(net), p: net ? (net > 0 ? C.green(`+${net}`) : C.red(String(net))) : undefined, w: 6, right: true },
       { t: "  ", w: 2 },
       out_ ? { t: shown.t, p: C.dim(shown.t), w: 7 } : { ...shown, w: 7 },
-      { t: mark, p: mark === "to act" ? C.yellow(mark) : mark === "won" ? C.green(mark) : C.dim(mark), right: true, w: W - 34 },
+      { t: mark, p: mark === "to act" ? C.yellow(mark) : mark === "won" ? C.green(mark) : C.dim(mark), w: 10 },
     ]));
   }
 
@@ -245,12 +246,11 @@ function frame(
     const stalled = Date.now() - Date.parse(waiting.runtimeMeta.createdAt) > 300_000;
     out.push(rule("├", "┤"));
     out.push(row([
-      { t: "  " + ask, p: "  " + C.dim(ask), w: 48 },
+      { t: "  " + ask, p: "  " + C.dim(ask), w: 46 },
       {
         t: `${ago(waiting.runtimeMeta.createdAt)} ${stalled ? "stalled" : "waiting"}`,
         p: (stalled ? C.red : C.yellow)(`${ago(waiting.runtimeMeta.createdAt)} ${stalled ? "stalled" : "waiting"}`),
-        right: true,
-        w: W - 48,
+        w: 20,
       },
     ]));
   }
@@ -296,17 +296,37 @@ function frame(
   const whoIs = new Map<string, string>();
   for (const a of actions) whoIs.set(a.runtimeMeta.createdBy, a.body.player);
   out.push(rule("├", "┤"));
-  const headline = notes.length === 0 ? "no notes written" : `${notes.length} note${notes.length === 1 ? "" : "s"}`;
+  const players = notes.filter((n) => whoIs.has(n.runtimeMeta.createdBy)).length;
+  const headline = players === 0
+    ? (notes.length ? `no player notes (${notes.length} from the floor)` : "no notes written")
+    : `${players} player note${players === 1 ? "" : "s"}`;
   out.push(row([
     { t: "  channel", p: "  " + C.bold("channel"), w: 12 },
-    { t: headline, p: notes.length ? C.red(headline) : C.dim(headline) },
+    { t: headline, p: players ? C.red(headline) : C.dim(headline) },
   ]));
-  for (const n of notes.slice(-4)) {
-    const who = whoIs.get(n.runtimeMeta.createdBy) ?? n.runtimeMeta.createdBy;
-    const text = JSON.stringify(n.body);
+  // ONE LINE PER RULING, not one per addressee. The floor writes a copy to every seat so that a
+  // reader filtering on its own name sees it, which is correct and makes five records of one
+  // event; collapsing them on the message keeps the panel readable and loses nothing.
+  const seen = new Set<string>();
+  const distinct = notes.filter((n) => {
+    const body = { ...(n.body as Record<string, unknown>) };
+    delete body.to;
+    const key = JSON.stringify(body);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  for (const n of distinct.slice(-5)) {
+    // The floor is the only writer that never takes a turn, so it is the one author the action
+    // records cannot name.
+    const who = whoIs.get(n.runtimeMeta.createdBy) ?? "floor";
+    const b = n.body as { to?: string; message?: string; text?: string };
+    const to = String(b.to ?? "all");
+    const said = String(b.message ?? b.text ?? JSON.stringify(n.body));
+    const from = `${short(who)} -> ${short(to)}`;
     out.push(row([
-      { t: "      " + short(who), w: 12 },
-      { t: text, p: C.red(text), w: W - 12 },
+      { t: "      " + from, p: "      " + C.dim(from), w: 22 },
+      { t: said, p: who === "floor" ? C.red(said) : said, w: Math.max(20, W - 22) },
     ]));
   }
 
@@ -357,7 +377,10 @@ for (;;) {
     ]);
     // ONE SESSION, or the view is every game ever played here: `--fresh` clears the open work and
     // leaves the history. The newest action names the current one.
-    const newest = [...actions].sort((a, b) => (a.id < b.id ? 1 : -1))[0];
+    // REQUESTS COUNT, NOT JUST ACTIONS. The dealer writes holes, a board and the first turn
+    // before anybody has moved, and deriving the session from actions alone drew "no poker
+    // records" over a table that was already dealt and waiting on its first player.
+    const newest = [...actions, ...requests].sort((a, b) => (a.id < b.id ? 1 : -1))[0];
     const nb = newest?.body as unknown as { session?: string; team?: string } | undefined;
     const session = wanted ?? nb?.session ?? "";
     const team = wantedTeam ?? nb?.team ?? "";
@@ -376,8 +399,8 @@ for (;;) {
         (notes as Rec<Note>[]).filter((n) => n.id >= start && (n.body as { team?: string }).team === team),
       )
       : wantedTeam
-      ? `  no poker records on team '${wantedTeam}' yet`
-      : "  no poker records on this space yet";
+      ? `  nothing dealt on team '${wantedTeam}' yet`
+      : "  nothing dealt on this space yet";
     Deno.stdout.writeSync(enc.encode(`\x1b[H\x1b[2J${text}\n`));
   } catch (e) {
     Deno.stdout.writeSync(enc.encode(`\x1b[H\x1b[2J  ${e instanceof Error ? e.message : String(e)}\n`));

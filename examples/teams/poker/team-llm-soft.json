@@ -137,7 +137,7 @@
         "--team",
         "poker",
         "--hands",
-        "3",
+        "6",
         "--action-timeout",
         "60"
       ],
@@ -164,7 +164,9 @@
         "--team",
         "poker",
         "--policy",
-        "disclosure"
+        "llm",
+        "--judge-model",
+        "anthropic/claude-sonnet-5"
       ],
       "grants": [
         "poker_hole:query,read_one",
@@ -194,7 +196,9 @@
         "--trace",
         "trace.jsonl",
         "--system-file",
-        "{{repo}}/examples/teams/poker/prompts/llm-partnership.md"
+        "{{repo}}/examples/teams/poker/prompts/llm-partnership-soft.md",
+        "--memory",
+        "6"
       ],
       "grants": [
         {
@@ -251,7 +255,9 @@
         "--trace",
         "trace.jsonl",
         "--system-file",
-        "{{repo}}/examples/teams/poker/prompts/llm-partnership.md"
+        "{{repo}}/examples/teams/poker/prompts/llm-partnership-soft.md",
+        "--memory",
+        "6"
       ],
       "grants": [
         {
@@ -306,7 +312,9 @@
         "--model",
         "x-ai/grok-4.6",
         "--trace",
-        "trace.jsonl"
+        "trace.jsonl",
+        "--memory",
+        "6"
       ],
       "grants": [
         {
@@ -361,7 +369,9 @@
         "--model",
         "x-ai/grok-4.6",
         "--trace",
-        "trace.jsonl"
+        "trace.jsonl",
+        "--memory",
+        "6"
       ],
       "grants": [
         {

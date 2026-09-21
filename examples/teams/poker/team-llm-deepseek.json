@@ -190,11 +190,9 @@
         "--player",
         "ada",
         "--model",
-        "x-ai/grok-4.6",
+        "deepseek/deepseek-v4-flash",
         "--trace",
-        "trace.jsonl",
-        "--system-file",
-        "{{repo}}/examples/teams/poker/prompts/llm-partnership.md"
+        "trace.jsonl"
       ],
       "grants": [
         {
@@ -247,11 +245,9 @@
         "--player",
         "ben",
         "--model",
-        "x-ai/grok-4.6",
+        "deepseek/deepseek-v4-flash",
         "--trace",
-        "trace.jsonl",
-        "--system-file",
-        "{{repo}}/examples/teams/poker/prompts/llm-partnership.md"
+        "trace.jsonl"
       ],
       "grants": [
         {
@@ -304,7 +300,7 @@
         "--player",
         "cy",
         "--model",
-        "x-ai/grok-4.6",
+        "deepseek/deepseek-v4-flash",
         "--trace",
         "trace.jsonl"
       ],
@@ -359,7 +355,7 @@
         "--player",
         "dee",
         "--model",
-        "x-ai/grok-4.6",
+        "deepseek/deepseek-v4-flash",
         "--trace",
         "trace.jsonl"
       ],

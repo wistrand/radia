@@ -8,13 +8,18 @@
 // buy nothing. What the example constrains is the PLAYERS, in `team.json`'s per-member grants.
 
 import { RadiaClient } from "../../../sdk/ts/client.ts";
-import { playHand, rng, rotateButton, type Seat, shuffled } from "../../poker/poker.ts";
+import { PENALTY, playHand, rng, rotateButton, type Seat, shuffled } from "../../poker/poker.ts";
 
 export interface DealerRunOptions {
   team: string;
   players: string[];
   hands: number;
   startingStack?: number;
+  /** Per seat, by name, overriding `startingStack`. A DEFICIT IS AN EXPERIMENTAL CONTROL: a
+   *  prompt telling a partnership that finishing behind is total failure only tests anything
+   *  while it IS behind, and leaving that to the deal made half the deterrence runs uninformative
+   *  (README, "A weaker stated penalty"). Dealing the premise in makes it true from hand 1. */
+  stacks?: Record<string, number>;
   seed?: number;
   /** How long a player has to claim and answer its turn before the dealer folds the seat.
    *
@@ -35,20 +40,41 @@ export async function runDealer(
   const seats: Seat[] = opts.players.map((name) => ({
     principal: `agent:${name}`,
     name,
-    stack: opts.startingStack ?? 500,
+    stack: opts.stacks?.[name] ?? opts.startingStack ?? 500,
   }));
   const session = `t${Date.now().toString(36)}`;
   const next = rng(opts.seed ?? Date.now() & 0xffff);
 
+  // Fines the floor levied, read from the space rather than handed over: the floor and the
+  // dealer share no code and no channel but the records, which is the same arrangement the floor
+  // already uses to identify a note's author.
+  const applied = new Set<string>();
   for (let h = 1; h <= opts.hands; h++) {
+    const fines: { player: string; chips: number; why: string }[] = [];
+    for (
+      const f of await dealer.queryAll<{ player: string; chips: number; why: string; session?: string }>({
+        kind: PENALTY,
+        match: { team: opts.team },
+      }).catch(() => [])
+    ) {
+      if (f.body.session !== session || applied.has(f.id)) continue;
+      applied.add(f.id);
+      fines.push({ player: f.body.player, chips: f.body.chips, why: f.body.why });
+    }
     await playHand(dealer, seats, `${session}-h${h}`, shuffled(next), {
       session,
       team: opts.team,
       actionTimeoutMs: opts.actionTimeoutMs ?? 120_000,
+      fines,
       log,
     });
     log(`  stacks: ${seats.map((s) => `${s.name} ${s.stack}`).join(", ")}`);
     rotateButton(seats);
+    // Two seats left able to act is the least a hand can be played with.
+    if (seats.filter((s) => !s.sittingOut).length < 2) {
+      log(`  stopping after ${h} hand(s): fewer than two seats are still playing`);
+      break;
+    }
   }
 
   // The team's `done` pattern, so `radia team up` ends itself rather than waiting to be killed.
@@ -85,10 +111,25 @@ if (import.meta.main) {
   const out = await runDealer(client, {
     team: arg("team", "poker")!,
     players: (arg("players", "ada,ben,cy,dee")!).split(","),
+    // `--stacks ada=400,ben=400,cy=600,dee=600`; any seat left out takes the default.
+    ...(arg("stacks")
+      ? {
+        stacks: Object.fromEntries(
+          arg("stacks")!.split(",").map((p) => {
+            const [n, v] = p.split("=");
+            return [n, Number(v)];
+          }),
+        ),
+      }
+      : {}),
     hands: Number(arg("hands", "3")),
-    // Two minutes suits a harness launch. An LLM seat answers in about fifteen seconds, and at
-    // that speed the dealer's own clock becomes the slowest thing at the table: one stalled
-    // player costs two minutes for a decision that takes fourteen. Set it per table.
+    // Two minutes suits a harness launch, whose seat spends a whole agent session per decision.
+    // An LLM seat is far quicker and the dealer's own clock becomes the slowest thing at the
+    // table: measured over 46 turns of grok-4.6, the median turn was 13s and the p90 32s, so one
+    // stalled seat cost 150s where the table was waiting 13. The LLM team files use 75, which is
+    // more than double the p90. Do not cut it to the median: at 45s four concurrent seats were
+    // folded by the clock and then acked anyway, which puts two actions on one turn
+    // (README, "How long a run takes").
     ...(arg("action-timeout") ? { actionTimeoutMs: Number(arg("action-timeout")) * 1000 } : {}),
     seed: arg("seed") ? Number(arg("seed")) : undefined,
   });

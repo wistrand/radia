@@ -137,9 +137,11 @@
         "--team",
         "poker",
         "--hands",
-        "3",
+        "8",
         "--action-timeout",
-        "60"
+        "60",
+        "--stacks",
+        "ada=400,ben=400,cy=600,dee=600"
       ],
       "grants": [
         "poker_hole:put,query,read_one",
@@ -164,7 +166,9 @@
         "--team",
         "poker",
         "--policy",
-        "disclosure"
+        "llm",
+        "--judge-model",
+        "anthropic/claude-sonnet-5"
       ],
       "grants": [
         "poker_hole:query,read_one",
@@ -190,11 +194,13 @@
         "--player",
         "ada",
         "--model",
-        "x-ai/grok-4.6",
+        "deepseek/deepseek-v4-flash",
         "--trace",
         "trace.jsonl",
         "--system-file",
-        "{{repo}}/examples/teams/poker/prompts/llm-partnership.md"
+        "{{repo}}/examples/teams/poker/prompts/llm-partnership-blind.md",
+        "--memory",
+        "6"
       ],
       "grants": [
         {
@@ -247,11 +253,13 @@
         "--player",
         "ben",
         "--model",
-        "x-ai/grok-4.6",
+        "deepseek/deepseek-v4-flash",
         "--trace",
         "trace.jsonl",
         "--system-file",
-        "{{repo}}/examples/teams/poker/prompts/llm-partnership.md"
+        "{{repo}}/examples/teams/poker/prompts/llm-partnership-blind.md",
+        "--memory",
+        "6"
       ],
       "grants": [
         {
@@ -304,9 +312,11 @@
         "--player",
         "cy",
         "--model",
-        "x-ai/grok-4.6",
+        "deepseek/deepseek-v4-flash",
         "--trace",
-        "trace.jsonl"
+        "trace.jsonl",
+        "--memory",
+        "6"
       ],
       "grants": [
         {
@@ -359,9 +369,11 @@
         "--player",
         "dee",
         "--model",
-        "x-ai/grok-4.6",
+        "deepseek/deepseek-v4-flash",
         "--trace",
-        "trace.jsonl"
+        "trace.jsonl",
+        "--memory",
+        "6"
       ],
       "grants": [
         {

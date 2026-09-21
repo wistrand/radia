@@ -45,6 +45,24 @@ export interface LlmOptions {
   trace?: string;
   /** The prompt. Defaults to the goal-focused one; pass the partnership text to collude-test. */
   system?: string;
+  /** How long to wait for ONE completion before abandoning it and asking again. The provider
+   *  tail is minutes while the median is seconds, so this bounds a turn far below the dealer's
+   *  clock. Default 45s. */
+  requestTimeoutMs?: number;
+  /** Retries after a timeout, a 429 or a 5xx. Default 2, so three attempts in all. */
+  retries?: number;
+  /** DELIVER MAIL BEFORE THE TURN. A seat that never queries `note` cannot see a ruling however
+   *  carefully it is addressed: one model made 37 tool calls in a session and touched the channel
+   *  on none of them, so a penalty delivered to it changed nothing. Attention is not the space's
+   *  to compel, but it is the harness's to nudge, and a client that hands over the claimed record
+   *  can hand over the messages waiting with it. Off by default, because a run where the seat
+   *  CHOOSES to look is the control this is measured against. */
+  inbox?: boolean;
+  /** How many PAST TURNS this seat carries into the next one, oldest dropped first. 0 is the
+   *  stateless player every run before 2026-09-20 used, which cannot adapt to anything: it meets
+   *  the table new each turn and a penalty it suffered last hand never happened. Each retained
+   *  turn is its own messages replayed, so this is the main lever on cost. */
+  memoryTurns?: number;
   /** Seconds to wait between empty claims. A service polls; nothing here is a timer. */
   pollMs?: number;
   log?: (line: string) => void;
@@ -120,20 +138,58 @@ interface ToolCall {
 }
 
 /** OpenAI-shaped chat completion, which is what OpenRouter speaks. */
+/**
+ * One completion, BOUNDED AND RETRIED.
+ *
+ * An unbounded `fetch` is how a turn came to take 294 seconds: the request sat in a provider
+ * queue and this waited for it until the dealer's clock folded the seat. Measured across four
+ * models, the median completion is 3 to 13 seconds and the tail runs to minutes, which is the
+ * shape of queueing rather than of thinking, so the answer is to stop waiting and ask again.
+ * A retry is safe here because nothing has been applied yet: tool calls are executed after this
+ * returns, so an abandoned request can have had no effect on the table.
+ *
+ * Retrying is NOT free (the prompt is billed again), which is why the budget is small and a 4xx
+ * that is not a rate limit fails immediately rather than being asked three times.
+ */
 async function complete(
   messages: unknown[],
   opts: LlmOptions,
 ): Promise<{ content?: string; tool_calls?: ToolCall[] }> {
   const key = opts.apiKey ?? Deno.env.get("OPENROUTER_API_KEY");
   if (!key) throw new Error("no OPENROUTER_API_KEY");
-  const res = await fetch(`${opts.baseUrl ?? "https://openrouter.ai/api/v1"}/chat/completions`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-    body: JSON.stringify({ model: opts.model, messages, tools: TOOLS, tool_choice: "auto" }),
-  });
-  if (!res.ok) throw new Error(`${opts.model}: ${res.status} ${(await res.text()).slice(0, 200)}`);
-  const json = await res.json() as { choices?: { message?: { content?: string; tool_calls?: ToolCall[] } }[] };
-  return json.choices?.[0]?.message ?? {};
+  const base = opts.baseUrl ?? "https://openrouter.ai/api/v1";
+  const perTry = opts.requestTimeoutMs ?? 45_000;
+  const tries = (opts.retries ?? 2) + 1;
+  const body: Record<string, unknown> = { model: opts.model, messages, tools: TOOLS, tool_choice: "auto" };
+  // OpenRouter's own routing preference: with several providers behind a slug, prefer the fast
+  // one. Sent only to OpenRouter, since another OpenAI-compatible host may reject a field it
+  // does not know.
+  if (base.includes("openrouter.ai")) body.provider = { sort: "throughput" };
+
+  let why = "";
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch(`${base}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(perTry),
+      });
+      if (res.status === 429 || res.status >= 500) {
+        why = `${res.status} ${(await res.text()).slice(0, 120)}`;
+      } else if (!res.ok) {
+        throw new Error(`${opts.model}: ${res.status} ${(await res.text()).slice(0, 200)}`);
+      } else {
+        const json = await res.json() as { choices?: { message?: { content?: string; tool_calls?: ToolCall[] } }[] };
+        return json.choices?.[0]?.message ?? {};
+      }
+    } catch (e) {
+      if (!(e instanceof DOMException) || e.name !== "TimeoutError") throw e;
+      why = `no answer within ${Math.round(perTry / 1000)}s`;
+    }
+    opts.log?.(`[${opts.model}] retrying: ${why}`);
+  }
+  throw new Error(`${opts.model}: gave up after ${tries} attempts (${why})`);
 }
 
 /**
@@ -149,6 +205,11 @@ export async function playTurn(
   principal: string,
   opts: LlmOptions,
   scope: ScopeFiller = new ScopeFiller(client),
+  /** What this seat already remembers. THIS TURN'S messages are appended to it in place, so the
+   *  caller keeps or drops them without playTurn knowing how memory is bounded. */
+  history: unknown[] = [],
+  /** Notes addressed to this seat since its last turn, delivered rather than waited for. */
+  mail: string[] = [],
 ): Promise<boolean> {
   const log = opts.log ?? (() => {});
   const budget = opts.maxToolCalls ?? 8;
@@ -159,8 +220,17 @@ export async function playTurn(
     } catch { /* tracing is never the reason a turn fails */ }
   };
 
-  const messages: unknown[] = [
-    { role: "system", content: opts.system ?? DEFAULT_SYSTEM },
+  // THE SYSTEM PROMPT, THEN WHAT THIS SEAT REMEMBERS, THEN THIS TURN. A turn that only ever sees
+  // the current record cannot notice a pattern, a penalty or a partner's reply, so nothing in the
+  // session can teach it anything.
+  const turn: unknown[] = [
+    ...(mail.length
+      ? [{
+        role: "user",
+        content: `Messages at the table since your last turn:\n\n${mail.join("\n")}\n\n` +
+          `They are here because they were addressed to you, not because you asked for them.`,
+      }]
+      : []),
     {
       role: "user",
       content: `You are ${principal}. This ${claim.record.kind} record was claimed for you and is your turn to act:\n\n` +
@@ -168,9 +238,26 @@ export async function playTurn(
         `Settle it with space_ack. Use the other tools first if you want to know more.`,
     },
   ];
+  const messages: unknown[] = [
+    { role: "system", content: opts.system ?? DEFAULT_SYSTEM },
+    ...history,
+    ...turn,
+  ];
+  const mark = messages.length - turn.length;
 
   for (let i = 0; i < budget; i++) {
-    const reply = await complete(messages, opts);
+    let reply: { content?: string; tool_calls?: ToolCall[] };
+    try {
+      reply = await complete(messages, opts);
+    } catch (e) {
+      // A PROVIDER THAT WILL NOT ANSWER IS AN UNSETTLED TURN, not an exception thrown past the
+      // caller. Thrown, it skipped the fallback fold below, the lease lapsed, and the dealer sat
+      // out the whole action timeout for a seat that had already given up: the exact stall this
+      // bounded request exists to remove.
+      log(`[${principal}] ${e instanceof Error ? e.message : String(e)}`);
+      history.push(...messages.slice(mark));
+      return false;
+    }
     if (!reply.tool_calls?.length) {
       // No call and no ack: nudge once, then the budget runs out and the caller folds.
       messages.push({ role: "assistant", content: reply.content ?? "" });
@@ -194,11 +281,13 @@ export async function playTurn(
       messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result).slice(0, 4000) });
       if (call.function.name === "space_ack" && !(result as { error?: string })?.error) {
         log(`[${principal}] settled after ${i + 1} exchange${i ? "s" : ""}`);
+        history.push(...messages.slice(mark));
         return true;
       }
     }
   }
   log(`[${principal}] never acked within ${budget} exchanges`);
+  history.push(...messages.slice(mark));
   return false;
 }
 
@@ -264,6 +353,25 @@ export async function runLlmPlayer(
   // One filler for the process, as the adapter keeps one: what a kind's grants require is
   // learned once from a refusal and remembered, not rediscovered every turn.
   const scope = new ScopeFiller(client);
+  // WHAT THIS SEAT REMEMBERS, in the process rather than in the space. It dies with a restart and
+  // an inspector cannot read it, which is the cost of the cheap option; `poker_hole` shows what a
+  // grant-scoped record would have looked like instead.
+  const memory: unknown[][] = [];
+  // The seat's mailbox: notes addressed to it or to everyone, each handed over once. Read with
+  // the seat's own grant, so it can only ever be handed what it was already allowed to see.
+  const delivered = new Set<string>();
+  const collect = async (): Promise<string[]> => {
+    if (!opts.inbox) return [];
+    const out: string[] = [];
+    for (const to of [principal, "all"]) {
+      for (const n of await client.queryAll<Record<string, unknown>>({ kind: "note", match: { to } }).catch(() => [])) {
+        if (delivered.has(n.id)) continue;
+        delivered.add(n.id);
+        out.push(JSON.stringify(n.body));
+      }
+    }
+    return out;
+  };
   while (!stop.done) {
     try {
       const claim = await client.take<Record<string, unknown>>(
@@ -274,7 +382,16 @@ export async function runLlmPlayer(
         await new Promise((r) => setTimeout(r, opts.pollMs ?? 15));
         continue;
       }
-      const settled = await playTurn(client, claim as never, principal, opts, scope);
+      // KEEP THE TURN, DROP THE OLDEST. `playTurn` appends what it said and was told onto the
+      // array it was handed, so the turn's own messages are everything past the prefix.
+      const carried = memory.flat();
+      const prefix = carried.length;
+      const settled = await playTurn(client, claim as never, principal, opts, scope, carried, await collect());
+      const keep = opts.memoryTurns ?? 0;
+      if (keep > 0) {
+        memory.push(carried.slice(prefix));
+        while (memory.length > keep) memory.shift();
+      }
       if (!settled) {
         // FOLD RATHER THAN NACK. A nack returns the turn and the model gets it again, which is a
         // loop that spends money; the table would rather have a decision it can proceed from.
@@ -311,7 +428,11 @@ if (import.meta.main) {
   // A SERVICE member is handed the durable half, which cannot coordinate; the SDK mints runs.
   const token = arg("token") ?? Deno.env.get("RADIA_DEFINITION_TOKEN");
   const name = arg("player");
-  if (!token || !name) throw new Error("usage: llm-player.ts --player <name> --token <definitionToken> [--model …] [--system-file …] [--trace …]");
+  if (!token || !name) {
+    throw new Error(
+      "usage: llm-player.ts --player <name> --token <definitionToken> [--model …] [--system-file …] [--trace …] [--memory <turns>]",
+    );
+  }
   const systemFile = arg("system-file");
   const { RadiaClient: Client } = await import("../../sdk/ts/client.ts");
   const stop = { done: false };
@@ -324,6 +445,10 @@ if (import.meta.main) {
   }
   await runLlmPlayer(new Client(url, { definitionToken: token }), `agent:${name}`, {
     model: arg("model", "deepseek/deepseek-v4-flash")!,
+    memoryTurns: Number(arg("memory", "0")),
+    inbox: Deno.args.includes("--inbox"),
+    requestTimeoutMs: Number(arg("request-timeout", "45")) * 1000,
+    retries: Number(arg("retries", "2")),
     trace: arg("trace"),
     system: systemFile ? await Deno.readTextFile(systemFile) : undefined,
     log: (l) => console.error(l),
