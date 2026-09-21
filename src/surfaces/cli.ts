@@ -2748,9 +2748,18 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
       // pattern bounding it; `patterns` unions across verbs and would call the wide grant a match.
       const satisfiesPattern = (
         k: { byOperation?: { operation: string; patterns: unknown[]; unpatterned: boolean }[]; patterns: unknown[] },
-        w: { operations: string[]; pattern?: Record<string, unknown> },
+        w: { operations: string[]; pattern?: Record<string, unknown>; unscoped?: boolean },
       ): boolean => {
-        if (!w.pattern) return true;
+        // An unscoped grant is assigned with no pattern at all; `k.unpatterned` at the call site
+        // is what checks it, and there is nothing here to compare it against.
+        if (w.unscoped) return true;
+        // NEVER SHORT-CIRCUIT ON A MISSING `w.pattern`. A grant written in string form carries no
+        // pattern of its own, because `addMember` is what scopes it to `{team: <label>}`. Reading
+        // that as "no requirement" made a member provisioned for one team read as fully
+        // provisioned for ANY other, so `team up` skipped re-provisioning on a relabel: it printed
+        // nothing, spawned the services, and the dealer was refused on its first put with `record
+        // body is outside the pattern scope of your put grant`. Scope the wanted grant the way
+        // `addMember` would, then ask.
         const want = JSON.stringify(memberGrantPattern(label, agent, w.pattern));
         const has = (op: string) => {
           const b = k.byOperation?.find((x) => x.operation === op);

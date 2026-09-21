@@ -138,6 +138,30 @@ Deno.test("team up: runs a team.json member as a worker that launches its harnes
     const settled = await cli(["team", "up", tdir, "--init", "--seed", "--once", "--url", url], env);
     assertEquals(settled.code, 0, settled.err);
     assert(!settled.err.includes("minting") && !settled.err.includes("minted"), settled.err);
+
+    // A FILE THAT CHANGES ITS TEAM LABEL re-mints too. A grant written in string form carries no
+    // pattern of its own, because `addMember` is what scopes it to `{team: <label>}`, and the
+    // convergence check used to read that as "no requirement" and pass whatever label the member
+    // was minted under. `team up` then printed nothing, spawned the services, and the member was
+    // refused on its first write with `record body is outside the pattern scope of your grant`.
+    const relabelled = JSON.parse(await Deno.readTextFile(`${tdir}/team.json`)) as { team?: string };
+    relabelled.team = "game2";
+    await Deno.writeTextFile(`${tdir}/team.json`, JSON.stringify(relabelled));
+    const moved = await cli(["team", "up", tdir, "--init", "--seed", "--once", "--url", url], env);
+    assertEquals(moved.code, 0, moved.err);
+    assertStringIncludes(moved.err, "[agent:player] re-minting: it lacks");
+    assertStringIncludes(moved.err, "minted for team game2");
+    const after = await admin.permissions("agent:player");
+    const note = after.kinds.find((k) => k.kind === "note")!;
+    assert(
+      note.patterns.some((p) => (p as { team?: string }).team === "game2"),
+      `the new label is what it holds now: ${JSON.stringify(note.patterns)}`,
+    );
+    // Put it back, so what follows sees the team it expects.
+    relabelled.team = "game";
+    await Deno.writeTextFile(`${tdir}/team.json`, JSON.stringify(relabelled));
+    await cli(["team", "up", tdir, "--init", "--seed", "--once", "--url", url], env);
+
     assertStringIncludes(again.out, "1 run: 0 settled, 1 ok");
     const upLine = again.err.split("\n").find((l) => l.includes("[agent:player] up:"))!;
     assert(/config \/\S+\/team\/game\/player\.mcp\.json, cwd \/\S+\/team\/game\/player/.test(upLine), upLine);

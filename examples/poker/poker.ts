@@ -126,6 +126,7 @@ export const BOARD = "poker_board";
 export const ACTION_REQUEST = "poker_action_request";
 export const ACTION = "poker_action";
 export const RESULT = "poker_hand_result";
+export const PENALTY = "poker_penalty";
 
 /**
  * `owner` and `player` are indexed because they are what a grant pattern narrows on, and a grant
@@ -133,6 +134,19 @@ export const RESULT = "poker_hand_result";
  * kinds rather than reusing `note`: the isolation IS the indexing contract.
  */
 export const KINDS = [
+  {
+    kind: PENALTY,
+    indexedPaths: [
+      { path: "player", type: "keyword" as const },
+      { path: "session", type: "keyword" as const },
+      { path: "team", type: "keyword" as const },
+    ],
+    claimable: false,
+    usage:
+      "A fine the floor levied on one player, in chips, with the reason and the note that " +
+      "earned it. The dealer applies each one once, at the start of the next hand, and says so. " +
+      "A player keeps its seat and its channel: this is a cost, not a removal.",
+  },
   {
     kind: HOLE,
     indexedPaths: [
@@ -236,10 +250,26 @@ export function playerGrants(principal: string): { principal: string; kind: stri
 export type Street = "preflop" | "flop" | "turn" | "river";
 const STREETS: Street[] = ["preflop", "flop", "turn", "river"];
 
+/** Consecutive ignored turns before a seat is dealt out. See `Seat.sittingOut`. */
+export const SIT_OUT_AFTER = 3;
+
 export interface Seat {
   principal: string;
   name: string;
   stack: number;
+  /** Consecutive turns this seat was asked and never answered. Reset by any answer. */
+  timeouts?: number;
+  /** DEALT OUT FOR THE REST OF THE SESSION, after `SIT_OUT_AFTER` ignored turns in a row. A seat
+   *  whose player is gone cannot be distinguished from one that is thinking, so the dealer waits
+   *  `actionTimeoutMs` for it every single turn; a floor ejection makes that expensive, since the
+   *  process exits and the seat can never answer again. The dealer learns it the only way it can,
+   *  by being ignored, which needs no coordination with the floor and also covers a crash.
+   *
+   *  THREE, not two. At two it dealt out a live player whose ack landed one second later: the
+   *  timeout was tuned to one model and a slower one crossed it twice in a row while still
+   *  playing. Any answer resets the count, so three consecutive misses is a seat that is not
+   *  answering rather than one that is slow. */
+  sittingOut?: boolean;
 }
 
 export interface ActionBody {
@@ -271,6 +301,8 @@ export interface DealerOptions {
   bigBlind?: number;
   /** How long to wait for a player to act before folding them. There is no timer in the space. */
   actionTimeoutMs?: number;
+  /** Fines to apply at the start of this hand, already deduplicated by the caller. */
+  fines?: { player: string; chips: number; why: string }[];
   log?: (line: string) => void;
 }
 
@@ -311,11 +343,24 @@ export async function playHand(
   const stamp = <T extends Record<string, unknown>>(body: T) => (team ? { ...body, team } : body);
   const log = opts.log ?? (() => {});
 
-  const live = new Map(seats.map((s) => [s.principal, true]));
+  // Only seats still in the session are dealt in, posted, asked or shown down. `seats` keeps its
+  // order and every member of it for the standings, so a sat-out seat still reports its stack.
+  const active = seats.filter((s) => !s.sittingOut);
+  // FINES LEVIED SINCE THE LAST HAND, applied once each and announced. A fine is the survivable
+  // penalty: the seat keeps playing and keeps the channel, so whether it changes what it writes
+  // NEXT is observable, which an ejection makes impossible by removing the writer.
+  for (const f of opts.fines ?? []) {
+    const seat = seats.find((x) => x.principal === f.player);
+    if (!seat) continue;
+    const paid = Math.min(f.chips, seat.stack);
+    seat.stack -= paid;
+    log(`  ${seat.name} fined ${paid}: ${f.why}`);
+  }
+  const live = new Map(active.map((s) => [s.principal, true]));
   // A hand ends the moment one player is left: everybody folding is not a possible outcome, so
   // the betting loop breaks here rather than letting the last seat fold into an empty pot.
   const remaining = () => [...live.values()].filter(Boolean).length;
-  const committed = new Map(seats.map((s) => [s.principal, 0]));
+  const committed = new Map(active.map((s) => [s.principal, 0]));
   const hole = new Map<string, Card[]>();
   const abandoned: string[] = [];
   const timedOut: string[] = [];
@@ -323,7 +368,7 @@ export async function playHand(
   let next = 0;
 
   // Hole cards. One record per player, each carrying the owner the grant pattern matches on.
-  for (const s of seats) {
+  for (const s of active) {
     const cards = [deck[next++], deck[next++]];
     hole.set(s.principal, cards);
     await dealer.put({
@@ -333,15 +378,15 @@ export async function playHand(
   }
 
   const post = (p: string, amount: number) => {
-    const seat = seats.find((s) => s.principal === p)!;
+    const seat = active.find((s) => s.principal === p)!;
     const paid = Math.min(amount, seat.stack);
     seat.stack -= paid;
     committed.set(p, committed.get(p)! + paid);
     pot += paid;
     return paid;
   };
-  post(seats[0].principal, sb);
-  post(seats[1 % seats.length].principal, bb);
+  post(active[0].principal, sb);
+  post(active[1 % active.length].principal, bb);
   log(`${handId}: blinds ${sb}/${bb}, pot ${pot}`);
 
   const board: Card[] = [];
@@ -361,7 +406,7 @@ export async function playHand(
     let toMatch = street === "preflop" ? bb : 0;
     let raises = 0;
     let acted = 0;
-    const order = street === "preflop" ? [...seats.slice(2), ...seats.slice(0, 2)] : seats;
+    const order = street === "preflop" ? [...active.slice(2), ...active.slice(0, 2)] : active;
 
     for (let i = 0; acted < order.length * 4; i++) {
       const seat = order[i % order.length];
@@ -390,6 +435,7 @@ export async function playHand(
       });
       const action = await waitForAction(dealer, handId, street, p, req.id, timeout);
       acted++;
+      if (action !== null) seat.timeouts = 0;
 
       if (action === null) {
         // Nobody claimed it. The space has no timer and the dealer cannot unpublish a record, so
@@ -407,7 +453,12 @@ export async function playHand(
         abandoned.push(req.id);
         timedOut.push(p);
         live.set(p, false);
+        seat.timeouts = (seat.timeouts ?? 0) + 1;
         log(`  ${seat.name} timed out, folded (request ${req.id} left available)`);
+        if (seat.timeouts >= SIT_OUT_AFTER) {
+          seat.sittingOut = true;
+          log(`  ${seat.name} is dealt out for the rest of the session: ignored ${seat.timeouts} turns running`);
+        }
         if (remaining() < 2) break;
         continue;
       }
@@ -445,7 +496,7 @@ export async function playHand(
 
   // Showdown. A folded hand is never revealed: the dealer writes only the cards of players who
   // reached showdown, so the space holds no record of what a folder was holding.
-  const contenders = seats.filter((s) => live.get(s.principal));
+  const contenders = active.filter((s) => live.get(s.principal));
   const shown: HandOutcome["shown"] = [];
   let winners: string[] = [];
   if (contenders.length === 1) {
