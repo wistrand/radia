@@ -1,0 +1,10 @@
+# An OTLP collector with a trace UI for `radia otlp` (extensions/ts/otlp.ts). Jaeger v2 is the
+# collector the exporter's three gotchas were found against (agent_docs/gotchas.md, "Three rules
+# the OTLP exporter learned"). In-memory storage, no autorestart: traces vanish with the
+# container, and a re-export reproduces them because span ids are content-derived.
+services:
+  jaeger:
+    image: jaegertracing/jaeger:2.5.0
+    ports:
+      - "16686:16686" # UI
+      - "4318:4318"   # OTLP/HTTP, what `radia otlp --to` posts to (/v1/traces)

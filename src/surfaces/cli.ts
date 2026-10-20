@@ -24,7 +24,7 @@ import { BINDING, type Binding, declareBinding, type Outcome, readBindings, sand
 import { brokeredInvoker, declareBrokerSandbox } from "../../extensions/ts/broker.ts";
 import { selectJavascriptJail } from "../../extensions/ts/exec-tool.ts";
 import { auditCompartment } from "../../extensions/ts/compartment.ts";
-import { addMember, DEFAULT_TEAM, declareKind, declareTeamKinds, liveKinds, type MemberRemoval, memberGrantPattern, type ObserveChange, readDefinition, removeMember, TEAM_FIELD, teamRoster } from "../../extensions/ts/team.ts";
+import { addMember, announceMember, DEFAULT_TEAM, declareKind, declareTeamKinds, liveKinds, type MemberRemoval, memberGrantPattern, type ObserveChange, readDefinition, removeMember, TEAM_FIELD, teamRoster } from "../../extensions/ts/team.ts";
 import { configLocation, type Harness, mcpInvocation, renderMcpConfig, renderMcpInstall } from "./mcp/config.ts";
 import { TOOLS } from "./mcp/tools.ts";
 import { framePrompt, harnessTemplates, loadTeamFile, substitute, type TeamFileMember, type TeamGrant } from "./teamfile.ts";
@@ -679,7 +679,11 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         // The whole cascade lives in `removeMember` rather than here: it closes four doors in an
         // order that matters, and a CLI verb is the wrong place for a rule other clients need too.
         const removed: MemberRemoval[] = [];
-        for (const agent of names) removed.push(await removeMember(client, agent));
+        for (const agent of names) {
+          const r = await removeMember(client, agent);
+          await announceMember(client, agent, r.teams, "left");
+          removed.push(r);
+        }
         return out(ctx, removed, () =>
           lines([
             ...removed.map((r) =>
@@ -764,6 +768,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         // racer that revoked in between loses instead of adding a second definition.
         const after = state === "active" ? (await readDefinition(client, agent)).id : prior.id;
         const member = await addMember(client, agent, { teams: lanes, observe, extra, supersedes: after });
+        if (state !== "active") await announceMember(client, agent, lanes, "joined");
         // The token is shown once; `radia team up` runs this member as a worker later and needs the
         // durable half, so it is kept where the CLI's other credentials live. Best effort: a file
         // that cannot be written costs `up` a clear message, never `add` its result.
@@ -2793,6 +2798,7 @@ async function teamUp(argv: string[], ctx: Ctx): Promise<number> {
         throw new UsageError(`${agent} is already defined on this space but its token is not on this machine; run \`radia team add ${m.name} --team ${label} --rotate\` here`);
       }
       const member = await addMember(admin, agent, { teams: [label], supersedes: prior.id, extra: (m.grants ?? []).map(parseGrant) });
+      if (prior.state !== "active") await announceMember(admin, agent, [label], "joined");
       // Reference kinds carry no team, so a scoped grant on one matches nothing: written unscoped,
       // as the operator, the one way to say so (the lab does the same for its exec worker).
       for (const g of m.unscopedGrants ?? []) {

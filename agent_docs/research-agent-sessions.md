@@ -375,6 +375,14 @@ It was told to write one note saying whether the answer was right, and "there is
 exactly the case it did not report. Same shape as an empty queue read as an empty space: the absence
 of a thing is a finding, and nothing in the instructions made it one.
 
+**Two interactive members, 2026-10-20: three gaps in one check-in.** Claude Code and Codex on team
+`alpha`, both driven by a person. (1) Claude could not name its teammate and asked its user, since a
+member reads no roster; `team add`/`team up`/`team remove` now broadcast a `topic: 'roster'` note
+(`announceMember`, `extensions/ts/team.ts`). (2) Codex advertised its HARNESS tools (shell, patch,
+web search, the `space_*` tools) as 8 capabilities, which route nothing; the `capability` usage now
+says `tool` is the tag a task carries. (3) Codex ordered capabilities by `tool` and got
+`unsortable_path`, recovered in one call; the usage now says the kind has no sortable path.
+
 ## What five models writing one song showed, 2026-09-06
 
 Twenty finished songs on one space, five model members each. The first team here whose output is

@@ -126,6 +126,31 @@ without anything being logged on purpose.
 **Driving both agents yourself.** You are then the transport, and the exclusivity is your attention.
 A lease is exclusivity the space enforces, and it survives you looking away.
 
+## Choosing a mode: interactive, worker, or mixed
+
+Setup:
+
+```
+radia dev --db                                            # start a persistent space
+radia team add claude-alpha codex-alpha --team alpha      # one-time setup, as operator
+```
+
+For an interactive member, paste the config block `team add` printed into that harness and open a
+session. A new member is announced to its team as a `note {to: "all", topic: "roster", agent,
+event: "joined"}` (`announceMember`; `team remove` writes `"left"`), because a member reads no
+roster and otherwise cannot name a teammate until it writes something. For a worker, list it in a `team.json` and run `radia team up` (next section), whose
+`--init` mints any member `team add` did not.
+
+| Mode                   | What wakes the harness                 | Idle cost               | Fits                                                       |
+|------------------------|----------------------------------------|-------------------------|------------------------------------------------------------|
+| Both interactive       | you, or a `space_watch {newOnly}` loop | tokens per watch call   | short sessions with a human in the loop                    |
+| Both `team up` workers | the worker, once per claim             | none                    | games and pipelines with no human turn                     |
+| Mixed (you + a worker) | you; the worker for the other side     | none on the worker side | the usual case; `scripts/agent-lab/scenarios/team-up.json` |
+
+All three share the pitfalls below: one member per SESSION ("A member is an agent definition, not a
+run"), leftovers from an earlier run claimed alongside new work (`--fresh`, or a space of its own:
+"Members as workers"), and `foreign` taint saturating as threads deepen ("What it is NOT for").
+
 ## Members as workers: `team.json` and `radia team up`
 
 A harness on MCP acts only while a session is open, and nothing wakes one that is not running
@@ -319,9 +344,12 @@ claim.
 
 **Once one IS running, it can watch without being poked each time.** A harness that can spawn a
 subagent (Claude Code's is one) can hand it a loop of `space_watch {newOnly: true}` calls and let it
-react to what arrives; each call blocks up to 120 seconds, so the loop is what spans a working
+react to what arrives; each call blocks for `timeoutSeconds` (default 30, capped at 120, so a loop
+should pass 120), and the loop is what spans a working
 session. That is the practical shape for "tell me when the other agent answers", and it costs one
-instruction rather than a code change. It is bounded by the SESSION, not by the space: the watcher
+instruction rather than a code change. Claude Code may instead run a single `space_watch` as a
+background tool call (its own feature; `radia mcp` has no MCP tasks support): that is one watch,
+not a loop, so it ends at the first arrival and must be re-armed for the next. It is bounded by the SESSION, not by the space: the watcher
 dies with the harness, and it is polling, so it spends tokens while it waits.
 
 For work that must be picked up with no session alive at all, the answer is a worker on `agentLoop`

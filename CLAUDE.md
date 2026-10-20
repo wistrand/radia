@@ -69,7 +69,7 @@ file's own header, never here.
 | `openapi/radia-ext.yaml`                | the extension HTTP bindings (`radia serve-ext` / `--ext`), versioned per extension and NOT frozen. [plan-extension-http.md](agent_docs/plan-extension-http.md) |
 | `agent_docs/`                           | design deep dives, one topic per file (linked below)       |
 | `docs/`                                 | the published site (no build); reader-facing, so it summarises and `agent_docs/` stays the record. `test/docs.test.ts` checks every claim a machine can |
-| `docker/`                               | deployment recipes, not examples: `keycloak/` (a real OIDC issuer), `s3/` (an object store for artifact bytes), `py-parity/` (pinned Pythons for the SDK parity suite), `cluster/` (primary, standby and S3 for `bench/cluster/`), `postgres/`. README in each of the first four |
+| `docker/`                               | deployment recipes, not examples: `keycloak/` (a real OIDC issuer), `s3/` (an object store for artifact bytes), `py-parity/` (pinned Pythons for the SDK parity suite), `cluster/` (primary, standby and S3 for `bench/cluster/`), `jaeger/` (a collector for `radia otlp`), `postgres/`. README in each but `postgres/`; `docker/README.md` has the VPN subnet fix |
 | `notes/radia-runtime-outline-v0.3.md`   | origin design outline; provenance, not maintained doc      |
 | `notes/*-explained.md`                  | orientation for a newcomer, in figures: [the model](notes/radia-explained.md), [the auth stack](notes/radia-auth-explained.md), [the implementation](notes/radia-implementation-explained.md) |
 

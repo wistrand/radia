@@ -92,13 +92,13 @@ export const TEAM_KINDS: KindDef[] = [
       { path: "ok", type: "keyword" },
     ],
     claimable: false,
-    usage: "What agents say to each other, and what a finished task acks as its result. " +
-      "body: {to, message, topic?, ok?}. `to` is a member's AGENT name, which space_health reports " +
-      "as `agent`, never the RUN in `principal`, or 'all' for the whole team. READ YOUR MAILBOX AS " +
-      "{to: {$in: ['<your agent name>', 'all']}}: a keyword match is exact, so watching your own " +
-      "name alone silently misses every broadcast. WORK YOU COULD NOT DO IS STILL ANSWERED: ack a " +
-      "note with ok:false saying why, and nack only if a retry could succeed. PROSE ONLY: code, a " +
-      "script or a file goes in space_put_artifact and the note names it.",
+    usage: "Mail between members, and a finished task's ack result. body: {to, message, topic?, " +
+      "ok?}. `to` is a member's AGENT name (space_health's `agent`, never the RUN in `principal`), " +
+      "or 'all'. READ YOUR MAILBOX AS {to: {$in: ['<your agent name>', 'all']}}: a keyword match " +
+      "is exact, so your own name alone misses every broadcast. Topic 'roster' notes ({agent, " +
+      "event}) name your teammates. WORK YOU COULD NOT DO IS STILL ANSWERED: ack a note with " +
+      "ok:false saying why; nack only if a retry could succeed. PROSE ONLY: code or a file goes " +
+      "in space_put_artifact and the note names it.",
   },
   {
     kind: ARTIFACT,
@@ -125,11 +125,13 @@ export const TEAM_KINDS: KindDef[] = [
     // with nothing reporting it. Absence is a value in the key (`keyOf`, src/core/gc.ts), so
     // records written without a team (the chat's workers) keep grouping exactly as they did.
     contentKey: [...(CAPABILITY_KIND.contentKey ?? []), TEAM_FIELD],
-    usage: "What YOU can do, so work reaches you by content rather than by name. body: " +
-      "{tool, provider, def}, where `provider` is your own principal and `def` is the " +
-      "function-calling shape {type:'function', function:{name, description, parameters}}. " +
-      "Publish one per thing you can do; re-publishing an unchanged one is free. Read the team's " +
-      "with {kind: 'capability'} before deciding a task is yours or nobody's.",
+    usage: "Work YOU will take, so it reaches you by content, not by name. body: {tool, " +
+      "provider, def}: `tool` is the TAG a task needing it carries ('review' reaches tool " +
+      "'review'), `provider` your own principal, `def` {type:'function', function:{name, " +
+      "description, parameters}}. NOT your harness's tools (shell, edits, space_*): every member " +
+      "has those, so they route nothing. One per kind of work; re-publishing is free. Read the " +
+      "team's with {kind: 'capability'}, no orderBy (no sortable path), before deciding a task " +
+      "is yours or nobody's.",
   },
   {
     // The unit a HOST runs and a promotion PINS. Extended with `team` for the same reason
@@ -623,6 +625,9 @@ export interface MemberRemoval {
    *  one left standing routes tasks to a principal that can no longer authenticate. Retiring the
    *  grant does not retire the record: the projection reads what was written, not who may write. */
   capabilitiesRetired: number;
+  /** The teams the member's retired grants reached, read before retiring them, so a caller can
+   *  announce the departure (`announceMember`). */
+  teams: string[];
   /** Run ids actually stopped, split by the two classes a principal acts through. */
   stoppedOwn: string[];
   stoppedDelegated: string[];
@@ -679,9 +684,12 @@ export async function removeMember(admin: RadiaClient, agent: string): Promise<M
   // unreachable while the definition stays revoked, and that is not the failure: a later
   // `team add` of the same name RESTORES it, silently, having been granted by nobody.
   let grantsRetired = 0;
+  const teams = new Set<string>();
   for (const principal of [agent, `delegable:${agent}`]) {
     const rows = await admin.queryAll<GrantBody>({ kind: "grant", match: { principal } });
     for (const rec of activeByKey<GrantBody>(rows, grantKey).values()) {
+      const team = rec.body.pattern?.[TEAM_FIELD];
+      if (principal === agent && typeof team === "string") teams.add(team);
       await admin.put(
         { kind: "grant", body: { ...rec.body, retired: true } },
         `${grantKey(rec.body)}:remove:after:${rec.id}`,
@@ -712,7 +720,42 @@ export async function removeMember(admin: RadiaClient, agent: string): Promise<M
       if ((await admin.stopRun(b.run)).applied) out.push(b.run);
     }
   }
-  return { agent, revoked, grantsRetired, opsPowersRetired, capabilitiesRetired, stoppedOwn, stoppedDelegated };
+  return { agent, revoked, grantsRetired, opsPowersRetired, capabilitiesRetired, teams: [...teams].sort(), stoppedOwn, stoppedDelegated };
+}
+
+/** The `topic` of the notes that say who joined or left a team. */
+export const ROSTER_TOPIC = "roster";
+
+/**
+ * Tell a team who joined or left it, as a broadcast note per team.
+ *
+ * A member otherwise cannot learn a teammate's agent name until that teammate writes something:
+ * the roster (`teamRoster`) is operator-only, and a capability exists only once published.
+ * Measured: a fresh member asked its user for the other harness's name. A NOTE rather than a kind
+ * of its own, so every member already holds the read (`MEMBER_GRANTS`) and finds it with the
+ * mailbox match the `note` usage teaches. It is a join/leave log, not a projection: a reader takes
+ * the newest event per agent. Called by the VERB, not by `addMember`, so a rotation (no team
+ * change) announces nothing. Best effort: a failed write costs the hint, never the membership.
+ */
+export async function announceMember(
+  admin: RadiaClient,
+  agent: string,
+  teams: string[],
+  event: "joined" | "left",
+): Promise<number> {
+  let written = 0;
+  for (const team of teams) {
+    try {
+      await admin.put({
+        kind: NOTE,
+        body: { [TEAM_FIELD]: team, to: "all", topic: ROSTER_TOPIC, agent, event, message: `${agent} ${event} team ${team}` },
+      });
+      written++;
+    } catch {
+      // The hint is lost; the membership change it describes already happened.
+    }
+  }
+  return written;
 }
 
 /** The half of a `grant` body this file rewrites. */
@@ -720,6 +763,7 @@ interface GrantBody {
   principal?: string;
   kind?: string;
   operations?: string[];
+  pattern?: Record<string, unknown>;
   retired?: boolean;
 }
 
